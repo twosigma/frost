@@ -679,9 +679,12 @@ dpc, resume, and separate running-state confirmation) on the simulated core.
 Without OpenOCD installed those targets log a warning and pass; set
 `FROST_REQUIRE_OPENOCD=1`, as CI does, to make them fail instead. The GDB
 session also requires `${RISCV_PREFIX}gdb` and checks registers, memory,
-software breakpoints, and single stepping through OpenOCD. The
+software breakpoints, and single stepping through OpenOCD. OpenOCD's
 simulation configuration uses a 60-second RISC-V command deadline for
-program-buffer cache maintenance. The
+program-buffer cache maintenance. With full toggle coverage,
+`debug_openocd_test` allows 240 seconds for that command, 8 or 20 seconds
+for halt waits, 480 seconds for GDB server startup and remote replies,
+and 7,200 seconds for the GDB session. The
 [memory-response tests](../verif/cocotb_tests/cpu_ooo/memory/README.md) cover
 the portable and Xilinx builds of the load-data mux.
 
@@ -2144,17 +2147,37 @@ longer, so the other jobs build without it. The `coverage` field of a matrix
 entry sets `FROST_COVERAGE` and enables the merge and upload steps.
 When a change adds a job or moves tests between jobs, check the points
 the report reaches and move the field if a job it relied on no longer
-contributes. The unit-bench jobs also set `FROST_COVERAGE_TOGGLE=1`.
-Toggle coverage stays out of the whole-SoC jobs, which the full set would
-slow about sixfold. The control set is for local runs. Each contributing
-job merges its files into a `coverage-job-*`
-artifact. Coverage Report checks the downloaded artifacts against the matrix
+contributes. In regular CI the unit-bench jobs also set
+`FROST_COVERAGE_TOGGLE=1`. The control set is for local runs. Each
+contributing job merges its files into a `coverage-job-*` artifact.
+Coverage Report checks the downloaded artifacts against the selected matrix
 after the other jobs finish, including jobs that fail. A missing artifact or
 one without a coverage payload fails the job. With all inputs present, the job
 merges them into the `coverage-report` artifact (the [report](#coverage) with
 annotated sources) and shows the summary on the job's page.
 
-The workflow has the exact job filters. The named real-program shards select
+The manual `toggle_coverage` input runs the shared image build, the two
+unit-bench jobs, the whole-SoC Verilator shards selected for toggle coverage,
+and Coverage Report. It takes precedence over the vector and proof inputs.
+Each full OpenSBI smoke boot must fit its own toggle-mode job budget as a
+single workload. The smoke configurations with and without misaligned hardware
+run only in regular coverage. The cold and warm reset tests collect toggles
+in separate jobs, each with its own toggle-mode time limit.
+
+The toggle budgets use hosted per-job and per-program wall times. Split a
+toggle shard above 216 minutes (60 percent of the hosted limit), and account
+for cold model builds, extra startup sweeps and artifact uploads in the
+new shards. The timeout is 1.8 times the plan, rounded up to minutes and
+capped at 360 minutes. Record the per-program and per-job costs and the
+partitions in [ci_toggle_budgets.json](fixtures/ci_toggle_budgets.json).
+The fast checks require each selected program to run once per covered tier.
+The toggle program jobs allow a cumulative 40 minutes for startup seeds and
+assertion controls across the simulator builds in each job. The shortest
+toggle program job allows 65 minutes, including the startup allowance, its
+programs and coverage upload.
+
+The [Verilator matrix](ci_verilator.py) has the exact job filters for regular
+CI. The named real-program shards select
 applications by name, and the "Runtime and other" shard runs every
 application they don't list. Memory and NIC stress groups the NIC benchmarks,
 L2 capacity checks, misaligned accesses and DDR reset checks. Cache management
@@ -2164,9 +2187,9 @@ the fence.i benchmark; both were split off to keep their parents inside their
 time limits. Runtime benchmarks groups the PAUSE and RAS benchmarks by
 their shared builds. Vector programs selects every registry name that starts
 with `vec_`, so a vector program added later joins it without a workflow
-change; "Runtime and other" excludes the same prefix. Each real-program job
-has a four-hour timeout, including setup and coverage uploads, unless its
-shard sets `timeout_minutes`. Size the timeout at 1.8 times the planned wall
+change; "Runtime and other" excludes the same prefix. In regular CI, each
+real-program job has a four-hour timeout, including setup and coverage uploads,
+unless its shard sets `timeout_minutes`. Size the timeout at 1.8 times the planned wall
 time, rounded up to whole minutes. The real-program ceiling is 300 minutes.
 Vector programs, Memory and NIC stress, Runtime and other, CoreMark-PRO nnet,
 and both OpenSBI smoke variants use that ceiling. CoreMark-PRO loops has a
@@ -2182,9 +2205,9 @@ selection. If the ceiling prevents the 1.8 multiplier, the recorded plan caps
 the selection's total cost.
 
 The other job families have a ceiling of 360 minutes, which is also the
-default for jobs without a configured timeout. The two cocotb unit jobs,
-the complete generated-vector campaign shards, and the Store boundary
-four records proof use 360-minute limits.
+default for jobs without a configured timeout. In regular CI the two cocotb
+unit jobs, the complete generated-vector campaign shards, and the Store
+boundary four records proof use 360-minute limits.
 
 Give each program that boots OpenSBI its own BRAM-only shard with coverage,
 including variants that disable a hardware feature or exercise reset through

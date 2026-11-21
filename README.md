@@ -362,6 +362,17 @@ its own workflow, so a newer push to `main` does not cancel it.
 The [test guide](tests/README.md#ci-integration) has the details and the commands
 for each suite.
 
+In the CI workflow's **Run workflow** menu, enable `toggle_coverage` to run
+only the Cocotb coverage shards with Verilator toggles, the shared image
+build, and the Coverage Report. The input defaults to off and takes
+precedence over the vector and proof inputs. The whole-SoC coverage shards
+allow 40 minutes for startup sweeps within their job limits. The two full
+OpenSBI smoke boots collect line and branch coverage in regular CI only.
+Collecting toggles makes simulations take several times as long and produces
+much larger coverage artifacts. The manual run's job limits allow for the
+extra simulation and artifact handling time. See the
+[coverage guide](tests/README.md#coverage).
+
 Every started main push checks a vector program for each instruction form,
 and pull requests labeled `run-ci` and regular manual runs check a slice.
 A manual vector run can replay a chosen slice or run the complete campaign,

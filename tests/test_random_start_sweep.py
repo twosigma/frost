@@ -171,14 +171,18 @@ def test_full_sweep_has_a_bounded_allocation(monkeypatch: pytest.MonkeyPatch) ->
         sweep.startup_count(12)
 
 
+@pytest.mark.parametrize(("timeout", "count"), [("", 3), ("2400", 69)])
 def test_pinned_program_seed_uses_the_ci_job_base_and_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    timeout: str,
+    count: int,
 ) -> None:
-    """A registry seed override must not replace the job's rotating sample."""
+    """Use the job's seed base and discard a plan with a different limit."""
     monkeypatch.setattr(sweep, "__file__", str(tmp_path / "random_start_sweep.py"))
     Path(sweep.__file__).write_text("runner")
     monkeypatch.delenv("FROST_STARTUP_SEEDS", raising=False)
+    monkeypatch.setenv("FROST_STARTUP_TIMEOUT_SEC", timeout)
     binary = tmp_path / "Vtop"
     binary.write_bytes(b"model")
     (tmp_path / "Vtop__verFiles.dat").write_text("+define+FROST_RANDOM_START")
@@ -202,7 +206,9 @@ def test_pinned_program_seed_uses_the_ci_job_base_and_budget(
     def run(
         binary: Path, environment: dict[str, str], output: Path, **kwargs: Any
     ) -> bool:
-        calls.append((sweep.startup_base(environment), kwargs["count"]))
+        calls.append(
+            (sweep.startup_base(environment), kwargs["count"], kwargs["budget_seconds"])
+        )
         output.mkdir(parents=True, exist_ok=True)
         return True
 
@@ -214,7 +220,7 @@ def test_pinned_program_seed_uses_the_ci_job_base_and_budget(
             "FROST_STARTUP_SEED_BASE": "run-job",
         },
     )
-    assert calls == [("run-job", 3)]
+    assert calls == [("run-job", count, int(timeout or "300"))]
 
 
 def test_job_budget_deduplicates_programs_sharing_clock_mode(
@@ -385,12 +391,14 @@ def test_designated_ci_job_requires_control_summary() -> None:
         (["ddr_reset_distribution", "nic_loopback"], 1, 34),
     ],
 )
+@pytest.mark.parametrize("timeout", ["", "2400"])
 def test_plan_reserves_only_executed_controls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     tests: list[str],
     controls: int,
     count: int,
+    timeout: str,
 ) -> None:
     """BRAM-tier builds spend their share on seeds instead of absent probes."""
     monkeypatch.setattr(sweep, "__file__", str(tmp_path / "random_start_sweep.py"))
@@ -402,10 +410,12 @@ def test_plan_reserves_only_executed_controls(
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("FROST_COVERAGE", "0")
+    monkeypatch.setenv("FROST_STARTUP_TIMEOUT_SEC", timeout)
     sweep.plan_startup_sweeps(tests)
     plan = json.loads((tmp_path / "startup_sweep/plan.json").read_text())
     assert plan["control_builds"] == controls and plan["count"] == count
-    assert plan["estimated_seconds"] <= 180 and plan["limit_seconds"] == 300
+    assert plan["estimated_seconds"] <= 180
+    assert plan["limit_seconds"] == int(timeout or "300")
 
 
 def test_exhausted_job_budget_starts_no_simulator(
