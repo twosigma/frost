@@ -365,11 +365,14 @@ module frost #(
   (* ASYNC_REG = "TRUE" *)
   logic [NumResetSyncStages-1:0] reset_synchronizer_shift_register;
   (* MAX_FANOUT = 1000 *) logic reset_synchronized;
+  // Both synchronizers shift as whole vectors. Verilator 5.054 can apply
+  // a nonblocking assignment in a for loop in place, so that each stage
+  // reads the stage just written and the chain collapses to one flop.
+  // The stages carry the active-high reset.
   always_ff @(posedge i_clk)
-    for (int i = 0; i < NumResetSyncStages; ++i)
-      reset_synchronizer_shift_register[i] <= (i > 0) ?
-                                              reset_synchronizer_shift_register[i-1] :
-                                              ~i_rst_n;  // Active-high reset.
+    reset_synchronizer_shift_register <= {
+      reset_synchronizer_shift_register[NumResetSyncStages-2:0], ~i_rst_n
+    };
   always_ff @(posedge i_clk)
     reset_synchronized <= reset_synchronizer_shift_register[NumResetSyncStages-1];
 
@@ -391,10 +394,9 @@ module frost #(
   logic [NumResetSyncStages-1:0] reset_div4_synchronizer_shift_register;
   logic reset_div4_synchronized;
   always_ff @(posedge i_clk_div4)
-    for (int i = 0; i < NumResetSyncStages; ++i)
-      reset_div4_synchronizer_shift_register[i] <= (i > 0) ?
-                                                   reset_div4_synchronizer_shift_register[i-1] :
-                                                   ~i_rst_n;
+    reset_div4_synchronizer_shift_register <= {
+      reset_div4_synchronizer_shift_register[NumResetSyncStages-2:0], ~i_rst_n
+    };
   assign reset_div4_synchronized = reset_div4_synchronizer_shift_register[NumResetSyncStages-1];
   logic async_soc_reset, async_div4_reset;
   if (ASYNC_CPU_CLOCK) begin : gen_external_reset_pair
