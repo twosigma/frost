@@ -1062,6 +1062,8 @@ jobs:
       - name: Merge and report
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
+            make -C tests TOPLEVEL=vcu118_frost sim_build/vcu118_ddr_cone.sv
+          ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/coverage_report.py report coverage-jobs \
               --output-dir coverage-report --annotate --require-ci-artifacts \
               ${{ inputs.toggle_coverage && '--toggle-coverage' || '' }}
@@ -1556,9 +1558,17 @@ jobs:
               (ptw or tlb or imsic or aplic or immu or dmmu) and not
               (coherence_ or coherent_ or _twin)
             timeout_minutes: 120
-          # The load queue and its helper blocks.
+          # The load queue's own proofs: their SBY allowances (formal/
+          # load_queue.sby) plus ten minutes of setup.
           - shard: Load queue
-            pytest_filter: (load_queue or lq_) and not (coherence_ or coherent_ or _twin)
+            pytest_filter: >-
+              load_queue_ and not load_queue_amo and not
+              (coherence_ or coherent_ or _twin)
+            timeout_minutes: 130
+          # The load queue's helper blocks, its AMO datapath and the range
+          # holds at its address-update port.
+          - shard: Load queue blocks
+            pytest_filter: (load_queue_amo or lq_) and not (coherence_ or coherent_ or _twin)
             timeout_minutes: 77
           # The longest block proofs among the remaining targets: branch
           # prediction hand-off and release, the flash-valid cache bits, the

@@ -1589,6 +1589,8 @@ FORMAL_TARGETS = [
             "prove_pre_match",
             "bmc_no_prepare_busy",
             "cover_no_prepare_busy",
+            "bmc_probe_launch",
+            "cover_probe_launch",
         ),
     ),
     FormalTarget(
@@ -3603,6 +3605,14 @@ SBY_TASKS = [
         "Load queue component with busy-port preparation disabled",
     ),
     ("cover_no_prepare_busy", "Load queue reachability without busy-port preparation"),
+    (
+        "bmc_probe_launch",
+        "Load queue with forwarding and cached loads launched during the store-queue probe",
+    ),
+    (
+        "cover_probe_launch",
+        "Load queue reachability of each verdict on a read launched during the probe",
+    ),
     ("prove_alignment", "Unbounded mixed-width tracker and physical FU alignment"),
     ("prove_alignment_direct", "Unbounded direct multiply completion alignment"),
     ("prove_direct_fallback", "Unbounded direct full-width fallback control"),
@@ -4575,6 +4585,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     # remaining catch-all shards group short partitions under hang backstops
     # and may not hold any multi-hour (> 120 minute) task.
     allowance_shards = (set(dedicated_shards.values()) - {"Store boundary"}) | {
+        "Load queue",
         "Coherence links pressure",
         "Coherence L1D data single-endpoint",
         "Coherence L1D data multi-endpoint",

@@ -54,6 +54,9 @@ module cpu_ooo #(
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
+    // Cached loads read memory during the store-queue probe (load_queue
+    // PROBE_LAUNCH).
+    parameter bit LQ_PROBE_LAUNCH = 1'b0,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
     parameter int unsigned DECODED_QUEUE_DEPTH = riscv_pkg::DecodedQueueDepth,
     // Profiling counters: perf_counter_aggregator, the wrapper's
@@ -2625,6 +2628,7 @@ module cpu_ooo #(
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
+      .LQ_PROBE_LAUNCH(LQ_PROBE_LAUNCH),
       .INT_RS_DEPTH(INT_RS_DEPTH),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),

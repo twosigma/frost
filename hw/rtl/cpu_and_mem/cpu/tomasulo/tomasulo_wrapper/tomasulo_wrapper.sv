@@ -45,6 +45,9 @@ module tomasulo_wrapper #(
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
+    // Cached loads read memory during the store-queue probe (load_queue
+    // PROBE_LAUNCH).
+    parameter bit LQ_PROBE_LAUNCH = 1'b0,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
     // Share the ROB value RAM's link bank only when slot 2 never allocates
     // behind a slot-1 branch, as cpu_ooo dispatch guarantees. The default
@@ -4189,6 +4192,7 @@ module tomasulo_wrapper #(
       .PREISSUE_RS_DEPTH(riscv_pkg::MemRsDepth),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
+      .PROBE_LAUNCH(LQ_PROBE_LAUNCH),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
       .ENABLE_SQ_FORWARD_FAST_PATH(1'b1),

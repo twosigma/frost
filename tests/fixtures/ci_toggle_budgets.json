@@ -147,7 +147,8 @@
           "case_seconds": {
             "nic_cmo_loopback": 1469,
             "cbo_mgmt_test": 4451,
-            "cbo_mgmt_test_assert": 4431
+            "cbo_mgmt_test_assert": 4431,
+            "probe_zero_twin": 600
           }
         },
         {

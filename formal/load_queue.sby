@@ -3,9 +3,20 @@ bmc queue
 cover queue
 bmc_no_prepare_busy queue no_prepare_busy
 cover_no_prepare_busy queue no_prepare_busy
+bmc_probe_launch queue probe_launch
+cover_probe_launch queue probe_launch
 prove_pre_match
 
 [options]
+# Allowances are about 2.2 times each task's time on a development host
+# (formal/README.md); the Load queue CI job holds their sum.
+bmc: timeout 1800
+bmc_no_prepare_busy: timeout 1800
+bmc_probe_launch: timeout 1500
+cover: timeout 600
+cover_no_prepare_busy: timeout 600
+cover_probe_launch: timeout 600
+prove_pre_match: timeout 300
 bmc: mode bmc
 # Limit depth for runtime; the four cached-load slots make the model large.
 bmc: depth 10
@@ -15,6 +26,11 @@ cover: mode cover
 cover: depth 20
 cover_no_prepare_busy: mode cover
 cover_no_prepare_busy: depth 20
+# Forwarding on, as in the core, and cached loads launched during the probe.
+bmc_probe_launch: mode bmc
+bmc_probe_launch: depth 10
+cover_probe_launch: mode cover
+cover_probe_launch: depth 20
 prove_pre_match: mode prove
 prove_pre_match: depth 3
 
@@ -38,6 +54,7 @@ prove_pre_match: read -sv coherent_lq_candidate_select.sv
 prove_pre_match: read -formal -sv coherent_lq_address_store.sv
 prove_pre_match: read -formal -D F_LQ_PREMATCH_ONLY -sv load_queue.sv
 no_prepare_busy: chparam -set PREPARE_LOAD_WHILE_BUSY 0 load_queue
+probe_launch: chparam -set PROBE_LAUNCH 1 -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 hierarchy -top load_queue
 script free_undefined.ys
 prep -top load_queue

@@ -58,7 +58,12 @@ module load_queue #(
     // atomic starts or ends), register each entry's same-sector match.
     parameter bit REGISTERED_SECTOR_MATCH = 1'b0,
     // The producer qualifies i_cache_store_strb with the store address's PMA.
-    parameter bit STORE_STRB_PMA_CHECKED = 1'b0
+    parameter bit STORE_STRB_PMA_CHECKED = 1'b0,
+    // An ordinary cached load that misses the L0 reads memory in the cycle
+    // it probes the SQ, before the verdict (load queue README, "Launch
+    // during the probe"). The verdict then keeps the read, or drops its
+    // response and completes the load by forwarding or relaunches it.
+    parameter bit PROBE_LAUNCH = 1'b0
 ) (
     input logic i_coherent_cut_hold = 1'b0,
     input logic [riscv_pkg::XLEN-1:0] i_coherent_cut_addr = '0,
@@ -729,6 +734,10 @@ module load_queue #(
   riscv_pkg::mem_size_e sq_check_size_next;
   logic sq_check_is_lr_next;
   logic sq_check_is_amo_next;
+  logic sq_check_is_mmio_next;
+  logic [1:0] sq_check_fault_kind_next;
+  // PROBE_LAUNCH: the staged load may launch during its probe (see below).
+  logic probe_launch_ok_q;
   logic cache_lookup_hit, resp_bypass_ok, sq_check_cacheable;
 
   // The fast_* tracker owns the single uncached response. The legacy local
@@ -776,6 +785,19 @@ module load_queue #(
   localparam int unsigned CachedSlotBits = riscv_pkg::CachedLoadSlotBits;
   logic [CachedSlots-1:0] cs_valid;  // Slot tracks an outstanding cached load
   logic [CachedSlots-1:0] cs_drop;  // its response is to be drained (flushed)
+  // PROBE_LAUNCH: the slot's read launched during its load's probe, and the
+  // verdict arrives this cycle. Its response is drained if it arrives now.
+  logic [CachedSlots-1:0] cs_spec, cs_spec_r;
+  logic probe_launched_r, probe_launched_q;
+  // PROBE_LAUNCH (load queue README, "Launch during the probe"). The launch
+  // during the probe, without and with the bus and L0-hit terms, and whether
+  // the staged load keeps the stage on that edge. probe_launched_q marks the
+  // verdict cycle that follows; the verdict keeps the read (probe_keep) or
+  // drops it, and then the load is no longer issued (probe_unissue).
+  logic probe_launch_permitted, probe_launch_fire, probe_launch_kept;
+  logic probe_settle, probe_keep, probe_unissue, probe_resp_now;
+  // Without PROBE_LAUNCH, cs_spec and probe_launched_q are constant zero.
+  assign cs_spec = PROBE_LAUNCH ? cs_spec_r : '0;
   logic [CachedSlots-1:0] cs_inval;  // Store or DMA invalidated the in-flight line
   // Leave per-slot storage to inference. Vivado maps response-only reads
   // (size, amo_kind, amo_rs2) to LUTRAM, reducing launch fanout.
@@ -1062,7 +1084,8 @@ module load_queue #(
   assign resp_from_slot = i_mem_read_valid && i_mem_read_is_cached;
   assign resp_slot = i_mem_read_id;
   assign resp_outstanding = resp_from_slot ? cs_valid[resp_slot] : mem_outstanding;
-  assign resp_drop = resp_from_slot ? cs_drop[resp_slot] : drop_mem_response_pending;
+  assign resp_drop = resp_from_slot ? (cs_drop[resp_slot] || cs_spec[resp_slot]) :
+      drop_mem_response_pending;
   assign issued_idx = resp_from_slot ? cs_idx[resp_slot] : fast_idx;
   assign issued_addr = resp_from_slot ? cs_addr[resp_slot] : fast_addr;
   assign issued_size = resp_from_slot ? cs_size[resp_slot] : fast_size;
@@ -2061,6 +2084,13 @@ module load_queue #(
         riscv_pkg::mem_size_e'(lq_size[update_issue_payload_idx]), i_addr_update.address);
     wire selected_misaligned = issue_mem_uses_addr_update ?
         update_misaligned : stored_misaligned;
+    // PROBE_LAUNCH: the staged load may read memory during its probe. It is
+    // an ordinary load to cached memory, aligned and without a fault, so
+    // the probe cycle's launch needs no term of its class.
+    wire selected_probe_launch = PROBE_LAUNCH && selected_class[0] && selected_permission &&
+        !selected_misaligned && !sq_check_is_mmio_next && !sq_check_is_lr_next &&
+        !sq_check_is_amo_next &&
+        riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_next) == riscv_pkg::DFAULT_NONE;
     always_ff @(posedge i_clk) begin
       if (sq_check_payload_en) begin
         pma_ok_q <= selected_permission;
@@ -2068,6 +2098,7 @@ module load_queue #(
         normal_q <= selected_class[3];
         misaligned_q <= selected_misaligned;
         pbmt_alias_q <= selected_class[4];
+        probe_launch_ok_q <= selected_probe_launch;
       end
     end
     // Svpbmt: the uncached alias of DDR is outside the PMA map, so an
@@ -2119,6 +2150,10 @@ module load_queue #(
              (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_check_addr_q))));
         p_staged_misaligned_exact : assert (misaligned_q ==
             is_load_misaligned(sq_check_size_q, sq_check_addr_q));
+        p_staged_probe_launch_exact : assert (probe_launch_ok_q == (PROBE_LAUNCH && cached_q &&
+            pma_ok_q && !misaligned_q && !sq_check_is_mmio_q && !sq_check_is_lr_q &&
+            !sq_check_is_amo_q &&
+            riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) == riscv_pkg::DFAULT_NONE));
       end
     end
 `endif
@@ -2138,7 +2173,7 @@ module load_queue #(
   // eligible it is at the ROB head, so head priority selects it.
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending ||
+       launch_mem_issue || probe_settle || misalign_bypass_fire || older_amo_write_pending ||
        (coherent_sector_hold));
 
   // Stored MMIO at ROB head is eligible in both scans; head priority wins.
@@ -2249,9 +2284,10 @@ module load_queue #(
         .i_all_older_known(i_sq_all_older_addrs_known),
         .i_forward_match(i_sq_forward.match),
         .i_can_forward(i_sq_forward.can_forward),
-        .i_mem_busy(i_mem_bus_busy),
+        // A load that launched during its probe needs no port to settle.
+        .i_mem_busy(i_mem_bus_busy && !probe_launched_q),
         .i_l0_allowed(i_l0_hit_allowed),
-        .i_cached_hold(cached_launch_hold_q),
+        .i_cached_hold(cached_launch_hold_q && !probe_launched_q),
         .i_flush_all,
         .i_flush_en,
         .i_address_fault(coherent_address_fault),
@@ -2796,7 +2832,9 @@ module load_queue #(
 
   assign stage_mem_issue_addr = sq_check_addr_q;
 
-  assign stage_mem_issue = !i_flush_en && !i_flush_all && sq_can_issue && !cache_hit_fast_path;
+  // A load that launched during its probe does not launch again.
+  assign stage_mem_issue = !i_flush_en && !i_flush_all && sq_can_issue && !cache_hit_fast_path &&
+      !probe_launched_q;
   assign stage_mem_issue_size = sq_check_size_q;
 
   // The legacy fixed-latency BRAM profile permits a launch each cycle without
@@ -2824,6 +2862,33 @@ module load_queue #(
   // since the miss value already holds the flush and issue terms. The LQ's
   // own launch (mem_read_en) and its snapshot captures take the hit last the
   // same way; other internal consumers keep launch_mem_issue.
+  // PROBE_LAUNCH: a cached cbo.zero enters the L1D's store buffer as its
+  // lower sector's record, and its upper record (the twin) follows once a
+  // record is free. Until then no load of the block may reach the L1D; the
+  // phase-2 launch waits for the SQ, which keeps the cbo.zero until the twin
+  // is recorded, but the launch during the probe precedes the verdict. So
+  // no load launches during its probe from the cbo.zero's write cycle (its
+  // block invalidation with the lower record's push) until the twin's push,
+  // nor in the cycle of any block invalidation.
+  logic probe_zero_hold;
+  if (PROBE_LAUNCH) begin : gen_probe_zero_hold
+    logic twin_wait_q;
+    logic [XLEN-1:6] twin_block_q;
+    wire zero_push = i_cache_invalidate_valid && i_cache_invalidate_block &&
+        i_coherent_store_push && !i_coherent_store_push_addr[5] &&
+        i_coherent_store_push_addr[XLEN-1:6] == i_cache_invalidate_addr[XLEN-1:6];
+    wire twin_push = i_coherent_store_push && i_coherent_store_push_addr[5] &&
+        i_coherent_store_push_addr[XLEN-1:6] == twin_block_q;
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) twin_wait_q <= 1'b0;
+      else if (zero_push) twin_wait_q <= 1'b1;
+      else if (twin_push) twin_wait_q <= 1'b0;
+      if (zero_push) twin_block_q <= i_cache_invalidate_addr[XLEN-1:6];
+    end
+    assign probe_zero_hold = twin_wait_q || (i_cache_invalidate_valid && i_cache_invalidate_block);
+  end else begin : gen_no_probe_zero_hold
+    assign probe_zero_hold = 1'b0;
+  end
   (* keep = "true" *) logic launch_if_miss, launch_if_hit;
   (* keep = "true" *) logic launch_permitted, launch_hit_blocks;
   if (1'b1) begin : gen_coherent_launch_gate
@@ -2832,20 +2897,73 @@ module load_queue #(
     for (genvar drain_case = 0; drain_case < 2; drain_case++) begin : gen_drain_choice
       assign launch_choice[drain_case] = !i_flush_en && !i_flush_all &&
           coherent_issue_by_drain[drain_case] && !cached_launch_hold_q &&
-          sq_check_entry_valid && !older_amo_write_pending && !sq_commit_interlock;
+          sq_check_entry_valid && !older_amo_write_pending && !sq_commit_interlock &&
+          !probe_launched_q;
     end
     assign launch_permitted = !coherent_local_hold && launch_choice[i_sq_committed_empty];
     assign launch_hit_blocks = ENABLE_L0_FAST_PATH && sq_check_cacheable &&
         !sq_check_is_mmio_q && !sq_check_is_lr_q && !sq_check_is_amo_q;
     assign launch_if_miss = 1'b0;
     assign launch_if_hit = 1'b0;
-    assign o_mem_read_en = !i_mem_bus_busy && launch_permitted &&
+    // The launch during the probe: the probe fires this cycle (its class
+    // terms were registered at staging in probe_launch_ok_q), and the launch
+    // resources are free. Like the phase-2 launch it takes the bus and the
+    // L0 hit last; the hit blocks a cached ordinary load.
+    assign probe_launch_permitted = PROBE_LAUNCH && probe_launch_ok_q && sq_check_pending &&
+        !sq_check_phase2 && !sq_check_no_older_store_q && !i_sq_empty &&
+        !coherent_local_hold && !i_flush_en && !i_flush_all && !drop_mem_response_pending &&
+        !i_sq_commit_pending && !older_amo_write_pending && !cached_launch_hold_q &&
+        !coh_launch_hold_q && !probe_zero_hold;
+    assign o_mem_read_en = !i_mem_bus_busy && (launch_permitted || probe_launch_permitted) &&
         !(cache_lookup_hit && launch_hit_blocks);
   end
+  assign probe_launch_fire = !i_mem_bus_busy && probe_launch_permitted &&
+      !(cache_lookup_hit && launch_hit_blocks);
 `ifndef SYNTHESIS
   always_comb if (sim_reset_seen_q) begin
-    p_mem_read_en_exact : assert (o_mem_read_en == launch_mem_issue);
-    p_launch_hit_last_exact : assert (mem_read_en == launch_mem_issue);
+    p_mem_read_en_exact : assert (o_mem_read_en == (launch_mem_issue || probe_launch_fire));
+    p_launch_hit_last_exact : assert (mem_read_en == (launch_mem_issue || probe_launch_fire));
+    // The launch during the probe is a probe cycle of a cached ordinary
+    // load with no address fault, never a phase-2 launch.
+    if (i_rst_n && probe_launch_fire)
+      p_probe_launch_probes : assert (o_sq_check_valid && !sq_check_phase2 &&
+          !launch_mem_issue && sq_check_is_cached_region && launch_hit_blocks &&
+          !coherent_address_fault && !sq_check_is_mmio_q && !sq_check_is_lr_q &&
+          !sq_check_is_amo_q && is_cached_addr(launch_mem_issue_addr));
+  end
+`endif
+  // The probe cycle's capture can only replace the staged load (it has no
+  // phase-2 release, hold or fault), and then the launched read is dropped
+  // at once. Otherwise the next cycle is the verdict: a clean probe settles
+  // the load, which keeps its read unless it completes from the L0 or its
+  // response arrives in that same cycle (drained, since its slot is still
+  // marked cs_spec); every other verdict drops the read and the load is no
+  // longer issued, so it completes by forwarding or launches again.
+  assign probe_launch_kept = probe_launch_fire && !coherent_stage_take[0];
+  assign probe_launched_q = PROBE_LAUNCH && probe_launched_r;
+  assign probe_resp_now = resp_from_slot && cs_spec[resp_slot];
+  assign probe_settle = probe_launched_q && sq_can_issue && !i_flush_en && !i_flush_all;
+  assign probe_keep = probe_settle && !cache_hit_fast_path && !probe_resp_now;
+  assign probe_unissue = probe_launched_q && !probe_keep;
+`ifndef SYNTHESIS
+  // In the verdict cycle the load still holds the stage in phase 2, issued,
+  // and exactly one live slot, marked cs_spec, names it.
+  logic [CachedSlots-1:0] probe_slot_names_stage;
+  always_comb
+    for (int sl = 0; sl < int'(CachedSlots); sl++)
+      probe_slot_names_stage[sl] = cs_valid[sl] && !cs_drop[sl] &&
+          cs_idx[sl] == sq_check_idx && cs_rob_tag[sl] == sq_check_rob_tag_q;
+`ifdef FORMAL
+  always_comb
+`else
+  always @(posedge i_clk)
+`endif
+  if (sim_reset_seen_q && i_rst_n) begin
+    if (probe_launched_q)
+      p_probe_verdict_state : assert (PROBE_LAUNCH && $onehot(cs_spec) &&
+          (cs_spec & ~probe_slot_names_stage) == '0 && sq_check_pending && sq_check_phase2 &&
+          lq_valid[sq_check_idx] && lq_issued[sq_check_idx] && probe_launch_ok_q);
+    else p_probe_spec_only_in_verdict : assert (cs_spec == '0);
   end
 `endif
   assign launch_mem_issue_idx  = sq_check_idx;
@@ -2905,10 +3023,12 @@ module load_queue #(
   (* keep = "true" *) logic fast_capture_without_hit;
   (* keep = "true" *) logic [CachedSlots-1:0] cs_capture_without_hit;
   logic [CachedSlots-1:0] cs_capture;
-  assign fast_capture_without_hit = !i_mem_bus_busy && launch_permitted && !launching_is_cached;
+  assign fast_capture_without_hit = !i_mem_bus_busy &&
+      (launch_permitted || probe_launch_permitted) && !launching_is_cached;
   assign fast_capture = fast_capture_without_hit && !(cache_lookup_hit && launch_hit_blocks);
   for (genvar sl = 0; sl < CachedSlots; sl++) begin : gen_cs_capture
-    assign cs_capture_without_hit[sl] = !i_mem_bus_busy && launch_permitted &&
+    assign cs_capture_without_hit[sl] = !i_mem_bus_busy &&
+        (launch_permitted || probe_launch_permitted) &&
         launching_is_cached && cs_alloc_idx == CachedSlotBits'(sl);
     assign cs_capture[sl] = cs_capture_without_hit[sl] &&
         !(cache_lookup_hit && launch_hit_blocks);
@@ -2951,7 +3071,8 @@ module load_queue #(
   // Memory issue port: driven straight from the launch terms (no second-deep
   // staging register, see above).
   always_comb begin
-    mem_read_en = !i_mem_bus_busy && launch_permitted && !(cache_lookup_hit && launch_hit_blocks);
+    mem_read_en = !i_mem_bus_busy && (launch_permitted || probe_launch_permitted) &&
+        !(cache_lookup_hit && launch_hit_blocks);
     o_mem_read_addr = launch_mem_issue_addr;
     o_mem_read_size = launch_mem_issue_size;
     o_mem_read_id = cs_alloc_idx;
@@ -3118,7 +3239,8 @@ module load_queue #(
     (* keep = "true" *) logic [CachedSlots-1:0] slot_live, slot_bypass;
     (* keep = "true" *) logic fast_live, fast_bypass;
     for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
-      assign slot_live[slot] = cs_valid[slot] && !cs_drop[slot] && lq_valid[cs_idx[slot]];
+      assign slot_live[slot] = cs_valid[slot] && !cs_drop[slot] && !cs_spec[slot] &&
+          lq_valid[cs_idx[slot]];
       assign slot_bypass[slot] = slot_live[slot] && !cs_is_amo[slot];
     end
     assign fast_live = mem_outstanding && !drop_mem_response_pending && lq_valid[fast_idx];
@@ -3161,7 +3283,7 @@ module load_queue #(
     (* keep = "true" *) logic [CachedSlots-1:0] slot_permission;
     (* keep = "true" *) logic [CachedSlots-1:0] slot_cut;
     for (genvar slot = 0; slot < CachedSlots; slot++) begin : gen_slot
-      assign slot_permission[slot] = cs_valid[slot] && !cs_drop[slot] &&
+      assign slot_permission[slot] = cs_valid[slot] && !cs_drop[slot] && !cs_spec[slot] &&
           lq_valid[cs_idx[slot]] && !cs_is_lr[slot] && !cs_is_amo[slot] && !cs_inval[slot];
       assign slot_cut[slot] = cs_inval_now[slot] || cs_coh_inval_now[slot];
     end
@@ -3182,7 +3304,7 @@ module load_queue #(
 `endif
     if (sim_reset_seen_q) begin
       p_fill_slot_select_exact : assert (cache_fill_if_slot ==
-          (cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] &&
+          (cs_valid[resp_slot] && !i_flush_all && !cs_drop[resp_slot] && !cs_spec[resp_slot] &&
            lq_valid[cs_idx[resp_slot]] && !cs_is_lr[resp_slot] && !cs_is_amo[resp_slot] &&
            !(cs_inval[resp_slot] || cs_inval_now[resp_slot] || cs_coh_inval_now[resp_slot])));
     end
@@ -3836,7 +3958,7 @@ module load_queue #(
   logic sq_check_stage_clears;
   assign sq_check_stage_clears = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
+       launch_mem_issue || probe_settle || misalign_bypass_fire || older_amo_write_pending);
 
   if (1'b1) begin : gen_coherent_stage_control
     wire take = coherent_stage_take[0];
@@ -4146,7 +4268,12 @@ module load_queue #(
               cs_idx[sl] == IdxWidth'(i))
             issued_kept[i] = 1'b0;
         end
-        if (mem_read_en && launch_mem_issue_idx == IdxWidth'(i)) issued_kept[i] = 1'b1;
+        if (probe_unissue && sq_check_idx == IdxWidth'(i)) issued_kept[i] = 1'b0;
+        // A read launched during the probe of a load that loses the stage
+        // on that edge is dropped at once; the load stays unissued.
+        if (mem_read_en && !(probe_launch_fire && !probe_launch_kept) &&
+            launch_mem_issue_idx == IdxWidth'(i))
+          issued_kept[i] = 1'b1;
         response_error_kept[i] = lq_response_error[i] || (!drop_mem_response_now &&
             accept_mem_response && mem_response_error && issued_idx == IdxWidth'(i));
         if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done && amo_entry_idx == IdxWidth'(i))
@@ -4213,6 +4340,8 @@ module load_queue #(
       drop_mem_response_pending <= 1'b0;
       cs_valid                  <= '0;
       cs_drop                   <= '0;
+      cs_spec_r                 <= '0;
+      probe_launched_r          <= 1'b0;
       cached_launch_hold_q      <= 1'b0;
       cs_any_q                  <= 1'b0;
       amo_state                 <= AMO_IDLE;
@@ -4233,6 +4362,8 @@ module load_queue #(
       // answering slot and any unaccepted request canceled by the router.
       cs_valid <= cs_valid_next;
       cs_drop <= cs_valid_next;
+      cs_spec_r <= '0;
+      probe_launched_r <= 1'b0;
       cached_launch_hold_q <= cached_launch_hold_next;
       cs_any_q <= |cs_valid_next;
       amo_state <= AMO_IDLE;
@@ -4293,6 +4424,13 @@ module load_queue #(
         end
       end
 
+      // PROBE_LAUNCH: the verdict cycle drops the read unless it keeps it.
+      // A response in that cycle frees the slot below instead.
+      cs_spec_r <= '0;
+      probe_launched_r <= probe_launch_kept;
+      for (int sl = 0; sl < int'(CachedSlots); sl++)
+        if (probe_unissue && cs_spec[sl]) cs_drop[sl] <= 1'b1;
+
       // A cached response, accepted or drained, frees its slot.
       if (resp_from_slot) begin
         cs_valid[resp_slot] <= 1'b0;
@@ -4310,7 +4448,8 @@ module load_queue #(
       if (mem_read_en) begin
         if (launching_is_cached) begin
           cs_valid[cs_alloc_idx] <= 1'b1;
-          cs_drop[cs_alloc_idx]  <= 1'b0;
+          cs_drop[cs_alloc_idx]  <= probe_launch_fire && !probe_launch_kept;
+          cs_spec_r[cs_alloc_idx]  <= probe_launch_kept;
         end else begin
           mem_outstanding <= 1'b1;
         end
@@ -4437,8 +4576,6 @@ module load_queue #(
   logic [ReorderBufferTagWidth-1:0] sq_check_rob_tag_next;
   logic sq_check_is_fp_next;
   logic sq_check_sign_ext_next;
-  logic sq_check_is_mmio_next;
-  logic [1:0] sq_check_fault_kind_next;
   assign sq_check_payload_en = coherent_stage_take[0];
   // sq_check_capture with the pending bit taken from one copy.
   function automatic logic sq_check_capture_on(input logic pending);
@@ -4808,7 +4945,8 @@ module load_queue #(
     end
   end
 `ifndef SYNTHESIS
-  always_comb if (sim_reset_seen_q) begin
+  // Checked out of reset: the staging registers start arbitrary.
+  always_comb if (sim_reset_seen_q && i_rst_n) begin
 `ifndef FORMAL
     if (!$isunknown({amo_launch, mem_read_en, sq_check_is_amo_q}))
 `endif
@@ -5594,6 +5732,9 @@ module load_queue #(
   // case is necessary for formal to explore the late-drain behavior.
   // A cached response names a slot that was launched and not yet answered
   // (live or drop-marked): the router never answers a slot it canceled.
+  // The SQ reports a forwardable store only as the winning match
+  // (sq_forwarding_unit), which the forwarding tasks rely on.
+  always_comb assume (!i_sq_forward.can_forward || i_sq_forward.match);
   always_comb begin
     if (i_mem_read_valid) begin
       if (i_mem_read_is_cached)
@@ -5995,6 +6136,74 @@ module load_queue #(
     if (i_rst_n && resp_from_slot && cs_drop[resp_slot]) begin
       p_slot_drain_not_accepted : assert (!accept_mem_response);
       p_slot_drain_does_not_fill_l0 : assert (!cache_fill_valid);
+    end
+    // PROBE_LAUNCH: the response of a read launched during the probe and
+    // dropped by its verdict, or arriving in the verdict cycle, reaches
+    // neither the LQ data, the CDB stage (and so no wakeup) nor the L0.
+    if (i_rst_n && resp_from_slot && (cs_drop[resp_slot] || cs_spec[resp_slot])) begin
+      p_dropped_response_not_accepted : assert (!accept_mem_response);
+      p_dropped_response_no_data : assert (!lq_data_we[0]);
+      p_dropped_response_no_cdb : assert (!coherent_response_bypass && !resp_bypass_fire);
+      p_dropped_response_no_l0 : assert (!cache_fill_pre && !cache_fill_write);
+    end
+  end
+
+  // PROBE_LAUNCH: each verdict's effect on the next cycle.
+  logic [CachedSlotBits-1:0] f_probe_slot;
+  always_comb begin
+    f_probe_slot = '0;
+    for (int sl = 0; sl < int'(CachedSlots); sl++)
+      if (cs_spec[sl]) f_probe_slot = CachedSlotBits'(sl);
+  end
+  // A load whose read was dropped by a blocking verdict while it stays
+  // staged, for the relaunch cover.
+  logic f_probe_blocked_q;
+  logic [ReorderBufferTagWidth-1:0] f_probe_blocked_tag_q;
+  always @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all || i_flush_en) f_probe_blocked_q <= 1'b0;
+    else if (probe_unissue && !probe_settle && !sq_do_forward) begin
+      f_probe_blocked_q <= 1'b1;
+      f_probe_blocked_tag_q <= sq_check_rob_tag_q;
+    end
+    if (f_past_valid && i_rst_n && $past(i_rst_n && !i_flush_all)) begin
+      if ($past(probe_keep)) begin
+        p_probe_keep_keeps_read : assert (cs_valid[$past(f_probe_slot)] &&
+            !cs_drop[$past(f_probe_slot)] && !cs_spec[$past(f_probe_slot)] &&
+            lq_issued[$past(sq_check_idx)]);
+      end
+      if ($past(probe_unissue)) begin
+        p_probe_drop_drains_read : assert (!cs_valid[$past(f_probe_slot)] ||
+            cs_drop[$past(f_probe_slot)]);
+        p_probe_drop_unissues : assert (!lq_valid[$past(sq_check_idx)] ||
+            !lq_issued[$past(sq_check_idx)]);
+      end
+      if ($past(probe_launch_fire && !probe_launch_kept)) begin
+        p_probe_replaced_drains_read : assert (cs_drop[$past(cs_alloc_idx)] &&
+            !lq_issued[$past(sq_check_idx)] && !probe_launched_q);
+      end
+    end
+  end
+  // The covers exist only with PROBE_LAUNCH, so the other cover tasks
+  // carry no unreachable ones.
+  if (PROBE_LAUNCH) begin : gen_f_probe_launch_covers
+    always @(posedge i_clk) begin
+      if (i_rst_n) begin
+        // Early launch, then forward; early launch, then keep; a replaced
+        // stage; a response in the verdict cycle; early launch, block, then
+        // the relaunch; a store accepted on the launch edge, to the load's
+        // dword and pushed into the L1D.
+        cover_probe_launch_forward : cover (probe_launched_q && sq_do_forward);
+        cover_probe_launch_keep : cover (probe_keep);
+        cover_probe_launch_replaced : cover (probe_launch_fire && !probe_launch_kept);
+        cover_probe_launch_verdict_response : cover (probe_resp_now);
+        cover_probe_launch_relaunch :
+        cover (f_probe_blocked_q && launch_mem_issue &&
+               sq_check_rob_tag_q == f_probe_blocked_tag_q);
+        cover_probe_launch_store_edge :
+        cover (probe_launch_kept && i_cache_invalidate_valid &&
+               i_cache_invalidate_addr[XLEN-1:3] == sq_check_addr_q[XLEN-1:3]);
+        cover_probe_launch_store_push : cover (probe_launch_kept && i_coherent_store_push);
+      end
     end
   end
 
