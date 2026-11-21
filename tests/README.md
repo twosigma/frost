@@ -1977,6 +1977,8 @@ collected but never hit is uncovered, and a point that no run collected is
 left out of the total, so whole-SoC figures from the control set cover
 control signals only.
 `--annotate` also writes copies of the sources with each line's count.
+Annotation requires the source files at the paths recorded in `coverage.dat`.
+The report lists all missing source paths together and exits before annotation.
 `merge` combines files without the report:
 
 ```bash
@@ -2169,7 +2171,9 @@ Coverage Report checks the downloaded artifacts against the selected matrix
 after the other jobs finish, including jobs that fail. A missing artifact or
 one without a coverage payload fails the job. With all inputs present, the job
 merges them into the `coverage-report` artifact (the [report](#coverage) with
-annotated sources) and shows the summary on the job's page.
+annotated sources) and shows the summary on the job's page. The report job
+generates `tests/sim_build/vcu118_ddr_cone.sv` with the same Makefile target
+used by the unit bench.
 
 The manual `toggle_coverage` input runs the shared image build, the two
 unit-bench jobs, the whole-SoC Verilator shards selected for toggle coverage,

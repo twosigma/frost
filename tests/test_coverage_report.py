@@ -252,6 +252,46 @@ def test_report_merges_runs_and_writes_lcov(tmp_path: Path) -> None:
     assert not list(report.glob("*.lines.dat"))
 
 
+def test_missing_source_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Check absolute and relative paths from the annotation working directory."""
+    monkeypatch.chdir(tmp_path)
+    Path("present.sv").touch()
+    first = str(tmp_path / "missing.sv")
+    last = "other.sv"
+    assert coverage_report.missing_source_paths([last, first, "present.sv", last]) == [
+        first,
+        last,
+    ]
+
+
+@pytest.mark.skipif(
+    shutil.which("verilator_coverage") is None,
+    reason="verilator_coverage is in the frost image",
+)
+def test_report_lists_all_missing_annotation_sources(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """List missing sources from every point kind before running annotation."""
+    toggle_source = str(tmp_path / "b.sv")
+    user_source = str(tmp_path / "a.sv")
+    data = _write(
+        tmp_path / "run.dat",
+        _record("line", "lq", "block", 1),
+        _record("toggle", "lq", "sig:0->1", 1, source=toggle_source),
+        _record("toggle", "lq", "sig:1->0", 0, source=toggle_source),
+        _record("user", "lq", "cover_a", 0, source=user_source),
+    )
+    output = tmp_path / "report"
+    assert coverage_report.report([data], output, annotate=True) == 1
+    assert capsys.readouterr().err.splitlines() == [
+        "Missing source files for coverage annotation",
+        f"  {user_source}",
+        f"  {toggle_source}",
+    ]
+    assert not (output / "annotated").exists()
+    assert coverage_report.report([data], output) == 0
+
+
 def test_report_without_coverage_files_fails(tmp_path: Path) -> None:
     """A report with nothing to merge is an error, not an empty success."""
     (tmp_path / "runs").mkdir()
