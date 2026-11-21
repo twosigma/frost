@@ -1180,9 +1180,8 @@ cycles, give each shard the same `--cycle-profile previous.jsonl`. Passing
 records at the requested VLEN supply exact weights and calibrate estimates
 for the other splits.
 
-Main CI uses `--shard-profile` with measured program wall times. The complete
-campaign uses `--cycle-profile` with calibrated cycle estimates. Both
-profiles and their cost units are described under
+Main CI and the complete campaign use `--shard-profile` with measured
+program wall times in milliseconds. Each selection has its own profile. See
 [Generated vector programs in CI](#generated-vector-programs-in-ci).
 
 Each result records the SHA-256 of the exact profile bytes (empty input for
@@ -1250,19 +1249,19 @@ programs must print the pass marker after their last check.
 
 Every started main push runs all 1,995 one-per-form programs, 665 at each
 VLEN. Its 24 vector jobs share a pool of 20 runners and require at least
-two waves. The projected cost is 24.9 vector runner-hours including setup
-and upload. The shared image build is additional.
+two waves.
 
-Main assigns the longest measured program to the lightest shard first.
-The table gives the longest modeled main shard in minutes at each width.
-The inner time includes model build and guest preparation. Whole-job
-time also includes runner setup, image download and load, and upload.
+Main and complete runs assign the longest program to the lightest shard
+first. The wall-time profile needs at least one measurement at the
+selected VLEN. For each program missing a row at that VLEN, the runner
+uses the largest measured time for the width and prints one warning
+line naming the program on standard error.
 
-| VLEN | Jobs | Model build (s) | Guest preparation (s) | Inner time (min) | Whole job (min) | Inner / step / job limits (min) |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 128 | 4 | 260 | 211 | 50.93 | 60.93 | 92 / 95 / 130 |
-| 256 | 7 | 307 | 271 | 50.79 | 60.79 | 92 / 95 / 130 |
-| 512 | 13 | 382 | 368 | 53.23 | 63.23 | 96 / 99 / 134 |
+| Main VLEN | Jobs | Inner deadline (min) | Step limit (min) | Job limit (min) |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 4 | 92 | 95 | 130 |
+| 256 | 7 | 92 | 95 | 130 |
+| 512 | 13 | 96 | 99 | 134 |
 
 To refresh the main profile, download the vector artifacts from the
 calibration runs and verify their published SHA-256, revision, native
@@ -1271,11 +1270,10 @@ assertion-armed PASS row from each run that finished it. Check the image
 SHA-256 when both runs have the same program. Round each `wall_seconds`
 up to integer milliseconds and write the two observations to `main_ms`
 and `complete_ms` in VLEN and name order. Leave an unavailable observation
-empty. Each program uses its larger available measurement. A selected
-program without a measurement fails sharding. For a form awaiting its first
-hosted measurement, enter a passing local native run's wall time rounded up
-to whole milliseconds in `main_ms`, then replace that provisional value with
-the hosted measurement in its run's column. See the
+empty. Each program uses its larger available measurement. A passing
+local native run can supply a provisional `main_ms` value in whole
+milliseconds, rounded up. Replace it with the hosted measurement in its
+run's column when available. See the
 [main run](https://github.com/twosigma/frost/actions/runs/44695684644),
 [complete run](https://github.com/twosigma/frost/actions/runs/44655272352)
 and [main wall-time profile](fixtures/rvv_ci_form_times.csv).
@@ -1285,47 +1283,43 @@ of its simulator manifest. Guest preparation uses the largest remaining
 step time after model build and program execution on shards that finished.
 Each width uses the two separate maxima rounded up, plus two seconds each
 for artifact timestamp resolution. The layout uses the fewest shards
-whose measured inner time stays below 54 minutes at each width.
-Outside the vector step, the six measured phases (startup, checkout, ISA
-fetch, image download, image load and publication) add 10 minutes when
-each maximum is rounded up to a whole minute. Each width's inner deadline
-is 1.8 times its longest modeled inner time, rounded up to a whole minute.
+whose modeled inner time stays below 54 minutes at each width. Each width's
+inner deadline is 1.8 times its longest modeled inner time, rounded up to
+a whole minute.
 The vector step gets three additional minutes for container startup and
 saving partial results. The job limit is the vector step limit plus 30
 minutes for the four setup steps (5, 5, 15 and 5 minutes) and five
 minutes for the summary and artifact upload. Actual times depend on the
 runner and DDR seed.
 
-The complete campaign runs all 9,051 programs in 50 jobs, with 6, 12
-and 32 jobs at VLEN 128, 256 and 512. Its original 92.3 runner-hour
-projection used a 1,995-program hosted run and local split measurements.
-The complete profile converts hosted program wall time to cycles at
-each job's aggregate rate. Other splits inherit a weight from their
-instruction form and width in proportion to source weight. Measured
-work has a 15% allowance and estimated work has a 50% allowance. For
-a split also measured locally, the profile uses the larger estimate
-with its allowance. See the [original hosted run](https://github.com/twosigma/frost/actions/runs/44490257076)
-and [complete cycle profile](fixtures/rvv_ci_profile.csv).
+The complete campaign assigns all 9,051 programs to 43 vector jobs, with
+at least three waves on 20 runners.
 
-The original complete estimates below are wall minutes. Typical times
-use each width's aggregate rate and mean setup. The slow case uses the
-slowest observed rate and larger of the raw and wall-adjusted workloads,
-with preparation scaled for larger batches.
-
-| Complete VLEN | Jobs | Typical longest | Slow longest | Slow with one fewer |
+| Complete VLEN | Jobs | Inner deadline (min) | Step limit (min) | Job limit (min) |
 | ---: | ---: | ---: | ---: | ---: |
-| 128 | 6 | 109.30 | 209.98 | 250.87 |
-| 256 | 12 | 114.56 | 199.17 | 216.96 |
-| 512 | 32 | 112.87 | 208.96 | 215.42 |
+| 128 | 7 | 297 | 300 | 335 |
+| 256 | 11 | 296 | 299 | 334 |
+| 512 | 25 | 316 | 319 | 354 |
 
-In the profile, `cycles` is the program's measured cycle count. Complete shard
-weights use hundredths of a cycle. For a hosted program, `shard_weight`
-and `form_weight` are 115 and 150 times its rounded wall-time-adjusted
-cycles. An unmeasured split uses `form_weight` times its source weight
-divided by the hosted program's `source_weight`. A locally timed split
-has its own `shard_weight`.
-For the calibration inputs and calculations, see
-[Regenerating the cycle profile](#regenerating-the-cycle-profile).
+The complete profile weights each measured program by its process wall time.
+Each width uses its largest measured model build. Guest preparation uses
+the larger of the longest measured preparation and the highest measured
+preparation per program times the new layout's largest batch. Both
+allowances include two seconds for timestamp resolution. The layout uses
+the fewest jobs that keep the modeled inner time below 180 minutes and
+the job limit at or below 360 minutes. The same deadline, step and job
+rules as main keep every modeled shard below 60% of its inner deadline.
+
+To refresh the complete profile, verify the complete run's artifacts and
+invocation as for main. Check each VLEN's selected-name digest and an
+assertion-armed passing record for every selected name. Round each
+`wall_seconds` up to milliseconds in `complete_ms`, leave `main_ms` empty
+and sort by numeric VLEN and name. A passing local native run can supply
+a provisional `complete_ms` value rounded up to whole milliseconds.
+Update the measured totals, build and preparation inputs
+and limits in the fast shard-budget test when refreshing the layout.
+A stale time can unbalance the shards. See the
+[complete wall-time profile](fixtures/rvv_ci_complete_times.csv).
 
 `SLICES_PER_MAIN_RUN` in `.github/workflows/ci.yml` is set to 20, which
 selects the full one-per-form layout above. A value N from 1 through 19
@@ -1339,9 +1333,8 @@ Adding the `run-ci` label to a pull request runs one slice, the PR
 number modulo 20. In **Run workflow**, leaving `campaign` at
 `rotation` and `slice` empty runs regular CI with one slice, the
 workflow run number modulo 20. Both check 99 to 102 programs in three
-vector jobs at an estimated 0.90 to 1.08 runner-hours per slice in the
-original hosted calibration. The
-20 slices partition the one-per-form selection using source weights.
+vector jobs. The 20 slices partition the one-per-form selection using
+source weights.
 Selecting `reprove` on regular manual CI forces fresh
 formal and synthesis checks.
 
@@ -1352,20 +1345,21 @@ build, the complete vector shards and the campaign report run. Both
 manual vector runs get their own concurrency group and skip regular CI jobs,
 including lint, fast Python tests, formal and synthesis, even with
 `reprove` selected. Each dispatch draws a DDR seed from its run ID.
-Rerunning failed jobs repeats that seed while the shared image
-artifact is available (one day). After it expires, check out the
-tested commit and run the command in the shard summary.
+Rerunning failed jobs repeats that seed. A complete dispatch keeps the
+shared image and shard artifacts for 14 days so the report can use the
+same image after the last shard finishes. Other runs keep the shared
+image for one day. After it expires, check out the tested commit and
+run the command in the shard summary.
 
 Each shard builds a four-thread simulator, checks its executable and
 source manifest, and runs one program at a time. Before sharding, the
 selection must contain 665 programs per width for one per form or
 3,017 for the complete suite. An empty shard, missing results or a
 pass without armed assertions fails the job. Each program has a
-20,000,000-cycle limit and a 7,200-second process timeout. Main uses the
-limits in the table above. Slice replays and rotations have a 90-minute inner deadline, a 100-minute step and a 140-minute job limit.
-The complete campaign has a 300-minute inner deadline, a 310-minute step
-and a 360-minute job limit. Each job reserves time to publish results
-after a deadline.
+20,000,000-cycle limit and a 7,200-second process timeout. Main and
+complete runs use the limits in their tables above. Slice replays and
+rotations have a 90-minute inner deadline, a 100-minute step and a
+140-minute job limit. Each job reserves time to publish partial results.
 
 The shard summary gives the DDR seed and local command. Each failed
 or unfinished program has a command with `--test NAME` for its exact
@@ -1393,7 +1387,10 @@ and widening arithmetic. Both selections excluded bfloat16.
 
 ##### Regenerating the cycle profile
 
-Download the `rvv-v*` artifacts from a successful full one-per-form
+For standalone runs with `--cycle-profile`, the repository includes a
+[cycle profile](fixtures/rvv_ci_profile.csv) calibrated from a hosted
+[one-per-form run](https://github.com/twosigma/frost/actions/runs/44490257076).
+To regenerate it, download the `rvv-v*` artifacts from a successful full one-per-form
 main run. Keep each shard's `results.jsonl` separate to calculate its
 rate. Use the run's revision and matching frost image to generate a source
 directory for each VLEN.
@@ -1580,10 +1577,10 @@ provides Sail and the engine.
 with both implementations configured for `--vlen` (128, 256 or 512).
 `--vector-source-widths` includes the directed integer, FP and memory
 source-width traces. `--vector-directed` includes the vector CSR,
-scalar-result, fractional LMUL and base FP checks. CI uses seed 42 and
-compares 12 generated and six directed traces at each length. The VLEN 128
-job injects one incorrect value in each of four checks and requires TestRIG
-to report each mismatch.
+scalar-result, fractional LMUL, base FP and fused multiply-add checks.
+CI compares the seeded and directed traces at each length. The VLEN 128 job
+injects one incorrect value in each control replay and requires TestRIG to
+report each mismatch.
 
 `--atomics` replays random A-extension tests from `verif/testrig/atomics.py`
 in place of the engine's templates, from a seed the runner prints. A mismatch
@@ -2113,7 +2110,7 @@ and Fast Python Tests jobs locally.
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
-| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares 12 seeded integer traces, three directed source-width traces and three traces for vector state and scalar results, fractional LMUL, and base FP results and flags against Sail |
+| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares seeded integer traces and directed source-width, vector state and scalar-result, fractional LMUL, base FP and fused multiply-add traces against Sail |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
@@ -2224,8 +2221,7 @@ the selection's total cost.
 
 The other job families have a ceiling of 360 minutes, which is also the
 default for jobs without a configured timeout. In regular CI the two cocotb
-unit jobs, the complete generated-vector campaign shards, and the Store
-boundary four records proof use 360-minute limits.
+unit jobs and the Store boundary four records proof use 360-minute limits.
 
 Give each program that boots OpenSBI its own BRAM-only shard with coverage,
 including variants that disable a hardware feature or exercise reset through

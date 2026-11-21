@@ -1513,9 +1513,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "served_window_coverage.sby",
-        "Fetch-window coverage matches full-address comparisons for 32/64-bit "
-        "addresses and portable/Xilinx implementations",
-        tasks=("bmc", "bmc_xilinx", "bmc_32", "bmc_32_xilinx"),
+        "Per-provider fetch-window coverage and guard match full-address and "
+        "aligner references across portable/Xilinx twins for 32/64-bit addresses",
+        tasks=("bmc", "bmc_xilinx", "bmc_32", "bmc_32_xilinx", "prove", "cover"),
     ),
     FormalTarget(
         "rs_primary_payload.sby",

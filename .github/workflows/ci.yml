@@ -260,7 +260,7 @@ jobs:
         with:
           name: frost-docker-image
           path: /tmp/frost-dev.tar
-          retention-days: 1
+          retention-days: ${{ inputs.campaign == 'complete' && !inputs.toggle_coverage && 14 || 1 }}
 
   # Run programs in both memory tiers; separate long runs and group matching builds.
   # CPU architecture comes from the shared RTL defaults used by FPGA builds.
@@ -998,6 +998,8 @@ jobs:
             'order=14 insn=0x42902557 rd=x10' '0x9 != 0x8'
           check_vector_result base-fp vector_fp_results_flags \
             'order=10 insn=0x43102557 rd=x10' '0x40400000 != 0x40400001'
+          check_vector_result fma vector_fma \
+            'order=14 insn=0x43602557 rd=x10' '0xffffffffa8800000 != 0xffffffffa8800001'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
@@ -1786,7 +1788,7 @@ jobs:
     runs-on: ubuntu-26.04
     needs: build-docker
     if: ${{ !cancelled() && needs.build-docker.result == 'success' && !inputs.toggle_coverage }}
-    timeout-minutes: ${{ matrix.job_minutes || (matrix.mode == 'complete' && 360 || 140) }}
+    timeout-minutes: ${{ matrix.job_minutes || 140 }}
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -1815,7 +1817,7 @@ jobs:
           rm -f /tmp/frost-dev.tar
       - name: Run vector programs
         id: programs
-        timeout-minutes: ${{ matrix.step_minutes || (matrix.mode == 'complete' && 310 || 100) }}
+        timeout-minutes: ${{ matrix.step_minutes || 100 }}
         env:
           VLEN: ${{ matrix.vlen }}
           MODE: ${{ matrix.mode }}

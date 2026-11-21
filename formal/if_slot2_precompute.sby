@@ -35,7 +35,7 @@ setattr -mod -unset keep_hierarchy *
 setundef -undriven -anyseq
 opt
 prep -flatten -top if_stage
-if_slot2_precompute_bmc: select -assert-count 15 t:$check r:FLAVOR=assert %i
+if_slot2_precompute_bmc: select -assert-count 17 t:$check r:FLAVOR=assert %i
 if_slot2_precompute_cover: select -assert-count 8 t:$check r:FLAVOR=cover %i
 
 [files]
