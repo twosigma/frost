@@ -1570,7 +1570,8 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --trace-dir verif/testrig/traces
 ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf
 ./scripts/frost.py run python3 tests/test_testrig.py --crypto 50
-./scripts/frost.py run python3 tests/test_testrig.py --vector 12 --vector-source-widths --seed 42 --vlen 256
+./scripts/frost.py run python3 tests/test_testrig.py --vector 12 \
+  --vector-source-widths --vector-directed --seed 42 --vlen 256
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
 ./scripts/frost.py run python3 tests/test_testrig.py --wfi
 ```
@@ -1578,9 +1579,11 @@ provides Sail and the engine.
 `--vector N` replays generated vector traces from `verif/testrig/vector.py`
 with both implementations configured for `--vlen` (128, 256 or 512).
 `--vector-source-widths` includes the directed integer, FP and memory
-source-width traces in that replay. CI uses seed 42 and checks 12 generated
-and three directed traces at each length. The VLEN 128 job also checks that
-TestRIG reports a changed FROST vector readout.
+source-width traces. `--vector-directed` includes the vector CSR,
+scalar-result and fractional LMUL checks. CI uses seed 42 and compares
+12 generated and five directed traces at each length. The VLEN 128 job
+injects one incorrect value in each of three checks and requires TestRIG
+to report each mismatch.
 
 `--atomics` replays random A-extension tests from `verif/testrig/atomics.py`
 in place of the engine's templates, from a seed the runner prints. A mismatch
@@ -2110,7 +2113,7 @@ and Fast Python Tests jobs locally.
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
-| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares 12 seeded integer traces and three directed source-width traces against Sail |
+| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares 12 seeded integer traces, three directed source-width traces, a vector CSR and scalar-result trace and a fractional LMUL trace against Sail |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
