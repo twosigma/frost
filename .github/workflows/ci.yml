@@ -996,6 +996,8 @@ jobs:
             'order=49 insn=0x42182557 rd=x10' '0x3 != 0x2'
           check_vector_result fractional-lmul vector_fractional_lmul \
             'order=14 insn=0x42902557 rd=x10' '0x9 != 0x8'
+          check_vector_result base-fp vector_fp_results_flags \
+            'order=10 insn=0x43102557 rd=x10' '0x40400000 != 0x40400001'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()

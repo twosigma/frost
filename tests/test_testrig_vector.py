@@ -272,7 +272,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (17, instructions + 123) if vector_directed else (15, instructions)
+    expected = (18, instructions + 197) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -283,6 +283,7 @@ def test_vector_directed_replay(
     for filename, words, checks in (
         ("vector_state_results.S", 69, 56),
         ("vector_fractional_lmul.S", 54, 62),
+        ("vector_fp_results_flags.S", 74, 51),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
