@@ -2075,20 +2075,22 @@ SRAM macros in BRAM and C library and RTOS, DMA NIC and coherence, Interrupts,
 Memory link stage (other programs) and Privilege and MMU in DDR; four Physical address aperture jobs
 (1 GiB / Bare access, 1 GiB / Unit boundaries, 128 GiB / DMA, 128 GiB / NIC);
 riscv-tests (all suites / bram / p); riscv-torture (ddr / paged); TestRIG
-shards 1, 2 and 4; and the unit-bench job. A model build with coverage takes
-about 2.3 times as long and a simulation about a quarter longer, so the other
-jobs build without it. A job selects coverage through the `coverage` field of
-its matrix entry, which sets `FROST_COVERAGE` and enables the merge and upload
-steps. When a change adds a job or moves tests between jobs, check the points
+shards 1, 2 and 4; and both unit-bench jobs. Debug and UART collects
+`irq_take_hold_test` in BRAM. Interrupts collects it in DDR. A model build
+with coverage takes about 2.3 times as long and a simulation about a quarter
+longer, so the other jobs build without it. The `coverage` field of a matrix
+entry sets `FROST_COVERAGE` and enables the merge and upload steps.
+When a change adds a job or moves tests between jobs, check the points
 the report reaches and move the field if a job it relied on no longer
-contributes. The unit-bench job also
-sets `FROST_COVERAGE_TOGGLE=1`. Toggle coverage stays out of the whole-SoC
-jobs, which the full set would slow about sixfold, and the control set is
-for local runs. Each job merges its files into a `coverage-job-*` artifact,
-and the Coverage Report job merges those into the
-`coverage-report` artifact (the [report](#coverage) with annotated sources)
-and shows its summary on the job's page, after the other jobs finish, failed
-ones included.
+contributes. The unit-bench jobs also set `FROST_COVERAGE_TOGGLE=1`.
+Toggle coverage stays out of the whole-SoC jobs, which the full set would
+slow about sixfold. The control set is for local runs. Each contributing
+job merges its files into a `coverage-job-*`
+artifact. Coverage Report checks the downloaded artifacts against the matrix
+after the other jobs finish, including jobs that fail. A missing artifact or
+one without a coverage payload fails the job. With all inputs present, the job
+merges them into the `coverage-report` artifact (the [report](#coverage) with
+annotated sources) and shows the summary on the job's page.
 
 The workflow has the exact job filters. The named real-program shards select
 applications by name, and the "Runtime and other" shard runs every
@@ -2102,12 +2104,20 @@ their shared builds. Vector programs selects every registry name that starts
 with `vec_`, so a vector program added later joins it without a workflow
 change; "Runtime and other" excludes the same prefix. Each real-program job
 has a four-hour timeout, including setup and coverage uploads, unless its
-shard sets `timeout_minutes`. Size each shard's allowance at 1.8 times its
-slowest measured hosted job time, rounded up to whole minutes. The
-real-program ceiling is 300 minutes. Vector programs, Memory and NIC stress,
-Runtime and other, CoreMark-PRO nnet, and both OpenSBI smoke variants use that
-ceiling. CoreMark-PRO loops has a 340-minute exception because it cannot be
-split further.
+shard sets `timeout_minutes`. Size the timeout at 1.8 times the planned wall
+time, rounded up to whole minutes. The real-program ceiling is 300 minutes.
+Vector programs, Memory and NIC stress, Runtime and other, CoreMark-PRO nnet,
+and both OpenSBI smoke variants use that ceiling. CoreMark-PRO loops has a
+340-minute exception for its single workload.
+
+The fast budget check adds the job overhead and the cost of every selected
+program in that memory tier. The wall-time inputs come from hosted job elapsed
+times and pytest call durations, with estimates for configurations that lack
+a complete measurement. Record each program's cost for the tiers where it
+runs in `tests/fixtures/ci_real_program_budgets.json`. Include any extra model
+build in the cost. Refresh the inputs when a complete hosted run measures the
+selection. If the ceiling prevents the 1.8 multiplier, the recorded plan caps
+the selection's total cost.
 
 The other job families have a ceiling of 360 minutes, which is also the
 default for jobs without a configured timeout. The two cocotb unit jobs,
@@ -2116,12 +2126,13 @@ four records proof use 360-minute limits.
 
 Give each program that boots OpenSBI its own BRAM-only shard with coverage,
 including variants that disable a hardware feature or exercise reset through
-firmware. Programs whose registry cycle budget exceeds 10 million cycles
-also require a named shard. When adding a named selection, exclude it from
-"Runtime and other" on both tiers. The fast checks in
+firmware. Give programs with a cycle limit above 10 million, including bench
+defaults, or at least 30 minutes of planned wall time a named shard. When
+adding a named selection, exclude it from "Runtime and other" on both tiers.
+The fast checks in
 `test_ci_real_program_shards.py` require collection and exactly one selection
-per supported tier for every registered CI program, and keep OpenSBI and
-large cycle budgets out of the complement. Entries with
+per supported tier for every registered CI program, and keep OpenSBI and long
+programs out of the complement. Entries with
 `include_in_pytest=False` remain available through the command line. To see
 what a filter selects without running it:
 
