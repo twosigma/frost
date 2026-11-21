@@ -73,7 +73,9 @@ def test_vector_workflow(tmp_path: Path) -> None:
     jobs = workflow["jobs"]
     job = jobs["test-rvv"]
     assert job["needs"] == "build-docker"
-    assert job["if"] == "${{ !cancelled() && needs.build-docker.result == 'success' }}"
+    assert job["if"] == (
+        "${{ !cancelled() && needs.build-docker.result == 'success' && !inputs.toggle_coverage }}"
+    )
     assert job["strategy"]["fail-fast"] is False
     assert job["strategy"]["max-parallel"] == 20
     assert "needs.build-docker.outputs.rvv_matrix" in job["strategy"]["matrix"]
@@ -207,6 +209,7 @@ def test_vector_workflow(tmp_path: Path) -> None:
 
 VECTOR_JOBS = {"build-docker", "test-rvv"}
 CAMPAIGN_JOBS = VECTOR_JOBS | {"rvv-campaign-report"}
+TOGGLE_JOBS = {"build-docker", "test-verilator", "coverage-report"}
 REGULAR_CI = VECTOR_JOBS | {
     "gate",
     "lint",
@@ -245,6 +248,11 @@ def job_condition(condition: str, context: dict[str, str]) -> bool:
         compare,
         expression,
     ).replace("!cancelled()", "true")
+    expression = re.sub(
+        r"(!?)\b(inputs\.\w+)\b",
+        lambda match: str((context[match[2]] == "true") != bool(match[1])).lower(),
+        expression,
+    )
     assert re.fullmatch(r"(?:true|false|&&|\|\||[()\s])+", expression), condition
     result = subprocess.run(["bash", "-c", expression])
     assert result.returncode in (0, 1), condition
@@ -265,6 +273,21 @@ def job_condition(condition: str, context: dict[str, str]) -> bool:
         ("workflow_dispatch", {"slice": "19"}, (), VECTOR_JOBS),
         ("workflow_dispatch", {}, (), REGULAR_CI),
         ("workflow_dispatch", {"reprove": True}, (), REGULAR_CI),
+        ("workflow_dispatch", {"toggle_coverage": False}, (), REGULAR_CI),
+        ("workflow_dispatch", {"toggle_coverage": True}, (), TOGGLE_JOBS),
+        (
+            "workflow_dispatch",
+            {"reprove": True, "toggle_coverage": True},
+            (),
+            TOGGLE_JOBS,
+        ),
+        ("workflow_dispatch", {"slice": "0", "toggle_coverage": True}, (), TOGGLE_JOBS),
+        (
+            "workflow_dispatch",
+            {"campaign": "complete", "toggle_coverage": True},
+            (),
+            TOGGLE_JOBS,
+        ),
         ("push", {}, (), REGULAR_CI),
         ("pull_request", {}, ("run-ci",), REGULAR_CI),
         ("pull_request", {}, ("documentation",), {"gate"}),
@@ -297,6 +320,7 @@ def test_ci_job_scope(
             "run-ci" in labels
         ).lower(),
         "needs.gate.outputs.full": "",
+        "needs.build-docker.outputs.verilator_matrix": "",
     }
     for key, spec in workflow[True]["workflow_dispatch"]["inputs"].items():
         value = (
@@ -308,9 +332,15 @@ def test_ci_job_scope(
             str(value).lower() if isinstance(value, bool) else value
         )
     group = workflow["concurrency"]["group"]
-    guard, suffix = group.rsplit("${{", 1)[1].rsplit("&& format", 1)
-    assert suffix == "('-rvv-{0}', github.run_id) || '' }}"
-    assert job_condition(guard, context) == (expected in (VECTOR_JOBS, CAMPAIGN_JOBS))
+    _, toggle_group, vector_group = group.rsplit("${{", 2)
+    toggle_guard, toggle_suffix = toggle_group.rsplit("&&", 1)
+    vector_guard, vector_suffix = vector_group.rsplit("&& format", 1)
+    assert toggle_suffix == " '-toggle' || '' }}"
+    assert vector_suffix == "('-rvv-{0}', github.run_id) || '' }}"
+    assert job_condition(toggle_guard, context) == (expected == TOGGLE_JOBS)
+    assert job_condition(vector_guard, context) == (
+        expected in (VECTOR_JOBS, CAMPAIGN_JOBS)
+    )
     enabled: set[str] = set()
     for name in TopologicalSorter(needs).static_order():
         guard = jobs[name].get("if", "")
@@ -337,6 +367,15 @@ def test_ci_job_scope(
             context["needs.gate.outputs.full"] = dict(
                 line.split("=", 1) for line in output.read_text().splitlines()
             )["full"]
+        if runs and name == "build-docker":
+            steps = {s.get("id"): s for s in jobs[name]["steps"]}
+            has_verilator = job_condition(steps["verilator"]["if"], context)
+            assert has_verilator == ("test-verilator" in expected)
+            assert job_condition(steps["rvv"]["if"], context) == (
+                "test-rvv" in expected
+            )
+            if has_verilator:
+                context["needs.build-docker.outputs.verilator_matrix"] = "planned"
     assert enabled == expected
 
 

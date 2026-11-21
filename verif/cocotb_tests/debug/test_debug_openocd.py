@@ -58,6 +58,27 @@ OPENOCD_CFG = Path(__file__).resolve().parents[3] / "fpga" / "debug" / "openocd_
 CYCLES_PER_EDGE = 4
 
 
+def _wall_timeout_scale() -> int:
+    # Toggle instrumentation slows the simulator while the debugger waits
+    # on real time. In the hosted run GDB ran out of time after its breakpoint.
+    toggles = (
+        os.environ.get("FROST_COVERAGE") == "1"
+        and os.environ.get("FROST_COVERAGE_TOGGLE") == "1"
+    )
+    return 4 if toggles else 1
+
+
+def _openocd_command(openocd: str, rbb_port: int, wall_scale: int) -> list[str]:
+    return [
+        openocd,
+        "-c",
+        f"set FROST_RBB_PORT {rbb_port}; "
+        f"set FROST_RISCV_COMMAND_TIMEOUT_SEC {60 * wall_scale}",
+        "-f",
+        str(OPENOCD_CFG),
+    ]
+
+
 class RemoteBitbangServer:
     """Serve OpenOCD remote_bitbang clients from the simulator, one at a time."""
 
@@ -133,13 +154,13 @@ class RemoteBitbangServer:
         self.listener.close()
 
 
-def _session_script(syms: dict[str, int]) -> str:
+def _session_script(syms: dict[str, int], wall_scale: int) -> str:
     bp = syms["bp_target"]
     return f"""
 init
 puts "FROST_TARGETS=[target names]"
 halt
-wait_halt 2000
+wait_halt {2000 * wall_scale}
 set pc0 [dict get [get_reg -force pc] pc]
 puts [format "FROST_HALT_PC=0x%x" $pc0]
 set misa [dict get [get_reg -force misa] misa]
@@ -152,7 +173,7 @@ write_memory {syms["table"] + 16:#x} 64 {{0xa5a5a5a5a5a5a5a5}}
 puts [format "FROST_TABLE2=0x%x" [lindex [read_memory {syms["table"] + 16:#x} 64 1] 0]]
 bp {bp:#x} 4
 resume
-wait_halt 5000
+wait_halt {5000 * wall_scale}
 set pc1 [dict get [get_reg -force pc] pc]
 puts [format "FROST_BP_PC=0x%x" $pc1]
 rbp {bp:#x}
@@ -172,7 +193,7 @@ sleep 20
 set priv 3
 for {{set i 0}} {{$i < 64}} {{incr i}} {{
     halt
-    wait_halt 2000
+    wait_halt {2000 * wall_scale}
     set priv [dict get [get_reg -force priv] priv]
     if {{$priv == 0}} break
     resume
@@ -185,7 +206,7 @@ write_memory {syms["flag"]:#x} 64 {{2}}
 resume
 sleep 50
 halt
-wait_halt 2000
+wait_halt {2000 * wall_scale}
 puts [format "FROST_WFI_PC=0x%x" [dict get [get_reg -force pc] pc]]
 reset halt
 puts [format "FROST_RESET_PC=0x%x" [dict get [get_reg -force pc] pc]]
@@ -218,18 +239,11 @@ async def test_debug_openocd(dut: Any) -> None:
     await _wait_text(monitor, dut, BANNER_START)
     cocotb.start_soon(server.serve())
 
+    wall_scale = _wall_timeout_scale()
     with tempfile.NamedTemporaryFile("w", suffix=".tcl", delete=False) as script:
-        script.write(_session_script(syms))
+        script.write(_session_script(syms, wall_scale))
         script_path = script.name
-    cmd = [
-        openocd,
-        "-c",
-        f"set FROST_RBB_PORT {server.port}",
-        "-f",
-        str(OPENOCD_CFG),
-        "-f",
-        script_path,
-    ]
+    cmd = [*_openocd_command(openocd, server.port, wall_scale), "-f", script_path]
     log.info("launching: " + " ".join(cmd))
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
@@ -306,13 +320,16 @@ async def test_debug_gdb(dut: Any) -> None:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
 
+    wall_scale = _wall_timeout_scale()
+    connect_timeout = 120 * wall_scale
+    session_timeout = 1800 * wall_scale
     with tempfile.TemporaryDirectory(prefix="frost_gdb_") as temporary:
         directory = Path(temporary)
         script = directory / "session.gdb"
         script.write_text(
             f"""set pagination off
 set confirm off
-set remotetimeout 120
+set remotetimeout {connect_timeout}
 set trust-readonly-sections on
 target extended-remote 127.0.0.1:{port}
 monitor halt
@@ -336,11 +353,7 @@ quit
         openocd_path = directory / "openocd.log"
         gdb_path = directory / "gdb.log"
         command = [
-            openocd,
-            "-c",
-            f"set FROST_RBB_PORT {server.port}",
-            "-f",
-            str(OPENOCD_CFG),
+            *_openocd_command(openocd, server.port, wall_scale),
             "-c",
             f"bindto 127.0.0.1; gdb_port {port}; init; halt",
         ]
@@ -354,7 +367,7 @@ quit
                 for _ in range(20000):
                     output = openocd_path.read_text(errors="replace")
                     assert proc.poll() is None, output
-                    assert time.monotonic() - started < 120, output
+                    assert time.monotonic() - started < connect_timeout, output
                     if f"Listening on port {port} for gdb connections" in output:
                         break
                     await ClockCycles(dut.i_clk, 2000)
@@ -377,7 +390,9 @@ quit
                 for _ in range(20000):
                     if gdb_proc.poll() is not None:
                         break
-                    assert time.monotonic() - started < 1800, "GDB session timed out"
+                    assert time.monotonic() - started < session_timeout, (
+                        f"GDB session timed out after {session_timeout} s"
+                    )
                     await ClockCycles(dut.i_clk, 2000)
                 else:
                     raise AssertionError("GDB session did not finish")
