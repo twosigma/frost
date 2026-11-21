@@ -1269,7 +1269,7 @@ jobs:
           ./scripts/frost.py --image frost-dev:latest run \
             env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 40m \
             python3 tests/test_testrig.py --vector 12 --vector-length 20 \
-              --vector-source-widths --seed 42 --vlen "${{ matrix.vlen }}" \
+              --vector-source-widths --vector-directed --seed 42 --vlen "${{ matrix.vlen }}" \
               --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
               --response-timeout 600 --no-shrink
 

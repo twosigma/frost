@@ -87,6 +87,7 @@ VECTOR_SOURCE_WIDTH_TRACES = tuple(
     VERIF_DIR / "testrig" / f"vector_source_widths_{family}.S"
     for family in ("integer", "fp", "memory")
 )
+VECTOR_DIRECTED_TRACES = (VERIF_DIR / "testrig" / "vector_state_results.S",)
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
 DEFAULT_LOG_DIR = TESTS_DIR / "testrig_logs"
@@ -354,6 +355,7 @@ def prepare_inputs(
     command: list[str] = []
     mode_check = None
     wfi_strands = ()
+    vector_traces: list[Path] = []
     if arguments.trace is not None:
         command += ["-t", str(Path(arguments.trace).resolve())]
     elif arguments.sscofpmf:
@@ -408,8 +410,11 @@ def prepare_inputs(
             arguments.vlen,
         )
         if arguments.vector_source_widths:
-            for trace in VECTOR_SOURCE_WIDTH_TRACES:
-                shutil.copyfile(trace, trace_dir / trace.name)
+            vector_traces.extend(VECTOR_SOURCE_WIDTH_TRACES)
+        if arguments.vector_directed:
+            vector_traces.extend(VECTOR_DIRECTED_TRACES)
+        for trace in vector_traces:
+            shutil.copyfile(trace, trace_dir / trace.name)
         print(
             f"Wrote {arguments.vector} vector tests at VLEN {arguments.vlen} "
             f"from seed {seed} (--seed {seed} regenerates them)",
@@ -523,8 +528,7 @@ def prepare_inputs(
             ),
             max(1, len(paths), len(wfi_strands)),
         )
-        if arguments.vector_source_widths:
-            requested += len(VECTOR_SOURCE_WIDTH_TRACES)
+        requested += len(vector_traces)
         if not directory.is_dir() or len(paths) < requested:
             raise ValueError(
                 f"expected at least {requested} .S traces in {directory}; "
@@ -975,6 +979,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="add the directed integer, FP and memory source-width traces to --vector",
     )
     parser.add_argument(
+        "--vector-directed",
+        action="store_true",
+        help="add directed vector CSR and scalar-result comparisons to --vector",
+    )
+    parser.add_argument(
         "--vlen",
         type=int,
         choices=vector.VECTOR_LENGTHS,
@@ -1024,6 +1033,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     arguments = parser.parse_args(argv)
     if arguments.vector_source_widths and arguments.vector is None:
         parser.error("--vector-source-widths requires --vector")
+    if arguments.vector_directed and arguments.vector is None:
+        parser.error("--vector-directed requires --vector")
     if arguments.vector and arguments.vlen is None:
         arguments.vlen = DEFAULT_VECTOR_LENGTH
     active_modes = sum(
