@@ -4102,6 +4102,46 @@ def test_predictor_reference_sources_are_frozen() -> None:
         ), filename
 
 
+def test_store_completion_cofactor_production_inputs(tmp_path: Path) -> None:
+    """Bind the proof's file map and staged bytes to the checkout sources."""
+    root = Path(__file__).resolve().parents[1]
+    formal = root / FORMAL_DIR
+    cpu_rtl = root / "hw/rtl/cpu_and_mem/cpu"
+    proof = formal / "store_completion_cofactor.sby"
+    expected = {
+        "riscv_pkg.sv": cpu_rtl / "riscv_pkg.sv",
+        "dtlb.sv": cpu_rtl / "mmu/dtlb.sv",
+        "dmmu.sv": cpu_rtl / "mmu/dmmu.sv",
+        "tomasulo_wrapper.sv": (
+            cpu_rtl / "tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv"
+        ),
+        "store_completion_cofactor_cover.sv": formal
+        / "store_completion_cofactor_cover.sv",
+        "free_undefined.ys": formal / "free_undefined.ys",
+    }
+    source = sby_config.source(proof)
+    for task in source.tasks:
+        resolved = {
+            name: (formal / path).resolve(strict=True)
+            for name, path in source.task(task).files.items()
+        }
+        assert resolved == expected, task
+
+        setup = tmp_path / task
+        result = subprocess.run(
+            ["sby", "--setup", "-d", str(setup), proof.name, task],
+            cwd=formal,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        staged = setup / "src"
+        assert {path.name for path in staged.iterdir()} == expected.keys(), task
+        for name, path in expected.items():
+            assert (staged / name).read_bytes() == path.read_bytes(), (task, name)
+
+
 def test_formal_target_tasks_are_registered() -> None:
     """Every SBY file and task must participate in CLI and pytest execution."""
     formal_dir = Path(__file__).resolve().parents[1] / FORMAL_DIR
