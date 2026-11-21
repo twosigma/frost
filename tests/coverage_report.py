@@ -399,6 +399,38 @@ def merge(inputs: Sequence[Path], output: Path) -> list[Path]:
     return files
 
 
+def ci_coverage_files(directory: Path) -> list[Path]:
+    """Require a readable coverage payload from each CI coverage producer."""
+    from ci_matrix import coverage_artifacts, workflow_jobs
+
+    expected = coverage_artifacts(workflow_jobs())
+    downloaded = {path.name for path in directory.glob("coverage-job-*")}
+    errors = [
+        f"missing {name} ({expected[name]})"
+        for name in expected
+        if name not in downloaded
+    ]
+    errors.extend(f"unexpected {name}" for name in sorted(downloaded - expected.keys()))
+    files = []
+    for name in expected.keys() & downloaded:
+        payloads = sorted((directory / name).rglob("*.dat"))
+        if len(payloads) != 1 or not payloads[0].is_file():
+            errors.append(f"{name} ({expected[name]}) must contain one .dat file")
+            continue
+        with payloads[0].open("rb") as stream:
+            for record in stream:
+                parsed = split_record(record)
+                if parsed is not None and parsed[0].get("f") and parsed[0].get("t"):
+                    break
+            else:
+                errors.append(f"{name} ({expected[name]}) has no coverage records")
+                continue
+        files.append(payloads[0])
+    if errors:
+        raise ValueError("Incomplete CI coverage:\n" + "\n".join(sorted(errors)))
+    return sorted(files)
+
+
 def write_lcov(merged: Path, info: Path) -> None:
     """Write merged line and branch coverage as lcov with repository-relative paths.
 
@@ -481,6 +513,11 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     report_parser.add_argument(
         "--annotate", action="store_true", help="also write annotated sources"
     )
+    report_parser.add_argument(
+        "--require-ci-artifacts",
+        action="store_true",
+        help="require every coverage artifact selected by the CI workflow",
+    )
     return parser.parse_args(argv)
 
 
@@ -491,7 +528,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         files = merge(arguments.inputs, arguments.output)
         print(f"Merged {len(files)} coverage files into {arguments.output}")
         return 0
-    return report(arguments.inputs, arguments.output_dir, annotate=arguments.annotate)
+    inputs = arguments.inputs
+    if arguments.require_ci_artifacts:
+        if len(inputs) != 1:
+            print("Give one CI artifact download directory", file=sys.stderr)
+            return 1
+        try:
+            inputs = ci_coverage_files(inputs[0])
+        except ValueError as error:
+            print(error, file=sys.stderr)
+            return 1
+    return report(inputs, arguments.output_dir, annotate=arguments.annotate)
 
 
 if __name__ == "__main__":

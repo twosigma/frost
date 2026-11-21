@@ -17,6 +17,9 @@
 Scalar entries and vector memory table entries are allocated in one program
 order with ROB tags. Scalar entries get addresses later; table entries get
 ranges, may retire and are freed (never reused in the cycle they are freed).
+A flush rolls back the next ROB tag and removes younger scalar entries.
+Removed unretired table entries keep their tag and range for the cleanup
+cycle. They free on the following edge, which can also allocate other entries.
 The model keeps, per scalar entry, the table entries that were older and live
 when it was allocated (formed in the entry's first valid cycle, as the queue's
 valid mirror sees it), and expects a hold whenever one of them is still live and
@@ -75,10 +78,12 @@ async def test_vec_hold_rows_random(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     dut.i_rst.value = 0
 
-    seq = 0  # program order counter; tag = seq mod 32
+    seq = 0  # next program order number, rolled back on flush
     inflight: list[int] = []  # program-order sequence numbers not retired
     ent: list[Any] = [None] * DEPTH
     vmt: list[Any] = [None] * VMT
+    pending: set[int] = set()
+    cleaned_last_cycle: set[int] = set()
     prev_ovl: list[list[bool]] = [[False] * VMT for _ in range(DEPTH)]
     prev_ovl_valid: list[list[bool]] = [[False] * VMT for _ in range(DEPTH)]
     rows: list[list[bool]] = [[False] * VMT for _ in range(DEPTH)]
@@ -88,6 +93,8 @@ async def test_vec_hold_rows_random(dut: Any) -> None:
     checked = 0
     held = 0
     released = 0
+    full_flushes = partial_flushes = retired_survivals = 0
+    cleanup_cycles = cleanup_allocations = cleanup_reuses = cleanup_overlaps = 0
 
     def vmt_word() -> int:
         word = 0
@@ -117,36 +124,66 @@ async def test_vec_hold_rows_random(dut: Any) -> None:
         return word
 
     for cycle in range(6000):
-        # Next state: frees, retires, allocations, address and range writes.
+        # Apply the edge before the sampled cycle. The entries pending on
+        # that edge free, but are unavailable for allocation on that edge.
+        cleaned = pending
+        pending = set()
+        for t in cleaned:
+            vmt[t] = None
+        freed_v = set(cleaned)
+
         head_seq = min(inflight) if inflight else seq
-        # Scalar entry frees (any time) and vector frees (only once retired).
+        rollback = rng.choice(inflight) if inflight and rng.random() < 0.08 else None
+        if rollback is not None:
+            full_flushes += rollback == head_seq
+            partial_flushes += rollback != head_seq
+            seq = rollback
+            inflight = [s for s in inflight if s < rollback]
+
         freed_s = set()
         for i in range(DEPTH):
-            if ent[i] and rng.random() < 0.05:
-                freed_s.add(i)
-                if ent[i]["seq"] in inflight:
-                    inflight.remove(ent[i]["seq"])
-                ent[i] = None
-        newly_freed = set()
+            e = ent[i]
+            if e is None:
+                continue
+            if rollback is None:
+                if rng.random() >= 0.05:
+                    continue
+                inflight.remove(e["seq"])
+            elif e["seq"] < rollback:
+                continue
+            freed_s.add(i)
+            ent[i] = None
         for t in range(VMT):
             e = vmt[t]
-            if e and e["retired"] and rng.random() < 0.15:
-                vmt[t] = None
-                newly_freed.add(t)
-            elif e and not e["retired"] and e["seq"] == head_seq and rng.random() < 0.3:
+            if e is None:
+                continue
+            if e["retired"]:
+                if rng.random() < 0.15:
+                    vmt[t] = None
+                    freed_v.add(t)
+                elif rollback is not None:
+                    retired_survivals += 1
+            elif rollback is not None:
+                if e["seq"] >= rollback:
+                    pending.add(t)
+            elif e["seq"] == head_seq and rng.random() < 0.3:
                 e["retired"] = True
                 inflight.remove(e["seq"])
-        # Allocate (program order) when the window has room.
+        cleanup_cycles += bool(pending)
+
+        # A flush edge has no allocation or retirement. Allocation otherwise
+        # uses indices that were free before the edge.
         upd = None
         # Keep the age window inside the tag space; a freed slot stays empty
         # for at least one cycle, as both queues and the table guarantee.
         # (against the previous cycle's head too, which the rows compare with:
         # the ROB holds every tag between them).
-        if seq - prev_head < ntag - 4 and rng.random() < 0.5:
-            free_v = [t for t in range(VMT) if vmt[t] is None and t not in newly_freed]
+        if rollback is None and seq - prev_head < ntag - 4 and rng.random() < 0.5:
+            free_v = [t for t in range(VMT) if vmt[t] is None and t not in freed_v]
             free_s = [i for i in range(DEPTH) if ent[i] is None and i not in freed_s]
             if free_v and rng.random() < 0.3:
                 t = rng.choice(free_v)
+                cleanup_reuses += t in cleaned_last_cycle
                 vmt[t] = {
                     "seq": seq,
                     "retired": False,
@@ -157,6 +194,7 @@ async def test_vec_hold_rows_random(dut: Any) -> None:
                 seq += 1
             elif free_s:
                 i = rng.choice(free_s)
+                cleanup_allocations += bool(cleaned)
                 ent[i] = {
                     "seq": seq,
                     "atomic": rng.random() < 0.1,
@@ -166,10 +204,11 @@ async def test_vec_hold_rows_random(dut: Any) -> None:
                 }
                 inflight.append(seq)
                 seq += 1
+        cleaned_last_cycle = cleaned
         # Range writes.
         for t in range(VMT):
             e = vmt[t]
-            if e and not e["known"] and rng.random() < 0.2:
+            if e and t not in pending and not e["known"] and rng.random() < 0.2:
                 ppn = rng.randrange(4)
                 assert ppn_w >= 2
                 lo = rng.randrange(128)
@@ -205,6 +244,8 @@ async def test_vec_hold_rows_random(dut: Any) -> None:
         dut.i_tag_flat.value = tags
         dut.i_atomic.value = atomic
         head_now = min(inflight) if inflight else seq
+        if rollback is not None:
+            assert head_now == head_seq, "head advanced on the flush edge"
         dut.i_head_tag.value = head_now % ntag
         dut.i_vmt.value = vmt_word()
         # Direct mode: each entry's address, size and address-valid bit as of
@@ -257,6 +298,7 @@ async def test_vec_hold_rows_random(dut: Any) -> None:
                 "ovl_valid": prev_ovl_valid[bad],
                 "ovl": prev_ovl[bad],
                 "table": vmt,
+                "pending": pending,
                 "head": head_now,
             }
             raise AssertionError(
@@ -267,7 +309,20 @@ async def test_vec_hold_rows_random(dut: Any) -> None:
         released += sum(
             1
             for i in range(DEPTH)
-            if ent[i] and built[i] and any(rows[i]) and not exp >> i & 1
+            if ent[i]
+            and built[i]
+            and not exp >> i & 1
+            and any(row and v is not None for row, v in zip(rows[i], vmt, strict=True))
+        )
+        # A settled scalar survivor can overlap the flushed range and stay
+        # unheld through cleanup because it is older.
+        cleanup_overlaps += sum(
+            1
+            for i in range(DEPTH)
+            if ent[i]
+            and built[i]
+            and not exp >> i & 1
+            and any(prev_ovl_valid[i][t] and prev_ovl[i][t] for t in pending)
         )
         await RisingEdge(dut.i_clk)
         # Registered model state, as of this edge.
@@ -311,3 +366,15 @@ async def test_vec_hold_rows_random(dut: Any) -> None:
         f"{released} with an older live entry but no overlap"
     )
     assert held > 1000 and released > 200, "traffic too thin to exercise the rule"
+    dut._log.info(
+        f"{full_flushes} full and {partial_flushes} partial flushes, "
+        f"{retired_survivals} retired entries surviving flush, "
+        f"{cleanup_cycles} cleanup cycles, {cleanup_overlaps} unheld overlapping survivors, "
+        f"{cleanup_allocations} scalar allocations on cleanup edges and "
+        f"{cleanup_reuses} table index reuses on the following edge"
+    )
+    assert full_flushes and partial_flushes and retired_survivals, "flush coverage"
+    assert cleanup_cycles and cleanup_overlaps, "late free coverage"
+    assert cleanup_allocations and cleanup_reuses, (
+        "cleanup allocation and reuse coverage"
+    )

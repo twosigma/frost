@@ -740,6 +740,11 @@ single-precision FP loads are NaN-boxed to 64 bits; FP stores transfer the
 low bits for their access size. If a part faults, the engine's exception is taken as the instruction's own, with its
 cause and trap value, and `mepc` or `sepc` holds the access's PC.
 
+The engine waits for older vector memory work before it uses the shared line
+client. The registered owner selects its requests before the first sector
+issues. A simulation check pairs each accepted engine request with a request
+of the same identity at the shared port.
+
 An access is split at the first sector boundary it crosses. `ma_pkg` checks
 each part in architectural order: page fault, then access fault (a physical
 address outside the map), then region. Only cached DDR is served; another
@@ -1039,7 +1044,10 @@ the one or two touched pages on the DMMU's walk-request port (requiring cached
 DDR with `PBMT = PMA`), waits for older committed scalar stores (`o_sq_committed_empty`), records
 the physical page segments in `vec_vmt`, and completes on CDB slot 6 to retire
 alone in slot 1 (`vstart` cleared; VS set Dirty on loads and when `vstart` was
-nonzero). Faults are reported precisely at the head (`xtval` holds the first
+nonzero). The head unit receives the registered commit one cycle after the
+table retires the entry. A simulation check forbids a full flush in that
+cycle because it would mask the registered commit. Faults are reported
+precisely at the head (`xtval` holds the first
 active byte's virtual address in the faulting page, or the second page's base
 when a single element straddles into a faulting second page); if earlier whole
 elements lie on a valid first page before a faulting second page, `vec_vmu`

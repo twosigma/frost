@@ -300,6 +300,24 @@ def test_home_cmo_replay_staging_and_key(tmp_path: Path) -> None:
     assert formal_key(root, control) == control_key
 
 
+def test_store_completion_projection_staging_and_keys(tmp_path: Path) -> None:
+    """Both tasks consume the source projection staged with the wrapper."""
+    root = formal_tree(tmp_path / "repo")
+    proof = ROOT / "formal/store_completion_cofactor.sby"
+    staged = sby_config.stage_proof(proof, ROOT, root)
+    helper = root / "tests/store_completion_cofactor.py"
+    assert sby_config.store_completion_cone_helper(staged) == helper
+    assert helper.read_bytes() == (ROOT / "tests" / helper.name).read_bytes()
+    tasks = ("store_completion_cofactor_prove", "store_completion_cofactor_cover")
+    before = {task: formal_key(root, task) for task in tasks}
+    trap_key = formal_key(root)
+    with helper.open("a") as stream:
+        stream.write("# changed projection\n")
+    for task in tasks:
+        assert formal_key(root, task) != before[task]
+    assert formal_key(root) == trap_key
+
+
 def test_formal_key_file_list_is_order_independent() -> None:
     """The [files] entries enter the key sorted by path."""
     preimages: list[Any] = []

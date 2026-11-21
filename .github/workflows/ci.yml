@@ -254,8 +254,8 @@ jobs:
     needs: [build-docker, gate]
     if: ${{ needs.gate.outputs.full == 'true' }}
     # Real-program jobs allow four hours, including setup and coverage uploads,
-    # unless the shard sets timeout_minutes. A shard's limit is 1.8 times its
-    # slowest measured time, rounded up, so a slow runner still finishes it.
+    # unless the shard sets timeout_minutes. Allow 1.8 times the planned
+    # wall time, rounded up within the applicable ceiling.
     timeout-minutes: ${{ matrix.shard.timeout_minutes || (startsWith(matrix.shard.name, 'Unit Tests') && 360 || 240) }}
     strategy:
       fail-fast: false
@@ -291,6 +291,8 @@ jobs:
               [svpbmt_test] or [svpbmt_test_assert] or [svpbmt_test_2g] or [svpbmt_bus_error]
           - name: Real Programs (Interrupts)
             coverage: [ddr]
+            pytest_filter_extra:
+              ddr: "[irq_take_hold_test]"
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
               [imsic_csr_test] or [imsic_msi_test] or [imsic_collision_test] or
@@ -298,7 +300,7 @@ jobs:
               [sscofpmf_test] or
               [ns16550_irq_console_test] or [wfi_mepc_test] or
               [wfi_drain_mepc_test] or [mret_timer_resume_test] or [mtimer_stress] or
-              [wfi_lost_tick] or [irq_mie_window] or [irq_take_hold_test] or [ns16550_test] or
+              [wfi_lost_tick] or [irq_mie_window] or [ns16550_test] or
               [clint_test] or
               [linux_irq_ddr_test] or [linux_irq_active_ddr_test] or [linux_irq_stack_slot_test] or
               [linux_irq_find_next_slot_test]
@@ -337,7 +339,10 @@ jobs:
               or [ddr_atomic_test_equal_lines] or [async_hello_world] or [async_nic_loopback]
               or [async_dma_torture]
           - name: Real Programs (Debug and UART)
+            timeout_minutes: 256
             coverage: [bram]
+            pytest_filter_extra:
+              bram: "[irq_take_hold_test]"
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
               [debug_test] or [debug_fence_test] or [debug_openocd_test] or [bram_reload] or [instret_test] or
@@ -414,7 +419,7 @@ jobs:
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: "[smc_stale_test] or [smc_torture] or [smc_predict_test] or [fencei_bench]"
           # The complement keeps unlisted non-CoreMark-PRO programs in CI.
-          # OpenSBI and registry budgets above 10 million cycles need named
+          # OpenSBI, long cycle budgets and long planned runtimes need named
           # shards; give each OpenSBI boot its own BRAM-only include entry.
           # Keep the exclusions in sync with every named shard.
           - name: Real Programs (Runtime and other)
@@ -625,7 +630,10 @@ jobs:
           # these long workloads. Keep their checks and reset runs unchanged.
           COCOTB_COREMARK_PROGRESS_INTERVAL: ${{ contains(matrix.shard.name, 'CoreMark-PRO') && '0' || '500000' }}
           PYTEST_MARK: ${{ matrix.shard.pytest_mark }}
-          PYTEST_FILTER: ${{ matrix.shard.pytest_filter }}
+          PYTEST_FILTER: >-
+            ${{ matrix.shard.pytest_filter_extra[matrix.mem_config] &&
+                format('({0}) or ({1})', matrix.shard.pytest_filter, matrix.shard.pytest_filter_extra[matrix.mem_config]) ||
+                matrix.shard.pytest_filter }}
           CALIBRATION_TEST: ${{ matrix.mem_config == 'bram' && matrix.shard.calibration_test || '' }}
         run: |
           if [ -n "$CALIBRATION_TEST" ]; then
@@ -672,7 +680,7 @@ jobs:
           name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
           path: coverage-job/
           retention-days: 3
-          if-no-files-found: ignore
+          if-no-files-found: error
           overwrite: true
 
   # Exercise configured DDR apertures at their software-visible edges.
@@ -777,7 +785,7 @@ jobs:
           name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
           path: coverage-job/
           retention-days: 3
-          if-no-files-found: ignore
+          if-no-files-found: error
           overwrite: true
 
   # Standalone Ethernet uses the shared image but has no CPU/software dependencies.
@@ -913,7 +921,7 @@ jobs:
           name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
           path: coverage-job/
           retention-days: 3
-          if-no-files-found: ignore
+          if-no-files-found: error
           overwrite: true
 
   # riscv-tests: p runs physically without a kernel; v runs user suites on DDR
@@ -987,7 +995,7 @@ jobs:
           name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
           path: coverage-job/
           retention-days: 3
-          if-no-files-found: ignore
+          if-no-files-found: error
           overwrite: true
 
   # riscv-tests benchmarks by memory tier, on one Verilator build per job; mm,
@@ -1092,7 +1100,7 @@ jobs:
           name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
           path: coverage-job/
           retention-days: 3
-          if-no-files-found: ignore
+          if-no-files-found: error
           overwrite: true
 
   # TestRIG: QuickCheckVEngine runs instruction sequences on the Sail RISC-V
@@ -1220,7 +1228,7 @@ jobs:
           name: coverage-job-${{ github.job }}-${{ strategy.job-index }}
           path: coverage-job/
           retention-days: 3
-          if-no-files-found: ignore
+          if-no-files-found: error
           overwrite: true
 
   # Merge the coverage that the simulating jobs uploaded into one report
@@ -1239,7 +1247,7 @@ jobs:
       - test-riscv-tests
       - test-riscv-torture
       - test-testrig
-    # Report what the finished jobs reached even when some of them failed.
+    # Check every coverage input even when some of the simulating jobs fail.
     if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.gate.outputs.full == 'true' }}
     timeout-minutes: 30
     env:
@@ -1271,7 +1279,7 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/coverage_report.py report coverage-jobs \
-              --output-dir coverage-report --annotate
+              --output-dir coverage-report --annotate --require-ci-artifacts
 
       - name: Publish the summary
         if: ${{ !cancelled() }}

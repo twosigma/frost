@@ -49,6 +49,7 @@ from cocotb.utils import get_sim_time
 from typing import Any, TextIO
 
 from config import XLEN
+from real_program_limits import real_program_cycle_limit
 from cocotb_tests.calibration_trace import CalibrationTrace
 from cocotb_tests.cpu_structs import (
     COMMIT_FIELDS,
@@ -640,54 +641,9 @@ async def check_nic_mac_clocks_aligned(
             )
 
 
-# Cycle cap per run, so a hung program fails instead of running forever.
-# COCOTB_MAX_CYCLES raises it for tests that need more (e.g. the arch tests).
-MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 500000))
-
 # Reset and rerun to check that the program reinitializes its state.
 # Set to 1 for ISA tests that modify .text-resident data (e.g. riscv-tests rvc).
 NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
-
-# The DMA torture program takes about 895k cycles with uncached BRAM
-# instruction fetches using AXI; allow headroom for response-latency variants.
-DMA_TORTURE_MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 1500000))
-
-# CoreMark's list and matrix phases exceed the generic budget even at
-# ITERATIONS=1.
-COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
-# nic_loopback and nic_echo wait for the PCS BER window before CARRIER,
-# then process frames byte by byte. nic_loopback also resets during traffic.
-# The AXI uncached path completes the full loopback in about 2.89M cycles.
-NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 4000000))
-
-# All 344 sprintf/snprintf checks take about 1.23M cycles in BRAM or DDR
-# with Normal read caching; retain every formatting case with headroom.
-SPRINTF_TEST_MAX_CYCLES = 2000000
-
-# Cover the complete lookup/cache-churn and store-forwarding sweep.
-PDE_RETURN_HAZARD_MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
-
-# Cover 3,000 idle iterations across the 24..535-cycle deadline sweep.
-# Normal read caching takes about 1.38M cycles with the CI DDR timing seed.
-WFI_LOST_TICK_MAX_CYCLES = 2000000
-
-# Cover all 800 cold-DDR frame-eviction and restore iterations.
-RESTORE_WINDOW_STRESS_MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 1500000))
-
-# DDR boot and BSS clearing exceed the generic budget before the first banner.
-# This budget also covers the jitter variant.
-AMO_IRQ_TORTURE_MAX_CYCLES = int(
-    os.environ.get("COCOTB_AMO_TORTURE_MAX_CYCLES", 6000000)
-)
-
-# Cover DDR BSS clearing and the simulation-scale timer-torture workset.
-TICK_TORTURE_MAX_CYCLES = int(os.environ.get("COCOTB_TICK_TORTURE_MAX_CYCLES", 6000000))
-
-# Allow for cached-DDR eviction and refill. The registry sets the round
-# count through EXTRA_CFLAGS.
-MEM_DIVERGENCE_PROBE_MAX_CYCLES = int(
-    os.environ.get("COCOTB_MEM_DIVERGENCE_PROBE_MAX_CYCLES", 20000000)
-)
 
 # i_clk cycles to hold i_rst_n low, before the first run and between runs.
 # frost.sv needs at least 20 (five i_clk_div4 cycles) so that each dual-clock
@@ -5650,52 +5606,7 @@ async def test_real_program(dut: Any) -> None:
         get_expected_behavior()
     )
 
-    # Per-app cycle budgets. Match the is_coremark_like convention (startswith)
-    # so coremark_pro workloads get the CoreMark budget too, not just the exact
-    # "coremark" app. Every CoreMark-PRO workload arrives here as coremark_pro
-    # (its build directory), so the test registry sets a workload's own budget
-    # through COCOTB_COREMARK_MAX_CYCLES.
-    if app_name is not None and app_name.startswith("coremark"):
-        max_cycles = COREMARK_MAX_CYCLES
-    elif app_name == "dma_torture":
-        max_cycles = DMA_TORTURE_MAX_CYCLES
-    elif app_name == "sprintf_test":
-        max_cycles = SPRINTF_TEST_MAX_CYCLES
-    elif app_name == "pde_return_hazard":
-        max_cycles = PDE_RETURN_HAZARD_MAX_CYCLES
-    elif app_name == "wfi_lost_tick":
-        max_cycles = WFI_LOST_TICK_MAX_CYCLES
-    elif app_name == "restore_window_stress":
-        max_cycles = RESTORE_WINDOW_STRESS_MAX_CYCLES
-    elif app_name == "amo_irq_torture":
-        max_cycles = AMO_IRQ_TORTURE_MAX_CYCLES
-    elif app_name in (
-        "nic_loopback",
-        "nic_cmo_loopback",
-        "nic_sg_loopback",
-        "nic_rate",
-        "nic_echo",
-    ):
-        max_cycles = NIC_LOOPBACK_MAX_CYCLES
-    elif app_name == "tick_torture":
-        max_cycles = TICK_TORTURE_MAX_CYCLES
-    elif app_name == "mem_divergence_probe":
-        max_cycles = MEM_DIVERGENCE_PROBE_MAX_CYCLES
-    elif app_name in ("misaligned_test", "vec_mem_test"):
-        # Several hundred engine accesses, translated S/U-mode crossings and
-        # faults, and the timer-interrupt section take ~1.28M cycles (1,275,934
-        # in DDR at DDR_MODEL_LATENCY=160); 2M leaves ~57% headroom.
-        max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
-    elif app_name == "vec_mem_reserved_forms_test":
-        # Exhaustive 8,192 unit-stride + 256 whole-register-alignment sweeps
-        # take ~548k cycles in BRAM (~8,114 precise illegal-instruction traps);
-        # 1.5M leaves headroom for DDR and latency variants.
-        max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 1500000))
-    elif app_name == "linux_irq_active_ddr_test":
-        # Allow for timer ticks and sentinel spin-waits.
-        max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
-    else:
-        max_cycles = MAX_CYCLES
+    max_cycles = real_program_cycle_limit(app_name, os.environ)
 
     cocotb.log.info(
         f"Expected behavior: success_marker={success_marker}, "
