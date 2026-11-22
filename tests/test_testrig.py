@@ -102,6 +102,7 @@ VECTOR_DIRECTED_TRACES = tuple(
         "int_compare",
         "strided",
         "indexed",
+        "segment",
     )
 )
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"

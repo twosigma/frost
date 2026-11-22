@@ -80,6 +80,7 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "int-compare": 0x4390_2557,  # vmv.x.s a0, v25 in the integer comparison trace
     "strided": 0x43B0_2557,  # vmv.x.s a0, v27 in the strided memory trace
     "indexed": 0x43C0_2557,  # vmv.x.s a0, v28 in the indexed memory trace
+    "segment": 0x43E0_2557,  # vmv.x.s a0, v30 in the segment memory trace
 }
 
 # frost_rvfi_dii's error_flags bits.
