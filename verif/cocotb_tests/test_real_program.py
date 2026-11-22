@@ -354,11 +354,30 @@ def _nic_engine(nic: Any) -> Any:
 def _nic_reset_history(dut: Any) -> tuple[Any, ...]:
     """Return checker history without changing its reset evidence."""
     soc = _program_soc(dut)
-    if not hasattr(soc, "gen_cached_tier"):
-        return ()
-    tier = soc.gen_cached_tier
+    selective = os.environ.get("FROST_SELECTIVE_VISIBILITY") == "1"
+    extra_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
+    if selective:
+        cached_overrides = re.findall(r"-GENABLE_CACHED_TIER=(\d+)", extra_args)
+        cached_enabled = (
+            int(cached_overrides[-1]) != 0
+            if cached_overrides
+            else os.environ.get("ENABLE_CACHED_TIER", "1") != "0"
+        )
+        if not cached_enabled:
+            return ()
+        tier = soc.gen_cached_tier
+    else:
+        if not hasattr(soc, "gen_cached_tier"):
+            return ()
+        tier = soc.gen_cached_tier
     fronts = [_nic_engine(tier.nic).u_front]
-    if hasattr(tier, "gen_nic_1g"):
+    eth1g_overrides = re.findall(r"-GENABLE_1G_ETH=(\d+)", extra_args)
+    eth1g_required = (
+        selective
+        and bool(eth1g_overrides and int(eth1g_overrides[-1]) != 0)
+        and hasattr(dut.cpu_and_memory_subsystem, "soc")
+    )
+    if eth1g_required or hasattr(tier, "gen_nic_1g"):
         fronts.append(_nic_engine(tier.gen_nic_1g.nic_1g).u_front)
     return tuple(front.reset_seen_q for front in fronts)
 
@@ -439,21 +458,36 @@ def load_program_images(dut: Any) -> None:
     assert int(soc.rst_core.value), "program image load requires core reset"
     assert int(soc.rst_div4.value), "program image load requires programming reset"
     # TestRIG fetches instructions from its injected stream.
-    if hasattr(soc, "instruction_memory"):
+    if hasattr(platform, "soc") or not hasattr(platform, "u_rvfi_dii"):
         _load_instruction_image(soc.instruction_memory)
     memory = soc.data_memory
     if hasattr(memory, "u_sram"):
         memory = memory.u_sram
     memory.sim_load_image.value = 1
-    if hasattr(soc, "gen_behavioral_ddr"):
-        model = soc.gen_behavioral_ddr.ddr_model
-    elif hasattr(soc, "gen_cached_tier") and hasattr(
-        soc.gen_cached_tier, "gen_behavioral_ddr"
+    extra_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
+    ddr_overrides = re.findall(r"-GUSE_BEHAVIORAL_DDR=(\d+)", extra_args)
+    behavioral_ddr_enabled = (
+        int(ddr_overrides[-1]) != 0
+        if ddr_overrides
+        else os.environ.get("USE_BEHAVIORAL_DDR", "1") != "0"
+    )
+    cached_overrides = re.findall(r"-GENABLE_CACHED_TIER=(\d+)", extra_args)
+    cached_enabled = (
+        int(cached_overrides[-1]) != 0
+        if cached_overrides
+        else os.environ.get("ENABLE_CACHED_TIER", "1") != "0"
+    )
+    is_rvfi = hasattr(platform, "u_rvfi_dii") and not hasattr(platform, "soc")
+    if (
+        behavioral_ddr_enabled
+        and (cached_enabled or not is_rvfi)
+        and Path("sw_ddr.mem").is_file()
     ):
-        model = soc.gen_cached_tier.gen_behavioral_ddr.ddr_model
-    else:
-        return
-    if hasattr(model, "sim_load_image") and Path("sw_ddr.mem").is_file():
+        model = (
+            soc.gen_behavioral_ddr.ddr_model
+            if hasattr(soc, "gen_behavioral_ddr")
+            else soc.gen_cached_tier.gen_behavioral_ddr.ddr_model
+        )
         model.sim_load_image.value = 1
 
 
@@ -461,7 +495,7 @@ def initialize_wrapper_resets(dut: Any) -> None:
     """Supply asserted reset from the FPGA wrapper at startup."""
     # The FPGA wrapper supplies an asserted reset at the platform boundary.
     # Its reset pipeline is outside the ASIC design's randomized state.
-    if hasattr(dut, "reset_synchronizer_shift_register"):
+    if hasattr(dut, "cpu_and_memory_subsystem"):
         for name in (
             "reset_synchronizer_shift_register",
             "reset_synchronized",
@@ -469,6 +503,13 @@ def initialize_wrapper_resets(dut: Any) -> None:
         ):
             signal = getattr(dut, name)
             signal.value = Immediate((1 << len(signal)) - 1)
+        if os.environ.get("FROST_CPU_PERIOD_PS") or hasattr(
+            dut, "gen_external_reset_pair"
+        ):
+            pair = dut.gen_external_reset_pair.external_reset
+            for stage_name in ("reset_a", "reset_b", "peer_a", "peer_b"):
+                chain = getattr(pair, stage_name).chain_q
+                chain.value = Immediate((1 << len(chain)) - 1)
 
 
 async def prepare_program_start(dut: Any) -> None:
@@ -495,11 +536,11 @@ async def prepare_program_start(dut: Any) -> None:
     for seen in history:
         seen.value = Immediate(0)
     if history:
-        soc = _program_soc(dut)
+        platform = dut.cpu_and_memory_subsystem
         request = (
-            soc.reset_request_soc
-            if hasattr(soc, "reset_request_soc")
-            else soc.rst_core_next
+            platform.soc.reset_request_soc
+            if hasattr(platform, "soc")
+            else platform.rst_core_next
         )
         assert int(request.value), "NIC startup requires system reset"
 
@@ -679,6 +720,8 @@ class UartMonitor:
             platform = self.dut.cpu_and_memory_subsystem
             wr_en, wr_data = platform.o_uart_wr_en, platform.o_uart_wr_data
         except AttributeError:
+            if os.environ.get("FROST_SELECTIVE_VISIBILITY") == "1":
+                raise
             # The UART signals may be optimized out in some simulators.
             wr_en = wr_data = None
         while self._running:
@@ -708,7 +751,12 @@ def _uart_bit_cycles(dut: Any) -> int:
     Both run on clk_div4 with CLK_FREQ_HZ/4 as their clock, so a bit lasts
     (CLK_FREQ_HZ/4) / BAUD_RATE cycles.
     """
-    clk_freq = _read_u64(getattr(dut, "CLK_FREQ_HZ", None))
+    clk_freq_handle = (
+        dut.CLK_FREQ_HZ
+        if os.environ.get("FROST_SELECTIVE_VISIBILITY") == "1"
+        else getattr(dut, "CLK_FREQ_HZ", None)
+    )
+    clk_freq = _read_u64(clk_freq_handle)
     if clk_freq is None:
         clk_freq = UART_CLK_FREQ_HZ_DEFAULT
     return max(1, (clk_freq // 4) // UART_BAUD_RATE)
@@ -875,8 +923,16 @@ async def _mid_traffic_reset(dut: Any, uart_monitor: Any, line_monitor: Any) -> 
     dut.i_rst_n.value = 1
 
 
-def _get_signal(dut: Any, path: str) -> Any | None:
-    """Get a nested signal by dotted path, or None if not found."""
+# Optional per-platform prefixes whose generate scopes vary across build
+# configurations (behavioral DDR location in cached vs uncached builds).
+_SELECTIVE_OPTIONAL_SIGNAL_PREFIXES: tuple[str, ...] = (
+    "cpu_and_memory_subsystem.soc.gen_behavioral_ddr.",
+    "cpu_and_memory_subsystem.soc.gen_cached_tier.",
+)
+
+
+def _lookup_signal(dut: Any, path: str) -> Any | None:
+    """Resolve a dotted signal path without raising on missing scopes."""
     obj = dut
     for part in path.split("."):
         if not hasattr(obj, part):
@@ -885,12 +941,39 @@ def _get_signal(dut: Any, path: str) -> Any | None:
     return obj
 
 
+def _get_signal(dut: Any, path: str) -> Any | None:
+    """Get a nested signal by dotted path, raising if unlisted on selective frost."""
+    sig = _lookup_signal(dut, path)
+    if (
+        sig is None
+        and os.environ.get("FROST_SELECTIVE_VISIBILITY") == "1"
+        and not path.startswith(_SELECTIVE_OPTIONAL_SIGNAL_PREFIXES)
+    ):
+        raise AttributeError(
+            f"Could not resolve signal {path} "
+            "(selective-visibility frost build; list the signal in "
+            "hw/sim/frost_cocotb_visibility.vlt or run with "
+            "FROST_FULL_VISIBILITY=1)"
+        )
+    return sig
+
+
 def _first_signal(dut: Any, paths: list[str]) -> Any | None:
     """Return the first resolvable signal from a list of dotted paths."""
     for path in paths:
-        sig = _get_signal(dut, path)
+        sig = _lookup_signal(dut, path)
         if sig is not None:
             return sig
+    if os.environ.get("FROST_SELECTIVE_VISIBILITY") == "1" and not all(
+        path.startswith(_SELECTIVE_OPTIONAL_SIGNAL_PREFIXES) for path in paths
+    ):
+        joined = ", ".join(paths)
+        raise AttributeError(
+            f"Could not resolve any candidate signal ({joined}) "
+            "(selective-visibility frost build; list a candidate in "
+            "hw/sim/frost_cocotb_visibility.vlt or run with "
+            "FROST_FULL_VISIBILITY=1)"
+        )
     return None
 
 
@@ -1049,7 +1132,7 @@ async def ddr_write_watch(dut: Any) -> None:
     FROST_DDR_WATCH_LO and FROST_DDR_WATCH_HI are hex addresses relative to
     0x80000000. Pair accepted AW addresses with W beats and log their time,
     relative and absolute addresses, strobes, and full line data. Timestamps
-    can be compared with a retire trace.
+    can be compared with a retire trace recorded with FROST_RETIRE_TRACE=1.
     """
     lo = int(os.environ.get("FROST_DDR_WATCH_LO", "0"), 16)
     hi = int(os.environ.get("FROST_DDR_WATCH_HI", "0"), 16)
@@ -3601,14 +3684,6 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.valid_count",
         )
-        ras_write_enable_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.ras_write_enable",
-        )
-        ras_write_data_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.ras_write_data",
-        )
         ras_pending_pop_sig = _get_signal(
             dut,
             "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.pending_pop",
@@ -4268,6 +4343,19 @@ async def run_until_complete(
                 f"0x{irq_precision_callee_body:08x}"
             )
     if external_irq_enabled and external_irq_symbol is not None:
+        ext_irq_pin = (
+            dut.i_external_interrupt
+            if os.environ.get("FROST_SELECTIVE_VISIBILITY") == "1"
+            else getattr(dut, "i_external_interrupt", None)
+        )
+        _require_signals(
+            "FROST_EXTERNAL_IRQ_SYMBOL",
+            {
+                "dbg_commit_valid": retire_sig,
+                "dbg_commit_pc": retire_pc_sig,
+                "i_external_interrupt": ext_irq_pin,
+            },
+        )
         external_symbol_ranges = _load_symbol_ranges([external_irq_symbol], app_name)
         external_irq_range = external_symbol_ranges.get(external_irq_symbol)
         if external_irq_range is None:
@@ -5120,8 +5208,6 @@ async def run_until_complete(
                     f"ras_vc={_read_int(ras_valid_count_sig)} "
                     f"ras_pending_pop={_read_bool(ras_pending_pop_sig)} "
                     f"ras_do_push={_read_bool(ras_do_push_sig)} "
-                    f"ras_wen={_read_bool(ras_write_enable_sig)} "
-                    f"ras_wdata=0x{(_read_int(ras_write_data_sig) or 0):08x} "
                     f"link=0x{(_read_int(ras_link_address_sig) or 0):08x} "
                     f"ras_restore={_read_bool(ras_misprediction_live_sig)} "
                     f"ras_rt_tos={_read_int(ras_restore_tos_live_sig)} "
@@ -5595,12 +5681,6 @@ async def test_real_program(dut: Any) -> None:
     )
     if hasattr(dut, "i_disable_branch_prediction"):
         dut.i_disable_branch_prediction.value = disable_branch_prediction
-    elif hasattr(dut, "cpu_and_memory_subsystem") and hasattr(
-        dut.cpu_and_memory_subsystem, "i_disable_branch_prediction"
-    ):
-        dut.cpu_and_memory_subsystem.i_disable_branch_prediction.value = (
-            disable_branch_prediction
-        )
 
     success_marker, initial_text, has_defined_endpoint, app_name = (
         get_expected_behavior()

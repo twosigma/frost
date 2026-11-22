@@ -18,9 +18,37 @@ Use targets in ``tests/test_run_cocotb.py`` through ``scripts/frost.py cocotb``;
 see ``verif/README.md`` for the directed CPU targets and shared helpers.
 """
 
+import os
+from typing import Any
+
+from cocotb.handle import HierarchyObject
 from cocotb_tests.test_common import TestConfig
 from cocotb_tests.test_state import TestState
 from cocotb_tests.test_helpers import DUTInterface, TestStatistics
+
+_ORIGINAL_HIERARCHY_GETATTR = HierarchyObject.__getattr__
+
+
+def _selective_visibility_getattr(self: HierarchyObject, name: str) -> Any:
+    """Explain how to expose an unlisted HDL signal in selective-visibility builds."""
+    try:
+        return _ORIGINAL_HIERARCHY_GETATTR(self, name)
+    except AttributeError as exc:
+        if (
+            not name.startswith("_")
+            and os.environ.get("FROST_SELECTIVE_VISIBILITY") == "1"
+        ):
+            raise AttributeError(
+                f"{self._path} contains no child object named {name} "
+                "(selective-visibility frost build; list the signal in "
+                "hw/sim/frost_cocotb_visibility.vlt or run with "
+                "FROST_FULL_VISIBILITY=1)"
+            ) from None
+        raise exc
+
+
+if HierarchyObject.__getattr__ is not _selective_visibility_getattr:
+    HierarchyObject.__getattr__ = _selective_visibility_getattr  # type: ignore[method-assign]
 
 __all__ = [
     "TestConfig",

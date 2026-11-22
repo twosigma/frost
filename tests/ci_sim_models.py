@@ -25,6 +25,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from functools import cache
 from itertools import groupby
 from pathlib import Path
@@ -51,12 +52,16 @@ SOURCE_SUFFIXES = (
 
 
 # tests/Makefile turns these environment variables into Verilator arguments:
-# WAVES and the coverage switches for every toplevel, the rest as -G overrides
-# of the frost toplevel.
+# WAVES and the coverage switches for every toplevel, visibility, retirement
+# trace, thread count, and -G overrides for the frost toplevel.
 MAKEFILE_BUILD_VARIABLES = (
     "WAVES",
     "FROST_COVERAGE",
     "FROST_COVERAGE_TOGGLE",
+    "FROST_FULL_VISIBILITY",
+    "FROST_HANG_PROBE",
+    "FROST_RETIRE_TRACE",
+    "FROST_VERILATOR_THREADS",
     "SIM_MEM_SIZE_BYTES",
     "FROST_CPU_PERIOD_PS",
     "ENABLE_CACHED_TIER",
@@ -66,6 +71,43 @@ MAKEFILE_BUILD_VARIABLES = (
     "MEMORY_LINK_STAGES",
     "MISALIGNED_HW",
 )
+
+
+def selective_visibility_enabled(
+    hdl_toplevel_module: str, env: Mapping[str, str] | None = None
+) -> bool:
+    """Return True when TOPLEVEL=frost uses hw/sim/frost_cocotb_visibility.vlt."""
+    env_map = os.environ if env is None else env
+    return (
+        hdl_toplevel_module == "frost"
+        and env_map.get("FROST_COVERAGE", "0") == "0"
+        and env_map.get("FROST_FULL_VISIBILITY", "0") == "0"
+        and not env_map.get("FROST_HANG_PROBE", "").strip()
+    )
+
+
+def effective_verilator_threads(
+    hdl_toplevel_module: str = "frost", env: Mapping[str, str] | None = None
+) -> int:
+    """Return the core-capped Verilator thread count for selective frost builds."""
+    env_map = os.environ if env is None else env
+    if not selective_visibility_enabled(hdl_toplevel_module, env_map):
+        return 1
+    if env_map.get("WAVES", "0") == "1":
+        return 1
+    raw = env_map.get("FROST_VERILATOR_THREADS", "1").strip() or "1"
+    if not raw.isdigit() or int(raw) < 1:
+        return 1
+    requested = int(raw)
+    if requested == 1:
+        return 1
+    process_cpus = getattr(os, "process_cpu_count", None)
+    available = (
+        process_cpus() if process_cpus is not None else len(os.sched_getaffinity(0))
+    ) or 1
+    cores_raw = env_map.get("NUMBER_OF_CPU_CORES", "").strip()
+    cores = int(cores_raw) if cores_raw.isdigit() and int(cores_raw) >= 1 else available
+    return min(requested, cores, available)
 
 
 def ddr_timing_args(arguments: str) -> list[str]:
@@ -99,7 +141,7 @@ def ordered_parameters(arguments: list[str]) -> list[str]:
     return result
 
 
-def settings(top: str, env: dict[str, str]) -> dict[str, str]:
+def settings(top: str, env: Mapping[str, str]) -> dict[str, str]:
     """Describe the Makefile inputs for a clean build in the shared image."""
     arguments = env.get("FROST_VERILATOR_EXTRA_ARGS", "").split()
     if top == "frost":
@@ -126,10 +168,23 @@ def settings(top: str, env: dict[str, str]) -> dict[str, str]:
         ("WAVES", "0"),
         ("FROST_COVERAGE", "0"),
         ("FROST_COVERAGE_TOGGLE", "0"),
+        ("FROST_FULL_VISIBILITY", "0"),
+        ("FROST_RETIRE_TRACE", "0"),
         ("SIM_FAST_MAINT", "1"),
     ):
         if config.get(key) == default:
             config.pop(key)
+    if "FROST_HANG_PROBE" in config:
+        if config["FROST_HANG_PROBE"].strip():
+            config["FROST_HANG_PROBE"] = "1"
+        else:
+            config.pop("FROST_HANG_PROBE")
+    if "FROST_VERILATOR_THREADS" in config:
+        threads = effective_verilator_threads(top, env)
+        if threads > 1:
+            config["FROST_VERILATOR_THREADS"] = str(threads)
+        else:
+            config.pop("FROST_VERILATOR_THREADS")
     if config.get("FROST_CPU_PERIOD_PS"):
         config["FROST_CPU_PERIOD_PS"] = "1"
     if (

@@ -3290,6 +3290,7 @@ module reorder_buffer #(
     end
   end
 
+`ifndef FROST_NO_RETIRE_TRACE
   // Retire trace for debugging: one retire_trace.log line per retirement, in
   // program order (head, then head+1 when slot 2 retires in the same cycle).
   // PCs and values print as full 16 hex digits.
@@ -3317,6 +3318,7 @@ module reorder_buffer #(
       end
     end
   end
+`endif
 
   // Dispatch must not allocate when full.
   always @(posedge i_clk) begin
