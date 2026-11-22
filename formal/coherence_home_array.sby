@@ -64,13 +64,19 @@ coh_home_array_uram_byte60_prove proof uram byte60
 coh_home_array_uram_byte61_prove proof uram byte61
 coh_home_array_uram_byte62_prove proof uram byte62
 coh_home_array_uram_byte63_prove proof uram byte63
-coh_home_array_cover covers
+coh_home_array_uram4_byte0_prove proof uram4 uram4_b0
+coh_home_array_uram4_byte31_prove proof uram4 uram4_b31
+coh_home_array_uram4_byte32_prove proof uram4 uram4_b32
+coh_home_array_uram4_byte63_prove proof uram4 uram4_b63
+coh_home_array_cover covers bram_covers
+coh_home_array_uram_cover covers uram_cover
 
 [options]
 proof: mode prove
 covers: mode cover
 depth 32
 timeout 180
+uram4: timeout 900
 proof: aigsmt boolector
 
 [engines]
@@ -142,14 +148,21 @@ byte60: verilog_defines -D COHERENCE_ARRAY_BYTE=60
 byte61: verilog_defines -D COHERENCE_ARRAY_BYTE=61
 byte62: verilog_defines -D COHERENCE_ARRAY_BYTE=62
 byte63: verilog_defines -D COHERENCE_ARRAY_BYTE=63
-read -formal -sv -noautowire sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv
-chparam -set CACHE_BYTES 64 -set WAYS 1 -set LINE_BYTES 32 coherence_home_array
+~uram4: read -formal -sv -noautowire sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv
+~uram4: chparam -set CACHE_BYTES 64 -set WAYS 1 -set LINE_BYTES 32 coherence_home_array
 uram: chparam -set CACHE_BYTES 128 -set LINE_BYTES 64 coherence_home_array
+uram_cover: chparam -set CACHE_BYTES 512 -set WAYS 4 -set LINE_BYTES 64 coherence_home_array
 bram: chparam -set ULTRA 0 coherence_home_array
-covers: chparam -set ULTRA 0 coherence_home_array
-hierarchy -top coherence_home_array
+bram_covers: chparam -set ULTRA 0 coherence_home_array
+~uram4: hierarchy -top coherence_home_array
+uram4_b0: read_slang --top coherence_home_array_uram4_harness --single-unit -DSYNTHESIS -DCOHERENCE_ARRAY_BYTE=0 sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv coherence_home_array_uram4_harness.sv
+uram4_b31: read_slang --top coherence_home_array_uram4_harness --single-unit -DSYNTHESIS -DCOHERENCE_ARRAY_BYTE=31 sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv coherence_home_array_uram4_harness.sv
+uram4_b32: read_slang --top coherence_home_array_uram4_harness --single-unit -DSYNTHESIS -DCOHERENCE_ARRAY_BYTE=32 sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv coherence_home_array_uram4_harness.sv
+uram4_b63: read_slang --top coherence_home_array_uram4_harness --single-unit -DSYNTHESIS -DCOHERENCE_ARRAY_BYTE=63 sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv coherence_home_array_uram4_harness.sv
+uram4: hierarchy -top coherence_home_array_uram4_harness
 script free_undefined.ys
-prep -top coherence_home_array -flatten
+~uram4: prep -top coherence_home_array -flatten
+uram4: prep -top coherence_home_array_uram4_harness -flatten
 memory_map -keepdc
 opt -keepdc
 proof: techmap
@@ -161,4 +174,5 @@ proof: setundef -undriven -anyseq
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv
 ../hw/rtl/lib/cache/coherence_home_array.sv
+coherence_home_array_uram4_harness.sv
 free_undefined.ys
