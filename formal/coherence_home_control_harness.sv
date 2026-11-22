@@ -215,4 +215,74 @@ module coherence_home_control_harness #(
       .o_fatal_addr()
   );
   `undef FROST_CMO_OBSERVE
+
+`ifdef COHERENCE_HOME_ULTRA_PROOF
+  // Inductive strengthening for the unbounded UltraRAM home control proof:
+  // link the packed tag RAM's read pipeline, open parallel-read stages and
+  // each engine's taken-parallel-read wait counter to the array's pipeline.
+  localparam int unsigned UltraTagLatency = 3;
+  localparam int unsigned UltraDataLatency = 6;
+  localparam logic [2:0] PhaseTags = 3'd3;
+  localparam logic [2:0] PhaseSelect = 3'd4;
+  localparam logic [2:0] PhaseReply = 3'd5;
+  wire [1:0] f_ultra_tag_pipe = {
+    home.array.gen_tag_ultra.tags.read_valid_pipe[1],
+    home.array.gen_tag_ultra.tags.read_valid_pipe[0]
+  };
+  wire [UltraDataLatency:0] f_ultra_stage_valid = home.array.read_valid_q & ~home.array.read_open_q;
+  wire [3:0][2:0] f_ultra_stage_token = {
+    home.array.read_token_q[6],
+    home.array.read_token_q[5],
+    home.array.read_token_q[4],
+    home.array.read_token_q[3]
+  };
+  wire [1:0][3:0] f_ultra_spec_wait = {home.f_spec_wait_q[1], home.f_spec_wait_q[0]};
+  wire [2:0][1:0] f_ultra_comp_buf = {
+    home.completions.buffer_index_q[2],
+    home.completions.buffer_index_q[1],
+    home.completions.buffer_index_q[0]
+  };
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      if (home.array.phase_q == PhaseTags) begin
+        p_ultra_tag_count_range :
+        assert (home.array.count_q != '0 && int'(home.array.count_q) <= UltraTagLatency);
+        if (int'(home.array.count_q) < UltraTagLatency) begin
+          p_ultra_tag_pipe0_clear : assert (!f_ultra_tag_pipe[0]);
+          if (int'(home.array.count_q) == 1)
+            p_ultra_tag_pipe1_clear : assert (!f_ultra_tag_pipe[1]);
+        end
+      end
+      if (home.array.phase_q == PhaseSelect || home.array.phase_q == PhaseReply)
+        p_ultra_tag_pipe_idle : assert (f_ultra_tag_pipe == '0);
+      if (home.array.o_resp_valid)
+        p_ultra_resp_way_range : assert (int'(home.array.o_resp_way) < WAYS);
+      if (home.read_arbiter.selected_q)
+        p_ultra_row_way_range : assert (int'(home.row_request.way) < WAYS);
+      if (home.update_arbiter.selected_q)
+        p_ultra_update_way_range : assert (int'(home.update_request.way) < WAYS);
+      for (int engine = 0; engine < 2; engine++) assert (int'(home.engine_way[engine]) < WAYS);
+      for (int put = 0; put < 2; put++) assert (int'(home.put_way_q[put]) < WAYS);
+      if (home.run && home.array.FoldSelect)
+        p_ultra_open_before_reply :
+        assert (home.array.read_open_q[UltraDataLatency:UltraTagLatency] == '0);
+      p_ultra_grant_next_range : assert (int'(home.completions.grant_next_q) < 3);
+      if (home.completions.grant_selected_q) begin
+        p_ultra_grant_slot_range : assert (int'(home.completions.grant_slot_q) < 3);
+        p_ultra_grant_buf_range : assert (int'(home.completions.grant_buffer_q) < 3);
+      end
+      if (home.completions.work_selected_q)
+        p_ultra_work_slot_range : assert (int'(home.completions.work_slot_q) < 3);
+      for (int slot = 0; slot < 3; slot++)
+      if (home.completions.buffer_owned_q[slot]) assert (int'(f_ultra_comp_buf[slot]) < 3);
+      for (int engine = 0; engine < 2; engine++) begin
+        if (home.f_spec_wait_valid_q[engine]) begin
+          assert (int'(f_ultra_spec_wait[engine]) <= 3);
+          assert (f_ultra_stage_valid[3+int'(f_ultra_spec_wait[engine])] &&
+              f_ultra_stage_token[f_ultra_spec_wait[engine][1:0]] == 3'(engine));
+        end
+      end
+    end
+  end
+`endif
 endmodule

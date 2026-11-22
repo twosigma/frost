@@ -324,8 +324,10 @@ prefetch enabled or disabled.
 `coherence_home_completions`, `coherence_home`, `coherence_home_rowread`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
 and CPU observation cuts; `coherence_home_rowread` runs the UltraRAM home with `PARALLEL_READ=0` so row reads after the decision and probe replies ahead of row data are exercised, and `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
-requests execute, preserve waiter order across an older writer, and check
-current data on waiter reentry. Two DMA reads with an intervening clean,
+requests execute, preserve waiter order across an older writer, check
+current data on waiter reentry, sweep fills, puts and dirty probe updates
+across parallel way reads of a set, and run back-to-back hit lookups across
+and within a set. Two DMA reads with an intervening clean,
 flush or invalidate check that the later reader leaves the fill's way
 available to the management request. Streaming cases check way-0 miss placement,
 CPU line residency, dirty hits in other ways and progress after a pinned
