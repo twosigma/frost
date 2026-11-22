@@ -585,10 +585,11 @@ def test_vector_device_tree_matches_board(board: str, tmp_path: Path) -> None:
 
 
 def test_advertised_isa_lists_agree() -> None:
-    """Board DTs agree with the packer and share the documented scalar extensions.
+    """Board DTs agree with the packer, and docs match the advertised ISAs.
 
-    X3 also advertises V and its implemented Zve and Zvl subsets.
-    Also checks that the predecode Python twin serializes the three Svinval words.
+    X3 also advertises V and its implemented Zve and Zvl subsets, which
+    README.md lists. Also checks that the predecode Python twin serializes
+    the three Svinval words.
     """
     packer = _load_module(SBI_PACKER)
     assert packer.ISA_BASE == "rv64i"
@@ -628,21 +629,20 @@ def test_advertised_isa_lists_agree() -> None:
         assert mmu_prop is not None and mmu_prop[1] == "riscv,sv39", dts_label
 
     advertised = set(packer.ISA_EXTENSIONS)
+    x3_advertised = set(packer.X3_ISA_EXTENSIONS)
 
     readme = (REPO_ROOT / "README.md").read_text()
     ext_section = readme.split("### Supported RISC-V Extensions\n", 1)[1].split(
         "\n### Microarchitecture", 1
     )[0]
     readme_exts: set[str] = set()
-    vector_unadvertised = {"v", "zvbb", "zvfhmin", "zvfh", "zvbc", "zvkng"}
+    vector_unadvertised = {"zvbb", "zvfhmin", "zvfh", "zvbc", "zvkng"}
     for match in re.finditer(
         r"^\|\s*\*\*([^*]+)\*\*\s*\|\s*(.*?)\s*\|$", ext_section, re.M
     ):
         names, desc = match[1], match[2]
         for raw_token in names.split(","):
             token = raw_token.strip().lower()
-            if token == "v (partial)":
-                token = "v"
             if token in vector_unadvertised:
                 assert (
                     "unadvertised" in desc.lower()
@@ -652,6 +652,10 @@ def test_advertised_isa_lists_agree() -> None:
                 readme_exts.add("i")
             elif token == "b":
                 readme_exts.update({"zba", "zbb", "zbs"})
+            elif token == "v":
+                assert "VLEN 256" in desc
+                readme_exts.add("v")
+                readme_exts.update(packer.X3_VECTOR_EXTENSIONS)
             elif token == "supervisor mode":
                 assert "Sv39" in desc and "Sstc" in desc
                 readme_exts.add("sstc")
@@ -660,12 +664,12 @@ def test_advertised_isa_lists_agree() -> None:
             else:
                 readme_exts.add(token)
     # Supm needs a tagged-address ABI that the supplied Linux image lacks.
-    # This README comparison describes the common scalar configuration.
+    # README.md describes the X3 configuration, which advertises V (VLEN 256).
     readme_unadvertised = {"supm"} | (readme_exts & vector_unadvertised)
-    assert not (vector_unadvertised & advertised)
+    assert not (vector_unadvertised & x3_advertised)
     assert readme_unadvertised <= readme_exts
-    assert not (readme_unadvertised & advertised)
-    assert readme_exts - readme_unadvertised == advertised
+    assert not (readme_unadvertised & x3_advertised)
+    assert readme_exts - readme_unadvertised == x3_advertised
 
     linux_readme = (REPO_ROOT / "linux" / "README.md").read_text()
     linux_isa_section = linux_readme.split("## Advertised ISA\n", 1)[1].split(
