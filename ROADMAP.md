@@ -834,6 +834,9 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   - Revisit the path from the coherence completion endpoint's registered
     phase to the L1 data cache's read-wait flags when working on this
     clock target.
+  - Revisit the paths from the vector issue queue's head into the vector
+    engine and into the integer execution state machine when working on
+    this clock target.
   - Form the data MMU's walk eligibility without the partial-flush cancel and
     apply that cancel with the DTLB hit check last, shortening a path from
     the ROB head into walk arbitration that limits the clock without changing
