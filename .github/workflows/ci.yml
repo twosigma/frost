@@ -1680,7 +1680,7 @@ jobs:
         if: steps.plan.outputs.need_image == 'true'
         run: |
           ./scripts/frost.py --image frost-dev:latest run pytest tests/test_run_formal.py \
-            tests/test_pa_bridge_mutation.py \
+            tests/test_pa_bridge_mutation.py tests/test_predictor_mutations.py \
             -m formal -k "$PYTEST_FILTER" --collect-only -q > ci-reuse-collected.txt \
             && status=0 || status=$?
           python3 tests/ci_reuse.py formal-record --dir "$FROST_REUSE_DIR" \
@@ -1691,7 +1691,7 @@ jobs:
         if: steps.plan.outputs.need_image == 'true'
         run: |
           ./scripts/frost.py --image frost-dev:latest run pytest tests/test_run_formal.py \
-            tests/test_pa_bridge_mutation.py \
+            tests/test_pa_bridge_mutation.py tests/test_predictor_mutations.py \
             -m formal -k "$PYTEST_FILTER" -v --durations=0
 
       - name: Summarize proved and reused tasks
