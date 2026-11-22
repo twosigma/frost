@@ -59,6 +59,7 @@ SBY_TASK_TIMEOUT_S = 2400
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("imem_predecode_twin", "imem_predecode_live"): 60,
     ("l0_store_boundary_twin", "boundary_twin"): 60,
+    ("coherence_store_bank", "coh_store_bank_class_bmc"): 3600,
     ("coherence_dma_ingress", "coh_dma_ingress_soc_prove"): 3120,
     ("pd_target_candidate_twin", "pdt_twin"): 60,
     ("decoded_bundle_queue_twin", "dbq_twin"): 60,
@@ -662,6 +663,25 @@ FORMAL_TARGETS = [
             "coh_array_cover",
             "coh_array_uram_cover",
             "coh_array4_port_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_array_progress.sby",
+        "Controller progress with independent load streams and a common victim history.",
+        tasks=(
+            "coh_progress_prove",
+            "coh_progress4_prove",
+            "coh_progress4_56_prove",
+            "coh_progress4_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_store_bank.sby",
+        "Store lookup classification and isolation of invalid bank data from consumers.",
+        tasks=(
+            "coh_store_bank_taint_prove",
+            "coh_store_bank_class_bmc",
+            "coh_store_bank_cover",
         ),
     ),
     FormalTarget(
@@ -2900,17 +2920,23 @@ SBY_TASKS = [
     ("mirror_hold_prove", "Debug mirror address equality at sixteen bits."),
     ("mirror_hold15_prove", "Debug mirror address equality at fifteen bits."),
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
-    ("coh_read_capture_prove", "Read data capture with arbitrary controller state."),
+    (
+        "coh_read_capture_prove",
+        "Read data capture for both endpoint-zero install classes.",
+    ),
     ("coh_read_capture_stream_prove", "Read data capture with stream endpoints."),
     ("coh_idle_select_prove", "Idle phase and operation selection with one endpoint."),
     (
         "coh_idle_select_stream_prove",
         "Idle phase and operation selection with stream endpoints.",
     ),
-    ("coh_idle_phase_prove", "Phase register after Idle cycles with one endpoint."),
+    (
+        "coh_idle_phase_prove",
+        "Idle phase and endpoint-zero install class with one endpoint.",
+    ),
     (
         "coh_idle_phase_stream_prove",
-        "Phase register after Idle cycles with stream endpoints.",
+        "Idle phase and endpoint-zero install class with stream endpoints.",
     ),
     ("coh_read_kind_prove", "Per-slot read kinds equal buffered allocation payloads."),
     ("coh_array_reply_prove", "Registered response indication with block RAM."),
@@ -3203,7 +3229,35 @@ SBY_TASKS = [
         "coh_array_equiv_port_data0_bmc",
         "Byte lane 0 data equivalence with hit-port reads beside the lookups.",
     ),
-    ("coh_array_equiv_cover", "Compared data responses and insertions are reachable."),
+    (
+        "coh_array_equiv_cover",
+        "Data hits, insertions and no-bank store hits and misses.",
+    ),
+    (
+        "coh_progress_prove",
+        "One-way array progress under two independent load streams.",
+    ),
+    ("coh_progress4_prove", "Four-way array progress with common replacement touches."),
+    (
+        "coh_progress4_56_prove",
+        "Four-way controller progress with 56-bit physical addresses.",
+    ),
+    (
+        "coh_progress4_cover",
+        "Independent load takes and touches, consecutive offers and held replies.",
+    ),
+    (
+        "coh_store_bank_class_bmc",
+        "Store lookup class, sealed head, response and seven scratch-byte consumers.",
+    ),
+    (
+        "coh_store_bank_taint_prove",
+        "A scratch row cannot enter an active byte consumer.",
+    ),
+    (
+        "coh_store_bank_cover",
+        "Store miss scratch, its capture, overlapping offers and fast probes.",
+    ),
     (
         "coh_arbiter24_prove",
         "Twenty-four-way held arbitration and circular selection equality.",
@@ -4586,6 +4640,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     # and may not hold any multi-hour (> 120 minute) task.
     allowance_shards = (set(dedicated_shards.values()) - {"Store boundary"}) | {
         "Load queue",
+        "Coherence store lookup banks",
         "Coherence links pressure",
         "Coherence L1D data single-endpoint",
         "Coherence L1D data multi-endpoint",
@@ -10694,7 +10749,7 @@ def test_local_sector_lemma_models_match() -> None:
         + " ".join(owned_names)
         + " %u" * (len(owned_names) - 1)
         + " %d",
-        "select -assert-count 28 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 29 t:$check r:FLAVOR=assert %i",
     ]
     # Only these reads differ from the owner task's model: both expose the
     # request endpoint's phase, and neither changes its design logic.
@@ -10813,11 +10868,11 @@ def test_stream_owned_lemma_model_matches() -> None:
     # The lemma task proves its lemmas from the design alone.
     assert [line for line in owned["[script]"] if assertion_command(line)] == [
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %d",
-        "select -assert-count 17 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 18 t:$check r:FLAVOR=assert %i",
     ]
     proof_commands = [line for line in proof["[script]"] if assertion_command(line)]
     assert (
-        f"select -assert-count 17 t:$check r:FLAVOR=assert %i {lemmas} %u %u %i"
+        f"select -assert-count 18 t:$check r:FLAVOR=assert %i {lemmas} %u %u %i"
         in proof_commands
     )
     assert f"chformal -assert2assume {lemmas}" in proof_commands

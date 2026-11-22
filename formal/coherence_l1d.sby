@@ -377,7 +377,7 @@ unbounded: chformal -assert2assume c:p_prefetch_conflict_split
 # read's kind and the hit path's shadow rule by 8-step induction and assumes
 # nothing from this task. The request endpoints' own checks run in their proofs.
 unbounded: chformal -assert -remove t:$check r:FLAVOR=assert %i a:src=*coherence_request_endpoint.sv:* %i
-unbounded: select -assert-count 17 t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind c:p_path_shadowed %u %u %i
+unbounded: select -assert-count 18 t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind c:p_path_shadowed %u %u %i
 unbounded: chformal -assert2assume c:p_owned_* c:p_selected_kind c:p_path_shadowed
 outlier: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold %u %u %u %d
 outlier: select -assert-count 4 t:$check r:FLAVOR=assert %i
@@ -479,9 +479,9 @@ local: chformal -assert -remove c:p_local_probe_data
 # the selected read's kind by 8-step induction and assumes nothing from the
 # owner or sector tasks.
 owned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_failed_owned c:p_owned_* c:p_local_write_pending c:p_local_write_op c:p_local_amo_acquire c:p_local_acquired_amo c:p_local_phase c:p_local_granted c:p_local_acquired_sc c:p_local_active c:p_local_service c:p_local_failure c:p_selected_kind %u %u %u %u %u %u %u %u %u %u %u %u %d
-owned: select -assert-count 28 t:$check r:FLAVOR=assert %i
+owned: select -assert-count 29 t:$check r:FLAVOR=assert %i
 streamowned: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_owned_* c:p_selected_kind c:p_path_shadowed %u %u %d
-streamowned: select -assert-count 17 t:$check r:FLAVOR=assert %i
+streamowned: select -assert-count 18 t:$check r:FLAVOR=assert %i
 # The matching owned task proves these facts by unbounded induction.
 owner: chformal -assert2assume c:p_local_failed_owned c:p_local_write_pending c:p_local_write_op c:p_local_amo_acquire c:p_local_acquired_amo c:p_local_phase c:p_local_granted c:p_local_acquired_sc c:p_local_active c:p_local_service c:p_local_failure c:p_selected_kind
 owner: chformal -assert -remove c:p_local_sector c:p_local_lookup_stable c:p_local_conflict_sample c:p_local_admit_sector
@@ -493,10 +493,11 @@ sector: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_sector c:
 sector: chformal -assert2assume c:p_local_lookup_owner c:p_local_sc_lookup
 sector: select -assert-count 6 t:$check r:FLAVOR=assert %i
 sector: select -assert-count 2 c:p_local_lookup_owner c:p_local_sc_lookup %u t:$check %i r:FLAVOR=assume %i
-# Array behavior is arbitrary for controller induction. Real-array byte and
-# completion checks run in the bounded tasks and the array proofs.
-owned: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
-local: cutpoint w:array_ready w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
+# Array behavior is arbitrary for controller induction. Cutting update_ready
+# alone preserves array_ready as update_ready && !i_update_valid. Real-array
+# byte and completion checks run in the bounded tasks and the array proofs.
+owned: cutpoint w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
+local: cutpoint w:array_valid w:array_hit w:array_state w:array_addr w:array_data w:array_way w:array_available w:update_ready
 localcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_local_probe_cover c:p_local_fail_cover c:p_local_release_cover %u %u %d
 # Partition the scheduled real-array BMC without assuming any assertion. The
 # data task checks arbitrary-byte preservation and deferred probe data; the

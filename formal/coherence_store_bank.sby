@@ -1,0 +1,69 @@
+[tasks]
+coh_store_bank_taint_prove proof
+coh_store_bank_class_bmc class
+coh_store_bank_cover covers
+
+[options]
+proof: mode prove
+class: mode bmc
+covers: mode cover
+proof: depth 40
+class: depth 40
+covers: depth 44
+timeout 1800
+class: timeout 3600
+~covers: aigsmt boolector
+
+[engines]
+proof: abc pdr
+class: abc bmc3 -g
+covers: smtbmc boolector
+
+[script]
+read -sv cache_perf_pkg.sv coherence_pkg.sv
+read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+read -sv coherence_read_stream.sv coherence_request_endpoint.sv coherence_put_endpoint.sv
+read -sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv
+read -sv coherence_grant_select.sv coherence_read_select.sv coherence_store_buffer.sv
+read -sv -D STORE_BANK_PROOF coherence_array.sv
+read -formal -sv -D STORE_BANK_PROOF -D ZERO_WRITES -D FULL_WRITES coherence_read_payload.sv coherence_l1d.sv
+chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d
+hierarchy -top coherence_l1d
+script free_undefined.ys
+prep -top coherence_l1d -flatten
+select -assert-count 1 c:p_store_no_bank_exact
+select -assert-count 1 c:p_store_no_bank_sealed
+select -assert-count 1 c:p_store_no_bank_response
+select -assert-count 7 c:p_store_taint_*
+select -assert-count 4 c:c_store_taint_* c:c_store_probe_after_store c:c_store_no_bank_take
+proof: chformal -assert -remove t:$check r:FLAVOR=assert %i c:*p_store_taint_* %d c:p_store_no_bank_response %d
+class: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_no_bank_* %d c:*p_store_taint_* %d
+chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_store_taint_* %d c:c_store_probe_after_store %d c:c_store_no_bank_take %d
+covers: chformal -assert -remove
+memory_map -keepdc
+opt -keepdc
+~covers: techmap
+~covers: opt -fast -keepdc
+~covers: setundef -anyseq
+opt_clean
+
+[files]
+../hw/rtl/lib/cache/coherence_read_stream.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_types.svh
+../hw/rtl/lib/cache/coherence_array.sv
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_put_endpoint.sv
+../hw/rtl/lib/cache/coherence_l1d.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
+../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
+../hw/rtl/lib/cache/coherence_read_select.sv
+../hw/rtl/lib/cache/coherence_read_payload.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_store_buffer.sv
+free_undefined.ys
