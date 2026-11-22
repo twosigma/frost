@@ -24,6 +24,7 @@ import yaml  # type: ignore[import-untyped]
 
 import ci_reuse
 import sby_config
+from test_fp_forward_wake_mutations import MUTATIONS as FP_FORWARD_WAKE_MUTATIONS
 from test_pa_bridge_mutation import PROOF as PA_BRIDGE_PROOF
 from test_predictor_mutations import MUTATIONS
 
@@ -37,6 +38,12 @@ FIXTURE_PROOFS = {
             ROOT / "formal" / f"{mutation.proof}.sby"
         )
         for case, mutation in MUTATIONS.items()
+    },
+    **{
+        f"tests/test_fp_forward_wake_mutations.py::test_fp_forward_wake_rejects_fault[{case}]": (
+            ROOT / "formal" / f"{mutation.proof}.sby"
+        )
+        for case, mutation in FP_FORWARD_WAKE_MUTATIONS.items()
     },
 }
 TOOL_CHECK = "tests/test_run_formal.py::TestFormalVerification::test_sby_installed"
