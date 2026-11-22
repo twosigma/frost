@@ -66,6 +66,16 @@ selects test functions by regex through `COCOTB_TEST_FILTER`. The
 [environment table](../tests/README.md#environment-and-output) lists the
 cycle budgets and run counts for applications.
 
+`frost_reset_release` checks the two `i_rst_n` reset synchronizers in the
+default `frost` clock configuration. Both have three stages. The main-clock
+path includes an output register and releases on the fourth rising edge.
+The divided-clock path releases on the third rising edge. The first
+divided-clock rise after `i_rst_n` is released occurs while main-clock reset
+is asserted. The test checks the release edge and reset levels at both
+outputs and at the reset ports of the CPU and memory subsystem, the MMIO
+FIFOs, the UART transmitter and receiver, and both sides of the UART
+clock-crossing FIFOs.
+
 ## Directed CPU tests
 
 The directed suites drive instruction words into `cpu_tb`, the core with a

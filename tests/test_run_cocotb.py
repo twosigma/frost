@@ -5263,6 +5263,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="FST waveform output during reset release",
         extra_env=(("WAVES", "1"),),
     ),
+    "frost_reset_release": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_frost_reset_release",
+        hdl_toplevel_module="frost",
+        description="i_rst_n release edges at both synchronizers and their consumers",
+    ),
     "async_fifo": CocotbRunConfig(
         python_test_module="cocotb_tests.lib.test_async_fifo",
         hdl_toplevel_module="async_fifo",
