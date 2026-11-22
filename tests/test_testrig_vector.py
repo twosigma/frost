@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (31, instructions + 11720) if vector_directed else (15, instructions)
+    expected = (32, instructions + 13166) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -299,6 +299,7 @@ def test_vector_directed_replay(
         ("vector_fof.S", 326, 208),
         ("vector_int_widen_narrow.S", 1753, 871),
         ("vector_fixed_point.S", 1701, 1206),
+        ("vector_fp_single.S", 1446, 1068),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -2033,6 +2034,259 @@ def test_vector_fixed_point_trace_covers_forms() -> None:
         "masked_v0",
         "nclip_e64",
         "nclip_m8",
+    }
+    assert ctrl_count == 1
+
+
+def test_vector_fp_single_trace_covers_forms() -> None:
+    """Check single-width FP forms, frm readbacks, flags, classes and traps."""
+    trace = VERIF_DIR / "testrig" / "vector_fp_single.S"
+    raw_lines = [
+        line
+        for line in trace.read_text().splitlines()
+        if line.startswith((".4byte ", ".assert "))
+    ]
+    blocks: list[str] = []
+    for line in raw_lines:
+        if line.startswith(".4byte "):
+            blocks.append(line)
+        else:
+            blocks[-1] += "\n" + line
+
+    vtype = 0
+    avl_mode = ""
+    vl_imm = 0
+    frm = 0
+    retired_forms: set[tuple[str, int, int, int | None]] = set()
+    sews_by_group: dict[str, set[int]] = {}
+    masking_by_group: dict[str, set[bool]] = {}
+    regimes_by_group: dict[str, set[str]] = {}
+    frm_by_group: dict[str, set[int]] = {}
+    frm_by_muldiv_op: dict[str, set[int]] = {}
+    frm_readbacks_checked: set[int] = set()
+    pending_frm_readback: int | None = None
+    fflags_checked: set[int] = set()
+    vfclass_bits: dict[int, set[int]] = {32: set(), 64: set()}
+    in_vfclass_readback = False
+    policies_seen: set[int] = set()
+    lmuls_seen: set[int] = set()
+    inplace_seen = False
+    trap_kinds: set[str] = set()
+    traps_seen = 0
+    ctrl_count = 0
+
+    opfvv, opfvf = 1, 5
+    addsub_f6 = {0x00, 0x02, 0x27}
+    muldiv_f6 = {0x20, 0x21, 0x24}
+    minmax_f6 = {0x04, 0x06}
+    sgnj_f6 = {0x08, 0x09, 0x0A}
+
+    for block in blocks:
+        assert block.lstrip().startswith(".4byte ")
+        word = int(block.split()[1], 16)
+        if word == 0x42D0_2557:
+            ctrl_count += 1
+        opcode = word & 0x7F
+        is_frm_read = (
+            opcode == 0x73
+            and ((word >> 12) & 7) == 2
+            and ((word >> 20) & 0xFFF) == 0x002
+        )
+        if pending_frm_readback is not None:
+            assert is_frm_read, "every frm write must be followed by csrr frm"
+            assert f'rd_wdata == {pending_frm_readback:#x} "' in block
+            frm_readbacks_checked.add(pending_frm_readback)
+            pending_frm_readback = None
+            continue
+        if opcode == 0x73 and ((word >> 12) & 7) in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            assert csr != 0x301  # No misa access
+            if csr == 0x002 and ((word >> 12) & 7) == 5:  # csrwi frm, uimm
+                frm = (word >> 15) & 7
+                pending_frm_readback = frm
+            elif csr == 0x003 and ((word >> 12) & 7) == 5:  # csrwi fcsr, uimm
+                frm = ((word >> 15) & 0x1F) >> 5
+            elif csr == 0x001 and ((word >> 12) & 7) == 2:  # csrr a1, fflags
+                m = re.search(r'(?m)^\.assert rd_wdata == (0x[0-9a-f]+) "', block)
+                if m is not None:
+                    fflags_checked.add(int(m.group(1), 16))
+            continue
+        if word & 0xC000_707F == 0xC000_7057:  # vsetivli
+            vtype = (word >> 20) & 0xFF
+            vl_imm = (word >> 15) & 0x1F
+            avl_mode = "imm"
+            continue
+        if word & 0x8000_707F == 0x0000_7057:  # vsetvli
+            vtype = (word >> 20) & 0xFF
+            assert ((word >> 15) & 0x1F) == 0 and ((word >> 7) & 0x1F) != 0
+            avl_mode = "vlmax"
+            continue
+        if opcode != 0x57:
+            continue
+
+        f6 = word >> 26
+        f3 = (word >> 12) & 7
+        vm = bool((word >> 25) & 1)
+        vs2 = (word >> 20) & 0x1F
+        vs1 = (word >> 15) & 0x1F
+        vd = (word >> 7) & 0x1F
+        sew = 8 << ((vtype >> 3) & 7)
+        lmul = vtype & 7
+
+        if in_vfclass_readback and f6 == 0x10 and f3 == 2 and vs1 == 0:
+            m = re.search(r'(?m)^\.assert rd_wdata == (0x[0-9a-f]+) "', block)
+            if m is not None:
+                val = int(m.group(1), 16)
+                if val in {1 << k for k in range(10)} and sew in vfclass_bits:
+                    vfclass_bits[sew].add(val)
+            continue
+
+        if f3 not in (opfvv, opfvf):
+            continue
+
+        in_vfclass_readback = False
+
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            traps_seen += 1
+            if f6 == 0x00 and f3 == opfvv and sew == 8:
+                trap_kinds.add("e8_fp")
+            elif f6 == 0x02 and f3 == opfvv and frm == 5:
+                trap_kinds.add("reserved_frm")
+            elif f6 == 0x04 and f3 == opfvv and not vm and vd == 0:
+                trap_kinds.add("masked_v0")
+            elif f6 == 0x00 and f3 == opfvv and lmul == 1 and (vd & 1):
+                trap_kinds.add("misaligned_m2")
+            elif f6 == 0x17 and f3 == opfvf and vm and vs2 != 0:
+                trap_kinds.add("reserved_vfmv_vf")
+            elif f6 == 0x10 and f3 == opfvf and not vm:
+                trap_kinds.add("reserved_vfmv_sf")
+            continue
+
+        group = ""
+        sub: int | None = None
+        if f6 in addsub_f6:
+            group = "addsub"
+        elif f6 in muldiv_f6 or (f6 == 0x13 and f3 == opfvv and vs1 == 0):
+            group = "muldivsqrt"
+            sub = vs1 if f6 == 0x13 else None
+        elif f6 == 0x13 and f3 == opfvv and vs1 in (4, 5):
+            group = "estimate"
+            sub = vs1
+        elif f6 in minmax_f6:
+            group = "minmax"
+        elif f6 in sgnj_f6:
+            group = "sgnj"
+        elif f6 == 0x13 and f3 == opfvv and vs1 == 16:
+            group = "classify"
+            sub = vs1
+            in_vfclass_readback = True
+        elif f6 == 0x17 and f3 == opfvf:
+            group = "mergemove"
+            sub = 1 if vm else 0
+        elif f6 == 0x10 and ((f3 == opfvf and vs2 == 0) or (f3 == opfvv and vs1 == 0)):
+            group = "mergemove"
+            sub = 0
+        else:
+            continue
+
+        assert re.search(r"(?m)^\.assert trap == 0\b", block)
+        retired_forms.add((group, f6, f3, sub))
+        sews_by_group.setdefault(group, set()).add(sew)
+        masking_by_group.setdefault(group, set()).add(vm)
+        frm_by_group.setdefault(group, set()).add(frm)
+        if f6 == 0x24:
+            frm_by_muldiv_op.setdefault("vfmul", set()).add(frm)
+        elif f6 == 0x20:
+            frm_by_muldiv_op.setdefault("vfdiv", set()).add(frm)
+        elif f6 == 0x21:
+            frm_by_muldiv_op.setdefault("vfrdiv", set()).add(frm)
+        elif f6 == 0x13 and f3 == opfvv and vs1 == 0:
+            frm_by_muldiv_op.setdefault("vfsqrt", set()).add(frm)
+        policies_seen.add(vtype & 0xC0)
+        lmuls_seen.add(lmul)
+
+        if avl_mode == "vlmax":
+            regimes_by_group.setdefault(group, set()).add("vlmax")
+        elif vl_imm == 0:
+            regimes_by_group.setdefault(group, set()).add("zero")
+        elif all(vl_imm < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+            regimes_by_group.setdefault(group, set()).add("below_vlmax")
+
+        if group == "addsub" and vd == vs2:
+            inplace_seen = True
+
+    expected_forms: set[tuple[str, int, int, int | None]] = {
+        ("addsub", 0x00, opfvv, None),
+        ("addsub", 0x00, opfvf, None),
+        ("addsub", 0x02, opfvv, None),
+        ("addsub", 0x02, opfvf, None),
+        ("addsub", 0x27, opfvf, None),
+        ("muldivsqrt", 0x24, opfvv, None),
+        ("muldivsqrt", 0x24, opfvf, None),
+        ("muldivsqrt", 0x20, opfvv, None),
+        ("muldivsqrt", 0x20, opfvf, None),
+        ("muldivsqrt", 0x21, opfvf, None),
+        ("muldivsqrt", 0x13, opfvv, 0),
+        ("estimate", 0x13, opfvv, 4),
+        ("estimate", 0x13, opfvv, 5),
+        ("minmax", 0x04, opfvv, None),
+        ("minmax", 0x04, opfvf, None),
+        ("minmax", 0x06, opfvv, None),
+        ("minmax", 0x06, opfvf, None),
+        ("sgnj", 0x08, opfvv, None),
+        ("sgnj", 0x08, opfvf, None),
+        ("sgnj", 0x09, opfvv, None),
+        ("sgnj", 0x09, opfvf, None),
+        ("sgnj", 0x0A, opfvv, None),
+        ("sgnj", 0x0A, opfvf, None),
+        ("classify", 0x13, opfvv, 16),
+        ("mergemove", 0x17, opfvf, 0),
+        ("mergemove", 0x17, opfvf, 1),
+        ("mergemove", 0x10, opfvf, 0),
+        ("mergemove", 0x10, opfvv, 0),
+    }
+    assert len(expected_forms) == 28
+    assert retired_forms == expected_forms
+
+    all_groups = (
+        "addsub",
+        "muldivsqrt",
+        "estimate",
+        "minmax",
+        "sgnj",
+        "classify",
+        "mergemove",
+    )
+    for group in all_groups:
+        assert sews_by_group[group] == {32, 64}
+        assert masking_by_group[group] == {True, False}
+        assert {"below_vlmax", "vlmax", "zero"} <= regimes_by_group[group]
+    assert frm_by_group["addsub"] == {0, 1, 2, 3, 4}
+    assert frm_by_group["muldivsqrt"] == {0, 1, 2, 3, 4}
+    assert frm_by_group["estimate"] == {0, 1, 2, 3, 4}
+    for op_name in ("vfmul", "vfdiv", "vfrdiv", "vfsqrt"):
+        assert frm_by_muldiv_op[op_name] == {0, 1, 2, 3, 4}
+    assert pending_frm_readback is None
+    assert frm_readbacks_checked == {0, 1, 2, 3, 4, 5}
+    assert 0 in fflags_checked
+    fflags_or = 0
+    for bits in fflags_checked:
+        fflags_or |= bits
+    assert fflags_or == 0x1F
+    all_classes = {1 << k for k in range(10)}
+    assert vfclass_bits[32] == all_classes
+    assert vfclass_bits[64] == all_classes
+    assert {0x00, 0xC0} <= policies_seen  # tu, mu and ta, ma
+    assert {0, 1, 7} <= lmuls_seen  # m1, m2, mf2
+    assert inplace_seen
+    assert traps_seen == 6
+    assert trap_kinds == {
+        "e8_fp",
+        "reserved_frm",
+        "masked_v0",
+        "misaligned_m2",
+        "reserved_vfmv_vf",
+        "reserved_vfmv_sf",
     }
     assert ctrl_count == 1
 

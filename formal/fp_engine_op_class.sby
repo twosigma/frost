@@ -1,0 +1,42 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+cover: mode cover
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top fp_engine_op_formal --single-unit -DSYNTHESIS -DFP_SHIM_ABSTRACT_PROOF riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv reservation_station.sv fp_shim.sv fp_engine_op_formal.sv
+hierarchy -top fp_engine_op_formal
+script free_undefined.ys
+setattr -mod -unset keep_hierarchy *
+setattr -unset keep_hierarchy */c:*
+flatten
+setattr -unset keep */w:* */c:*
+opt_clean -purge
+opt -keepdc
+prep -top fp_engine_op_formal
+select -assert-count 0 t:$check r:FLAVOR=assume %i
+select -assert-count 3 t:$check r:FLAVOR=assert %i
+select -assert-count 4 t:$check r:FLAVOR=cover %i
+prove: chformal -cover -remove
+cover: chformal -assert -remove
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_capacity.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_shim.sv
+fp_engine_op_formal.sv
+free_undefined.ys

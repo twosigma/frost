@@ -84,6 +84,7 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "fof": 0x43F0_2557,  # vmv.x.s a0, v31 in the fault-only-first load trace
     "int-widen-narrow": 0x42E0_2557,  # vmv.x.s a0, v14 in the widening/narrowing integer trace
     "fixed-point": 0x42F0_2557,  # vmv.x.s a0, v15 in the fixed-point trace
+    "fp-single": 0x42D0_2557,  # vmv.x.s a0, v13 in the single-width FP trace
 }
 
 # frost_rvfi_dii's error_flags bits.
