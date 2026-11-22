@@ -12,6 +12,8 @@ cover_backing covers
 [options]
 bmc: mode bmc
 bmc: depth 6
+# Replay an ABC counterexample with the SMT solver used by the source checks.
+bmc: aigsmt boolector
 induction: mode prove
 smt: depth 3
 covers: mode cover

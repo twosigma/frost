@@ -1752,7 +1752,8 @@ The `pd_history_twin` target compares PD and history together across the registe
 boundary, including both decode packets and all training outputs.
 The `backing_btb_twin` target covers held and shifted reads and all five RAM interfaces.
 The `predictor_fetch_contract` target checks the real fetch stage’s packet and
-registered PC outputs against the conditions used by the PD comparison.
+registered PC outputs. The PD comparison reads those same packet and restore
+assertions from `predictor_fetch_contract.sv` and uses them as input assumptions.
 
 ```bash
 ./scripts/frost.py formal                          # every task of every target
@@ -1766,6 +1767,14 @@ Each target and task is a separate pytest case. Fast checks compare every SBY
 task list with the runner registration; selecting no matching task is an error.
 The Primitive forms job runs `rs_payload_twin:cover_cmo_request` to require a
 simultaneous CMO request from both copies at the second commit comparison’s depth.
+
+In the Other tasks shard, `test_predictor_mutations.py` changes one input or
+register assignment in a private copy of the RTL for John Goodacre's backing BTB
+and TAGE/ITTAGE predictor design. It checks the direction table read address,
+indirect table write data, backing BTB held read, direction history fold, and PD
+indirect redirect. The fetch case inverts the branch flag on a live second slot
+and requires the packet checker to identify that flag. Each case requires a
+counterexample at a named assertion and a saved solver trace.
 
 `test_pa_bridge_mutation.py` runs the 64 GiB proof on a private fixture for
 each AXI address channel and requires a counterexample at that channel's
