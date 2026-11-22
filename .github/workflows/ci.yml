@@ -970,7 +970,7 @@ jobs:
 
       - name: Check detection of an incorrect vector result
         if: matrix.vlen == 128
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
           check_vector_result() {
             local selector=$1 trace=$2 record=$3 mismatch=$4
@@ -1016,6 +1016,8 @@ jobs:
             'order=45 insn=0x43e02557 rd=x10' '0x19475b81 != 0x19475b80'
           check_vector_result fof vector_fof \
             'order=29 insn=0x43f02557 rd=x10' '0x13572468 != 0x13572469'
+          check_vector_result int-widen-narrow vector_int_widen_narrow \
+            'order=72 insn=0x42e02557 rd=x10' '0x1fe != 0x1ff'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()

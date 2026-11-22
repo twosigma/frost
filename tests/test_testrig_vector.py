@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (29, instructions + 8266) if vector_directed else (15, instructions)
+    expected = (30, instructions + 10019) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -297,6 +297,7 @@ def test_vector_directed_replay(
         ("vector_indexed.S", 1924, 645),
         ("vector_segment.S", 2159, 1126),
         ("vector_fof.S", 326, 208),
+        ("vector_int_widen_narrow.S", 1753, 871),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -1710,6 +1711,140 @@ def test_vector_fof_trace_covers_forms() -> None:
     assert trap_widths == {8, 16, 32, 64}
     assert masked_trim_seen and masked_trap_seen and masked_no_trim_seen
     assert m2_trim_seen and vlmax_trim_seen and zero_vl_seen
+
+
+def test_vector_int_widen_narrow_trace_covers_forms() -> None:
+    """Check all 41 widening, extending and narrowing integer encodings and corners."""
+    trace = VERIF_DIR / "testrig" / "vector_int_widen_narrow.S"
+    blocks = TRACE_WORD.split(trace.read_text())[1:]
+    vtype = 0
+    avl_mode = ""
+    vl_imm = 0
+    retired_forms: set[tuple[str, int, int, int | None]] = set()
+    sews_by_group: dict[str, set[int]] = {}
+    ext_sews: dict[int, set[int]] = {}
+    masking_by_group: dict[str, set[bool]] = {}
+    regimes_by_group: dict[str, set[str]] = {}
+    policies_seen: set[int] = set()
+    lmuls_seen: set[int] = set()
+    overlaps_seen: set[str] = set()
+    traps_seen = 0
+    ctrl_count = 0
+
+    ivv, mvv, ivi, ivx, mvx = 0, 2, 3, 4, 6
+    wadd_f6 = {0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37}
+    wmul_f6 = {0x38, 0x3A, 0x3B}
+    wmacc_f6 = {0x3C, 0x3D, 0x3E, 0x3F}
+    narrow_f6 = {0x2C, 0x2D}
+
+    for block in blocks:
+        assert block.lstrip().startswith(".4byte ")
+        word = int(block.split()[1], 16)
+        if word == 0x42E0_2557:
+            ctrl_count += 1
+        opcode = word & 0x7F
+        if opcode == 0x73 and ((word >> 12) & 7) in (1, 2, 3, 5, 6, 7):
+            assert ((word >> 20) & 0xFFF) != 0x301  # No misa access
+            continue
+        if word & 0xC000_707F == 0xC000_7057:  # vsetivli
+            vtype = (word >> 20) & 0xFF
+            vl_imm = (word >> 15) & 0x1F
+            avl_mode = "imm"
+            continue
+        if word & 0x8000_707F == 0x0000_7057:  # vsetvli
+            vtype = (word >> 20) & 0xFF
+            assert ((word >> 15) & 0x1F) == 0 and ((word >> 7) & 0x1F) != 0
+            avl_mode = "vlmax"
+            continue
+        if opcode != 0x57:
+            continue
+
+        f6 = word >> 26
+        f3 = (word >> 12) & 7
+        vm = bool((word >> 25) & 1)
+        vs2 = (word >> 20) & 0x1F
+        vs1 = (word >> 15) & 0x1F
+        vd = (word >> 7) & 0x1F
+        sew = 8 << ((vtype >> 3) & 7)
+        lmul = vtype & 7
+
+        group = ""
+        sub: int | None = None
+        if f3 in (mvv, mvx) and f6 in wadd_f6:
+            group = "wadd"
+        elif f3 == mvv and f6 == 0x12 and 2 <= vs1 <= 7:
+            group = "ext"
+            sub = vs1
+        elif f3 in (ivv, ivi, ivx) and f6 in narrow_f6:
+            group = "narrow"
+        elif f3 in (mvv, mvx) and f6 in wmul_f6:
+            group = "wmul"
+        elif f3 in (mvv, mvx) and f6 in wmacc_f6:
+            group = "wmacc"
+        else:
+            continue
+
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            traps_seen += 1
+            continue
+        assert re.search(r"(?m)^\.assert trap == 0\b", block)
+
+        retired_forms.add((group, f6, f3, sub))
+        sews_by_group.setdefault(group, set()).add(sew)
+        if group == "ext" and sub is not None:
+            ext_sews.setdefault(sub, set()).add(sew)
+        masking_by_group.setdefault(group, set()).add(vm)
+        policies_seen.add(vtype & 0xC0)
+        lmuls_seen.add(lmul)
+
+        if avl_mode == "vlmax":
+            regimes_by_group.setdefault(group, set()).add("vlmax")
+        elif vl_imm == 0:
+            regimes_by_group.setdefault(group, set()).add("zero")
+        elif all(vl_imm < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+            regimes_by_group.setdefault(group, set()).add("below_vlmax")
+
+        if group == "wadd" and f6 in {0x30, 0x31, 0x32, 0x33} and vs2 == vd + 1:
+            overlaps_seen.add("wadd_upper")
+        if group == "wadd" and f6 in {0x34, 0x35, 0x36, 0x37} and vs2 == vd:
+            overlaps_seen.add("wadd_inplace")
+        if group == "ext" and vs2 == vd + 1:
+            overlaps_seen.add("ext_upper")
+        if group == "narrow" and vs2 == vd:
+            overlaps_seen.add("narrow_low")
+
+    expected_forms: set[tuple[str, int, int, int | None]] = set()
+    expected_forms.update(("wadd", f6, f3, None) for f6 in wadd_f6 for f3 in (mvv, mvx))
+    expected_forms.update(("ext", 0x12, mvv, sub) for sub in range(2, 8))
+    expected_forms.update(
+        ("narrow", f6, f3, None) for f6 in narrow_f6 for f3 in (ivv, ivi, ivx)
+    )
+    expected_forms.update(("wmul", f6, f3, None) for f6 in wmul_f6 for f3 in (mvv, mvx))
+    expected_forms.update(
+        ("wmacc", f6, f3, None) for f6 in (0x3C, 0x3D, 0x3F) for f3 in (mvv, mvx)
+    )
+    expected_forms.add(("wmacc", 0x3E, mvx, None))
+    assert len(expected_forms) == 41
+    assert retired_forms == expected_forms
+
+    for group in ("wadd", "narrow", "wmul", "wmacc"):
+        assert sews_by_group[group] == {8, 16, 32}
+    assert ext_sews == {
+        2: {64},
+        3: {64},
+        4: {32, 64},
+        5: {32, 64},
+        6: {16, 32, 64},
+        7: {16, 32, 64},
+    }
+    for group in ("wadd", "ext", "narrow", "wmul", "wmacc"):
+        assert masking_by_group[group] == {True, False}
+        assert {"below_vlmax", "vlmax", "zero"} <= regimes_by_group[group]
+    assert {0x00, 0xC0} <= policies_seen  # tu, mu and ta, ma
+    assert {0, 1, 7} <= lmuls_seen  # m1, m2, mf2
+    assert overlaps_seen == {"wadd_upper", "wadd_inplace", "ext_upper", "narrow_low"}
+    assert traps_seen == 5
+    assert ctrl_count == 1
 
 
 def test_readout_sees_every_register_and_vxsat() -> None:
