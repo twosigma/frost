@@ -1096,6 +1096,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
+        "dmmu_bypass.sby",
+        "Sum-addressed DTLB selection and S2 results agree with an ordinary lookup, "
+        "including a replay through the real S1 port",
+        tasks=("prove", "bmc", "cover"),
+    ),
+    FormalTarget(
         "dmmu_va_next.sby",
         "Data-MMU S1 load and S2 VA next states, selected after the issue address, "
         "equal the whole-payload selects, portable and primitive forms",
@@ -1277,8 +1283,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "dtlb_entry_verdict.sby",
         "Registered DTLB entry validity, permissions and whole-leaf PMA verdicts "
-        "against the data lookup for an arbitrary access",
-        tasks=("prove", "cover"),
+        "against the data lookup for an arbitrary access on two DDR maps",
+        tasks=("prove", "cover", "prove_256m", "cover_256m"),
     ),
     FormalTarget(
         "l2tlb.sby",
@@ -3592,6 +3598,11 @@ SBY_TASKS = [
     (
         "cover_soc",
         "SoC burst and ID capacity, allocator wrap, reordered replies, drain, and reuse",
+    ),
+    ("prove_256m", "Inductive entry verdict checks on a 256 MiB DDR map"),
+    (
+        "cover_256m",
+        "Reach a gigapage crossing the DDR limit and an NC load at the disabled alias",
     ),
     ("bmc_64g", "Bounded physical-address check at a 64 GiB DDR capacity"),
     ("bmc_128g", "Bounded physical-address check at a 128 GiB DDR capacity"),

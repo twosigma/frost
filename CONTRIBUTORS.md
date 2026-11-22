@@ -70,8 +70,9 @@
   the FP fast paths for compares, moves, sign injection and conversions
 - Doubled the ITLB to 16 entries and removed the Sv39 sequential-fetch
   bubble with intra-page virtual tagging
-- Added the data MMU's last-page translation bypass, which saves a cycle
-  on translated accesses to the most recently used page
+- Added the data MMU's last-page translation bypass, which saved a cycle
+  on translated accesses to the most recently used page, and which the
+  resident-hit bypass later generalized
 - Added streaming coherent DMA, which keeps DMA fills marked non-allocating
   in one L2 way so that network traffic does not evict the CPU's lines from
   the others

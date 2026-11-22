@@ -6309,7 +6309,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_dmmu",
         hdl_toplevel_module="dmmu",
         description=(
-            "Sv39 data translation, last-page bypass, fault priority, and recovery"
+            "Sv39 data translation, resident-entry bypass, fault priority, and recovery"
         ),
     ),
     "dmmu_1g": CocotbRunConfig(

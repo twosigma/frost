@@ -99,7 +99,9 @@ which arrives early in the cycle. In the core
 (`PREISSUE_READY_PICK=1`) the LQ compares its tags against every MEM_RS entry
 tag, and each candidate's ready vector picks the compare result of that
 candidate's winner (entry 0 when nothing is ready). Under translation it
-compares `i_pre_issue_direct_tag` instead.
+compares `i_pre_issue_direct_tag` instead. The DMMU can announce a load before
+its lookup settles. The registered match takes effect only when the load's
+address-update packet arrives.
 
 [`lq_issue_selector.sv`](lq_issue_selector.sv) scans in ring order from
 `head_idx` and finds, in parallel: the first entry holding a result, which

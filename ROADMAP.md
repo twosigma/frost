@@ -607,12 +607,9 @@ and targeted microbenchmarks give these items:
    streaming scale, add and triad loops spend less than 0.3%. Taking
    ownership of a single 32-byte sector without fetching its 64-byte home
    line would still need per-sector L2 validity tracking.
-2. Data translation. Under Sv39, translated loads and stores outside the
-   single-entry last-page buffer wait for DMMU stage S1 before reaching S2;
-   replacing that buffer with a 16-entry DTLB bypass lets any clean resident
-   hit enter S2 directly, leaving faults, concurrent refills and
-   mixed-attribute superpages on S1. The L1D store-lookup change (item 9)
-   and per-entry DTLB verdicts are on `main`, with the 16-entry bypass next.
+2. Data translation. Under Sv39, a clean hit in any of the 16 DTLB entries
+   sends a load or store directly to DMMU stage S2. Faults, concurrent
+   refills and mixed-attribute superpages go through S1.
    On a DTLB miss, the shared 512-entry second-level TLB waits for S1 to
    report the miss; starting that lookup on the bypass miss whenever the
    port is idle removes that wait while keeping instruction-TLB priority.
