@@ -43,6 +43,13 @@ from xml.etree import ElementTree
 import pytest
 import cocotb
 
+from ci_sim_models import (
+    MAKEFILE_BUILD_VARIABLES,
+    ddr_timing_args,
+    select_model,
+    settings,
+)
+
 SW_APPS_DIR = Path(__file__).resolve().parent.parent / "sw" / "apps"
 # Simulation-only TestRIG harness and its recorder unit bench.
 RVFI_DII_HARNESS = (
@@ -89,23 +96,6 @@ class CocotbRunConfig:
     nic_mac_clocks: bool = True
 
 
-# tests/Makefile turns these environment variables into Verilator arguments:
-# WAVES and the coverage switches for every toplevel, the rest as -G overrides
-# of the frost toplevel.
-MAKEFILE_BUILD_VARIABLES = (
-    "WAVES",
-    "FROST_COVERAGE",
-    "FROST_COVERAGE_TOGGLE",
-    "SIM_MEM_SIZE_BYTES",
-    "FROST_CPU_PERIOD_PS",
-    "ENABLE_CACHED_TIER",
-    "DDR_MODEL_BYTES",
-    "DDR_MODEL_LATENCY",
-    "SIM_FAST_MAINT",
-    "MEMORY_LINK_STAGES",
-    "MISALIGNED_HW",
-)
-
 # FROST_COVERAGE=1 builds simulations with line and branch coverage and the cover
 # points. FROST_COVERAGE_TOGGLE selects full or control toggle coverage
 # (tests/Makefile). Each run writes its own file, named after the test, to
@@ -141,7 +131,7 @@ def coverage_file(label: str) -> Path:
     return path
 
 
-# FROST_DDR_MODEL_SEED draws the DDR model's timing for frost-toplevel builds:
+# FROST_DDR_MODEL_SEED draws the DDR model's timing for frost-toplevel runs:
 # its latency, its latency jitter, and whether it completes transactions out
 # of order across ids. CI gives every job its own seed. The run prints the seed
 # and the draw, and setting the same seed repeats it. A parameter a test pins,
@@ -7108,26 +7098,25 @@ class CocotbRunner:
         return tuple(f"-G{name}={value}" for name, value in drawn.items())
 
     def _verilator_extra_args_string(self) -> str:
-        """Return the build args string consumed by tests/Makefile."""
-        return " ".join(self.verilator_extra_args)
+        """Append external overrides after registry defaults and the job's draw."""
+        return " ".join(
+            part
+            for part in (
+                " ".join(self.verilator_extra_args),
+                os.environ.get("FROST_VERILATOR_EXTRA_ARGS", ""),
+            )
+            if part
+        )
 
     def _verilator_build_signature(self) -> str:
-        """Return the build-affecting signature tracked by the rebuild marker."""
-        signature = self._verilator_extra_args_string()
-        if os.environ.get(RANDOM_START_SEED_VARIABLE, "").strip():
-            signature = f"{signature} FROST_RANDOM_START=1".strip()
-        # Include external build overrides to prevent reusing a stale Vtop.
-        external_verilator_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
-        if external_verilator_args:
-            signature = f"{signature} {external_verilator_args}".strip()
-        makefile_settings = " ".join(
-            f"{name}={os.environ[name]}"
-            for name in MAKEFILE_BUILD_VARIABLES
-            if name in os.environ
+        """Identify the build inputs and the artifact scope of a local Vtop."""
+        env = dict(
+            os.environ, FROST_VERILATOR_EXTRA_ARGS=self._verilator_extra_args_string()
         )
-        if makefile_settings:
-            signature = f"{signature} {makefile_settings}".strip()
-        return signature
+        config = settings(self.hdl_toplevel_module, env)
+        if env.get("FROST_SIM_MODELS") == "1":
+            config["FROST_SIM_SCOPE"] = env["FROST_SIM_SCOPE"]
+        return " ".join(f"{key}={value}" for key, value in sorted(config.items()))
 
     def _compile_app(self) -> bool:
         """Compile the app; return True on success or when no app is configured."""
@@ -7199,12 +7188,16 @@ class CocotbRunner:
         environment_variables["ROOT"] = str(self.repository_root_directory)
         # Append external arguments after registry defaults so sweeps can
         # override settings such as FETCH_VALID_FUZZ_SEED.
-        external_verilator_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
-        environment_variables["FROST_VERILATOR_EXTRA_ARGS"] = " ".join(
-            part
-            for part in (self._verilator_extra_args_string(), external_verilator_args)
-            if part
+        environment_variables["FROST_VERILATOR_EXTRA_ARGS"] = (
+            self._verilator_extra_args_string()
         )
+
+        if self.hdl_toplevel_module == "frost":
+            environment_variables["FROST_DDR_TIMING_ARGS"] = " ".join(
+                ddr_timing_args(environment_variables["FROST_VERILATOR_EXTRA_ARGS"])
+            )
+        if environment_variables.get("FROST_SIM_MODELS") == "1":
+            select_model(self.hdl_toplevel_module, environment_variables)
 
         # verif/ on PYTHONPATH makes the cocotb_tests modules importable.
         verif_path = str(self.repository_root_directory / "verif")

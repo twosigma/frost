@@ -511,8 +511,12 @@ def test_ddr_model_seed_draws_repeatable_timing(
     drawn = tuple(f"-G{name}={value}" for name, value in timing.items())
     assert runner.verilator_extra_args == drawn
     assert _soc_runner().verilator_extra_args == drawn
-    # A new seed rebuilds the model rather than reusing another draw's build.
-    assert all(argument in runner._verilator_build_signature() for argument in drawn)
+    assert runner.setup_environment()["FROST_DDR_TIMING_ARGS"].split() == list(drawn)
+    signature = runner._verilator_build_signature()
+    monkeypatch.setenv("FROST_DDR_MODEL_SEED", "another-job")
+    other = _soc_runner()
+    assert other._verilator_build_signature() == signature
+    assert other.setup_environment()["FROST_DDR_TIMING_ARGS"].split() != list(drawn)
     low, high = test_run_cocotb.DDR_MODEL_LATENCY_RANGE
     assert low <= timing["DDR_MODEL_LATENCY"] <= high
     jitter = timing["DDR_MODEL_LATENCY_JITTER"]

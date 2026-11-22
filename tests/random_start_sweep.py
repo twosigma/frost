@@ -202,7 +202,8 @@ def check_built_model(binary: Path, environment: dict[str, str]) -> None:
     with binary.open("rb") as executable:
         digest = hashlib.file_digest(executable, "sha256").hexdigest()
     identity = hashlib.sha256(
-        f"{digest}:{startup_fixture_digest()}:{base}:{count}".encode()
+        f"{digest}:{startup_fixture_digest()}:{base}:{count}:"
+        f"{environment.get('FROST_DDR_TIMING_ARGS', '')}".encode()
     ).hexdigest()
     output = directory / identity
     marker = output / "passed"
@@ -379,6 +380,10 @@ def run_startup_sweep(
             "+verilator+rand+reset+2",
             f"+verilator+seed+{seed}",
             "+verilator+coverage+file+/dev/null",
+            *[
+                "+" + arg.removeprefix("-G")
+                for arg in env.get("FROST_DDR_TIMING_ARGS", "").split()
+            ],
         ]
         if not baseline:
             arguments.append("+verilator+noassert")
