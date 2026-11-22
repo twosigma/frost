@@ -1951,3 +1951,735 @@ def test_loader_lists_targets_without_an_application(
     assert len(calls) == 1
     assert calls[0]["list_only"] is True
     assert calls[0]["board"] == board
+
+
+# --- Vector width and advertisement settings ---------------------------------
+
+
+def _write_vector_board_repo(
+    root: Path,
+    *,
+    x3_vlen: int = 256,
+    x3_advertise: bool = True,
+    vcu118_vector: bool = False,
+    vcu118_vlen: int = 256,
+    vcu118_advertise: bool = False,
+    vcu118_via_param: bool = False,
+) -> None:
+    """Create a minimal board RTL and DDR layout under ``root``."""
+    (root / "boards/x3").mkdir(parents=True, exist_ok=True)
+    (root / "boards/vcu118").mkdir(parents=True, exist_ok=True)
+    (root / "fpga/build").mkdir(parents=True, exist_ok=True)
+    for board in ("x3", "vcu118"):
+        target_bd = root / f"fpga/build/{board}_ddr_bd.tcl"
+        if not target_bd.exists():
+            target_bd.symlink_to(ROOT / f"fpga/build/{board}_ddr_bd.tcl")
+    (root / "boards/xilinx_frost_subsystem.sv").write_text(
+        "module xilinx_frost_subsystem #(\n"
+        "    parameter bit VECTOR = 1'b0,\n"
+        "    parameter int unsigned VLEN = 256,\n"
+        "    parameter bit VECTOR_ADVERTISE = 1'b0\n"
+        ") ();\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    x3_adv_line = (
+        f"      .VECTOR_ADVERTISE(1'b{int(x3_advertise)}),\n" if x3_advertise else ""
+    )
+    (root / "boards/x3/x3_frost.sv").write_text(
+        "module x3_frost #(\n"
+        "    parameter int unsigned PERF_COUNTERS = 0\n"
+        ") ();\n"
+        "  xilinx_frost_subsystem #(\n"
+        "      .VECTOR(1'b1),\n"
+        f"      .VLEN({x3_vlen}),\n"
+        f"{x3_adv_line}"
+        "      .RAW_LOOPBACK(0)\n"
+        "  ) subsystem ();\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    if vcu118_vector:
+        header_params = (
+            f"    parameter bit VECTOR = 1'b1,\n"
+            f"    parameter int unsigned VLEN = {vcu118_vlen},\n"
+            f"    parameter bit VECTOR_ADVERTISE = 1'b{int(vcu118_advertise)}\n"
+            if vcu118_via_param
+            else "    parameter bit MISALIGNED_HW = 1'b1\n"
+        )
+        vec_bind = "VECTOR" if vcu118_via_param else "1'b1"
+        vlen_bind = "VLEN" if vcu118_via_param else str(vcu118_vlen)
+        adv_bind = (
+            "VECTOR_ADVERTISE" if vcu118_via_param else f"1'b{int(vcu118_advertise)}"
+        )
+        vcu_overrides = (
+            f"      .VECTOR            ({vec_bind}),\n"
+            f"      .VLEN              ({vlen_bind}),\n"
+            f"      .VECTOR_ADVERTISE  ({adv_bind}),\n"
+        )
+    else:
+        header_params = "    parameter bit MISALIGNED_HW = 1'b1\n"
+        vcu_overrides = "      // .VECTOR(1'b1), .VECTOR_ADVERTISE(1'b1),\n"
+    (root / "boards/vcu118/vcu118_frost.sv").write_text(
+        "module vcu118_frost #(\n"
+        f"{header_params}"
+        ") ();\n"
+        "  xilinx_frost_subsystem #(\n"
+        "      .MISALIGNED_HW     (MISALIGNED_HW && (1 != 0)),\n"
+        f"{vcu_overrides}"
+        "      .RAW_LOOPBACK      (0)\n"
+        "  ) u_frost_subsystem ();\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+
+
+def _scratch_vector_repo(
+    tmp_path: Path,
+    app: str,
+    *,
+    x3_vlen: int = 256,
+    x3_advertise: bool = True,
+    vcu118_vector: bool = False,
+    vcu118_vlen: int = 256,
+    vcu118_advertise: bool = False,
+) -> Path:
+    """Create a self-contained scratch repository for compiling a vector app."""
+    _write_vector_board_repo(
+        tmp_path,
+        x3_vlen=x3_vlen,
+        x3_advertise=x3_advertise,
+        vcu118_vector=vcu118_vector,
+        vcu118_vlen=vcu118_vlen,
+        vcu118_advertise=vcu118_advertise,
+    )
+    sw = tmp_path / "sw"
+    (sw / "apps").mkdir(parents=True, exist_ok=True)
+    for shared in ("common", "lib"):
+        link = sw / shared
+        if not link.exists():
+            link.symlink_to(ROOT / "sw" / shared, target_is_directory=True)
+    vec_common = sw / "apps" / "vec_common"
+    if not vec_common.exists():
+        vec_common.symlink_to(ROOT / "sw/apps/vec_common", target_is_directory=True)
+    app_dir = sw / "apps" / app
+    if not app_dir.exists():
+        app_dir.mkdir()
+        for source in (ROOT / "sw/apps" / app).iterdir():
+            if source.name == "Makefile" or source.suffix in {".c", ".h", ".S"}:
+                if source.name != "sw.S":
+                    shutil.copy2(source, app_dir / source.name)
+    return app_dir
+
+
+def test_vec_vlen_apps_match_registered_sources() -> None:
+    """VEC_VLEN_APPS matches every registered app whose C sources read VEC_VLEN."""
+    discovered = set()
+    for app in loader.VALID_APPS:
+        source_dir = ROOT / "sw/apps" / loader.app_build_directory_name(app)
+        if not source_dir.is_dir():
+            continue
+        for path in source_dir.iterdir():
+            if path.suffix in {".c", ".h"} and "VEC_VLEN" in path.read_text(
+                encoding="utf-8", errors="replace"
+            ):
+                discovered.add(app)
+                break
+    assert discovered == set(loader.VEC_VLEN_APPS)
+    assert "vec_state_test" in loader.valid_apps_for_board("x3")
+    assert "vec_state_test" in loader.valid_apps_for_board("vcu118")
+    assert "vec_state_test" in loader.DEBUG_APPS
+
+
+def test_board_vector_config_reads_rtl_defaults_and_variants(tmp_path: Path) -> None:
+    """board_vector_config tracks X3 widths, VCU118 variants, and rejects invalid RTL."""
+    # Live repository checks: X3 has a 256-bit vector unit; VCU118 matches its RTL.
+    live_x3_vlen, live_x3_adv = loader.board_vector_config("x3")
+    assert live_x3_vlen == 256
+    assert isinstance(live_x3_adv, bool)
+    live_vcu_vlen, live_vcu_adv = loader.board_vector_config("vcu118")
+    assert live_vcu_vlen in loader.SUPPORTED_VEC_STATE_VLENS
+    if live_vcu_vlen == 0:
+        assert live_vcu_adv is False
+
+    # X3 at 128, 256, 512 advertised and 256 unadvertised; VCU118 scalar (comments ignored).
+    for width, advertise in ((128, True), (256, True), (512, True), (256, False)):
+        repo = tmp_path / f"x3_{width}_{int(advertise)}"
+        _write_vector_board_repo(repo, x3_vlen=width, x3_advertise=advertise)
+        assert loader.board_vector_config("x3", project_root=repo) == (width, advertise)
+        assert loader.board_vector_config("vcu118", project_root=repo) == (0, False)
+
+    # VCU118 with Verible-aligned parameter references and direct literals.
+    for via_param, advertise in ((True, False), (True, True), (False, True)):
+        repo = tmp_path / f"vcu_{int(via_param)}_{int(advertise)}"
+        _write_vector_board_repo(
+            repo,
+            vcu118_vector=True,
+            vcu118_vlen=256,
+            vcu118_advertise=advertise,
+            vcu118_via_param=via_param,
+        )
+        assert loader.board_vector_config("vcu118", project_root=repo) == (
+            256,
+            advertise,
+        )
+
+    # Invalid RTL configurations fail closed.
+    bad_adv = tmp_path / "bad_adv"
+    _write_vector_board_repo(bad_adv)
+    (bad_adv / "boards/vcu118/vcu118_frost.sv").write_text(
+        "module vcu118_frost ();\n"
+        "  xilinx_frost_subsystem #(.VECTOR(1'b0), .VECTOR_ADVERTISE(1'b1)) u ();\n"
+        "endmodule\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="VECTOR_ADVERTISE=1 requires VECTOR=1"):
+        loader.board_vector_config("vcu118", project_root=bad_adv)
+
+    bad_vlen = tmp_path / "bad_vlen"
+    _write_vector_board_repo(bad_vlen, x3_vlen=64)
+    with pytest.raises(ValueError, match="VLEN must be one of"):
+        loader.board_vector_config("x3", project_root=bad_vlen)
+
+
+@pytest.mark.parametrize(
+    "board,app,argv_extra,expected_cflags",
+    [
+        ("x3", "vec_state_test", [], "-DVEC_VLEN=256 -DVEC_ADVERTISE=1"),
+        (
+            "x3",
+            "vec_state_test",
+            ["--vlen", "128"],
+            "-DVEC_VLEN=128 -DVEC_ADVERTISE=1",
+        ),
+        (
+            "x3",
+            "vec_state_test",
+            ["--vlen", "512"],
+            "-DVEC_VLEN=512 -DVEC_ADVERTISE=1",
+        ),
+        (
+            "x3",
+            "vec_state_test",
+            ["--vlen", "256", "--no-vec-advertise"],
+            "-DVEC_VLEN=256 -DVEC_ADVERTISE=0",
+        ),
+        (
+            "x3",
+            "vec_state_test",
+            ["--vlen", "0"],
+            "-DVEC_VLEN=0 -DVEC_ADVERTISE=0",
+        ),
+        ("vcu118", "vec_state_test", [], "-DVEC_VLEN=0 -DVEC_ADVERTISE=0"),
+        (
+            "vcu118",
+            "vec_state_test",
+            ["--vlen", "0"],
+            "-DVEC_VLEN=0 -DVEC_ADVERTISE=0",
+        ),
+        (
+            "vcu118",
+            "vec_state_test",
+            ["--vlen", "256"],
+            "-DVEC_VLEN=256 -DVEC_ADVERTISE=0",
+        ),
+        (
+            "vcu118",
+            "vec_state_test",
+            ["--vlen", "256", "--vec-advertise"],
+            "-DVEC_VLEN=256 -DVEC_ADVERTISE=1",
+        ),
+        ("x3", "vec_fp_test", [], "-DVEC_VLEN=256"),
+        ("x3", "vec_fp_test", ["--vlen", "128"], "-DVEC_VLEN=128"),
+        ("x3", "vec_integer_test", ["--vlen", "512"], "-DVEC_VLEN=512"),
+        ("x3", "vec_crypto_exec_test", ["--vlen", "128"], "-DVEC_VLEN=128"),
+        ("x3", "vec_source_eew_test", ["--vlen", "512"], "-DVEC_VLEN=512"),
+        ("x3", "vec_vstart_reload_test", ["--vlen", "128"], "-DVEC_VLEN=128"),
+        ("x3", "vec_vtype_handoff_test", ["--vlen", "512"], "-DVEC_VLEN=512"),
+    ],
+)
+def test_loader_vector_options_build_expected_make_vars(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    board: str,
+    app: str,
+    argv_extra: list[str],
+    expected_cflags: str,
+) -> None:
+    """Loader CLI computes per-program vector make_vars from RTL defaults and overrides."""
+    _write_vector_board_repo(tmp_path, x3_vlen=256, x3_advertise=True)
+    (tmp_path / "sw/apps" / app).mkdir(parents=True)
+    monkeypatch.setattr(loader, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("FROST_CPU_CLK_HZ", raising=False)
+    monkeypatch.delenv("EXTRA_CFLAGS", raising=False)
+    monkeypatch.setattr(
+        sys, "argv", ["load_software.py", board, app, *argv_extra, "--build-only"]
+    )
+    builds: list[dict[str, str]] = []
+
+    def compile_app(*args: Any, **kwargs: Any) -> bool:
+        builds.append(args[4])
+        return True
+
+    monkeypatch.setattr(loader, "compile_app_for_board", compile_app)
+    monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a, **k: {})
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    loader.main()
+    assert builds == [{"EXTRA_CFLAGS": expected_cflags}]
+
+
+@pytest.mark.parametrize(
+    "argv,env_cflags,reason",
+    [
+        (
+            ["x3", "vec_state_test", "--vlen", "0", "--vec-advertise"],
+            None,
+            "--vec-advertise requires a nonzero --vlen",
+        ),
+        (
+            ["vcu118", "vec_state_test", "--vec-advertise"],
+            None,
+            "--vec-advertise requires a nonzero --vlen",
+        ),
+        (
+            ["x3", "vec_fp_test", "--vlen", "0"],
+            None,
+            "requires a nonzero --vlen",
+        ),
+        (
+            ["x3", "vec_fp_test", "--vec-advertise"],
+            None,
+            "only valid for vec_state_test",
+        ),
+        (
+            ["x3", "vec_fp_test", "--no-vec-advertise"],
+            None,
+            "only valid for vec_state_test",
+        ),
+        (
+            ["x3", "hello_world", "--vlen", "256"],
+            None,
+            "only valid for vector-width applications",
+        ),
+        (
+            ["x3", "vec_arith_test", "--vlen", "128"],
+            None,
+            "only valid for vector-width applications",
+        ),
+        (
+            ["x3", "hello_world", "--no-vec-advertise"],
+            None,
+            "only valid for vec_state_test",
+        ),
+        (
+            ["x3", "vec_state_test", "--vlen", "64"],
+            None,
+            "invalid choice:",
+        ),
+        (
+            ["x3", "--list-targets", "--vlen", "256"],
+            None,
+            "cannot be combined",
+        ),
+        (
+            ["x3", "--list-targets", "--vec-advertise"],
+            None,
+            "cannot be combined",
+        ),
+        (
+            ["x3", "vec_state_test"],
+            "-DVEC_VLEN=128",
+            "conflicts with selected VEC_VLEN=256",
+        ),
+        (
+            ["x3", "vec_state_test"],
+            "-D VEC_VLEN=128",
+            "conflicts with selected VEC_VLEN=256",
+        ),
+        (
+            ["x3", "vec_state_test"],
+            "-DVEC_VLEN",
+            "must assign an integer value to VEC_VLEN",
+        ),
+        (
+            ["x3", "vec_state_test"],
+            "-UVEC_VLEN",
+            "cannot undefine VEC_VLEN",
+        ),
+        (
+            ["x3", "vec_state_test"],
+            "-DVEC_ADVERTISE=0",
+            "conflicts with selected VEC_ADVERTISE=1",
+        ),
+        (
+            ["x3", "vec_state_test"],
+            "-UVEC_ADVERTISE",
+            "cannot undefine VEC_ADVERTISE",
+        ),
+    ],
+)
+def test_loader_rejects_invalid_vector_options_before_build(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    argv: list[str],
+    env_cflags: str | None,
+    reason: str,
+) -> None:
+    """Bad vector options or conflicting EXTRA_CFLAGS fail before build or cable."""
+    _write_vector_board_repo(tmp_path, x3_vlen=256, x3_advertise=True)
+    monkeypatch.setattr(loader, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("EXTRA_CFLAGS", raising=False)
+    if env_cflags is not None:
+        monkeypatch.setenv("EXTRA_CFLAGS", env_cflags)
+    monkeypatch.setattr(sys, "argv", ["load_software.py", *argv])
+    monkeypatch.setattr(
+        loader, "compile_app_for_board", lambda *a, **k: pytest.fail("build ran")
+    )
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    with pytest.raises(SystemExit) as stopped:
+        loader.main()
+    assert stopped.value.code == 2
+    assert reason in capsys.readouterr().err
+
+
+def test_loader_preserves_unrelated_extra_cflags_with_vector_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Non-conflicting inherited EXTRA_CFLAGS survive alongside VEC_VLEN."""
+    _write_vector_board_repo(tmp_path, x3_vlen=256, x3_advertise=True)
+    make_vars = loader.vector_app_make_vars(
+        "vec_state_test",
+        "x3",
+        vlen=128,
+        environment={"EXTRA_CFLAGS": "-DMY_FLAG=1 -DVEC_VLEN=128"},
+        project_root=tmp_path,
+    )
+    assert make_vars == {"EXTRA_CFLAGS": "-DMY_FLAG=1 -DVEC_VLEN=128 -DVEC_ADVERTISE=1"}
+
+
+def test_vec_state_test_vlen_and_advertise_reach_program_and_build_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Compiled vec_state_test receives VEC_VLEN and keeps distinct build identities.
+
+    Builds the real vec_state_test through load_software.main() --build-only at
+    scalar (0) and VLEN 128, 256, and 512, plus advertised vs unadvertised, and
+    also builds a preprocessor probe sharing vec_state_test's Makefile so both
+    VEC_VLEN and VEC_ADVERTISE are verified directly inside the linked ELF.
+    Fails if VEC_VLEN or VEC_ADVERTISE fails to reach the C compiler.
+    """
+    app_dir = _scratch_vector_repo(
+        tmp_path, "vec_state_test", x3_vlen=256, x3_advertise=True
+    )
+    monkeypatch.setattr(loader, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("FROST_CPU_CLK_HZ", raising=False)
+    monkeypatch.delenv("EXTRA_CFLAGS", raising=False)
+    monkeypatch.delenv("MEM_CONFIG", raising=False)
+    monkeypatch.delenv("FROST_DEBUG", raising=False)
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+
+    configs: list[tuple[str, list[str], int, int]] = [
+        ("vcu118", [], 0, 0),
+        ("x3", ["--vlen", "0"], 0, 0),
+        ("x3", ["--vlen", "128"], 128, 1),
+        ("x3", [], 256, 1),
+        ("x3", ["--vlen", "512"], 512, 1),
+        ("x3", ["--vlen", "256", "--no-vec-advertise"], 256, 0),
+        ("vcu118", ["--vlen", "256", "--vec-advertise"], 256, 1),
+    ]
+    config_hashes: dict[tuple[str, int, int], str] = {}
+    x3_elfs_by_vlen: dict[int, bytes] = {}
+    last_cfg: tuple[str, list[str], str] | None = None
+
+    for board, extra, want_vlen, want_adv in configs:
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["load_software.py", board, "vec_state_test", *extra, "--build-only"],
+        )
+        loader.main()
+        out = capsys.readouterr().out
+        assert "FROST_BUILD_COMPLETE" in out
+        sha_lines = [
+            line.split("=", 1)[1]
+            for line in out.splitlines()
+            if line.startswith("FROST_BUILD_CONFIG_SHA256=")
+        ]
+        assert len(sha_lines) == 1
+        sha = sha_lines[0]
+        assert len(sha) == 64
+
+        stamp = (app_dir / ".frost-build-config.bin").read_text(encoding="utf-8")
+        assert f"-DVEC_VLEN={want_vlen}" in stamp
+        assert f"-DVEC_ADVERTISE={want_adv}" in stamp
+
+        elf = (app_dir / "sw.elf").read_bytes()
+        # Prove VEC_VLEN reached the real C preprocessor: scalar vs vector branch.
+        if want_vlen == 0:
+            assert b"VS reads zero\0" in elf
+            assert b"VS resets Off\0" not in elf
+            assert b"vstart keeps log2(VLEN) bits\0" not in elf
+            assert b"fault buffer in low BRAM\0" not in elf
+        else:
+            assert b"VS reads zero\0" not in elf
+            assert b"VS resets Off\0" in elf
+            assert b"vstart keeps log2(VLEN) bits\0" in elf
+            assert b"fault buffer in low BRAM\0" in elf
+
+        key = (board, want_vlen, want_adv)
+        assert sha not in config_hashes.values(), f"duplicate build identity for {key}"
+        config_hashes[key] = sha
+        if board == "x3" and (want_vlen == 0 or want_adv == 1):
+            x3_elfs_by_vlen[want_vlen] = elf
+        last_cfg = (board, extra, sha)
+
+    # Every VLEN (0, 128, 256, 512) must produce a distinct compiled program image.
+    assert set(x3_elfs_by_vlen) == {0, 128, 256, 512}
+    assert len(set(x3_elfs_by_vlen.values())) == 4
+
+    # --skip-build accepts the matching configuration and rejects every mismatch.
+    assert last_cfg is not None
+    last_board, last_extra, last_sha = last_cfg
+    called_vivado: list[list[str]] = []
+    with monkeypatch.context() as skip_patch:
+        skip_patch.setattr(loader, "select_target", lambda *a, **k: TARGET)
+        skip_patch.setattr(
+            loader.subprocess, "run", lambda cmd, **kw: called_vivado.append(cmd)
+        )
+        skip_patch.setattr(
+            sys,
+            "argv",
+            [
+                "load_software.py",
+                last_board,
+                "vec_state_test",
+                *last_extra,
+                "--skip-build",
+                "--expected-build-config-sha256",
+                last_sha,
+            ],
+        )
+        loader.main()
+    assert len(called_vivado) == 1
+
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    for bad_argv in (
+        ["vcu118", "vec_state_test", "--skip-build"],
+        [
+            "vcu118",
+            "vec_state_test",
+            "--vlen",
+            "128",
+            "--vec-advertise",
+            "--skip-build",
+        ],
+        [
+            "vcu118",
+            "vec_state_test",
+            "--vlen",
+            "256",
+            "--no-vec-advertise",
+            "--skip-build",
+        ],
+        ["x3", "vec_state_test", "--vlen", "256", "--vec-advertise", "--skip-build"],
+    ):
+        monkeypatch.setattr(sys, "argv", ["load_software.py", *bad_argv])
+        with pytest.raises(SystemExit) as rejected:
+            loader.main()
+        assert rejected.value.code == 2
+
+    # Verify that compiling vec_state_test directly without EXTRA_CFLAGS falls
+    # back to scalar VEC_VLEN=0, proving the loader's flags are load-bearing.
+    direct = subprocess.run(
+        ["make", "-s", "clean"],
+        cwd=app_dir,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    assert direct.returncode == 0
+    direct_build = subprocess.run(
+        ["make", "-s", "FPGA_CPU_CLK_FREQ=322265625"],
+        cwd=app_dir,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert direct_build.returncode == 0, direct_build.stdout + direct_build.stderr
+    fallback_elf = (app_dir / "sw.elf").read_bytes()
+    assert b"VS reads zero\0" in fallback_elf
+    assert b"VS resets Off\0" not in fallback_elf
+
+    # Direct preprocessor probe using vec_state_test's Makefile: fail if either
+    # exact VEC_VLEN value or VEC_ADVERTISE value does not reach the compiled ELF.
+    (app_dir / "main.c").write_text(
+        '#include "uart.h"\n'
+        "#define STR_(x) #x\n"
+        "#define STR(x) STR_(x)\n"
+        "int main(void) {\n"
+        '    uart_puts("PROBE:VLEN=" STR(VEC_VLEN) ":ADV=" STR(VEC_ADVERTISE));\n'
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    for board, extra, want_vlen, want_adv in (
+        ("vcu118", [], 0, 0),
+        ("x3", ["--vlen", "128"], 128, 1),
+        ("x3", [], 256, 1),
+        ("x3", ["--vlen", "512"], 512, 1),
+        ("x3", ["--vlen", "256", "--no-vec-advertise"], 256, 0),
+    ):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["load_software.py", board, "vec_state_test", *extra, "--build-only"],
+        )
+        loader.main()
+        capsys.readouterr()
+        elf = (app_dir / "sw.elf").read_bytes()
+        marker = f"PROBE:VLEN={want_vlen}:ADV={want_adv}\0".encode()
+        assert marker in elf, f"{marker!r} missing from compiled ELF"
+
+
+def test_vector_width_app_rebuilds_distinct_elf_per_vlen(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """Non-state VEC_VLEN apps (e.g. vec_vtype_handoff_test) honor --vlen."""
+    app_dir = _scratch_vector_repo(
+        tmp_path, "vec_vtype_handoff_test", x3_vlen=256, x3_advertise=True
+    )
+    monkeypatch.setattr(loader, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("FROST_CPU_CLK_HZ", raising=False)
+    monkeypatch.delenv("EXTRA_CFLAGS", raising=False)
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    elfs: dict[int, bytes] = {}
+    hashes: dict[int, str] = {}
+    for width in (128, 256, 512):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "load_software.py",
+                "x3",
+                "vec_vtype_handoff_test",
+                "--vlen",
+                str(width),
+                "--build-only",
+            ],
+        )
+        loader.main()
+        out = capsys.readouterr().out
+        sha = next(
+            line.split("=", 1)[1]
+            for line in out.splitlines()
+            if line.startswith("FROST_BUILD_CONFIG_SHA256=")
+        )
+        elfs[width] = (app_dir / "sw.elf").read_bytes()
+        hashes[width] = sha
+    assert len(set(elfs.values())) == 3
+    assert len(set(hashes.values())) == 3
+    # Last build was 512; --skip-build at 128 must fail before cable discovery.
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "load_software.py",
+            "x3",
+            "vec_vtype_handoff_test",
+            "--vlen",
+            "128",
+            "--skip-build",
+        ],
+    )
+    with pytest.raises(SystemExit) as rejected:
+        loader.main()
+    assert rejected.value.code == 2
+
+
+def test_validate_prebuilt_vector_contract_rejects_bad_configs(tmp_path: Path) -> None:
+    """Direct prebuilt validation fails closed on missing or conflicting vector flags."""
+    directory = tmp_path / "vec_state_test"
+    write_prebuilt(
+        directory,
+        minimal_debug_elf(),
+        FPGA_CPU_CLK_FREQ="322265625",
+        CFLAGS="-O3 -DVEC_VLEN=256 -DVEC_ADVERTISE=1",
+    )
+    ok = loader.validate_prebuilt_app(
+        directory,
+        322265625,
+        "bram",
+        True,
+        app_name="vec_state_test",
+        make_vars={"EXTRA_CFLAGS": "-DVEC_VLEN=256 -DVEC_ADVERTISE=1"},
+    )
+    assert ok["app"] == "vec_state_test"
+
+    for bad_vars, pattern in (
+        (None, "requires the selected vector settings"),
+        ({}, "requires the selected vector settings"),
+        ({"EXTRA_CFLAGS": "-DVEC_VLEN=256"}, "missing required vector macro"),
+        (
+            {"EXTRA_CFLAGS": "-DVEC_VLEN=64 -DVEC_ADVERTISE=1"},
+            "unsupported VEC_VLEN=64",
+        ),
+        (
+            {"EXTRA_CFLAGS": "-DVEC_VLEN=0 -DVEC_ADVERTISE=1"},
+            "cannot set VEC_ADVERTISE=1 with VEC_VLEN=0",
+        ),
+        (
+            {"EXTRA_CFLAGS": "-DVEC_VLEN=128 -DVEC_ADVERTISE=1"},
+            "prebuilt vector length or advertisement differs",
+        ),
+        (
+            {"EXTRA_CFLAGS": "-DVEC_VLEN=256 -DVEC_ADVERTISE=0"},
+            "prebuilt vector length or advertisement differs",
+        ),
+    ):
+        with pytest.raises(ValueError, match=pattern):
+            loader.validate_prebuilt_app(
+                directory,
+                322265625,
+                "bram",
+                True,
+                app_name="vec_state_test",
+                make_vars=bad_vars,
+            )
+
+    # A prebuilt stamp lacking explicit VEC_VLEN/VEC_ADVERTISE or containing a
+    # conflicting definition is rejected even for scalar VEC_VLEN=0.
+    for bad_cflags in (
+        "-O3",
+        "-O3 -DVEC_VLEN=0",
+        "-O3 -DVEC_VLEN=256 -UVEC_VLEN -DVEC_ADVERTISE=1",
+        "-O3 -DVEC_VLEN=128 -DVEC_VLEN=256 -DVEC_ADVERTISE=1",
+    ):
+        (directory / ".frost-build-config.bin").write_text(
+            f"MEM_CONFIG=bram|FROST_DEBUG=1|FPGA_CPU_CLK_FREQ=322265625|CFLAGS={bad_cflags}\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError):
+            loader.validate_prebuilt_app(
+                directory,
+                322265625,
+                "bram",
+                True,
+                app_name="vec_state_test",
+                make_vars={"EXTRA_CFLAGS": "-DVEC_VLEN=0 -DVEC_ADVERTISE=0"},
+            )

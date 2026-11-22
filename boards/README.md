@@ -103,8 +103,10 @@ MMCM on the 300 MHz input instead (300 MHz / 8 × 34.375 / 4N); the CPU clock
 channel still runs. Load software with the matching clock. The
 `PERF_COUNTERS` generic includes the profiling counters (`--perf-counters`).
 The X3 build includes the vector unit (`VECTOR`, at a `VLEN` of 256 bits); the
-loader's board list for each vector test program names the boards whose builds
-include it.
+loader's board list for each vector-only test program names the boards whose
+builds include it. `vec_state_test` runs on every board with each board's RTL
+vector width and advertisement state, or explicit `--vlen` and
+`--vec-advertise` / `--no-vec-advertise` overrides.
 
 On X3, Linux `reboot` requests SYSRESET and re-enters the retained DDR images;
 they can be stale or hang in OpenSBI, so reload them for a fresh boot.
