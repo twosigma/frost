@@ -1272,7 +1272,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ptw_pbmt_alias.sby",
-        "Svpbmt alias bit predicates equal the full-address range check for every address",
+        "Svpbmt alias decode on enabled maps and NC/IO leaf faults on the small map",
         tasks=(
             "bmc_small",
             "bmc_1g",
@@ -3454,7 +3454,7 @@ SBY_TASKS = [
     ("bmc16", "Bounded local equivalence at depth 16"),
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
-    ("bmc_small", "Svpbmt alias range equivalence at a 256 MiB DDR capacity"),
+    ("bmc_small", "Disabled alias decode and NC/IO leaf faults on the 256 MiB DDR map"),
     ("bmc_2g", "Svpbmt translation and alias refusal at a 2 GiB DDR capacity"),
     ("cover_2g", "Svpbmt no-alias faults and device-page translations at 2 GiB"),
     ("bmc_4g", "Svpbmt alias range equivalence at a 4 GiB DDR capacity"),

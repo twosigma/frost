@@ -1583,12 +1583,12 @@ with both implementations configured for `--vlen` (128, 256 or 512).
 source-width traces. `--vector-directed` includes the vector CSR,
 scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison,
 FP conversion, cached DDR probe, unit-stride memory, strided memory,
-indexed memory, segment memory, fault-only-first load, integer comparison
-and widening and narrowing integer traces. Every vector store trace
-compares all written bytes through immediate scalar loads. CI compares the
-seeded and directed traces at each length. The VLEN 128 job injects one
-incorrect value in each control replay and requires TestRIG to report each
-mismatch.
+indexed memory, segment memory, fault-only-first load, integer comparison,
+widening and narrowing integer and fixed-point traces. Every vector store
+trace compares all written bytes through immediate scalar loads. CI
+compares the seeded and directed traces at each length. The VLEN 128 job
+injects one incorrect value in each control replay and requires TestRIG to
+report each mismatch.
 
 `--atomics` replays random A-extension tests from `verif/testrig/atomics.py`
 in place of the engine's templates, from a seed the runner prints. A mismatch
@@ -2079,6 +2079,8 @@ all of them.
 | `pd_stage` | `cover_pd_slot2_not_taken_veto` | A slot-2 tagged conditional-branch match vetoes a taken BTB prediction to the fall-through |
 | `pd_stage` | `cover_pd_slot2_redirect_held_through_stall` | A slot-2 tagged conditional-branch redirect is asserted during a front-end stall |
 | `pd_stage` | `cover_pd_slot2_candidate_lost_to_flush` | A registered slot-2 tagged conditional-branch candidate is cleared by a pipeline flush |
+| `backing_btb` | `cover_backing_btb_s1_slot1_hit` | A shifted lookup serves slot 1 from image 1 |
+| `backing_btb` | `cover_backing_btb_s1_slot2_hit` | A shifted lookup serves a same-word slot 2 from image 1 |
 
 Only the load queue's unit bench reaches two of them, because the whole SoC
 never builds the state they check. For `cover_dma_write_hits_lr_in_flight`,
@@ -2129,7 +2131,7 @@ and Fast Python Tests jobs locally.
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
-| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares seeded integer traces and directed source-width, vector state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride memory, strided memory, indexed memory, segment memory, fault-only-first load, integer comparison and widening and narrowing integer traces against Sail |
+| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares seeded integer traces and directed source-width, vector state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride memory, strided memory, indexed memory, segment memory, fault-only-first load, integer comparison, widening and narrowing integer and fixed-point traces against Sail |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |

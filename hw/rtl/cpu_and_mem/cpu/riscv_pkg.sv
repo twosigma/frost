@@ -1786,17 +1786,18 @@ package riscv_pkg;
   // merged) and leaves nothing in the hart's caches.
   // The window sits in the unused top of the physical space, so the physical
   // width does not grow:
-  //   DDR of 2**c bytes, c <= 30: bit 30; DDR [2**31, 2**31 + 2**c) aliases
-  //     to [0xC000_0000, 0xC000_0000 + 2**c), all of DDR.
+  //   For 1 GiB of DDR (c = 30), bit 30 aliases the full DDR window
+  //     to [0xC000_0000, 0x1_0000_0000).
   //   c >= 32 (PhysAddrBits = c + 1): bit c; DDR below 2**c aliases to
   //     [2**c + 2**31, 2**(c+1)). The top 2 GiB of the DDR window,
   //     [2**c, 2**c + 2**31), has no alias: the walker answers an NC or IO
   //     leaf there with an access fault (an implementation PMA override,
   //     norm:Svpbmt_impl_may_override_pmas). For example, a 64 GiB window
   //     (c = 36) aliases its first 62 GiB.
-  //   c = 31, or a map other than FROST's: no alias; every NC or IO leaf
-  //     over DDR is an access fault.
-  localparam bit PbmtAliasEnabled = PmaUsesFrostMap && (DdrCapacityLog2Bytes != 31);
+  //   For c < 30, c = 31 or a map other than FROST's, NC and IO leaves
+  //     over DDR raise an access fault.
+  localparam bit PbmtAliasEnabled =
+      PmaUsesFrostMap && (DdrCapacityLog2Bytes == 30 || DdrCapacityLog2Bytes >= 32);
   localparam int unsigned PbmtAliasBit = (DdrCapacityLog2Bytes <= 30) ? 30 : DdrCapacityLog2Bytes;
   // DDR addresses in [DdrBase, PbmtAliasCoverLimit) have an alias.
   localparam longint unsigned PbmtAliasCoverLimit = !PbmtAliasEnabled ? DdrBase :
@@ -2027,10 +2028,9 @@ package riscv_pkg;
     logic perm_g;
   } ptw_resp_t;
 
-  // Svpbmt leaf classification of a clean leaf's PPN (the base of its page:
-  // DDR and its alias boundaries are 1 GiB aligned, so a superpage is wholly
-  // inside or outside each range). A nonzero PBMT over cached DDR takes the
-  // alias PPN when the alias exists; without one the leaf is an access fault.
+  // Svpbmt classifies a clean leaf by its base PPN. On maps with an alias,
+  // DDR and alias boundaries are 1 GiB aligned. An NC or IO leaf based in
+  // DDR takes the alias PPN if covered and raises an access fault otherwise.
   function automatic logic pbmt_ddr_leaf(input logic [PtePpnBits-1:0] ppn);
     pbmt_ddr_leaf = ({ppn, 12'h000} >= (PtePpnBits + 12)'(DdrBase)) &&
         ({ppn, 12'h000} < (PtePpnBits + 12)'(DdrLimit));
