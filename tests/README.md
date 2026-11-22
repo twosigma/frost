@@ -2070,6 +2070,8 @@ all of them.
 | `pd_stage` | `cover_pd_slot2_not_taken_veto` | A slot-2 tagged conditional-branch match vetoes a taken BTB prediction to the fall-through |
 | `pd_stage` | `cover_pd_slot2_redirect_held_through_stall` | A slot-2 tagged conditional-branch redirect is asserted during a front-end stall |
 | `pd_stage` | `cover_pd_slot2_candidate_lost_to_flush` | A registered slot-2 tagged conditional-branch candidate is cleared by a pipeline flush |
+| `backing_btb` | `cover_backing_btb_s1_slot1_hit` | A shifted lookup serves slot 1 from image 1 |
+| `backing_btb` | `cover_backing_btb_s1_slot2_hit` | A shifted lookup serves a same-word slot 2 from image 1 |
 
 Only the load queue's unit bench reaches two of them, because the whole SoC
 never builds the state they check. For `cover_dma_write_hits_lr_in_flight`,
