@@ -590,10 +590,11 @@ and targeted microbenchmarks give these items:
    acquire a 64-byte block with `GetMZero`, allocating on an L2 miss without
    reading DRAM and installing both sectors before release; stores to Modified
    sectors use masked writes, and waiting reads share array service with
-   buffered hits. In simulation (`store_fill_bench`, 64 KiB, with the DDR
-   model's fixed 80-cycle latency) a sequential `sd` stream takes about 28
-   cycles per 64 bytes cold and 15.3 cycles L2-resident. A streaming copy
-   spends about 24% of its cycles stalled on store-queue capacity;
+   buffered hits. In simulation with the DDR-boot build of `store_fill_bench`
+   and a fixed 80-cycle DDR model, a sequential `sd` stream over 64 KiB takes
+   28.3 cycles per 64 bytes cold and 14.9 cycles after the L2 warm-up. A
+   streaming copy spends about 24% of its cycles stalled on store-queue
+   capacity;
    streaming scale, add and triad loops spend less than 0.3%. Taking
    ownership of a single 32-byte sector without fetching its 64-byte home
    line would still need per-sector L2 validity tracking.
