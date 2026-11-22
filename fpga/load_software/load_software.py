@@ -135,6 +135,7 @@ VALID_APPS = [
     "vec_order_test",
     "vec_segment_test",
     "vec_source_eew_test",
+    "vec_state_test",
     "vec_stride_test",
     "vec_vsetvl_test",
     "vec_vstart_reload_test",
@@ -142,10 +143,33 @@ VALID_APPS = [
     "vm_test",
 ]
 
-# The vector test programs need the X3's vector unit.
-# vec_crypto_exec_test, vec_fp_test, vec_integer_test, vec_source_eew_test,
-# vec_vstart_reload_test and vec_vtype_handoff_test also check the vector length they are built for:
-# VEC_VLEN, 256 by default, the X3 build's VLEN.
+SUPPORTED_VECTOR_VLENS = (128, 256, 512)
+SUPPORTED_VEC_STATE_VLENS = (0, *SUPPORTED_VECTOR_VLENS)
+
+# Applications that require a hardware vector unit (every vec_* app except
+# vec_state_test, which also checks scalar cores with VEC_VLEN=0).
+VECTOR_UNIT_APPS = frozenset(
+    app for app in VALID_APPS if app.startswith("vec_") and app != "vec_state_test"
+)
+
+# Applications compiled with -DVEC_VLEN=<bits> to match the target vector
+# width. vec_state_test also accepts 0 (scalar core) and -DVEC_ADVERTISE=<0|1>
+# for expected misa.V.
+VEC_VLEN_APPS = frozenset(
+    {
+        "vec_crypto_exec_test",
+        "vec_fp_test",
+        "vec_integer_test",
+        "vec_source_eew_test",
+        "vec_state_test",
+        "vec_vstart_reload_test",
+        "vec_vtype_handoff_test",
+    }
+)
+VEC_ADVERTISE_APPS = frozenset({"vec_state_test"})
+
+# The vector-only test programs require the X3's vector unit; vec_state_test
+# runs on both scalar and vector boards with each board's vector configuration.
 BOARD_SPECIFIC_APPS = {
     "bootrom": frozenset({"vcu118"}),
     "memerr_readback": CPU_ECC_READER_BOARDS,
@@ -302,6 +326,343 @@ def board_ddr_bytes(board: str) -> int:
     if match is None:
         raise ValueError(f"{design} assigns the CPU port (S00_AXI) no DDR range")
     return int(match.group(1), 16)
+
+
+_SV_COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+_SV_LITERAL_RE = re.compile(r"^(?:\d+)?'([sS]?)([bBdDhHoO])([0-9a-fA-F_]+)$")
+_SV_PARAM_ASSIGN_RE = re.compile(r"\b([A-Za-z_]\w*)\s*=\s*(.+)$", re.S)
+_SV_NAMED_PARAM_RE = re.compile(r"\.\s*([A-Za-z_]\w*)\s*\(")
+
+
+def _strip_sv_comments(text: str) -> str:
+    """Remove SystemVerilog line and block comments."""
+    return _SV_COMMENT_RE.sub("", text)
+
+
+def _extract_balanced_parens(text: str, open_index: int) -> tuple[str, int]:
+    """Return the substring inside balanced parentheses starting at open_index."""
+    if open_index >= len(text) or text[open_index] != "(":
+        raise ValueError("expected '(' in SystemVerilog parameter list")
+    depth = 0
+    for index in range(open_index, len(text)):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[open_index + 1 : index], index + 1
+    raise ValueError("unterminated '(' in SystemVerilog parameter list")
+
+
+def _split_sv_top_level_commas(text: str) -> list[str]:
+    """Split a SystemVerilog parameter block on commas outside nested parens."""
+    parts: list[str] = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(text):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return parts
+
+
+def _parse_sv_int(expression: str) -> int:
+    """Parse an unsigned SystemVerilog integer literal or decimal/hex integer."""
+    cleaned = expression.strip().replace("_", "")
+    match = _SV_LITERAL_RE.match(cleaned)
+    if match is not None:
+        base_map = {"b": 2, "d": 10, "h": 16, "o": 8}
+        return int(match.group(3), base_map[match.group(2).lower()])
+    return int(cleaned, 0)
+
+
+def _parse_sv_module_param_defaults(text: str, module_name: str) -> dict[str, str]:
+    """Extract parameter default expressions from a SystemVerilog module header."""
+    pattern = re.compile(rf"\bmodule\s+{re.escape(module_name)}\s*#\s*\(")
+    match = pattern.search(text)
+    if match is None:
+        return {}
+    block, _ = _extract_balanced_parens(text, match.end() - 1)
+    defaults: dict[str, str] = {}
+    for entry in _split_sv_top_level_commas(block):
+        assign = _SV_PARAM_ASSIGN_RE.search(entry.strip())
+        if assign is not None:
+            defaults[assign.group(1)] = assign.group(2).strip()
+    return defaults
+
+
+def _parse_sv_named_params(param_block: str) -> dict[str, str]:
+    """Extract named parameter overrides ``.NAME(expr)`` from an instance block."""
+    overrides: dict[str, str] = {}
+    cursor = 0
+    while True:
+        match = _SV_NAMED_PARAM_RE.search(param_block, cursor)
+        if match is None:
+            break
+        name = match.group(1)
+        expr, cursor = _extract_balanced_parens(param_block, match.end() - 1)
+        if name in overrides:
+            raise ValueError(f"duplicate SystemVerilog parameter override .{name}")
+        overrides[name] = expr.strip()
+    return overrides
+
+
+def board_vector_config(
+    board: str, project_root: Path | None = None
+) -> tuple[int, bool]:
+    """Return ``(vlen, advertise)`` derived from the board's RTL top and subsystem.
+
+    Reads ``boards/<board>/<board>_frost.sv`` and ``boards/xilinx_frost_subsystem.sv``.
+    A scalar board (``VECTOR=0``) returns ``(0, False)``; a vector board
+    (``VECTOR=1``) returns ``(VLEN, bool(VECTOR_ADVERTISE))``.
+    """
+    if board not in BOARD_CONFIG:
+        raise ValueError(f"Unknown board: {board}")
+    root = PROJECT_ROOT if project_root is None else project_root
+    subsystem_path = root / "boards" / "xilinx_frost_subsystem.sv"
+    top_path = root / "boards" / board / f"{board}_frost.sv"
+    subsystem_text = _strip_sv_comments(subsystem_path.read_text(encoding="utf-8"))
+    top_text = _strip_sv_comments(top_path.read_text(encoding="utf-8"))
+
+    subsystem_defaults = _parse_sv_module_param_defaults(
+        subsystem_text, "xilinx_frost_subsystem"
+    )
+    top_defaults = _parse_sv_module_param_defaults(top_text, f"{board}_frost")
+
+    instances = list(re.finditer(r"\bxilinx_frost_subsystem\s*#\s*\(", top_text))
+    if len(instances) != 1:
+        raise ValueError(
+            f"{top_path} must instantiate xilinx_frost_subsystem once "
+            f"(found {len(instances)})"
+        )
+    instance_block, _ = _extract_balanced_parens(top_text, instances[0].end() - 1)
+    instance_overrides = _parse_sv_named_params(instance_block)
+
+    fallback_defaults = {"VECTOR": "0", "VLEN": "256", "VECTOR_ADVERTISE": "0"}
+
+    def resolve_param(name: str) -> int:
+        if name in instance_overrides:
+            expr = instance_overrides[name]
+            if expr in top_defaults:
+                expr = top_defaults[expr]
+        elif name in subsystem_defaults:
+            expr = subsystem_defaults[name]
+        else:
+            expr = fallback_defaults[name]
+        try:
+            return _parse_sv_int(expr)
+        except ValueError as exc:
+            raise ValueError(
+                f"{top_path}: cannot parse {name} parameter expression {expr!r}"
+            ) from exc
+
+    vector = resolve_param("VECTOR")
+    advertise = resolve_param("VECTOR_ADVERTISE")
+    if vector not in (0, 1):
+        raise ValueError(f"{top_path}: VECTOR must be 0 or 1, got {vector}")
+    if advertise not in (0, 1):
+        raise ValueError(
+            f"{top_path}: VECTOR_ADVERTISE must be 0 or 1, got {advertise}"
+        )
+    if advertise and not vector:
+        raise ValueError(f"{top_path}: VECTOR_ADVERTISE=1 requires VECTOR=1")
+    if not vector:
+        return 0, False
+    vlen = resolve_param("VLEN")
+    if vlen not in SUPPORTED_VECTOR_VLENS:
+        raise ValueError(
+            f"{top_path}: VLEN must be one of {SUPPORTED_VECTOR_VLENS}, got {vlen}"
+        )
+    return vlen, bool(advertise)
+
+
+def _parse_cflag_macro_tokens(
+    cflags: str,
+    names: frozenset[str],
+    *,
+    source: str,
+) -> tuple[list[str], dict[str, int]]:
+    """Split compiler flags and extract integer ``-DNAME=VALUE`` definitions.
+
+    Rejects undefining, value-less defining, non-integer values, or conflicting
+    definitions for any macro in ``names``. Remaining tokens are returned in
+    order without the matched ``names`` definitions.
+    """
+    try:
+        tokens = shlex.split(cflags)
+    except ValueError as exc:
+        raise ValueError(f"malformed {source}: {exc}") from exc
+
+    other: list[str] = []
+    values: dict[str, int] = {}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        flag_kind: str | None = None
+        spec = ""
+        consumed = 1
+        if token in ("-D", "-U"):
+            if index + 1 < len(tokens):
+                flag_kind = token
+                spec = tokens[index + 1]
+                consumed = 2
+        elif token.startswith("-D") and len(token) > 2:
+            flag_kind = "-D"
+            spec = token[2:]
+        elif token.startswith("-U") and len(token) > 2:
+            flag_kind = "-U"
+            spec = token[2:]
+
+        if flag_kind is not None:
+            name, sep, raw_value = spec.partition("=")
+            if name in names:
+                if flag_kind == "-U":
+                    raise ValueError(f"{source} cannot undefine {name}")
+                if not sep or not raw_value:
+                    raise ValueError(f"{source} must assign an integer value to {name}")
+                try:
+                    parsed = int(raw_value, 0)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{source} has non-integer {name}={raw_value!r}"
+                    ) from exc
+                if name in values and values[name] != parsed:
+                    raise ValueError(
+                        f"{source} defines conflicting values for {name}: "
+                        f"{values[name]} vs {parsed}"
+                    )
+                values[name] = parsed
+                index += consumed
+                continue
+
+        other.extend(tokens[index : index + consumed])
+        index += consumed
+    return other, values
+
+
+def resolve_vector_app_config(
+    app_name: str,
+    board: str,
+    *,
+    vlen: int | None = None,
+    vec_advertise: bool | None = None,
+    project_root: Path | None = None,
+) -> tuple[int, bool | None] | None:
+    """Resolve effective ``(VEC_VLEN, VEC_ADVERTISE)`` for a vector-width app.
+
+    Returns ``None`` for apps that do not take compile-time vector settings.
+    For ``vec_state_test``, returns ``(vlen, advertise)`` with ``vlen`` in
+    ``(0, 128, 256, 512)`` and ``advertise`` forced ``False`` when ``vlen == 0``.
+    For the other ``VEC_VLEN_APPS``, returns ``(vlen, None)`` with ``vlen`` in
+    ``(128, 256, 512)``.
+    """
+    if app_name not in VEC_VLEN_APPS:
+        if vlen is not None:
+            raise ValueError(
+                "--vlen is only valid for vector-width applications: "
+                + ", ".join(sorted(VEC_VLEN_APPS))
+            )
+        if vec_advertise is not None:
+            raise ValueError(
+                "--vec-advertise and --no-vec-advertise are only valid for "
+                "vec_state_test"
+            )
+        return None
+    if app_name not in VEC_ADVERTISE_APPS and vec_advertise is not None:
+        raise ValueError(
+            "--vec-advertise and --no-vec-advertise are only valid for vec_state_test"
+        )
+
+    board_vlen, board_advertise = board_vector_config(board, project_root=project_root)
+    effective_vlen = board_vlen if vlen is None else vlen
+    if app_name in VEC_ADVERTISE_APPS:
+        if effective_vlen not in SUPPORTED_VEC_STATE_VLENS:
+            raise ValueError(
+                f"{app_name} requires --vlen in {SUPPORTED_VEC_STATE_VLENS}, "
+                f"got {effective_vlen}"
+            )
+        if effective_vlen == 0:
+            if vec_advertise:
+                raise ValueError("--vec-advertise requires a nonzero --vlen")
+            return 0, False
+        effective_advertise = (
+            board_advertise if vec_advertise is None else vec_advertise
+        )
+        return effective_vlen, effective_advertise
+
+    if effective_vlen not in SUPPORTED_VECTOR_VLENS:
+        raise ValueError(
+            f"{app_name} requires a nonzero --vlen "
+            f"({', '.join(str(v) for v in SUPPORTED_VECTOR_VLENS)}), "
+            f"got {effective_vlen}"
+        )
+    return effective_vlen, None
+
+
+def vector_app_make_vars(
+    app_name: str,
+    board: str,
+    *,
+    vlen: int | None = None,
+    vec_advertise: bool | None = None,
+    environment: Mapping[str, str] = os.environ,
+    project_root: Path | None = None,
+) -> dict[str, str]:
+    """Return Make overrides passing vector width and advertisement in EXTRA_CFLAGS."""
+    resolved = resolve_vector_app_config(
+        app_name,
+        board,
+        vlen=vlen,
+        vec_advertise=vec_advertise,
+        project_root=project_root,
+    )
+    if resolved is None:
+        return {}
+
+    effective_vlen, effective_advertise = resolved
+    managed = (
+        frozenset({"VEC_VLEN", "VEC_ADVERTISE"})
+        if effective_advertise is not None
+        else frozenset({"VEC_VLEN"})
+    )
+    inherited = environment.get("EXTRA_CFLAGS", "")
+    other_tokens, inherited_values = _parse_cflag_macro_tokens(
+        inherited, managed, source="EXTRA_CFLAGS"
+    )
+    if (
+        "VEC_VLEN" in inherited_values
+        and inherited_values["VEC_VLEN"] != effective_vlen
+    ):
+        raise ValueError(
+            f"EXTRA_CFLAGS defines VEC_VLEN={inherited_values['VEC_VLEN']}, "
+            f"which conflicts with selected VEC_VLEN={effective_vlen}; "
+            f"pass --vlen {inherited_values['VEC_VLEN']} or unset EXTRA_CFLAGS"
+        )
+    defines = [f"-DVEC_VLEN={effective_vlen}"]
+    if effective_advertise is not None:
+        want_adv = int(effective_advertise)
+        if (
+            "VEC_ADVERTISE" in inherited_values
+            and inherited_values["VEC_ADVERTISE"] != want_adv
+        ):
+            flag = (
+                "--vec-advertise"
+                if inherited_values["VEC_ADVERTISE"]
+                else "--no-vec-advertise"
+            )
+            raise ValueError(
+                f"EXTRA_CFLAGS defines VEC_ADVERTISE={inherited_values['VEC_ADVERTISE']}, "
+                f"which conflicts with selected VEC_ADVERTISE={want_adv}; "
+                f"pass {flag} or unset EXTRA_CFLAGS"
+            )
+        defines.append(f"-DVEC_ADVERTISE={want_adv}")
+    return {"EXTRA_CFLAGS": shlex.join([*other_tokens, *defines])}
 
 
 def _linux_boot_preflight() -> None:
@@ -675,6 +1036,52 @@ def validate_prebuilt_app(
             raise ValueError(
                 "prebuilt CoreMark iterations differ; run --build-only first"
             )
+    if app_name in VEC_VLEN_APPS:
+        if make_vars is None or "EXTRA_CFLAGS" not in make_vars:
+            raise ValueError(
+                f"{app_name} prebuilt validation requires the selected vector settings"
+            )
+        managed = (
+            frozenset({"VEC_VLEN", "VEC_ADVERTISE"})
+            if app_name in VEC_ADVERTISE_APPS
+            else frozenset({"VEC_VLEN"})
+        )
+        _, expected_vector = _parse_cflag_macro_tokens(
+            make_vars["EXTRA_CFLAGS"], managed, source="vector make_vars"
+        )
+        if "VEC_VLEN" not in expected_vector or (
+            app_name in VEC_ADVERTISE_APPS and "VEC_ADVERTISE" not in expected_vector
+        ):
+            raise ValueError(
+                f"{app_name} build contract is missing required vector macro settings"
+            )
+        allowed_vlens = (
+            SUPPORTED_VEC_STATE_VLENS
+            if app_name in VEC_ADVERTISE_APPS
+            else SUPPORTED_VECTOR_VLENS
+        )
+        if expected_vector["VEC_VLEN"] not in allowed_vlens:
+            raise ValueError(
+                f"{app_name} build contract has unsupported VEC_VLEN="
+                f"{expected_vector['VEC_VLEN']}"
+            )
+        if app_name in VEC_ADVERTISE_APPS:
+            if expected_vector["VEC_ADVERTISE"] not in (0, 1):
+                raise ValueError(
+                    f"{app_name} build contract has unsupported VEC_ADVERTISE="
+                    f"{expected_vector['VEC_ADVERTISE']}"
+                )
+            if expected_vector["VEC_VLEN"] == 0 and expected_vector["VEC_ADVERTISE"]:
+                raise ValueError(
+                    f"{app_name} build contract cannot set VEC_ADVERTISE=1 with VEC_VLEN=0"
+                )
+        _, built_vector = _parse_cflag_macro_tokens(
+            config.get("CFLAGS", ""), managed, source="prebuilt CFLAGS"
+        )
+        if any(built_vector.get(k) != v for k, v in expected_vector.items()):
+            raise ValueError(
+                "prebuilt vector length or advertisement differs; run --build-only first"
+            )
     entry, has_main, writable_ddr = inspect_debug_elf(
         (app_dir / "sw.elf").read_bytes(), debug
     )
@@ -837,6 +1244,27 @@ def main() -> None:
             "size and print the computed reference CRC"
         ),
     )
+    parser.add_argument(
+        "--vlen",
+        type=int,
+        choices=SUPPORTED_VEC_STATE_VLENS,
+        default=None,
+        metavar="BITS",
+        help=(
+            "Vector length in bits (128, 256, or 512; or 0 for scalar "
+            "vec_state_test) for vector-width applications "
+            "(default: match the selected board's RTL)"
+        ),
+    )
+    parser.add_argument(
+        "--vec-advertise",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Override whether vec_state_test expects misa.V to be set "
+            "(default: match the selected board's RTL, or off when --vlen 0)"
+        ),
+    )
     add_target_args(parser, managed=True)
     args = parser.parse_args()
     validate_target_args(parser, args)
@@ -858,7 +1286,13 @@ def main() -> None:
         target_exact=args.target_exact,
         non_interactive=args.non_interactive,
     )
-    if args.list_targets and (args.build_only or args.skip_build or args.debug):
+    if args.list_targets and (
+        args.build_only
+        or args.skip_build
+        or args.debug
+        or args.vlen is not None
+        or args.vec_advertise is not None
+    ):
         parser.error("--list-targets cannot be combined with build/debug options")
 
     # Listing targets does not require an application.
@@ -930,6 +1364,22 @@ def main() -> None:
             f"CoreMark-PRO hardware flow: {coremark_pro_error}."
         )
 
+    try:
+        vector_config = resolve_vector_app_config(
+            args.software_app,
+            args.board,
+            vlen=args.vlen,
+            vec_advertise=args.vec_advertise,
+        )
+        vector_make_vars = vector_app_make_vars(
+            args.software_app,
+            args.board,
+            vlen=args.vlen,
+            vec_advertise=args.vec_advertise,
+        )
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+
     # Run Linux preflight before target prompting or the potentially long build.
     if args.software_app == "linux_boot":
         _linux_boot_preflight()
@@ -991,7 +1441,9 @@ def main() -> None:
         make_vars["FROST_MEMORY_FENCE_WRITES"] = "1"
     if args.coremark_pro_trace:
         make_vars["COREMARK_PRO_TRACE"] = "1"
-    if make_vars:
+    if vector_make_vars:
+        make_vars.update(vector_make_vars)
+    if is_coremark_pro:
         print(f"  CoreMark-PRO workload: {make_vars['WORKLOAD']}")
         print(f"  CoreMark-PRO hardware args: {make_vars['COREMARK_PRO_RUN_ARGS']}")
         if args.coremark_pro_disable_free:
@@ -1019,6 +1471,10 @@ def main() -> None:
             print("  CoreMark-PRO run type: performance/score (-v0)")
         elif args.coremark_pro_mode == "validation":
             print("  CoreMark-PRO run type: validation (-v1)")
+    if vector_config is not None:
+        print(f"  Vector length (VEC_VLEN): {vector_config[0]}")
+        if vector_config[1] is not None:
+            print(f"  Vector advertisement (VEC_ADVERTISE): {int(vector_config[1])}")
     if not args.skip_build and not compile_app_for_board(
         args.software_app,
         app_dir,
@@ -1066,6 +1522,8 @@ def main() -> None:
     if args.build_only:
         if args.debug:
             print("FROST_DEBUG_BUILD=" + json.dumps(descriptor, sort_keys=True))
+        if descriptor and "buildConfigSha256" in descriptor:
+            print(f"FROST_BUILD_CONFIG_SHA256={descriptor['buildConfigSha256']}")
         print(f"FROST_ELF={app_dir / 'sw.elf'}")
         print("FROST_BUILD_COMPLETE")
         return
