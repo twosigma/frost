@@ -590,10 +590,11 @@ and targeted microbenchmarks give these items:
    acquire a 64-byte block with `GetMZero`, allocating on an L2 miss without
    reading DRAM and installing both sectors before release; stores to Modified
    sectors use masked writes, and waiting reads share array service with
-   buffered hits. In simulation (`store_fill_bench`, 64 KiB, with the DDR
-   model's fixed 80-cycle latency) a sequential `sd` stream takes about 28
-   cycles per 64 bytes cold and 15.3 cycles L2-resident. A streaming copy
-   spends about 24% of its cycles stalled on store-queue capacity;
+   buffered hits. In simulation with the DDR-boot build of `store_fill_bench`
+   and a fixed 80-cycle DDR model, a sequential `sd` stream over 64 KiB takes
+   28.3 cycles per 64 bytes cold and 14.9 cycles after the L2 warm-up. A
+   streaming copy spends about 24% of its cycles stalled on store-queue
+   capacity;
    streaming scale, add and triad loops spend less than 0.3%. Taking
    ownership of a single 32-byte sector without fetching its 64-byte home
    line would still need per-sector L2 validity tracking.
@@ -618,7 +619,10 @@ and targeted microbenchmarks give these items:
    entries and extending 4 KiB-page reach beyond 2 MiB would be next steps.
    A selective `sfence.vma` that reaches the second-level TLB while it is
    still running an earlier flush becomes a full flush: correct, but it
-   discards entries the selective form would have kept.
+   discards entries the selective form would have kept. Handling a second
+   flush selectively during the scan would preserve unrelated entries; that
+   change waits because the behavior is already correct and affects only
+   performance.
 4. Branch prediction. A misprediction costs about 7 cycles. Graph search
    incurs about 21 to 28 branch mispredictions per thousand retired
    instructions, and decompression about 19 to 20. The BTB has 256
@@ -766,7 +770,38 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   clock-domain crossing from the SoC clock to the pixel clock. It needs a
   board or bridge board with an HDMI output.
 - Enough timing margin at 322.265625 MHz that a single default placement
-  meets timing
+  meets timing. Changes held for that work:
+  - Form the data MMU's walk eligibility without the partial-flush cancel and
+    apply that cancel with the DTLB hit check last, shortening a path from
+    the ROB head into walk arbitration that limits the clock without changing
+    cycle behavior. It waits for work toward the target clock to check
+    whether the walk-request path into the second-level TLB needs the change.
+  - Drive the ROB's trap and xRET requests from registered head-condition
+    flags and feed the single-step commit hold from registered state,
+    shortening a path from ROB head state through trap and commit control
+    that limits the clock. It adds a cycle to trap and xRET entry while
+    leaving ordinary retirement unchanged, and waits for work toward the
+    target clock to check whether that path needs the change.
+  - Move rare-event controls (single-step `step_done_q`, `fence.i`, LR,
+    coherence probe valid, fatal stop, and reset) out of high-fanout core and
+    memory-path cones, using local registered copies or separate gating where
+    rare-event latency does not affect throughput, to shorten paths that
+    limit the clock. It waits for work toward the target clock to determine
+    which of those cones need separation.
+  - Compute the load queue's L0 store tag hit a cycle early from the store
+    queue's next drain address, registering the entry hit and prior-cycle
+    write and invalidation corrections so L0 write selects and enables depend
+    on registered state rather than a same-cycle tag lookup, shortening
+    store-to-L0 paths that limit the clock with cycle-identical behavior. It
+    waits for work toward the target clock because it changes the
+    store-queue, load-queue, and L0 interfaces and their verification
+    harnesses solely to shorten those paths.
+  - Enable the one-stage register link (`MEMORY_LINK_STAGES=1`) in the X3 top
+    so every coherent channel between `frost_hart` and `frost_cluster_memory`
+    crosses a register stage, shortening cross-boundary paths that limit the
+    clock. Because that stage adds latency to L2 hits and misses, it waits
+    until work toward the target clock shows whether the X3 needs the
+    boundary stage.
 - Routing the ASIC flow in CI again, through a hierarchical flow: large
   blocks hardened separately and placed as macros.
 - A redesign three or four instructions wide, sized first with a

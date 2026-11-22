@@ -466,6 +466,38 @@ write port and their read port, as the X3's block RAMs do.
 
 ## Results with the SRAM macros
 
+### Periodic full-flow runs
+
+CI runs the flow through floorplanning ([CI](#ci)); the full flow to GDS
+runs periodically on `main` with
+`./asic/orfs.py run --num-cores 8 --memory-limit 48 --target finish`
+using the pinned `openroad/orfs:26Q3-705-gecb3cfdeb` image (`256 KiB` L2,
+`3.103 ns` default core clock period, `PLACE_DENSITY_LB_ADDON=0.10`, and
+`5.13 by 8.105 mm` die).
+
+| Metric | Commit `15de5364e` (2026-11-21) |
+| --- | ---: |
+| Die area (`5.13 by 8.105 mm`) | `41.58 mm^2` (`41,578,600 um^2`) |
+| Core area | `41.18 mm^2` (`41,176,200 um^2`) |
+| SRAM macros | `97` (`19.00 mm^2` / `19,004,500 um^2`) |
+| Standard cells, final | `1,635,946` (`3.00 mm^2` / `3,000,630 um^2`) |
+| Utilization (total / standard-cell) | `53.4%` / `13.5%` |
+| Nets / I/O pins | `1,776,453` / `4,499` |
+| Total power (internal / switching / leakage) | `4.05 W` (`3.58 W` / `0.40 W` / `0.065 W`) |
+| Worst IR drop (VDD / VSS) | `87.7 mV` / `76.4 mV` |
+| Flow errors | `0` |
+| Final GDS size | `1.74 GiB` (`1,864,028,834 B`) |
+| Elapsed wall time (`8` threads, `48 GiB` limit) | `10 h 54 min 42 s` |
+
+The `1,635,946` final standard cells comprise `987,288` multi-input
+combinational cells, `247,024` sequential cells, `128,806` tap cells,
+`122,053` timing-repair buffers, `96,425` clock buffers, `51,121` inverters,
+and `3,229` clock inverters (excluding `4,358,359` fill cells). Worst VDD
+voltage is `1.012 V` on a `1.10 V` supply (average drop `0.495 mV` on VDD,
+`0.482 mV` on VSS).
+
+### Earlier comparison runs
+
 These measurements predate the larger ingress FIFO and current floorplan;
 their recorded die dimensions are retained below.
 
@@ -758,7 +790,9 @@ fails if Docker cannot, the job then logs its disk and memory use, and the
 hosted machine is discarded after the job.
 
 The rest of the flow, from placement to GDS, runs with `./asic/orfs.py run`
-outside CI ([The whole flow](#the-whole-flow)).
+outside CI ([The whole flow](#the-whole-flow)); periodic full-flow snapshots
+on `main` are recorded under
+[Periodic full-flow runs](#periodic-full-flow-runs).
 
 ## The whole flow
 

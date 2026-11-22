@@ -491,6 +491,38 @@ and a cached page-boundary crossing. Every strided store reads back all
 written bytes through immediate scalar loads without reading `misa`.
 [Strided memory](vector_strided.S)
 
+The indexed memory trace checks aligned cached DDR unordered and ordered
+indexed loads and stores at 8, 16, 32 and 64-bit index widths, both unmasked
+and masked. It covers matching and cross-width element and index widths
+(fractional and multi-register index EMUL), unsigned high-bit and wide index
+values, duplicate-index gathers and ordered duplicate-index store ordering,
+legal in-place gathers, vector lengths below and equal to VLMAX,
+tail-undisturbed and mask-undisturbed readouts where defined, zero-active
+transfers, and a cached page-boundary crossing. Every indexed store reads back
+all written bytes through immediate scalar loads without reading `misa`.
+[Indexed memory](vector_indexed.S)
+
+The segment memory trace checks aligned cached DDR unit-stride segment loads
+and stores (`vlseg` and `vsseg`) for two through eight fields across 8, 16, 32
+and 64-bit element widths, and strided segment loads and stores (`vlsseg` and
+`vssseg`) across all four widths, both unmasked and masked. It covers positive,
+negative and zero strides, vector lengths below and equal to VLMAX,
+tail-undisturbed and mask-undisturbed readouts where defined, multi-register
+and fractional EMUL field groups, zero-active transfers, and a cached
+page-boundary crossing inside a segment. Every segment store reads back all
+written bytes through immediate scalar loads without reading `misa`.
+[Segment memory](vector_segment.S)
+
+The fault-only-first load trace checks aligned `vle8ff.v`, `vle16ff.v`,
+`vle32ff.v` and `vle64ff.v` loads, both unmasked and masked, across the upper
+boundary of the 1 GiB cached DDR window at `0xC0000000`. It starts with a
+scalar load at `0xC0000000` to check load access-fault agreement, then checks
+later-element faults that trim `vl` while leaving post-fault lanes undisturbed
+across all four widths, multi-register and VLMAX configurations, masked-off
+faulting elements that preserve `vl`, non-faulting and zero-active loads, and
+element-zero faults that trap with `mcause`, `mtval`, `vstart` and unchanged
+`vl`, without reading `misa`. [Fault-only-first loads](vector_fof.S)
+
 The integer comparison trace checks vector, scalar and immediate predicates
 at SEW 32. It reads each active mask bit through an integer destination.
 The mask-undisturbed case checks enabled updates and preserved disabled bits.
@@ -499,17 +531,30 @@ operands with matching low halves and differing upper halves. The signed
 and unsigned ordering cases compare the same pairs, including one with
 opposite signs. [Integer comparisons](vector_int_compare.S)
 
+The widening and narrowing integer trace checks widening addition and
+subtraction, integer zero and sign extensions, narrowing logical and
+arithmetic right shifts, widening multiplication and widening
+multiply-accumulate across their supported element widths. It covers
+masked and unmasked forms, vector lengths below, equal to and zero
+relative to VLMAX, tail- and mask-undisturbed readouts, shift-amount
+masking at twice SEW without rounding or saturation, fractional and
+multi-register group multipliers, legal register overlaps and illegal
+width and group-multiplier traps.
+[Widening and narrowing integer operations](vector_int_widen_narrow.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at each
 of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
 groups from seed 42, the source-width traces and the directed state,
-fractional LMUL, FP, cached DDR and integer comparison traces. Both
-implementations must return every planned trace and instruction.
-The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
-destination in each control replay. It checks `vmv.x.s` for integer source
-widths, fractional LMUL, base FP results, fused multiply-add, FP
-conversions, unit-stride memory, strided memory and integer comparisons. It
-checks `vcpop.m` for state and scalar results and FP comparisons. TestRIG
-must report each destination value mismatch.
+fractional LMUL, FP, cached DDR, integer comparison and widening and
+narrowing integer traces. Both implementations must return every planned
+trace and instruction. The VLEN 128 job reuses its simulator to flip one
+bit in a FROST integer destination in each control replay. It checks
+`vmv.x.s` for integer source widths, fractional LMUL, base FP results,
+fused multiply-add, FP conversions, unit-stride memory, strided memory,
+indexed memory, segment memory, fault-only-first loads, integer comparisons
+and widening and narrowing integer operations. It checks `vcpop.m` for
+state and scalar results and FP comparisons. TestRIG must report each
+destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail
