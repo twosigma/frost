@@ -55,8 +55,8 @@ module cpu_ooo #(
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     // Cached loads read memory during the store-queue probe (load_queue
-    // PROBE_LAUNCH).
-    parameter bit LQ_PROBE_LAUNCH = 1'b0,
+    // PROBE_LAUNCH); gated by CACHED_TIER_EN below so non-cached builds stay off.
+    parameter bit LQ_PROBE_LAUNCH = 1'b1,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
     parameter int unsigned DECODED_QUEUE_DEPTH = riscv_pkg::DecodedQueueDepth,
     // Profiling counters: perf_counter_aggregator, the wrapper's
@@ -2412,8 +2412,14 @@ module cpu_ooo #(
   logic sq_mem_write_done;
   logic sq_mem_write_error;
   riscv_pkg::mem_size_e sq_mem_write_size;
+  // C2b: decouple buffered cached store_ack (i_cached_write_inflight &&
+  // i_cached_write_done) from bus-busy so cached loads can launch on the
+  // store_ack cycle, guarded by load_queue's registered push_prev_q sector
+  // hold. Atomic writes still hold i_cached_write_inflight without
+  // i_cached_write_done until completion.
+  wire cached_write_busy = i_cached_write_inflight && !i_cached_write_done;
   logic slow_write_inflight;
-  assign slow_write_inflight = i_cached_write_inflight ||
+  assign slow_write_inflight = cached_write_busy ||
       (VARIABLE_UNCACHED && i_uncached_write_inflight);
 
   logic lq_mem_read_en;
@@ -2628,7 +2634,7 @@ module cpu_ooo #(
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
-      .LQ_PROBE_LAUNCH(LQ_PROBE_LAUNCH),
+      .LQ_PROBE_LAUNCH(LQ_PROBE_LAUNCH && CACHED_TIER_EN),
       .INT_RS_DEPTH(INT_RS_DEPTH),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
@@ -4178,7 +4184,7 @@ module cpu_ooo #(
       .o_cached_read_ready(o_cached_read_ready),
       .o_cached_read_held(cached_read_held),
       .i_cached_write_done(i_cached_write_done),
-      .i_cached_write_inflight(i_cached_write_inflight),
+      .i_cached_write_inflight(cached_write_busy),
       .i_uncached_read_request_ready,
       .o_uncached_read_enable,
       .o_uncached_read_size,
