@@ -459,76 +459,6 @@ module coherence_store_boundary_formal #(
       end
     end
   end
-  if (COVER_PROBE_KEPT) begin : gen_probe_kept_covers
-    // Reachability of a kept probe-cycle read (and C2b's store_ack decoupling
-    // and push_prev_q sector hold) beside an older store to another dword or
-    // sector, observed purely through the production module ports.
-    wire probe_fire = lq_mem_read_en && lq_sq_check_valid;
-    wire store_ack_cycle = l1_write_inflight && l1_write_done && !l1_write_busy;
-    logic [1:0] read_count_q = 0;
-    logic probe_verdict_q = 0, probe_after_s0_q = 0, probe_store_ack_q = 0;
-    logic probe_kept_q = 0, probe_kept_ack_q = 0;
-    logic l0_hit_seen_q = 0, resp_after_verdict_q = 0;
-    logic sector_held_on_ack_q = 0, sector_held_second_ack_q = 0;
-    always_ff @(posedge i_clk) begin
-      assume (permit_d && permit_g && permit_c && permit_u);
-      assume (first_byte == 8'h11 && second_byte == 8'h22);
-      if (rst) begin
-        read_count_q <= 0;
-        probe_verdict_q <= 0;
-        probe_after_s0_q <= 0;
-        probe_store_ack_q <= 0;
-        probe_kept_q <= 0;
-        probe_kept_ack_q <= 0;
-        l0_hit_seen_q <= 0;
-        resp_after_verdict_q <= 0;
-        sector_held_on_ack_q <= 0;
-        sector_held_second_ack_q <= 0;
-      end else begin
-        probe_verdict_q <= probe_fire;
-        if (lq_mem_read_en && read_count_q != 2'd3)
-          read_count_q <= read_count_q + 2'd1;
-        if (probe_fire && !sq_empty && acknowledged_q >= 1)
-          probe_after_s0_q <= 1'b1;
-        if (probe_fire && !sq_empty && acknowledged_q >= 1 && store_ack_cycle)
-          probe_store_ack_q <= 1'b1;
-        if (probe_verdict_q && probe_after_s0_q && !lq_fu_complete.valid &&
-            !lq_l0_hit && !rt_lq_mem_read_valid)
-          probe_kept_q <= 1'b1;
-        if (probe_verdict_q && probe_store_ack_q && !lq_fu_complete.valid &&
-            !lq_l0_hit && !rt_lq_mem_read_valid)
-          probe_kept_ack_q <= 1'b1;
-        if (probe_kept_q && rt_lq_mem_read_valid)
-          resp_after_verdict_q <= 1'b1;
-        if (lq_l0_hit) l0_hit_seen_q <= 1'b1;
-        if (store_ack_cycle && $past(ordinary_write) &&
-            $past(rt_data_mem_addr[31:5]) == address0[31:5] &&
-            addressed_q && !load_update_q && read_count_q == 0 &&
-            !lq_mem_read_en && !lq_sq_check_valid && !lq_fu_complete.valid) begin
-          sector_held_on_ack_q <= 1'b1;
-          if (accepted_q == 2 && acknowledged_q == 1)
-            sector_held_second_ack_q <= 1'b1;
-        end
-        p_probe_kept_launch : cover (probe_fire && !sq_empty && acknowledged_q >= 1);
-        p_probe_kept_verdict : cover (probe_kept_q);
-        if (SECTOR_CASE == 1)
-          p_probe_kept_on_store_ack :
-          cover (probe_fire && !sq_empty && acknowledged_q >= 1 && store_ack_cycle);
-        if (lq_fu_complete.valid && lq_fu_complete.value == {8{first_byte}}) begin
-          p_probe_kept_complete :
-          cover (probe_kept_q && (resp_after_verdict_q || rt_lq_mem_read_valid) &&
-                 read_count_q == 2'd1 && !l0_hit_seen_q);
-          if (SECTOR_CASE == 1)
-            p_probe_kept_store_ack_complete :
-            cover (probe_kept_ack_q && (resp_after_verdict_q || rt_lq_mem_read_valid) &&
-                   read_count_q == 2'd1 && !l0_hit_seen_q);
-          p_probe_sector_hold_store_ack : cover (sector_held_on_ack_q);
-          if (SECTOR_CASE == 0)
-            p_probe_sector_hold_second_ack : cover (sector_held_second_ack_q);
-        end
-      end
-    end
-  end
   logic [3:0] local_phase;
   logic extra_sent_q, extra_granted_q, probe_offered_q, probe_accepted_q;
   coh_d_t extra_demand_q;
@@ -1487,6 +1417,76 @@ module coherence_store_boundary_formal #(
         p_control_all_local_stages :
         cover (released_q && probe_accepted_q && extra_granted_q &&
             (interrupt_seen_q & Stages) == Stages);
+    end
+  end
+  if (COVER_PROBE_KEPT) begin : gen_probe_kept_covers
+    // Reachability of a kept probe-cycle read (and C2b's store_ack decoupling
+    // and push_prev_q sector hold) beside an older store to another dword or
+    // sector, observed purely through the production module ports.
+    wire probe_fire = lq_mem_read_en && lq_sq_check_valid;
+    wire store_ack_cycle = l1_write_inflight && l1_write_done && !l1_write_busy;
+    logic [1:0] read_count_q = 0;
+    logic probe_verdict_q = 0, probe_after_s0_q = 0, probe_store_ack_q = 0;
+    logic probe_kept_q = 0, probe_kept_ack_q = 0;
+    logic l0_hit_seen_q = 0, resp_after_verdict_q = 0;
+    logic sector_held_on_ack_q = 0, sector_held_second_ack_q = 0;
+    always_ff @(posedge i_clk) begin
+      assume (permit_d && permit_g && permit_c && permit_u);
+      assume (first_byte == 8'h11 && second_byte == 8'h22);
+      if (rst) begin
+        read_count_q <= 0;
+        probe_verdict_q <= 0;
+        probe_after_s0_q <= 0;
+        probe_store_ack_q <= 0;
+        probe_kept_q <= 0;
+        probe_kept_ack_q <= 0;
+        l0_hit_seen_q <= 0;
+        resp_after_verdict_q <= 0;
+        sector_held_on_ack_q <= 0;
+        sector_held_second_ack_q <= 0;
+      end else begin
+        probe_verdict_q <= probe_fire;
+        if (lq_mem_read_en && read_count_q != 2'd3)
+          read_count_q <= read_count_q + 2'd1;
+        if (probe_fire && !sq_empty && acknowledged_q >= 1)
+          probe_after_s0_q <= 1'b1;
+        if (probe_fire && !sq_empty && acknowledged_q >= 1 && store_ack_cycle)
+          probe_store_ack_q <= 1'b1;
+        if (probe_verdict_q && probe_after_s0_q && !lq_fu_complete.valid &&
+            !lq_l0_hit && !rt_lq_mem_read_valid)
+          probe_kept_q <= 1'b1;
+        if (probe_verdict_q && probe_store_ack_q && !lq_fu_complete.valid &&
+            !lq_l0_hit && !rt_lq_mem_read_valid)
+          probe_kept_ack_q <= 1'b1;
+        if (probe_kept_q && rt_lq_mem_read_valid)
+          resp_after_verdict_q <= 1'b1;
+        if (lq_l0_hit) l0_hit_seen_q <= 1'b1;
+        if (store_ack_cycle && $past(ordinary_write) &&
+            $past(rt_data_mem_addr[31:5]) == address0[31:5] &&
+            addressed_q && !load_update_q && read_count_q == 0 &&
+            !lq_mem_read_en && !lq_sq_check_valid && !lq_fu_complete.valid) begin
+          sector_held_on_ack_q <= 1'b1;
+          if (accepted_q == 2 && acknowledged_q == 1)
+            sector_held_second_ack_q <= 1'b1;
+        end
+        p_probe_kept_launch : cover (probe_fire && !sq_empty && acknowledged_q >= 1);
+        p_probe_kept_verdict : cover (probe_kept_q);
+        if (SECTOR_CASE == 1)
+          p_probe_kept_on_store_ack :
+          cover (probe_fire && !sq_empty && acknowledged_q >= 1 && store_ack_cycle);
+        if (lq_fu_complete.valid && lq_fu_complete.value == {8{first_byte}}) begin
+          p_probe_kept_complete :
+          cover (probe_kept_q && (resp_after_verdict_q || rt_lq_mem_read_valid) &&
+                 read_count_q == 2'd1 && !l0_hit_seen_q);
+          if (SECTOR_CASE == 1)
+            p_probe_kept_store_ack_complete :
+            cover (probe_kept_ack_q && (resp_after_verdict_q || rt_lq_mem_read_valid) &&
+                   read_count_q == 2'd1 && !l0_hit_seen_q);
+          p_probe_sector_hold_store_ack : cover (sector_held_on_ack_q);
+          if (SECTOR_CASE == 0)
+            p_probe_sector_hold_second_ack : cover (sector_held_second_ack_q);
+        end
+      end
     end
   end
 `ifdef FATAL_STICKY_PROOF
