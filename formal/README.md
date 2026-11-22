@@ -354,9 +354,11 @@ contents don't matter, which leaves their outputs arbitrary too. Most run as
 depth-1 BMC. Because the start state is unconstrained, that single step
 covers every state, reachable or not, so it proves a combinational or
 next-state identity outright rather than to a bound. Many scripts also pin
-the number of assertions with `select -assert-count` and reject assumptions
-and initial values with `select -assert-none`, so a proof cannot pass with
-its properties compiled out.
+the number of assertions, assumptions, or covers with `select -assert-count`
+qualified by `r:FLAVOR=assert`, `r:FLAVOR=assume`, or `r:FLAVOR=cover`, and
+reject assumptions and initial values with `select -assert-none` (matching both
+`t:$assume` and `t:$check r:FLAVOR=assume %i`), so a proof cannot pass with
+its properties compiled out or reclassified as assumptions.
 
 ### Primitive twins
 

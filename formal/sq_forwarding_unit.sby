@@ -20,6 +20,8 @@ smtbmc boolector
 ~tree_equiv: hierarchy -top sq_forwarding_unit_formal
 ~tree_equiv: script free_undefined.ys
 ~tree_equiv: prep -top sq_forwarding_unit_formal
+~tree_equiv: select -assert-count 9 t:$check r:FLAVOR=assert %i
+~tree_equiv: select -assert-count 11 t:$check r:FLAVOR=cover %i
 
 tree_equiv: read_slang --top sq_forwarding_unit --single-unit -DSYNTHESIS riscv_pkg.sv sq_forwarding_unit.sv
 tree_equiv: hierarchy -check -top sq_forwarding_unit
@@ -43,6 +45,7 @@ tree_equiv: design -copy-from formal_sel -as sq_forwarding_unit_formal_sel sq_fo
 tree_equiv: hierarchy -top sq_forwarding_unit_tree_equiv
 tree_equiv: script free_undefined.ys
 tree_equiv: prep -top sq_forwarding_unit_tree_equiv -flatten
+tree_equiv: select -assert-count 4 t:$check r:FLAVOR=assert %i
 tree_equiv: opt -fast
 
 [files]

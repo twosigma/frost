@@ -32,8 +32,8 @@ cutpoint w:sq_check_payload_en w:lq_addr_update_raw_match w:entry_sector w:entry
 delete -port load_queue/o:*
 setundef -undriven -anyseq
 opt
-select -assert-count 1 t:$check
 select -assert-count 1 t:$check r:FLAVOR=assert %i
+select -assert-none t:$check r:FLAVOR=assume %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

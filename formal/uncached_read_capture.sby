@@ -14,8 +14,9 @@ read_verilog -formal -D SYNTHESIS -D UNCACHED_READ_CAPTURE_LOCAL_PROOF -sv cpu_u
 hierarchy -top cpu_uncached_adapter
 script free_undefined.ys
 prep -top cpu_uncached_adapter -flatten
-select -assert-count 2 t:$check
+select -assert-count 2 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
 select -assert-none a:init w:f_past_valid %d
 
 [files]

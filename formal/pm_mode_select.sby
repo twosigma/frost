@@ -26,8 +26,9 @@ read -formal -sv pm_mode_select.sv
 hierarchy -top pm_mode_select
 script free_undefined.ys
 prep -top pm_mode_select
-select -assert-count 14 t:$check
+select -assert-count 14 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

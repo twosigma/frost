@@ -14,7 +14,7 @@ read_verilog -formal -D SYNTHESIS -D CONTROL_FLOW_HOLDOFF_LOCAL_PROOF -sv contro
 hierarchy -top control_flow_tracker
 script free_undefined.ys
 prep -top control_flow_tracker
-select -assert-count 2 t:$check
+select -assert-count 2 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
 

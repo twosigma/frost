@@ -8230,6 +8230,47 @@ def test_scripts_free_undefined_constants_first() -> None:
     ] == UNDEFINED_OPENING
 
 
+def unqualified_check_count_guards(
+    commands: list[sby_config.ParsedCommand],
+) -> list[str]:
+    """Return select -assert-count/-assert-min lines that select t:$check without a FLAVOR filter."""
+    bad: list[str] = []
+    for cmd in commands:
+        if cmd.form.id not in ("select_assert_count", "select_assert_min"):
+            continue
+        selection = cmd.args[3:]
+        if "t:$check" not in selection:
+            continue
+        has_flavor = any(
+            tok in ("r:FLAVOR=assert", "r:FLAVOR=assume", "r:FLAVOR=cover")
+            for tok in selection
+        )
+        if not (has_flavor and "%i" in selection):
+            bad.append(" ".join(cmd.args))
+    return bad
+
+
+def test_check_count_guards_specify_flavor() -> None:
+    """Every select -assert-count/-assert-min over t:$check qualifies its FLAVOR."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
+    lacking: list[str] = []
+    for sby_path in sorted(formal.glob("*.sby")):
+        for task, cfg in sby_config.resolved(sby_path).items():
+            parsed = cfg.parsed(sby_path.parent, expand_opening=False)
+            lacking.extend(
+                f"{sby_path.name} {task}: {line}"
+                for line in unqualified_check_count_guards(parsed)
+            )
+    assert not lacking, lacking
+    bare = sby_config.parse_script_lines(["select -assert-count 2 t:$check"])
+    assert unqualified_check_count_guards(bare) == ["select -assert-count 2 t:$check"]
+    qualified = sby_config.parse_script_lines(
+        ["select -assert-count 2 t:$check r:FLAVOR=assert %i"]
+    )
+    assert unqualified_check_count_guards(qualified) == []
+
+
 DONT_CARE_NO_STATE = (
     "select -assert-none t:*ff* t:*FF* t:*latch* t:*LATCH* t:$sr t:$_SR_* t:$mem* "
     "t:$anyinit t:$fsm"

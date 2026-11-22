@@ -37,7 +37,8 @@ setundef -undriven -anyseq
 opt
 prep -top rs_lq_prematch_equiv
 select -assert-none t:$assume
-select -assert-count 76 t:$check
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 76 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

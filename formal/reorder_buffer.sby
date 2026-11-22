@@ -24,6 +24,8 @@ read -formal -sv reorder_buffer.sv
 hierarchy -top reorder_buffer
 script free_undefined.ys
 prep -top reorder_buffer
+select -assert-count 45 t:$check r:FLAVOR=assert %i
+select -assert-count 14 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

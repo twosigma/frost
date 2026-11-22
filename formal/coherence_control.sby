@@ -89,6 +89,8 @@ bypass_arbiter: chparam -set BYPASS_IDLE 1 coherence_d_arbiter
 arbiter: hierarchy -top coherence_d_arbiter
 arbiter: script free_undefined.ys
 arbiter: prep -top coherence_d_arbiter
+coh_arbiter_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
+large_arbiter: select -assert-count 39 t:$check r:FLAVOR=assert %i
 dma: chparam -set SOURCE 2 -set PORT_CLASS 3 -set ID_BITS 4 coherence_line_bridge
 early: chparam -set EARLY_RESPONSE 1 coherence_line_bridge
 slot1: chparam -set SLOT 1 coherence_line_bridge

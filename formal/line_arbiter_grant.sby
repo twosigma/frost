@@ -21,7 +21,8 @@ hierarchy -top line_port_arbiter
 script free_undefined.ys
 prep -top line_port_arbiter -flatten
 select -assert-none t:$assume
-select -assert-count 1 t:$check
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 1 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/cache/line_port_arbiter.sv

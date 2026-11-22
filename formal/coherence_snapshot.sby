@@ -24,6 +24,8 @@ hierarchy -check -top coherence_snapshot_formal
 script free_undefined.ys
 prep -flatten -top coherence_snapshot_formal
 check -assert
+select -assert-count 17 t:$check r:FLAVOR=assert %i
+select -assert-count 1 t:$check r:FLAVOR=cover %i
 memory_map -keepdc
 opt -keepdc
 bounded: techmap

@@ -49,9 +49,13 @@ prep -top frost_cache -flatten
 memory_map
 opt
 select -assert-none t:$assume
-bmc_fast: select -assert-count 9 t:$check
-bmc_fast_ways1: select -assert-count 9 t:$check
-bmc_hw: select -assert-count 9 t:$check
+select -assert-none t:$check r:FLAVOR=assume %i
+bmc_fast: select -assert-count 6 t:$check r:FLAVOR=assert %i
+bmc_fast: select -assert-count 3 t:$check r:FLAVOR=cover %i
+bmc_fast_ways1: select -assert-count 6 t:$check r:FLAVOR=assert %i
+bmc_fast_ways1: select -assert-count 3 t:$check r:FLAVOR=cover %i
+bmc_hw: select -assert-count 6 t:$check r:FLAVOR=assert %i
+bmc_hw: select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
