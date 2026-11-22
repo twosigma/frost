@@ -42,7 +42,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     """Run the seeded and directed suites with each job's vector length."""
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     job = workflow["jobs"]["test-testrig-vector"]
-    assert job["timeout-minutes"] == 55, (
+    assert job["timeout-minutes"] == 65, (
         "Vector TestRIG job needs the registered budget"
     )
     assert job["strategy"]["matrix"]["vlen"] == [128, 256, 512]
@@ -52,6 +52,9 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         if step.get("name") == "Compare seeded and directed vector traces"
     )
     command = shlex.split(replay["run"].replace("\\\n", ""))
+    assert command[command.index("--kill-after=10s") + 1] == "45m", (
+        "Vector TestRIG replay needs the registered budget"
+    )
     arguments = command[command.index("tests/test_testrig.py") + 1 :]
     assert arguments.count("--vlen") == 1
     assert arguments[arguments.index("--vlen") + 1] == "${{ matrix.vlen }}"
@@ -65,7 +68,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         if step.get("name") == "Check detection of an incorrect vector result"
     )
     assert control["if"] == "matrix.vlen == 128"
-    assert control["timeout-minutes"] == 35, (
+    assert control["timeout-minutes"] == 40, (
         "Vector controls need the registered budget"
     )
     control_command = shlex.split(control["run"].replace("\\\n", ""))
@@ -187,6 +190,12 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
             "vector_whole_reg",
             "order=45 insn=0x42c02557 rd=x10",
             "0x135724689acebdf1 != 0x135724689acebdf0",
+        ],
+        [
+            "fp-widen",
+            "vector_fp_widen",
+            "order=22 insn=0x42a02557 rd=x10",
+            "0x400e000000000000 != 0x400e000000000001",
         ],
     ]
 

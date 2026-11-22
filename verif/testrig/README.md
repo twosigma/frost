@@ -584,12 +584,27 @@ nonzero store widths and `mew = 1`. Every retiring whole-register store
 reads back all written bytes through immediate scalar loads without
 reading `misa`. [Whole-register memory](vector_whole_reg.S)
 
+The widening floating-point trace checks all eighteen binary32-to-binary64
+widening floating-point encodings: narrow-source and wide-source addition
+and subtraction (`vfwadd` and `vfwsub` in `.vv`, `.vf`, `.wv` and `.wf`),
+widening multiplication (`vfwmul.vv` and `vfwmul.vf`), and all four
+widening fused multiply-add sign forms (`vfwmacc`, `vfwnmacc`, `vfwmsac`
+and `vfwnmsac` in `.vv` and `.vf`). It covers all five rounding modes with
+`frm` CSR readbacks after each write across all sixteen rounding-capable
+encodings, subnormal binary32 widening and exact binary64 subnormal
+accumulation, signed-zero cancellation, binary64 overflow, `0 * inf + qNaN`
+and `sNaN` invalid flags, improperly NaN-boxed scalars, masked and unmasked
+forms, vector lengths below, equal to and zero relative to VLMAX, tail- and
+mask-undisturbed readouts, `mf2` through `m4` group multipliers, legal
+register overlaps and illegal widening FP traps.
+[Widening FP operations](vector_fp_widen.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at
 each of VLEN 128, 256 and 512. Each replays 12 generated traces of 20
 operation groups from seed 42, the source-width traces and the directed
 state, fractional LMUL, FP, cached DDR, integer comparison, widening and
-narrowing integer, fixed-point, single-width FP and whole-register
-memory traces. Both
+narrowing integer, fixed-point, single-width FP, whole-register memory and
+widening FP traces. Both
 implementations must return every planned trace and instruction. The
 VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer
@@ -597,7 +612,7 @@ source widths, fractional LMUL, base FP results, fused multiply-add, FP
 conversions, unit-stride memory, strided memory, indexed memory, segment
 memory, fault-only-first loads, integer comparisons, widening and
 narrowing integer operations, fixed-point operations, single-width FP
-operations and whole-register memory. It checks `vcpop.m` for state and
+operations, whole-register memory and widening FP operations. It checks `vcpop.m` for state and
 scalar results and FP comparisons. TestRIG must report each destination
 value mismatch.
 
