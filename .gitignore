@@ -127,3 +127,7 @@ ci-reuse-*
 
 # Reused-model startup check logs and completion records.
 /tests/startup_sweep/
+
+# Per-run simulation executables and their build manifests.
+/.ci-sim-models/
+/sim-model-export/

@@ -527,12 +527,69 @@ def test_vcu118_device_tree_isa_matches_the_boot_packer() -> None:
     assert int(block[1]) == packer.CBOZ_BLOCK_BYTES == int(rtl_block[1])
 
 
-def test_advertised_isa_lists_agree() -> None:
-    """Both boards' DTs, the boot packer, Sail, README and ROADMAP agree on extensions.
+@pytest.mark.parametrize("board", ["x3", "vcu118"])
+def test_vector_device_tree_matches_board(board: str, tmp_path: Path) -> None:
+    """Compiled DT properties describe X3's vector subsets and VCU118's scalar core."""
+    packer = _load_module(SBI_PACKER)
+    dts = packer.gen_dts(
+        clk_hz=1, initrd_range=None, bootargs="", model="t", board=board
+    )
+    packer.compile_dtb(dts, tmp_path, "dtc")
+    properties = {}
+    for name in ("riscv,isa", "riscv,isa-extensions"):
+        result = subprocess.run(
+            ["fdtget", "-t", "s", str(tmp_path / "frost.dtb"), "/cpus/cpu@0", name],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        properties[name] = result.stdout.strip()
+    head, *multi = properties["riscv,isa"].split("_")
+    tokens = (*head.removeprefix("rv64"), *multi)
+    extensions = tuple(properties["riscv,isa-extensions"].split())
+    assert tokens == extensions
+    assert len(extensions) == len(set(extensions))
+    vector = {ext for ext in extensions if ext == "v" or ext.startswith("zv")}
+    expected = {
+        "v",
+        "zve32x",
+        "zve32f",
+        "zve64x",
+        "zve64f",
+        "zve64d",
+        "zvl32b",
+        "zvl64b",
+        "zvl128b",
+        "zvl256b",
+    }
+    assert vector == (expected if board == "x3" else set())
+    first_supervisor = next(
+        i for i, ext in enumerate(extensions) if ext.startswith("s")
+    )
+    assert all(
+        i < first_supervisor for i, ext in enumerate(extensions) if ext.startswith("z")
+    )
+    if board == "x3":
+        assert extensions[extensions.index("zkt") + 1] == "zve32x"
+        assert extensions[extensions.index("smaia") - 1] == "zvl256b"
+    top = (REPO_ROOT / f"boards/{board}/{board}_frost.sv").read_text()
+    if board == "x3":
+        assert re.search(r"\.VECTOR\(1'b1\)", top)
+        assert re.search(r"\.VECTOR_ADVERTISE\(1'b1\)", top)
+        assert re.search(r"\.VLEN\(256\)", top)
+    else:
+        assert not re.search(r"\.VECTOR\s*\(", top)
+        assert not re.search(r"\.VECTOR_ADVERTISE\s*\(", top)
+    subsystem = (REPO_ROOT / "boards/xilinx_frost_subsystem.sv").read_text()
+    assert ".VECTOR_ADVERTISE(VECTOR_ADVERTISE)" in subsystem
 
-    Keeps every extension advertisement surface in sync and rejects any unimplemented,
-    partial or unadvertised roadmap entry from appearing in the device trees or Sail.
-    Also checks that the predecode Python twin serializes the three Svinval words.
+
+def test_advertised_isa_lists_agree() -> None:
+    """Board DTs agree with the packer, and docs match the advertised ISAs.
+
+    X3 also advertises V and its implemented Zve and Zvl subsets, which
+    README.md lists. Also checks that the predecode Python twin serializes
+    the three Svinval words.
     """
     packer = _load_module(SBI_PACKER)
     assert packer.ISA_BASE == "rv64i"
@@ -559,30 +616,33 @@ def test_advertised_isa_lists_agree() -> None:
         isa = re.search(r'riscv,isa = "([^"]+)";', dts)
         ext_prop = re.search(r"riscv,isa-extensions = (.*?);", dts, re.S)
         mmu_prop = re.search(r'mmu-type = "([^"]+)";', dts)
+        expected_isa = packer.X3_ISA_STRING if dts_label == "x3" else packer.ISA_STRING
+        expected_extensions = (
+            packer.X3_ISA_EXTENSIONS if dts_label == "x3" else packer.ISA_EXTENSIONS
+        )
         assert base is not None and base[1] == packer.ISA_BASE, dts_label
-        assert isa is not None and isa[1] == packer.ISA_STRING, dts_label
+        assert isa is not None and isa[1] == expected_isa, dts_label
         assert ext_prop is not None, dts_label
-        assert tuple(re.findall(r'"([^"]+)"', ext_prop[1])) == packer.ISA_EXTENSIONS, (
+        assert tuple(re.findall(r'"([^"]+)"', ext_prop[1])) == expected_extensions, (
             dts_label
         )
         assert mmu_prop is not None and mmu_prop[1] == "riscv,sv39", dts_label
 
     advertised = set(packer.ISA_EXTENSIONS)
+    x3_advertised = set(packer.X3_ISA_EXTENSIONS)
 
     readme = (REPO_ROOT / "README.md").read_text()
     ext_section = readme.split("### Supported RISC-V Extensions\n", 1)[1].split(
         "\n### Microarchitecture", 1
     )[0]
     readme_exts: set[str] = set()
-    vector_unadvertised = {"v", "zvbb", "zvfhmin", "zvfh", "zvbc", "zvkng"}
+    vector_unadvertised = {"zvbb", "zvfhmin", "zvfh", "zvbc", "zvkng"}
     for match in re.finditer(
         r"^\|\s*\*\*([^*]+)\*\*\s*\|\s*(.*?)\s*\|$", ext_section, re.M
     ):
         names, desc = match[1], match[2]
         for raw_token in names.split(","):
             token = raw_token.strip().lower()
-            if token == "v (partial)":
-                token = "v"
             if token in vector_unadvertised:
                 assert (
                     "unadvertised" in desc.lower()
@@ -592,6 +652,10 @@ def test_advertised_isa_lists_agree() -> None:
                 readme_exts.add("i")
             elif token == "b":
                 readme_exts.update({"zba", "zbb", "zbs"})
+            elif token == "v":
+                assert "VLEN 256" in desc
+                readme_exts.add("v")
+                readme_exts.update(packer.X3_VECTOR_EXTENSIONS)
             elif token == "supervisor mode":
                 assert "Sv39" in desc and "Sstc" in desc
                 readme_exts.add("sstc")
@@ -600,13 +664,12 @@ def test_advertised_isa_lists_agree() -> None:
             else:
                 readme_exts.add(token)
     # Supm needs a tagged-address ABI that the supplied Linux image lacks.
-    # Optional vector execution is documented but remains unadvertised at
-    # every implementation stage, including completed arithmetic subsets.
+    # README.md describes the X3 configuration, which advertises V (VLEN 256).
     readme_unadvertised = {"supm"} | (readme_exts & vector_unadvertised)
-    assert not (vector_unadvertised & advertised)
+    assert not (vector_unadvertised & x3_advertised)
     assert readme_unadvertised <= readme_exts
-    assert not (readme_unadvertised & advertised)
-    assert readme_exts - readme_unadvertised == advertised
+    assert not (readme_unadvertised & x3_advertised)
+    assert readme_exts - readme_unadvertised == x3_advertised
 
     linux_readme = (REPO_ROOT / "linux" / "README.md").read_text()
     linux_isa_section = linux_readme.split("## Advertised ISA\n", 1)[1].split(
@@ -657,7 +720,7 @@ def test_advertised_isa_lists_agree() -> None:
             roadmap_unadvertised.add(ext_name)
     non_rva23_advertised = {"smaia", "ssaia", "zbkb", "zbkc"}
     assert not (non_rva23_advertised & roadmap_unadvertised)
-    assert (roadmap_implemented | non_rva23_advertised) == advertised
+    assert (roadmap_implemented | non_rva23_advertised) == advertised | {"v"}
     assert not (roadmap_unadvertised & advertised)
 
     sail_raw = (REPO_ROOT / "verif" / "testrig" / "sail_frost.json").read_text()

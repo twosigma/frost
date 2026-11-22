@@ -103,6 +103,20 @@ CBOZ_BLOCK_BYTES = 64
 CBOP_BLOCK_BYTES = 64
 ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_ssu64xl_svade_svinval_svnapot_svpbmt_svvptc"
 
+# X3 implements V with ELEN 64 and VLEN 256. The VCU118 uses the scalar ISA.
+X3_VECTOR_EXTENSIONS = (
+    "zve32x", "zve32f", "zve64x", "zve64f", "zve64d",
+    "zvl32b", "zvl64b", "zvl128b", "zvl256b",
+)  # fmt: skip
+X3_ISA_EXTENSIONS = (
+    *ISA_EXTENSIONS[:6],
+    "v",
+    *ISA_EXTENSIONS[6 : ISA_EXTENSIONS.index("smaia")],
+    *X3_VECTOR_EXTENSIONS,
+    *ISA_EXTENSIONS[ISA_EXTENSIONS.index("smaia") :],
+)
+X3_ISA_STRING = "rv64imafdcv_" + "_".join(X3_ISA_EXTENSIONS[7:])
+
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
 DEFAULT_BOOTARGS = "earlycon console=ttyS0 rdinit=/sbin/init ipv6.disable=1"
@@ -282,9 +296,11 @@ def gen_dts(
     mac is the NIC's local-mac-address as DT bytes ("02 11 22 33 44 55");
     mem_size is the size of the memory node at DDR_BASE.
     """
+    isa_extensions = X3_ISA_EXTENSIONS if board == "x3" else ISA_EXTENSIONS
+    isa_string = X3_ISA_STRING if board == "x3" else ISA_STRING
     ext_list = ",\n\t\t\t\t".join(
-        ", ".join(f'"{e}"' for e in ISA_EXTENSIONS[i : i + 6])
-        for i in range(0, len(ISA_EXTENSIONS), 6)
+        ", ".join(f'"{e}"' for e in isa_extensions[i : i + 6])
+        for i in range(0, len(isa_extensions), 6)
     )
     chosen = [f'\t\tstdout-path = "/soc@0/serial@{UART_BASE:x}";']
     if bootargs:
@@ -341,7 +357,7 @@ def gen_dts(
 \t\t\tcompatible = "riscv";
 \t\t\tmmu-type = "riscv,sv39";
 \t\t\triscv,isa-base = "{ISA_BASE}";
-\t\t\triscv,isa = "{ISA_STRING}";
+\t\t\triscv,isa = "{isa_string}";
 \t\t\triscv,isa-extensions = {ext_list};
 \t\t\triscv,cbom-block-size = <{CBOM_BLOCK_BYTES}>;
 \t\t\triscv,cboz-block-size = <{CBOZ_BLOCK_BYTES}>;

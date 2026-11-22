@@ -25,6 +25,7 @@ bmc_32g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=35 riscv_pkg.sv
 bmc_64g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=36 riscv_pkg.sv
 bmc_128g: read -formal -sv -DFROST_DDR_CAPACITY_LOG2_BYTES=37 riscv_pkg.sv
 read -formal -sv ptw_pbmt_alias_ref.sv
+bmc_small: chparam -set ExpectAlias 0 ptw_pbmt_alias_ref
 hierarchy -top ptw_pbmt_alias_ref
 script free_undefined.ys
 prep -top ptw_pbmt_alias_ref

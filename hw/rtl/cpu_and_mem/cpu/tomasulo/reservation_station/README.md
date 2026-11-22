@@ -399,7 +399,9 @@ station does:
 - The `reservation_station` formal target checks the module defaults and the
   INT configuration; the `tomasulo_wrapper` target checks the 16-entry INT
   station against the real allocator. `rs_divide_gate` checks the MUL and FP
-  gates against a busy engine. The FP check uses the actual opcode RAM.
+  gates against a busy engine. The FP check uses the actual opcode RAM, and
+  `fp_engine_op_class` proves that FP_RS's engine-gate opcode list and
+  `fp_shim`'s pipelined opcode list agree for every opcode.
   Smaller targets check the restructured select, repair, and look-ahead
   logic against plain references.
 - `rs_stage2_payload_equiv` proves, without a bound and for each station's

@@ -15,21 +15,6 @@ cover: depth 7
 smtbmc boolector
 
 [script]
-# The original fetch-input contract: the sixteen assumptions this twin keeps,
-# copied verbatim from the frozen PD into pd_fetch_contract.sv, so the frozen
-# file's simulation checks are never compiled here. The old and new datapaths
-# expose their real outputs independently of these input restrictions.
-read -formal -sv riscv_pkg.original.sv rvc_decompressor.original.sv pd_target_high_precompute.original.sv pd_fetch_contract.sv
-hierarchy -check -top pd_fetch_contract
-setattr -unset dont_touch *
-setattr -mod -unset keep_hierarchy *
-hierarchy -top pd_fetch_contract
-script free_undefined.ys
-prep -top pd_fetch_contract -flatten
-select -assert-none t:$check r:FLAVOR=assert %i
-select -assert-count 16 t:$check r:FLAVOR=assume %i
-design -stash contract
-design -reset
 read_slang --top pd_history_twin_side --single-unit -DSYNTHESIS -DPREDICTOR_TWIN_REFERENCE riscv_pkg.original.sv predictor_twin_fold_pkg.sv pd_history_twin_pkg.sv rvc_decompressor.original.sv pd_target_high_precompute.original.sv pd_redirect_next.original.sv pd_stage.original.sv tage_history.original.sv sdp_dist_ram.sv pd_history_twin_side.sv
 hierarchy -top pd_history_twin_side
 script free_undefined.ys
@@ -44,13 +29,24 @@ prep -top pd_history_twin_side -flatten
 select -assert-none t:$assume t:$check r:FLAVOR=assume %i
 design -stash candidate
 design -reset
-read_slang --top pd_history_twin --single-unit -DSYNTHESIS riscv_pkg.sv pd_history_twin_pkg.sv pd_history_twin.sv
-design -copy-from contract -as pd_fetch_contract pd_fetch_contract
+read_slang --top pd_history_twin --single-unit -DSYNTHESIS riscv_pkg.sv pd_history_twin_pkg.sv rvc_decompressor.original.sv predictor_fetch_contract.sv pd_history_twin.sv
 design -copy-from reference -as pd_history_reference pd_history_twin_side
 design -copy-from candidate -as pd_history_candidate pd_history_twin_side
 hierarchy -check -top pd_history_twin
 script free_undefined.ys
 prep -top pd_history_twin -flatten
+# Use the IF producer's own assertions as the PD packet contract. The two
+# target sums and selectors per slot and the three separate first-slot source
+# fields remain free here. Both sides see the real inputs on the reset edge.
+select -set producer_only c:fetch_inputs.p_s1_native* c:fetch_inputs.p_s2_native* c:fetch_inputs.p_s1_compressed* c:fetch_inputs.p_s2_compressed* c:fetch_inputs.p_s1_hot c:fetch_inputs.p_s1_rs1 c:fetch_inputs.p_s1_rs2
+select -assert-count 11 @producer_only t:$check %i r:FLAVOR=assert %i
+chformal -assert -remove @producer_only
+select -set fetch_checks c:fetch_inputs.p_* t:$check %i r:FLAVOR=assert %i
+select -assert-count 16 @fetch_checks
+chformal -assert2assume @fetch_checks
+select -set fetch_covers c:fetch_inputs.c_* t:$check %i r:FLAVOR=cover %i
+select -assert-count 3 @fetch_covers
+chformal -cover -remove @fetch_covers
 select -assert-count 67 t:$check r:FLAVOR=assert %i
 select -assert-count 21 t:$check r:FLAVOR=assume %i
 select -assert-count 4 t:$check r:FLAVOR=cover %i
@@ -59,7 +55,6 @@ prove: chformal -cover -remove
 cover: chformal -assert -remove
 
 [files]
-pd_fetch_contract.sv
 predictor_reference/riscv_pkg.original.sv
 predictor_reference/rvc_decompressor.original.sv
 predictor_reference/pd_target_high_precompute.original.sv
@@ -75,6 +70,7 @@ predictor_reference/tage_history.original.sv
 predictor_twin_ram/sdp_dist_ram.sv
 predictor_twin_fold_pkg.sv
 pd_history_twin_pkg.sv
+predictor_fetch_contract.sv
 pd_history_twin_side.sv
 pd_history_twin.sv
 free_undefined.ys

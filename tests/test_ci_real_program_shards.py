@@ -41,7 +41,18 @@ from test_run_cocotb import (
 )
 
 
-VECTOR_SHARD = "Vector programs"
+VECTOR_SHARDS = frozenset({"Vector programs", "Vector programs, memory and strides"})
+SPLIT_DEFAULT_SHARDS = frozenset(
+    {
+        "Fetch and branch prediction",
+        "ISA, NAPOT and pointer masking",
+        "Runtime and other",
+        "Vector programs, memory and strides",
+        "Vector programs",
+        "NIC stress",
+        "Memory stress",
+    }
+)
 COMPLEMENT = "Runtime and other"
 SHARD_TITLE_PREFIX = "Real Programs ("
 BUDGET_FILE = Path(__file__).with_name("fixtures") / "ci_real_program_budgets.json"
@@ -312,10 +323,14 @@ def test_registered_programs_have_one_ci_shard(
                 "debug_fatal_stop_with_engine",
             ) and matches != ["Debug and UART"]:
                 errors.append((name, tier, matches, ["Debug and UART"]))
-            if name.startswith("vec_") and matches != [VECTOR_SHARD]:
-                errors.append((name, tier, matches, [VECTOR_SHARD]))
-            if not name.startswith("vec_") and VECTOR_SHARD in matches:
-                errors.append((name, tier, matches, "outside the vector shard"))
+            if name.startswith("vec_") and (
+                len(matches) != 1 or matches[0] not in VECTOR_SHARDS
+            ):
+                errors.append((name, tier, matches, sorted(VECTOR_SHARDS)))
+            if not name.startswith("vec_") and any(
+                match in VECTOR_SHARDS for match in matches
+            ):
+                errors.append((name, tier, matches, "outside the vector shards"))
     assert not errors, (
         f"Programs must select exactly one shard per supported tier: {errors}"
     )
@@ -432,12 +447,25 @@ def test_program_shards_fit_wall_time_budgets(
             # The planned elapsed seconds must fit with the 1.8x allowance.
             # For ceiling-limited jobs, freeze growth at the recorded plan.
             plan_limit = timeout * 5 // 9
+            if shard.name in SPLIT_DEFAULT_SHARDS:
+                assert shard.timeout_minutes == DEFAULT_TIMEOUT_MINUTES, (
+                    tier,
+                    shard.name,
+                    shard.timeout_minutes,
+                )
+                assert shard.name not in capped, (tier, shard.name)
             if shard.name in capped:
                 assert shard.timeout_minutes == TIMEOUT_CEILING_MINUTES, (
                     tier,
                     shard.name,
                 )
-                assert plan_limit < capped[shard.name] < timeout, (tier, shard.name)
+                assert len(shard.cases) == 1 and all(
+                    _is_opensbi(case) for case in shard.cases
+                ), (tier, shard.name, shard.cases)
+                assert plan_limit < capped[shard.name] <= timeout * 65 // 100, (
+                    tier,
+                    shard.name,
+                )
                 plan_limit = capped[shard.name]
             planned = overhead[shard.name] + sum(
                 case_seconds[name] for name in shard.cases

@@ -2,6 +2,13 @@
 # Tail and mask undisturbed. The scalar checks read only the five
 # initialized mask bits or element zero of an initialized vector.
 .noshrink
+# The vector configuration advertises V.
+.4byte 0x30102573  # csrr a0, misa
+.assert trap == 0 "misa is readable"
+.4byte 0x01555513  # srli a0, a0, 21
+.4byte 0x00157513  # andi a0, a0, 1
+.assert rd_addr == 10 "misa.V extraction writes x10"
+.assert rd_wdata == 0x1 "misa.V is set"
 # VS encodings with FS Off.
 .4byte 0x000062b7  # lui t0, 0x6
 .4byte 0x60028293  # addi t0, t0, 0x600

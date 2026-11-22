@@ -392,7 +392,8 @@ picks one and prints it. They are written to `tests/testrig_logs/atomics/`.
 QuickCheckVEngine has no vector templates, so `--vector N` replays N tests
 from [`vector.py`](vector.py) as raw instruction words, as `--atomics` does.
 It needs a core built with the vector unit, which the runner requests with
-`-GVECTOR=1 -GVLEN=<--vlen>`, and a Sail configuration for the same length:
+`-GVECTOR=1 -GVLEN=<--vlen> -GVECTOR_ADVERTISE=1`, and a Sail configuration
+for the same length:
 `sail_frost.json` with the matching `sail_frost_vlen*.json` overlay, which
 turns V on, makes `misa.V` read-only, and lets `mstatus.VS` take all four
 states.
@@ -422,7 +423,7 @@ legal controls. The memory trace checks traps before an access.
 · [Memory](vector_source_widths_memory.S)
 
 The `--vector-directed` option includes a state and scalar-result trace
-for vector CSRs, VS state, `vsetivli`, `vsetvl`, `vcpop.m`, `vfirst.m`
+for `misa.V`, vector CSRs, VS state, `vsetivli`, `vsetvl`, `vcpop.m`, `vfirst.m`
 and `vfmv.f.s`. The trace
 asserts the scalar results and selected trap outcomes. The mask operations
 read five active bits from initialized mask bytes. FP extraction reads
@@ -475,10 +476,53 @@ the expected value from every written element.
 The unit-stride memory trace checks aligned cached DDR loads and stores at
 8, 16, 32 and 64-bit element widths, both unmasked and masked, and mask loads
 and stores (`vlm.v` and `vsm.v`). It covers vector lengths below and equal to
-VLMAX, tail-undisturbed and mask-undisturbed readouts where defined, multi-register
-and fractional EMUL transfers, zero-active transfers, and a cached page-boundary
-crossing. Every vector store reads back all written bytes through immediate
-scalar loads without reading `misa`. [Unit-stride memory](vector_unit_stride.S)
+VLMAX, tail-undisturbed and mask-undisturbed readouts where defined,
+multi-register and fractional EMUL transfers, zero-active transfers, and a
+cached page-boundary crossing. Every vector store reads back all written bytes
+through immediate scalar loads without reading `misa`.
+[Unit-stride memory](vector_unit_stride.S)
+
+The strided memory trace checks aligned cached DDR strided loads and stores at
+8, 16, 32 and 64-bit element widths, both unmasked and masked. It covers
+positive strides above and equal to the element size, negative strides, zero
+strides through `x0` and through a zero-valued register, vector lengths below
+and equal to VLMAX, tail-undisturbed and mask-undisturbed readouts where
+defined, multi-register and fractional EMUL transfers, zero-active transfers,
+and a cached page-boundary crossing. Every strided store reads back all
+written bytes through immediate scalar loads without reading `misa`.
+[Strided memory](vector_strided.S)
+
+The indexed memory trace checks aligned cached DDR unordered and ordered
+indexed loads and stores at 8, 16, 32 and 64-bit index widths, both unmasked
+and masked. It covers matching and cross-width element and index widths
+(fractional and multi-register index EMUL), unsigned high-bit and wide index
+values, duplicate-index gathers and ordered duplicate-index store ordering,
+legal in-place gathers, vector lengths below and equal to VLMAX,
+tail-undisturbed and mask-undisturbed readouts where defined, zero-active
+transfers, and a cached page-boundary crossing. Every indexed store reads back
+all written bytes through immediate scalar loads without reading `misa`.
+[Indexed memory](vector_indexed.S)
+
+The segment memory trace checks aligned cached DDR unit-stride segment loads
+and stores (`vlseg` and `vsseg`) for two through eight fields across 8, 16, 32
+and 64-bit element widths, and strided segment loads and stores (`vlsseg` and
+`vssseg`) across all four widths, both unmasked and masked. It covers positive,
+negative and zero strides, vector lengths below and equal to VLMAX,
+tail-undisturbed and mask-undisturbed readouts where defined, multi-register
+and fractional EMUL field groups, zero-active transfers, and a cached
+page-boundary crossing inside a segment. Every segment store reads back all
+written bytes through immediate scalar loads without reading `misa`.
+[Segment memory](vector_segment.S)
+
+The fault-only-first load trace checks aligned `vle8ff.v`, `vle16ff.v`,
+`vle32ff.v` and `vle64ff.v` loads, both unmasked and masked, across the upper
+boundary of the 1 GiB cached DDR window at `0xC0000000`. It starts with a
+scalar load at `0xC0000000` to check load access-fault agreement, then checks
+later-element faults that trim `vl` while leaving post-fault lanes undisturbed
+across all four widths, multi-register and VLMAX configurations, masked-off
+faulting elements that preserve `vl`, non-faulting and zero-active loads, and
+element-zero faults that trap with `mcause`, `mtval`, `vstart` and unchanged
+`vl`, without reading `misa`. [Fault-only-first loads](vector_fof.S)
 
 The integer comparison trace checks vector, scalar and immediate predicates
 at SEW 32. It reads each active mask bit through an integer destination.
@@ -488,17 +532,58 @@ operands with matching low halves and differing upper halves. The signed
 and unsigned ordering cases compare the same pairs, including one with
 opposite signs. [Integer comparisons](vector_int_compare.S)
 
-On main pushes and pull requests labelled `run-ci`, CI runs one job at each
-of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
-groups from seed 42, the source-width traces and the directed state,
-fractional LMUL, FP, cached DDR and integer comparison traces. Both
-implementations must return every planned trace and instruction.
-The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
-destination in each control replay. It checks `vmv.x.s` for integer source
-widths, fractional LMUL, base FP results, fused multiply-add, FP
-conversions, unit-stride memory and integer comparisons. It checks `vcpop.m`
-for state and scalar results and FP comparisons. TestRIG must report each
-destination value mismatch.
+The widening and narrowing integer trace checks widening addition and
+subtraction, integer zero and sign extensions, narrowing logical and
+arithmetic right shifts, widening multiplication and widening
+multiply-accumulate across their supported element widths. It covers
+masked and unmasked forms, vector lengths below, equal to and zero
+relative to VLMAX, tail- and mask-undisturbed readouts, shift-amount
+masking at twice SEW without rounding or saturation, fractional and
+multi-register group multipliers, legal register overlaps and illegal
+width and group-multiplier traps.
+[Widening and narrowing integer operations](vector_int_widen_narrow.S)
+
+The fixed-point trace checks saturating addition and subtraction,
+averaging addition and subtraction, saturating fractional multiplication,
+scaling right shifts and narrowing fixed-point clips across all supported
+element widths. It covers all four fixed-point rounding modes with `vxrm`
+CSR readbacks after each write, saturation and sticky `vxsat` updates,
+rounding before saturation on narrowing clips, inactive masked and tail
+lanes leaving `vxsat` clear, vector lengths below, equal to and zero
+relative to VLMAX, tail- and mask-undisturbed readouts, fractional and
+multi-register group multipliers, legal register overlaps and illegal
+widening, narrowing and mask-register overlap traps.
+[Fixed-point operations](vector_fixed_point.S)
+
+The single-width floating-point trace checks binary32 and binary64
+addition, subtraction, reverse subtraction, multiplication, division,
+reverse division, square root, reciprocal and reciprocal-square-root
+estimates, minimum and maximum, sign injection, classification,
+floating-point merge, and scalar-vector floating-point moves. It covers
+all five rounding modes with `frm` CSR readbacks after each write across
+addition, multiplication, division, reverse division, square root and
+reciprocal estimates, all five accrued exception flags, signed-zero and
+NaN-propagation corners, improperly NaN-boxed scalars, all ten
+classification classes, masked and unmasked forms, vector lengths below,
+equal to and zero relative to VLMAX, tail- and mask-undisturbed
+readouts, fractional and multi-register group multipliers, legal
+in-place overlap and illegal single-width FP traps.
+[Single-width FP operations](vector_fp_single.S)
+
+On main pushes and pull requests labelled `run-ci`, CI runs one job at
+each of VLEN 128, 256 and 512. Each replays 12 generated traces of 20
+operation groups from seed 42, the source-width traces and the directed
+state, fractional LMUL, FP, cached DDR, integer comparison, widening and
+narrowing integer, fixed-point and single-width FP traces. Both
+implementations must return every planned trace and instruction. The
+VLEN 128 job reuses its simulator to flip one bit in a FROST integer
+destination in each control replay. It checks `vmv.x.s` for integer
+source widths, fractional LMUL, base FP results, fused multiply-add, FP
+conversions, unit-stride memory, strided memory, indexed memory, segment
+memory, fault-only-first loads, integer comparisons, widening and
+narrowing integer operations, fixed-point operations and single-width FP
+operations. It checks `vcpop.m` for state and scalar results and FP
+comparisons. TestRIG must report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail

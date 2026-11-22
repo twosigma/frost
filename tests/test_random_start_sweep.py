@@ -130,7 +130,7 @@ def test_failed_checks_are_not_cached_and_binary_changes_invalidate_success(
         "sim_assertions.py",
     ):
         (fixture / name).write_text("fixture")
-    outcomes = iter([False, True, True, True])
+    outcomes = iter([False, True, True, True, True])
     calls = []
 
     def run(
@@ -149,7 +149,13 @@ def test_failed_checks_are_not_cached_and_binary_changes_invalidate_success(
     binary.write_bytes(b"second model")
     sweep.check_built_model(binary, {"FROST_RANDOM_START_SEED": "job-a"})
     sweep.check_built_model(binary, {"FROST_RANDOM_START_SEED": "job-b"})
-    assert len(calls) == 4
+    timing = {
+        "FROST_RANDOM_START_SEED": "job-b",
+        "FROST_DDR_TIMING_ARGS": "-GDDR_MODEL_REORDER=1",
+    }
+    sweep.check_built_model(binary, timing)
+    sweep.check_built_model(binary, timing)
+    assert len(calls) == 5
 
 
 def test_full_sweep_has_a_bounded_allocation(monkeypatch: pytest.MonkeyPatch) -> None:

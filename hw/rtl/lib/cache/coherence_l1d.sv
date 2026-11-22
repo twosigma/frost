@@ -239,6 +239,7 @@ module coherence_l1d #(
   // every ordinary load attached to the endpoint, including a speculative
   // endpoint's attached loads.
   logic grant_answer, grant_service, grant_answered_q;
+  logic install_read_q, install_read;
   logic [7:0] grant_attached, grant_answer_slots;
   // An ordinary load's lookup also serves the other unowned, unwaiting loads
   // of its sector: a hit answers them from the same row, and an attachment
@@ -321,7 +322,14 @@ module coherence_l1d #(
   logic store_read_turn_q, read_waiting_q;
   logic read_service_waiting, load_grant_eligible;
   logic [31:0] update_mask_q;
-  logic array_skip_data, array_data_valid;
+  logic array_skip_data, array_no_bank, array_resp_no_bank, array_data_valid;
+`ifdef STORE_BANK_PROOF
+  // Follow one arbitrary byte from the physical row capture through the
+  // scratch image, until a real row or an overwrite supplies that byte.
+  logic f_store_tags, f_row_tainted, f_image_tainted, f_reply_tainted;
+  (* anyconst *) logic [4:0] f_store_lane;
+  logic [7:0] f_array_capture, f_local_capture;
+`endif
   logic [ADDR_WIDTH-1:0] pending_addr_q;
   logic [255:0] pending_data_q;
   logic [31:0] pending_mask_q;
@@ -497,9 +505,16 @@ module coherence_l1d #(
     assign grant_answer_slots[slot] = (grant_service && grant_attached[slot]) ||
         (grant_answer && ld_read_q[grant_ep_q] == 3'(slot));
   end
-  assign read_fill = grant_answer || (active && phase_q == UpdateWait && array_ready &&
-      operation_q == GrantOp && grant_ep_q == '0 && !selected_grant_store &&
-      !acquisition_sc_q);
+  // A grant on endpoint zero answers its read when the array returns to Idle
+  // after the update. Record the owner on the update handshake.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) install_read_q <= 1'b0;
+    else if (active && update_ready)
+      install_read_q <= phase_q == Update && operation_q == GrantOp &&
+          grant_ep_q == '0 && !acquisition_store_q && !acquisition_sc_q;
+  end
+  assign install_read = active && update_ready && install_read_q;
+  assign read_fill = grant_answer || install_read;
 
   coherence_read_flags read_flags (
       .i_valid(rd_valid_q),
@@ -1166,7 +1181,7 @@ module coherence_l1d #(
       .i_addr(i_address),
       .i_data(i_write_data),
       .i_mask(i_write_mask),
-      .i_zero(store_push && i_write_zero),
+      .i_zero(i_write_zero),
       .i_tag(i_write_tag),
       .i_pop(store_pop),
       .i_seal(store_seal),
@@ -2598,6 +2613,9 @@ module coherence_l1d #(
       (operation_q == StoreOp || operation_q == LookaheadOp) &&
       !probe_launch;
 
+  assign array_no_bank = array_skip_data && operation_q == StoreOp &&
+      !store_zero[store_head_index] && !store_twin[store_head_index];
+
   // Classification consumes registered lookup results. A conflicting
   // endpoint or frozen sector requires a fresh lookup.
   assign local_admit = !local_conflict_q && !request_live && !pending_q &&
@@ -2663,6 +2681,12 @@ module coherence_l1d #(
       .i_req_no_touch((StreamEnabled && !probe_launch && operation_q == PrefetchOp) ||
           shadow_req),
       .i_req_tags_only(shadow_req),
+      .i_req_no_bank(array_no_bank),
+      .o_resp_no_bank(array_resp_no_bank),
+`ifdef STORE_BANK_PROOF
+      .o_f_row_tainted(f_row_tainted),
+      .o_f_store_tags(f_store_tags),
+`endif
       .o_resp_valid(array_valid),
       .i_resp_ready(phase_q == LookupWait),
       .o_resp_hit(array_hit),
@@ -2694,7 +2718,16 @@ module coherence_l1d #(
   logic capture_array_read;
 `ifdef READ_CAPTURE_PROOF
   logic [7:0] capture_exact;
-  always_comb p_read_capture_exact : assert (&capture_exact);
+  logic capture_reset_seen_q = 1'b0;
+  wire install_class_exact = install_read_q == (phase_q == UpdateWait &&
+      operation_q == GrantOp && grant_ep_q == '0 && !selected_grant_store && !acquisition_sc_q);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) capture_reset_seen_q <= 1'b1;
+    if (capture_reset_seen_q) p_read_install_class : assert (install_class_exact);
+  end
+  // The sequential proof checks the class. The data proof cuts every flop
+  // and checks every slot and input for both values of that class.
+  always_comb p_read_capture_exact : assert (!install_class_exact || (&capture_exact));
 `endif
   always_comb begin
     capture_array_read = 1'b0;
@@ -2711,9 +2744,7 @@ module coherence_l1d #(
     (* keep = "true" *) logic [3:0] capture_select;
     logic [63:0] capture_data, capture_next;
     assign grant_capture = grant_answer_slots[slot] ||
-        (active && phase_q == UpdateWait && array_ready && operation_q == GrantOp &&
-         grant_ep_q == '0 && !selected_grant_store && !acquisition_sc_q &&
-         acquisition_read_q == 3'(slot));
+        (install_read && acquisition_read_q == 3'(slot));
     assign array_capture = active && phase_q == LookupWait && array_valid &&
         capture_array_read && !(shadow_q && path_hit_q) && selected_kind_q != ReadAMO &&
         array_hit && ((selected_read_q == 3'(slot) && !shadow_q) || merge_hit_slots[slot]);
@@ -2730,6 +2761,10 @@ module coherence_l1d #(
         ({64{capture_select[2]}} & array_data[64*rd_addr_q[slot][4:3]+:64]) |
         ({64{capture_select[3]}} & image_q[64*atomic_addr_q[4:3]+:64]);
     assign capture_next = capture_valid ? capture_data : rd_data_q[slot];
+`ifdef STORE_BANK_PROOF
+    assign f_array_capture[slot] = array_capture;
+    assign f_local_capture[slot] = local_capture;
+`endif
     always_ff @(posedge i_clk) begin
       if (i_rst) rd_data_q[slot] <= '0;
       else rd_data_q[slot] <= capture_next;
@@ -3407,6 +3442,10 @@ module coherence_l1d #(
       wb_reserved_q <= 1'b0;
       store_selected_q <= '0;
       image_q <= '0;
+`ifdef STORE_BANK_PROOF
+      f_image_tainted <= 1'b0;
+      f_reply_tainted <= 1'b0;
+`endif
       update_mask_q <= '0;
       state_q <= '0;
       way_q <= '0;
@@ -3545,6 +3584,9 @@ module coherence_l1d #(
             phase_q <= phase_t'(idle_phase_rest);
             if (probe_capture && probe_in.opcode != coherence_pkg::CheckSC) begin
               reply_q <= '0;
+`ifdef STORE_BANK_PROOF
+              f_reply_tainted <= 1'b0;
+`endif
               reply_q.tid <= probe_in.tid;
               reply_q.epoch <= probe_in.epoch;
               reply_q.addr <= probe_in.addr;
@@ -3552,6 +3594,9 @@ module coherence_l1d #(
               probe_put_q <= wb_match_slot;
             end else if (probe_valid_q && !o_r_valid) begin
               reply_q <= '0;
+`ifdef STORE_BANK_PROOF
+              f_reply_tainted <= 1'b0;
+`endif
               reply_q.tid <= probe_q.tid;
               reply_q.epoch <= probe_q.epoch;
               reply_q.addr <= probe_q.addr;
@@ -3613,6 +3658,9 @@ module coherence_l1d #(
             way_q <= array_way;
             update_addr_q <= array_addr;
             image_q <= array_data;
+`ifdef STORE_BANK_PROOF
+            f_image_tainted <= f_row_tainted;
+`endif
             state_q <= array_state;
             update_mask_q <= operation_q == ProbeOp ? '0 : '1;
             case (operation_q)
@@ -3625,6 +3673,9 @@ module coherence_l1d #(
                 reply_q.data_valid <= (array_hit && array_state ==
                     coherence_pkg::Modified) || probe_absorbed_q;
                 reply_q.data <= probe_absorbed_q ? probe_put.data : array_data;
+`ifdef STORE_BANK_PROOF
+                f_reply_tainted <= !probe_absorbed_q && f_row_tainted;
+`endif
                 reply_q.absorbed <= probe_absorbed_q;
                 reply_q.put_id <= probe_put_q;
                 reply_q.put_epoch <= probe_q.epoch;
@@ -3642,6 +3693,9 @@ module coherence_l1d #(
                 if (array_available) begin
                   update_addr_q <= grant_q.addr;
                   image_q <= grant_q.data;
+`ifdef STORE_BANK_PROOF
+                  f_image_tainted <= 1'b0;
+`endif
                   state_q <= coherence_pkg::is_grantm(grant_q.opcode) ?
                       coherence_pkg::Modified : coherence_pkg::Shared;
                   if (selected_grant_store) begin
@@ -3652,6 +3706,9 @@ module coherence_l1d #(
                     freeze_slot_q <= grant_ep_q == '0 ? reserved_wb_q : wb_free_slot;
                     freeze_addr_q <= array_addr;
                     freeze_data_q <= array_data;
+`ifdef STORE_BANK_PROOF
+                    p_store_taint_grant_freeze : assert (!f_row_tainted);
+`endif
                     freeze_maintenance_q <= 1'b0;
                     phase_q <= Freeze;
                   end else phase_q <= Update;
@@ -3660,6 +3717,9 @@ module coherence_l1d #(
               StoreOp: begin
                 if (array_hit && array_state == coherence_pkg::Modified) begin
                   image_q <= pending_data_q;
+`ifdef STORE_BANK_PROOF
+                  f_image_tainted <= 1'b0;
+`endif
                   update_mask_q <= pending_mask_q;
                   phase_q <= Update;
                 end else begin
@@ -3678,11 +3738,17 @@ module coherence_l1d #(
               TwinOp: begin
                 update_addr_q <= pending_addr_q;
                 image_q <= pending_data_q;
+`ifdef STORE_BANK_PROOF
+                f_image_tainted <= 1'b0;
+`endif
                 state_q <= coherence_pkg::Modified;
                 if (!array_hit && array_state == coherence_pkg::Modified) begin
                   freeze_slot_q <= twin_wb_slot;
                   freeze_addr_q <= array_addr;
                   freeze_data_q <= array_data;
+`ifdef STORE_BANK_PROOF
+                  p_store_taint_twin_freeze : assert (!f_row_tainted);
+`endif
                   freeze_maintenance_q <= 1'b0;
                   phase_q <= Freeze;
                 end else phase_q <= Update;
@@ -3701,6 +3767,9 @@ module coherence_l1d #(
                 end else begin
                   for (int index = 0; index < 32; index++)
                   if (atomic_mask_q[index]) image_q[8*index+:8] <= atomic_data_q[8*index+:8];
+`ifdef STORE_BANK_PROOF
+                if (atomic_mask_q[f_store_lane]) f_image_tainted <= 1'b0;
+`endif
                   phase_q <= Update;
                 end
               end
@@ -3709,6 +3778,9 @@ module coherence_l1d #(
                   freeze_slot_q <= wb_free_slot;
                   freeze_addr_q <= array_addr;
                   freeze_data_q <= array_data;
+`ifdef STORE_BANK_PROOF
+                  p_store_taint_maint_freeze : assert (!f_row_tainted);
+`endif
                   freeze_maintenance_q <= 1'b1;
                   state_q <= coherence_pkg::Shared;
                   phase_q <= Freeze;
@@ -3795,6 +3867,9 @@ module coherence_l1d #(
             end else begin
               for (int index = 0; index < 32; index++)
               if (atomic_mask_q[index]) image_q[8*index+:8] <= atomic_data_q[8*index+:8];
+`ifdef STORE_BANK_PROOF
+            if (atomic_mask_q[f_store_lane]) f_image_tainted <= 1'b0;
+`endif
               phase_q <= Update;
             end
           end
@@ -4190,6 +4265,7 @@ module coherence_l1d #(
         p_shadow_tags_only : assert (!array_data_valid);
       if (active && phase_q == LookupWait && array_valid && !array_data_valid) begin
         p_skipped_array_data_unused : assert (
+            (operation_q == StoreOp && array_resp_no_bank) ||
             ((operation_q == StoreOp || operation_q == LookaheadOp) && array_hit) ||
             (operation_q == ReadOp && (!array_hit || shadow_q)) ||
             ((operation_q == GrantOp || operation_q == TwinOp) &&
@@ -4788,6 +4864,33 @@ module coherence_l1d #(
 `undef COHERENCE_L1D_ANSWER_CHECKS
 `endif
 `ifdef FORMAL
+`ifdef STORE_BANK_PROOF
+  always_ff @(posedge i_clk) if (!i_rst) begin
+    if (array_ready && ((active && phase_q == Lookup) || probe_launch)) begin
+      p_store_no_bank_exact : assert (array_no_bank == (phase_q == Lookup &&
+          operation_q == StoreOp && !probe_launch &&
+          !store_zero[store_head_index] && !store_twin[store_head_index]));
+      if (array_no_bank)
+        p_store_no_bank_sealed : assert (pending_q && store_valid[store_head_index] &&
+            store_sealed[store_head_index] && array_request_addr == pending_addr_q &&
+            pending_addr_q == store_addr[store_head_index]);
+    end
+    if (|f_array_capture) p_store_taint_array_capture : assert (!f_row_tainted);
+    if ((|f_local_capture) && f_store_lane[4:3] == atomic_addr_q[4:3])
+      p_store_taint_local_capture : assert (!f_image_tainted);
+    if (active && phase_q == Update && update_ready && update_mask_q[f_store_lane])
+      p_store_taint_update : assert (!f_image_tainted);
+    if (o_r_valid && reply_q.data_valid)
+      p_store_taint_probe_reply : assert (!f_reply_tainted);
+    if (active && phase_q == LookupWait && array_valid && array_resp_no_bank)
+      p_store_no_bank_response : assert (operation_q == StoreOp && !array_data_valid);
+    c_store_taint_miss : cover (active && phase_q == LookupWait && array_valid &&
+        array_resp_no_bank && !array_hit && f_row_tainted);
+    c_store_taint_image : cover (f_image_tainted);
+    c_store_probe_after_store : cover (probe_launch && operation_q == StoreOp && !array_no_bank);
+    c_store_no_bank_take : cover (path_take && f_store_tags);
+  end
+`endif
 `ifdef STORE_DATA_PROOF
   initial assert ($bits(ep_grant) == EpSlots * (ADDR_WIDTH + 275));
   (* anyconst *) logic [ADDR_WIDTH-6:0] f_sector;
@@ -4956,6 +5059,11 @@ module coherence_l1d #(
       p_owned_operation : assert (operation_q <= (TwinLine ? TwinOp : LookaheadOp) &&
           (StreamEnabled || operation_q != PrefetchOp));
       p_owned_free : assert (!load_ep_free || f_owner_free);
+      // Endpoint 0's read-install flag matches UpdateWait on a non-store,
+      // non-SC grant for endpoint 0.
+      p_owned_install_read : assert (install_read_q == (phase_q == UpdateWait &&
+          operation_q == GrantOp && grant_ep_q == '0 && !selected_grant_store &&
+          !acquisition_sc_q));
       if (operation_q == LookaheadOp &&
           (phase_q == Lookup || phase_q == LookupWait || phase_q == Acquire))
         p_owned_lookahead : assert (acq_ep_q != '0);

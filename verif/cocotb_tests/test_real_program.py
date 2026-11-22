@@ -210,8 +210,28 @@ def _load_symbol_address(symbol_name: str, app_name: str | None = None) -> int |
 _VEC_MEM_DDR_CASE_LOG_ADDR = 0x00018000
 
 
-def _format_vec_mem_active_case(dut: Any, app_name: str | None) -> str | None:
-    """Read the last recorded encoding and case index for vec_mem_reserved_forms_test."""
+def _first_fail_line(uart_output: str) -> str | None:
+    """Return the first diagnostic FAIL line from UART output, excluding <<FAIL>>."""
+    for raw_line in uart_output.splitlines():
+        line = raw_line.strip()
+        if line == "FAIL" or line.startswith("FAIL "):
+            return line
+    return None
+
+
+def _format_vec_mem_case_footer(insn: int, case_num: int, uart_output: str = "") -> str:
+    """Format the diagnostic footer for vec_mem_reserved_forms_test failures."""
+    base = f"last recorded case: encoding 0x{insn:08x} (case {case_num})"
+    first_fail = _first_fail_line(uart_output)
+    if first_fail is not None:
+        return f"{base}; first FAIL line: {first_fail}"
+    return f"{base}; no FAIL line printed"
+
+
+def _format_vec_mem_active_case(
+    dut: Any, app_name: str | None, uart_output: str = ""
+) -> str | None:
+    """Format the last recorded case and first FAIL line for vec_mem_reserved_forms_test."""
     if app_name != "vec_mem_reserved_forms_test":
         return None
     addr = _load_symbol_address("vec_mem_active_case", app_name)
@@ -219,7 +239,7 @@ def _format_vec_mem_active_case(dut: Any, app_name: str | None) -> str | None:
         return None
     bram_addr = addr if addr < 0x40000 else _VEC_MEM_DDR_CASE_LOG_ADDR
     insn, case_num = read_low_bram_words(dut, bram_addr, 2)
-    return f"stopped while executing encoding 0x{insn:08x} (case {case_num})"
+    return _format_vec_mem_case_footer(insn, case_num, uart_output)
 
 
 def start_clocks(signals: tuple[Any, ...], period_ps: int) -> None:
@@ -5422,8 +5442,9 @@ async def run_until_complete(
             cocotb.log.error(
                 "RAS_stress_test BTB update trace:\n" + "\n".join(btb_update_events)
             )
-        cocotb.log.error(f"UART output:\n{uart_monitor.get_output()}")
-        case_note = _format_vec_mem_active_case(dut, app_name)
+        uart_output = uart_monitor.get_output()
+        cocotb.log.error(f"UART output:\n{uart_output}")
+        case_note = _format_vec_mem_active_case(dut, app_name, uart_output)
         if case_note is not None:
             cocotb.log.error(case_note)
         suffix = f"; {case_note}" if case_note is not None else ""
@@ -5470,10 +5491,11 @@ async def run_until_complete(
                 "RAS_stress_test last architectural commits: "
                 f"x8/s0={last_x8_commit} x18/s2={last_x18_commit}"
             )
-        cocotb.log.error(f"UART output:\n{uart_monitor.get_output()}")
+        uart_output = uart_monitor.get_output()
+        cocotb.log.error(f"UART output:\n{uart_output}")
         if on_timeout is not None:
             on_timeout(run_number, max_cycles)
-        case_note = _format_vec_mem_active_case(dut, app_name)
+        case_note = _format_vec_mem_active_case(dut, app_name, uart_output)
         if case_note is not None:
             cocotb.log.error(case_note)
         suffix = f"; {case_note}" if case_note is not None else ""

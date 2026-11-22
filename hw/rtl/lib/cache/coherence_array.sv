@@ -58,6 +58,27 @@ module coherence_array #(
     input logic i_req_no_touch,
     // This lookup reads no data: it replies after the tag read, without data.
     input logic i_req_tags_only = 1'b0,
+    // A lookup that needs only ownership can leave the banks to the hit port
+    // and keep its ordinary response schedule, including a data wait on a miss.
+    input logic i_req_no_bank = 1'b0,
+    output logic o_resp_no_bank,
+`ifdef STORE_BANK_PROOF
+    output logic o_f_row_tainted,
+    output logic o_f_store_tags,
+`endif
+`ifdef ARRAY_PROGRESS_PROOF
+    output logic [3:0] o_f_phase,
+    output logic [$clog2(
+DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
+)-1:0] o_f_count,
+    output logic o_f_touch,
+    output logic [WayBits-1:0] o_f_way,
+    output logic [SetBits-1:0] o_f_set,
+    input logic i_f_replay,
+    input logic i_f_touch,
+    input logic [WayBits-1:0] i_f_way,
+    input logic [SetBits-1:0] i_f_set,
+`endif
     output logic o_resp_valid,
     input logic i_resp_ready,
     output logic o_resp_hit,
@@ -65,7 +86,7 @@ module coherence_array #(
     output logic [WayBits-1:0] o_resp_way,
     output logic [ADDR_WIDTH-1:0] o_resp_addr,
     output logic [1:0] o_resp_state,
-    // Data is meaningful only when valid; skipped reads keep the prior data.
+    // Only a data-valid response carries a row belonging to the selected tag.
     output logic o_resp_data_valid,
     output logic [8*LINE_BYTES-1:0] o_resp_data,
     // An update names a complete tag and row. Writes finish before another
@@ -118,7 +139,7 @@ module coherence_array #(
   logic [SetBits-1:0] init_set_q, set_q;
   logic [TagBits-1:0] tag_q;
   logic visit_q, skip_data_q, modified_data_q, no_touch_q, hit_data_q, victim_data_q;
-  logic tags_only_q, init_done_q;
+  logic tags_only_q, bank_owner_q, init_done_q;
   // The early reply depends only on registered request flags and tag results.
   logic data_valid_q, early_reply;
   // The response indication captures with the tag result or the data row.
@@ -236,8 +257,24 @@ module coherence_array #(
   // way's path, so no write depends on the state read before it.
   // A hit-port touch writes when the array writes no replacement state; one
   // that meets an array write is dropped.
-  wire hp_touch_we = !i_rst && hp_touch && !plru_we;
-  assign plru_way = plru_hit_q ? o_resp_way : plru_we ? i_update_way : hp_touch_way;
+`ifdef ARRAY_PROGRESS_PROOF
+  // Both copies run their own hit ports. Four-way comparisons replay only
+  // the accepted replacement history at the tree writer to name the same victim.
+  assign o_f_phase = phase_q;
+  assign o_f_count = count_q;
+  assign o_f_touch = hp_touch;
+  assign o_f_way   = hp_touch_way;
+  assign o_f_set   = hp_touch_set;
+  wire replacement_touch = i_f_replay ? i_f_touch : hp_touch;
+  wire [WayBits-1:0] replacement_way = i_f_replay ? i_f_way : hp_touch_way;
+  wire [SetBits-1:0] replacement_set = i_f_replay ? i_f_set : hp_touch_set;
+`else
+  wire replacement_touch = hp_touch;
+  wire [WayBits-1:0] replacement_way = hp_touch_way;
+  wire [SetBits-1:0] replacement_set = hp_touch_set;
+`endif
+  wire hp_touch_we = !i_rst && replacement_touch && !plru_we;
+  assign plru_way = plru_hit_q ? o_resp_way : plru_we ? i_update_way : replacement_way;
   wire [PlruBits-1:0] plru_path = path(plru_way);
   assign plru_bit_we = plru_we ? (phase_q == Init ? '1 : plru_path) : hp_touch_we ? plru_path : '0;
   assign plru_write  = phase_q == Init ? '0 : touch('0, plru_way);
@@ -250,7 +287,7 @@ module coherence_array #(
         .i_clk(i_clk),
         .i_write_enable(plru_bit_we[node]),
         .i_bulk_clear(init_bulk_clear),
-        .i_write_address(phase_q == Init ? init_set_q : plru_we ? set_q : hp_touch_set),
+        .i_write_address(phase_q == Init ? init_set_q : plru_we ? set_q : replacement_set),
         .i_read_address(tag_raddr),
         .i_write_data(plru_write[node]),
         .o_read_data(plru_read[node])
@@ -300,7 +337,11 @@ module coherence_array #(
   // A lookup that may read data owns the banks' read address in its final
   // tag-read cycle (the claim); the hit port has it in every other cycle.
   // Both selects are registered, so no tag compare reaches a bank address.
-  wire claim = phase_q == Tags && !tags_only_q;
+  wire claim = phase_q == Tags && bank_owner_q;
+  assign o_resp_no_bank = !bank_owner_q && !tags_only_q;
+`ifdef STORE_BANK_PROOF
+  assign o_f_store_tags = phase_q == Tags && o_resp_no_bank;
+`endif
   wire [SetBits-1:0] hp_set = i_hp_addr[OffsetBits+:SetBits];
   // A hit-port read never shares an edge with a write to its set (a macro
   // would read that row as undefined data), with the claim, or with Init.
@@ -377,11 +418,18 @@ module coherence_array #(
 
   assign select_data = visit_q ||
       (!tags_only_q && !((hit && skip_data_q) || (modified_data_q && !hit_modified)));
+  // The wait is independent of bank ownership. Visits and requests for hit,
+  // probe or victim data keep ownership even if a caller offers no-bank.
+  wire request_needs_row = i_req_data_if_modified || i_req_data_if_hit ||
+      i_req_data_if_victim_modified;
+  wire select_bank_data = select_data && bank_owner_q;
 `ifdef FORMAL
+  wire f_wait_for_data = visit_q || (!tags_only_q && !((hit && skip_data_q) ||
+      (modified_data_q && (!hit || tag_rdata[selected][TagBits+:2] != 2'b11))));
   always_comb begin
     p_data_select_exact :
-    assert (select_data == (visit_q || (!tags_only_q && !((hit && skip_data_q) ||
-        (modified_data_q && (!hit || tag_rdata[selected][TagBits+:2] != 2'b11))))));
+    assert (select_data == f_wait_for_data &&
+        select_bank_data == (bank_owner_q && f_wait_for_data));
   end
 `endif
   // Each way has a data bank of Sets rows. In the final tag-read cycle every
@@ -411,7 +459,7 @@ module coherence_array #(
         .i_waddr(i_update_addr[OffsetBits+:SetBits]),
         .i_wdata(i_update_data),
         .i_wbyte_en(i_update_mask & {LINE_BYTES{update_fire && i_update_way == WayBits'(way)}}),
-        .i_re((select_valid && select_data && selected == WayBits'(way)) || hp_take),
+        .i_re((select_valid && select_bank_data && selected == WayBits'(way)) || hp_take),
         .i_raddr(bank_raddr),
         .o_rdata(bank_rdata[way])
     );
@@ -451,6 +499,7 @@ module coherence_array #(
       modified_data_q <= 1'b0;
       no_touch_q <= 1'b0;
       tags_only_q <= 1'b0;
+      bank_owner_q <= 1'b1;
       init_done_q <= 1'b0;
       hit_data_q <= 1'b0;
       victim_data_q <= 1'b0;
@@ -465,6 +514,9 @@ module coherence_array #(
       o_resp_addr <= '0;
       o_resp_state <= '0;
       o_resp_data <= '0;
+`ifdef STORE_BANK_PROOF
+      o_f_row_tainted <= 1'b0;
+`endif
       data_valid_q <= 1'b0;
       resp_valid_q <= 1'b0;
     end else begin
@@ -499,6 +551,8 @@ module coherence_array #(
             modified_data_q <= i_req_data_if_modified;
             no_touch_q <= i_req_no_touch;
             tags_only_q <= i_req_tags_only && !i_req_visit;
+            bank_owner_q <= i_req_visit ||
+                (!i_req_tags_only && (!i_req_no_bank || request_needs_row));
             hit_data_q <= i_req_data_if_hit && !i_req_visit;
             victim_data_q <= i_req_data_if_victim_modified && !i_req_visit;
             visit_way_q <= i_req_way;
@@ -515,7 +569,7 @@ module coherence_array #(
             o_resp_way <= selected;
             o_resp_addr <= {tag_rdata[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
             o_resp_state <= tag_rdata[selected][TagBits+:2];
-            data_valid_q <= select_data;
+            data_valid_q <= select_bank_data;
             resp_valid_q <= !select_data || selected_early_reply;
             if (!select_data) begin
               phase_q <= Reply;
@@ -532,7 +586,12 @@ module coherence_array #(
             resp_valid_q <= 1'b0;
           end else if (count_q == 1) begin
             // A held early reply keeps its data unchanged into Reply.
-            if (!early_reply) o_resp_data <= data_rdata;
+            if (!early_reply) begin
+              o_resp_data <= data_rdata;
+`ifdef STORE_BANK_PROOF
+              o_f_row_tainted <= o_resp_no_bank;
+`endif
+            end
             phase_q <= Reply;
             resp_valid_q <= 1'b1;
           end
@@ -699,7 +758,8 @@ module coherence_array #(
       // The port reads the banks only when no lookup reads data, and never
       // in a cycle that writes its set.
       if (hp_take) begin
-        p_hp_bank_free : assert (!(select_valid && select_data) && phase_q != Init);
+        p_hp_bank_free :
+        assert (!(select_valid && select_bank_data) && bank_raddr == hp_set && phase_q != Init);
         p_hp_write_free : assert (!(update_fire && i_update_addr[OffsetBits+:SetBits] == hp_set));
       end
     end
@@ -711,6 +771,8 @@ module coherence_array #(
       if (!i_rst) begin
         c_hp_hit : cover (f_hp4_byte_q);
         c_hp_beside_lookup : cover (hp_take && phase_q == Tags && tags_only_q);
+        c_hp_store_hit : cover (hp_take && select_valid && o_resp_no_bank && hit && !select_data);
+        c_hp_store_miss : cover (hp_take && select_valid && o_resp_no_bank && !hit && select_data);
         c_hp_after_write :
         cover (hp_take && $past(
             update_fire && |i_update_mask && i_update_addr[OffsetBits+:SetBits] == hp_set
@@ -769,9 +831,14 @@ module coherence_array #(
       assert (!(request_fire && update_fire));
       assert (!(o_resp_valid && (o_req_ready || o_update_ready)));
       if (select_valid) assert (selected < WAYS);
+      if (o_resp_no_bank) begin
+        p_no_bank_flags : assert (!(visit_q || modified_data_q || hit_data_q || victim_data_q));
+        if (o_resp_valid) p_no_bank_data : assert (!o_resp_data_valid);
+      end
       if (o_resp_valid && !o_resp_data_valid) begin
         assert (!visit_q);
-        assert (tags_only_q || (o_resp_hit && skip_data_q) ||
+        p_data_absent_reason :
+        assert (o_resp_no_bank || tags_only_q || (o_resp_hit && skip_data_q) ||
                 (modified_data_q && (!o_resp_hit || o_resp_state != 2'b11)) ||
                 (hit_data_q && !o_resp_hit) ||
                 (victim_data_q && (o_resp_hit || o_resp_state != 2'b11)));

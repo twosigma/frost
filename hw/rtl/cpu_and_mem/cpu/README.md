@@ -666,11 +666,11 @@ page fault, and with it set PBMT 3 in a leaf and any nonzero PBMT in a non-leaf 
 page faults, as are bits 60:54. An NC or IO leaf over
 cached DDR answers the PPN of the uncached alias of DDR after any Svnapot
 PPN substitution (riscv_pkg "Svpbmt":
-bit 30 for DDR up to 1 GiB, bit c for a 2^c-byte window of c >= 32, which
+bit 30 for 1 GiB of DDR, bit c for a 2^c-byte window of c >= 32, which
 leaves its top 2 GiB without an alias and makes an NC or IO leaf there an
-access fault). A 2 GiB DDR window has no alias in the current 32-bit physical
-map, so NC and IO leaves over DDR raise an access fault in that configuration,
-including the VCU118's 2 GiB map. Page-permission faults take precedence over
+access fault). DDR windows below 1 GiB and the 2 GiB window (including the
+VCU118 map) disable the alias, so NC and IO leaves based in DDR raise an
+access fault. Page-permission faults take precedence over
 this PMA refusal. Device mappings are unaffected. The alias
 window is not in the PMA map (an untranslated
 access or a PMA leaf there faults as before); an NC or IO leaf over it is a
@@ -1143,10 +1143,14 @@ registered commit, memory and vector-to-scalar instructions at the head,
 `vsetvli x0, x0` at its commit); a vector arithmetic instruction right behind the
 load reads it on the next edge, with no cycle to spare.
 
-`misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
-elaboration while the vector implementation is incomplete, and bare-metal
-software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
-not exist and VS reads zero.
+The X3 configuration uses `VECTOR=1`, `VLEN=256` and `VECTOR_ADVERTISE=1`, so
+`misa.V` reads one. Its device tree advertises V, Zve32x, Zve32f, Zve64x,
+Zve64f and Zve64d, with the Zvl32b, Zvl64b, Zvl128b and Zvl256b length
+guarantees. Software enables the state by writing `mstatus.VS`.
+`VECTOR_ADVERTISE=0` leaves `misa.V` clear without removing the unit.
+With `VECTOR=0` the vector CSRs do not exist, VS reads zero and `misa.V`
+reads zero. This configuration requires `VECTOR_ADVERTISE=0`; advertising
+V without the vector unit is an elaboration error.
 
 The vector unit's datapath blocks live in `vector/`, each with its own
 unit bench. `vec_int_lane` is one 64-bit integer lane: add, subtract and
@@ -1510,8 +1514,12 @@ The fast-lookup training contract is pinned per mechanism:
   `if_stage`, `odd_halfword_pred_test`, and `fast_btb_contract_test`.
 - **Fault suppression and fault-packet veto**: `if_fault_ras_veto` formal
   proof, `if_stage` (`test_faulting_fetch_suppresses_trained_btb_redirect`,
-  including spanning second-word faults), `odd_halfword_pred_test`, and live
-  `p_prediction_pma_fault_cofactor_exact` in `if_stage`.
+  including spanning second-word faults, and
+  `test_slot2_fault_suppresses_trained_call_and_replay_ras`, covering live,
+  spanning, and stall-replayed slot-2 calls), `odd_halfword_pred_test`, and
+  live `p_prediction_pma_fault_cofactor_exact` in `if_stage`. The explicit
+  slot-2 veto stays as a defensive guard, and the directed test pins the
+  observable behavior of faulting slot-2 calls.
 - **Invalidation events and four-cycle hold**: `btb_invalidate_hold` formal
   proof, `branch_predictor` and `branch_prediction_controller` benches (hold
   length and clear-over-update priority), `btb_mode_alias_test` (bare/Sv39

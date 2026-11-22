@@ -607,6 +607,44 @@ def test_low_bram_words_take_the_upper_half_of_odd_words() -> None:
     assert real_program.read_low_bram_words(dut, 4, 5) == [1, 2, 3, 4, 5]
 
 
+def test_vec_mem_active_case_footer_names_last_case_and_first_fail_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reserved-forms footer names the last recorded case and first FAIL line."""
+    real_program = importlib.import_module("cocotb_tests.test_real_program")
+    rows = [_VectorHandle(64, (4461 << 32) | 0x7245_6427)]
+    dut = SimpleNamespace(
+        cpu_and_memory_subsystem=SimpleNamespace(
+            soc=SimpleNamespace(data_memory=SimpleNamespace(memory=rows))
+        )
+    )
+    monkeypatch.setattr(real_program, "_load_symbol_address", lambda *_: 0)
+
+    uart_with_fails = (
+        "starting sweep\n"
+        "<<FAIL>>\n"
+        "FAIL mop00 insn=0x00850407 def=0 trap=0 cause=0x0 tval=0x0\n"
+        "FAIL mop00 insn=0x00850427 def=0 trap=0 cause=0x0 tval=0x0\n"
+    )
+    assert (
+        real_program._format_vec_mem_active_case(
+            dut, "vec_mem_reserved_forms_test", uart_with_fails
+        )
+        == "last recorded case: encoding 0x72456427 (case 4461); "
+        "first FAIL line: FAIL mop00 insn=0x00850407 def=0 trap=0 cause=0x0 tval=0x0"
+    )
+    assert (
+        real_program._format_vec_mem_active_case(
+            dut, "vec_mem_reserved_forms_test", "no failures\n<<FAIL>>\n"
+        )
+        == "last recorded case: encoding 0x72456427 (case 4461); no FAIL line printed"
+    )
+    assert (
+        real_program._format_vec_mem_active_case(dut, "hello_world", uart_with_fails)
+        is None
+    )
+
+
 def test_tomasulo_rs_mem_dispatch_requires_explicit_size_and_load_sign() -> None:
     """Folded RS_MEM operations reject omitted mem_size or LOAD mem_signed."""
     iface = tomasulo_interface.TomasuloInterface(SimpleNamespace())

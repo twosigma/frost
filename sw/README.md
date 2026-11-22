@@ -60,6 +60,18 @@ that build their own flags take the names from `common/arch.mk`:
 `FROST_XLEN_PREFIX` (`rv64`), `FROST_INT_ABI` (`lp64`), `FROST_FP_ABI`
 (`lp64d`), and `FROST_LD_EMULATION` (`elf64lriscv`).
 
+### Vector configuration
+
+The X3 includes the vector unit with `VLEN=256` and advertises it through
+`misa.V`. Its device tree lists V, Zve32x, Zve32f, Zve64x, Zve64f and Zve64d,
+and Zvl32b, Zvl64b, Zvl128b and Zvl256b. Vector code enables `mstatus.VS`
+before using the vector registers or CSRs.
+The `vec_smoke` and `vec_state_test` programs use `VEC_ADVERTISE` for the
+expected `misa.V` bit; the simulation runner supplies it from `VECTOR` and
+`VECTOR_ADVERTISE`. Direct builds default to advertised V for `vec_smoke`
+and for `vec_state_test` with nonzero `VEC_VLEN`; use
+`EXTRA_CFLAGS=-DVEC_ADVERTISE=0` for an unadvertised unit.
+
 ### Memory configuration
 
 | `MEM_CONFIG` | Linker script | Placement |
@@ -365,7 +377,7 @@ can be debugged and where each one first stops.
 | `ns16550_irq_console_test/` | Console output written one byte per THRE interrupt, each claimed through the APLIC |
 | `ns16550_test/` | The 16550 UART registers: Linux 8250 initialization, register file, LSR.THRE and LSR.TEMT around a write, and transmit |
 | `odd_halfword_pred_test/` | Pinned-alignment odd-halfword 32-bit loop branches and `jal ra` calls predicted by slot 1, even jumps to 32-bit odd targets, cache-line- and Sv39-page-spanning calls (with the second page unmapped for an `xtval = P + 2` fault and RAS check, then mapped and retried), and overlapping 32-bit instructions across odd BTB entries |
-| `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls, SRST presence with shutdown unsupported, APLIC delegation and supervisor interrupt delivery; fixed layout, ignores `MEM_CONFIG` |
+| `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls, SRST presence with shutdown unsupported, APLIC delegation and supervisor interrupt delivery; scalar VCU118 device tree, fixed layout, ignores `MEM_CONFIG` |
 | `packet_parser/` | FIX message parser demo fed through the MMIO FIFOs; reports parse time in cycles |
 | `pause_test/` | `pause` (`0x0100000F`) retires without draining committed stores, while `fence r,0` and the other FENCE encodings next to it wait for the drain |
 | `pde_return_hazard/` | A return value computed from `s1` just before the epilogue restores `s1` (Linux `pde_subdir_find` shape) |

@@ -43,6 +43,8 @@ module xilinx_frost_subsystem #(
     // The vector unit and its vector length in bits (frost VECTOR, VLEN)
     parameter bit VECTOR = 1'b0,
     parameter int unsigned VLEN = 256,
+    // Advertise the vector unit through misa.V.
+    parameter bit VECTOR_ADVERTISE = 1'b0,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
     // Profiling counters (see frost.sv); the board top passes its generic.
@@ -355,6 +357,7 @@ module xilinx_frost_subsystem #(
       .MEMORY_LINK_STAGES(MEMORY_LINK_STAGES),
       .VECTOR(VECTOR),
       .VLEN(VLEN),
+      .VECTOR_ADVERTISE(VECTOR_ADVERTISE),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
       .PERF_COUNTERS(PERF_COUNTERS),
       .MISALIGNED_HW(MISALIGNED_HW),

@@ -30,6 +30,8 @@ def test_parallel_image_targets_share_one_packer(tmp_path: Path) -> None:
     packer = tmp_path / "frost_boot_image.py"
     packer.write_text(
         "from pathlib import Path\n"
+        "import sys\n"
+        "assert sys.argv[sys.argv.index('--board') + 1] == 'vcu118'\n"
         "with Path('invocations').open('a') as log:\n"
         "    log.write('pack\\n')\n"
         f"for name in {outputs!r}:\n"

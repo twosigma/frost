@@ -7,8 +7,9 @@ set the direction of this roadmap. The sections are in priority order.
 
 FROST is working toward the RVA23 profile without the hypervisor extension:
 the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
-The remaining scalar and supervisor extensions are in progress. Two larger
-pieces come before the second hart:
+The mandatory scalar and supervisor extensions are implemented in hardware,
+though the supplied Linux image does not expose the `Supm` tagged-address
+ABI. Two larger pieces come before the second hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb and Zvkt. The optional
   cryptography extensions include Zvbc and Zvkng. The vector length
@@ -25,8 +26,11 @@ pieces come before the second hart:
   the Zvfhmin conversions), `vmv.x.s`, `vcpop.m`, `vfirst.m` and `vfmv.f.s`, and
   every vector load and store form. The X3 build includes the unit. It also
   executes vector carry-less multiply, AES rounds and key schedules, SHA-256
-  and SHA-512 compression and message schedules, and GHASH. The vector
-  extensions are unadvertised. Strided, indexed, segment and
+  and SHA-512 compression and message schedules, and GHASH. The X3 sets
+  `misa.V` with `VECTOR_ADVERTISE=1` and `VLEN=256`. Its device tree advertises
+  V, Zve32x, Zve32f, Zve64x, Zve64f and Zve64d, and Zvl32b, Zvl64b,
+  Zvl128b and Zvl256b. The additional Zv extensions are unadvertised.
+  Strided, indexed, segment and
   fault-only-first loads and stores run one element at a time, and an interrupt
   or debug halt that arrives after such a run has begun waits until the
   instruction finishes; taking them between elements, with `vstart` naming the
@@ -72,7 +76,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
 | Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction, permutation and floating-point execution; all load and store forms; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy) at three vector lengths), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
+| V | Implemented with `VECTOR=1`; advertised by the X3 with `VLEN=256` | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy) at three vector lengths), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
 | Zvfhmin | Implemented with `VECTOR=1` (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at SEW 16; unadvertised) | `vec_fp_test`, `test_vec_fcvt.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy), one program per form at three vector lengths) |
 | Zvbb | Implemented with `VECTOR=1` (including `vwsll`; unadvertised) | `test_vec_int_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py` |
 | Zvkt | Implemented with `VECTOR=1` (data-independent execution latency for the listed vector instructions; unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py`, `test_vec_crypto_exec.py` |
@@ -331,9 +335,14 @@ with the core's `SPLIT_RS_DISPATCH`, `ROB_SHARED_LINK_BANK`,
 four early-load-wakeup checks. The store queue's precise uncached rule is
 checked in simulation only, not proved of the ROB and cpu_ooo.
 
-Open: restore `coherence_store_boundary:bmc_four` to depth 120 with the
-L1D hit path, using additional lemmas or splitting the checks into smaller
-cones so the task fits its CI budget.
+Open: shorten the two deepest store-boundary proofs,
+`coherence_store_boundary:bmc_intervening` and
+`coherence_store_boundary:bmc_four`, which dominate formal CI time, and
+restore `coherence_store_boundary:bmc_four` to depth 120 with the L1D hit
+path. Splitting by selector, unbounded PDR, and switching from CaDiCaL to
+Glucose did not speed them up; reducing their runtime needs additional
+lemmas, smaller check cones, or model refinement so both tasks stay within
+their CI budgets.
 
 Open: `coherence_store_boundary:cover_edges_same_combined` reaches its three
 covers on the back-to-back schedule without itself requiring that the two
@@ -465,10 +474,7 @@ an ASIC, the RTL also needs:
    tables, and the instruction memory's PC-metadata overlays, which need
    flip-flop or latch arrays rather than SRAM macros.
    The final GDS leaves the macros' cells empty, since their layouts are not
-   in the repository. At the X3's clock, the macros' read paths fail by up
-   to 0.35 ns, the worst from the L1D's tags to its read-way selection. That
-   path has half a clock cycle from launch to capture, giving an estimated
-   core fmax of 263.0 MHz
+   in the repository
    ([results](asic/README.md#results-with-the-sram-macros)).
    FreePDK45 is not a manufacturable process, so the flow shows that the RTL
    maps onto standard cells and SRAM macros and estimates its area and
@@ -533,11 +539,14 @@ Priorities, guided by the performance counters and timing reports:
    address advances four and eight bytes in turn, so straight-line code
    alternates two-instruction and one-instruction packets. The instruction in
    such a one-instruction packet is the window's second word. A held backing
-   BTB read or its second image can now cover that word. Removing the
-   limit lets any two consecutive instructions pair. Then measure compressed
-   code across different code layouts: CoreMark runs without compressed
-   instructions, and should use them once throughput is stable across link
-   orders.
+   BTB read or its second image covers that word. A three-word fetch window
+   (returning a third 32-bit word alongside the 64-bit window to pair across
+   the boundary) is parked because qualifying the third word and its
+   predictions lengthens the next-PC and fetch-control paths at the target
+   clock, so the front end stays at a two-word window. Any future
+   fetch-width change should be measured on compressed code across different
+   code layouts: CoreMark runs without compressed instructions, and should
+   use them once throughput is stable across link orders.
 3. Lower pointer-chasing latency. Response bypass, early wakeup of dependent
    loads, and load preparation while the memory port is busy are in place.
    Next, take a cycle out of load-to-use latency, try associativity in the
@@ -590,16 +599,23 @@ and targeted microbenchmarks give these items:
    acquire a 64-byte block with `GetMZero`, allocating on an L2 miss without
    reading DRAM and installing both sectors before release; stores to Modified
    sectors use masked writes, and waiting reads share array service with
-   buffered hits. In simulation (`store_fill_bench`, 64 KiB, with the DDR
-   model's fixed 80-cycle latency) a sequential `sd` stream takes about 28
-   cycles per 64 bytes cold and 15.3 cycles L2-resident. A streaming copy
-   spends about 24% of its cycles stalled on store-queue capacity;
+   buffered hits. In simulation with the DDR-boot build of `store_fill_bench`
+   and a fixed 80-cycle DDR model, a sequential `sd` stream over 64 KiB takes
+   28.3 cycles per 64 bytes cold and 14.9 cycles after the L2 warm-up. A
+   streaming copy spends about 24% of its cycles stalled on store-queue
+   capacity;
    streaming scale, add and triad loops spend less than 0.3%. Taking
    ownership of a single 32-byte sector without fetching its 64-byte home
    line would still need per-sector L2 validity tracking.
-2. Data translation. A last-page bypass sends eligible translated accesses
-   directly to DMMU stage S2. Other translated accesses use S1 and S2.
-   Reducing that path would improve cross-page translation latency.
+2. Data translation. Under Sv39, translated loads and stores outside the
+   single-entry last-page buffer wait for DMMU stage S1 before reaching S2;
+   replacing that buffer with a 16-entry DTLB bypass lets any clean resident
+   hit enter S2 directly, leaving faults, concurrent refills and
+   mixed-attribute superpages on S1. The L1D store-lookup change (item 9)
+   and per-entry DTLB verdicts are on `main`, with the 16-entry bypass next.
+   On a DTLB miss, the shared 512-entry second-level TLB waits for S1 to
+   report the miss; starting that lookup on the bypass miss whenever the
+   port is idle removes that wait while keeping instruction-TLB priority.
 3. TLB reach. The DTLB and ITLB have 16 entries each, backed by a 512-entry
    second-level TLB, ASIDs with global pages, selective `sfence.vma`, and a
    walker cache of upper-level page-table pointers. In simulation a
@@ -618,7 +634,10 @@ and targeted microbenchmarks give these items:
    entries and extending 4 KiB-page reach beyond 2 MiB would be next steps.
    A selective `sfence.vma` that reaches the second-level TLB while it is
    still running an earlier flush becomes a full flush: correct, but it
-   discards entries the selective form would have kept.
+   discards entries the selective form would have kept. Handling a second
+   flush selectively during the scan would preserve unrelated entries; that
+   change waits because the behavior is already correct and affects only
+   performance.
 4. Branch prediction. A misprediction costs about 7 cycles. Graph search
    incurs about 21 to 28 branch mispredictions per thousand retired
    instructions, and decompression about 19 to 20. The BTB has 256
@@ -679,19 +698,34 @@ and targeted microbenchmarks give these items:
    add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
-   line installs.
+   line installs. Planned work trims the L1D-miss to L2-hit round trip in
+   order. First, the home holds an accepted request before entering L2 tag
+   lookup; starting the lookup as the request is accepted, with live
+   line-conflict checks on that edge, removes that wait. Second, the home's
+   speculative L2 data read waits after the tag request; launching both on
+   the same edge removes that wait. Third, an accepted grant pauses at the
+   L1D endpoint before reaching the core; answering the core straight from
+   the accepted grant removes that wait. Fourth, on the request path from L1D
+   to home, a miss waits after endpoint acquisition, at an idle request
+   arbiter, and for the controller's own lookup; presenting the request at
+   acquisition, passing a lone offer straight through an idle arbiter, and
+   optionally acquiring from the hit path's miss result remove those waits.
 9. L1D read hits. A dependent load that hits in the L1D takes about nine
    cycles from one load launch to the next. A hit path beside the coherent
    L1D's controller answers loads that hit. Its answers still wait a cycle in
    the read slots' response registers, which answering from its last stage
-   would remove, and a variant without that stage would be shorter again. It
-   refuses a load whose arrival meets a lookup that reads data, a probe or a
-   holder of its sector; retrying refused loads, and refusing only for probes
-   to the load's sector, would answer more of them. The controller still
-   shadows a load that it selects while the hit path holds it, which starting
-   misses from the hit path's tag result would avoid, and tags-only lookups
-   would keep stores, look-ahead stores and prefetch hints out of the data
-   banks.
+   would remove, and a variant without that stage would be shorter again.
+   Offering the hit port directly from the L1D input instead of its input
+   registers would remove a cycle on hits, at the risk of crossing the
+   core-to-cache boundary into the cache arrays in one cycle at the target
+   clock. It refuses a load whose arrival meets a lookup that reads data, a
+   probe or a holder of its sector; retrying refused loads, and refusing only
+   for probes to the load's sector, would answer more of them. The controller
+   still shadows a load that it selects while the hit path holds it, which
+   starting misses from the hit path's tag result would avoid. An ordinary
+   buffered store checks its tags while a load reads another sector.
+   Look-ahead stores and prefetch hints still reserve the data banks during
+   their tag lookups.
 10. Compressed code. Linux and its user space are built with the C
     extension. CoreMark's score uses a build without compressed instructions;
     built with them (`COREMARK_COMPRESSED=1`) it takes about 8% more cycles
@@ -703,12 +737,45 @@ and targeted microbenchmarks give these items:
     remaining gap is fetch and dispatch width on mixed 16-bit and 32-bit
     code: a 32-bit instruction starting at an odd halfword spans both words
     of the 64-bit fetch window, leaving only one 16-bit parcel for slot 2 so
-    a following 32-bit instruction cannot pair. Widening fetch or adding a
-    parcel queue between fetch and pre-decode is open. Two further options
-    are open: a staged target-buffer lookahead for a 16-bit instruction at
+    a following 32-bit instruction cannot pair. A three-word fetch window is
+    parked because it lengthens the next-PC and fetch-control paths at the
+    target clock (see Single-core performance, item 2); adding a parcel queue
+    between fetch and pre-decode is open. Two further options are open: a
+    staged target-buffer lookahead for a 16-bit instruction at
     the start of a fetch word that does not pair with the next one, and
     alignment flags (`-falign-loops`, `-falign-jumps`) for self-built
     software.
+11. Cached load launch. When the store queue is not empty, a staged load to
+    cached DDR waits for its store-queue probe verdict before launching its
+    read; an option on `main`, switched off by default (`LQ_PROBE_LAUNCH`),
+    lets an ordinary cached DDR load that misses the L0 launch during the
+    probe instead. If the verdict finds no overlapping older store and the
+    load misses the L0, the read is kept; if an older store forwards, blocks
+    or has an unknown address, or if the L0 hits or a flush occurs, the
+    speculative read is discarded. Device loads, LRs, AMOs, misaligned or
+    faulting loads, and low-BRAM loads keep waiting for the verdict. Enabling
+    the option for cached memory is in progress, with an optional filter to
+    skip early launch on matching older store addresses if forwarding
+    discards too many reads. A combinational store-queue probe at load
+    staging is an alternative that would also cover low-BRAM loads, but
+    places the store-queue compare, L0 lookup and capture in one cycle and
+    carries higher risk at the target clock.
+12. Dependent load address chains. On pointer-chasing and array-indexing
+    loops, core address calculation and wakeup add latency alongside the
+    memory hierarchy. Building Linux workloads with `Zba` replaces
+    shift-and-add address sequences (`slli` followed by `add`) with
+    indexed-add instructions such as `sh3add` without RTL changes; for
+    binaries built without `Zba`, fusing `slli` and `add` into `sh3add` at
+    decode or rename would shorten the chain, subject to front-end paths at
+    the target clock and preserving precise exceptions, retirement counts,
+    and debug single-step behavior. Back-to-back integer
+    issue (see Single-core performance, item 4) would shorten dependent
+    integer steps in the same chain. Waking the memory reservation station
+    early from ALU results, rather than from the registered CDB, would also
+    take a cycle off address generation, at the cost of wider look-ahead
+    comparison in that station. L0 associativity (see Single-core
+    performance, item 3) helps working sets that fit in the 512-entry L0,
+    not larger working sets that overflow it.
 
 ## Core area
 
@@ -766,7 +833,44 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   clock-domain crossing from the SoC clock to the pixel clock. It needs a
   board or bridge board with an HDMI output.
 - Enough timing margin at 322.265625 MHz that a single default placement
-  meets timing
+  meets timing. Changes held for that work:
+  - Revisit the path from the coherence completion endpoint's registered
+    phase to the L1 data cache's read-wait flags when working on this
+    clock target.
+  - Revisit the paths from the vector issue queue's head into the vector
+    engine and into the integer execution state machine when working on
+    this clock target.
+  - Form the data MMU's walk eligibility without the partial-flush cancel and
+    apply that cancel with the DTLB hit check last, shortening a path from
+    the ROB head into walk arbitration that limits the clock without changing
+    cycle behavior. It waits for work toward the target clock to check
+    whether the walk-request path into the second-level TLB needs the change.
+  - Drive the ROB's trap and xRET requests from registered head-condition
+    flags and feed the single-step commit hold from registered state,
+    shortening a path from ROB head state through trap and commit control
+    that limits the clock. It adds a cycle to trap and xRET entry while
+    leaving ordinary retirement unchanged, and waits for work toward the
+    target clock to check whether that path needs the change.
+  - Move rare-event controls (single-step `step_done_q`, `fence.i`, LR,
+    coherence probe valid, fatal stop, and reset) out of high-fanout core and
+    memory-path cones, using local registered copies or separate gating where
+    rare-event latency does not affect throughput, to shorten paths that
+    limit the clock. It waits for work toward the target clock to determine
+    which of those cones need separation.
+  - Compute the load queue's L0 store tag hit a cycle early from the store
+    queue's next drain address, registering the entry hit and prior-cycle
+    write and invalidation corrections so L0 write selects and enables depend
+    on registered state rather than a same-cycle tag lookup, shortening
+    store-to-L0 paths that limit the clock with cycle-identical behavior. It
+    waits for work toward the target clock because it changes the
+    store-queue, load-queue, and L0 interfaces and their verification
+    harnesses solely to shorten those paths.
+  - Enable the one-stage register link (`MEMORY_LINK_STAGES=1`) in the X3 top
+    so every coherent channel between `frost_hart` and `frost_cluster_memory`
+    crosses a register stage, shortening cross-boundary paths that limit the
+    clock. Because that stage adds latency to L2 hits and misses, it waits
+    until work toward the target clock shows whether the X3 needs the
+    boundary stage.
 - Routing the ASIC flow in CI again, through a hierarchical flow: large
   blocks hardened separately and placed as macros.
 - A redesign three or four instructions wide, sized first with a

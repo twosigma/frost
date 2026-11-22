@@ -58,7 +58,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from test_run_cocotb import TEST_REGISTRY, CocotbRunner
+from test_run_cocotb import TEST_REGISTRY, CocotbRunConfig, CocotbRunner
 
 if TYPE_CHECKING:
     from testrig.wfi import WfiStrand
@@ -100,6 +100,13 @@ VECTOR_DIRECTED_TRACES = tuple(
         "cached_store",
         "unit_stride",
         "int_compare",
+        "strided",
+        "indexed",
+        "segment",
+        "fof",
+        "int_widen_narrow",
+        "fixed_point",
+        "fp_single",
     )
 )
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
@@ -205,7 +212,7 @@ def write_sail_config(
 
     `sscofpmf` selects the dedicated Sscofpmf control config filename suffix;
     the vector unit at `vlen` is for the --vector traces, which FROST must be
-    built for with -GVECTOR=1 -GVLEN.
+    built for with -GVECTOR=1 -GVLEN and -GVECTOR_ADVERTISE=1.
     """
     if capacity_log2_bytes not in range(30, 38):
         raise ValueError("DDR capacity must be 1, 2, 4, 8, 16, 32, 64 or 128 GiB")
@@ -273,6 +280,33 @@ def load_rvfi_records_log(path: Path) -> dict[str, list[Any]]:
     }
 
 
+def simulator_config(
+    capacity_log2_bytes: int,
+    vlen: int | None,
+    *,
+    wfi_timeout_cycles: int = 0,
+) -> CocotbRunConfig:
+    """Return the RVFI-DII elaboration selected for the Sail comparison."""
+    base_config = TEST_REGISTRY["rvfi_dii"]
+    vector_args = (
+        ("-GVECTOR=1", f"-GVLEN={vlen}", "-GVECTOR_ADVERTISE=1") if vlen else ()
+    )
+    wfi_args = (
+        (f"-DFROST_RVFI_DII_WFI_TIMEOUT={wfi_timeout_cycles}",)
+        if wfi_timeout_cycles
+        else ()
+    )
+    return replace(
+        base_config,
+        verilator_extra_args=(
+            *base_config.verilator_extra_args,
+            f"-DFROST_DDR_CAPACITY_LOG2_BYTES={capacity_log2_bytes}",
+            *vector_args,
+            *wfi_args,
+        ),
+    )
+
+
 def start_frost(
     port: int,
     ready_file: Path,
@@ -288,23 +322,13 @@ def start_frost(
     Returns the process and a function that records a successful build, so
     the next run reuses it.
     """
-    base_config = TEST_REGISTRY["rvfi_dii"]
-    vector_args = ("-GVECTOR=1", f"-GVLEN={vlen}") if vlen else ()
-    wfi_args = (
-        (f"-DFROST_RVFI_DII_WFI_TIMEOUT={wfi_timeout_cycles}",)
-        if wfi_timeout_cycles
-        else ()
+    runner = CocotbRunner.from_config(
+        simulator_config(
+            capacity_log2_bytes,
+            vlen,
+            wfi_timeout_cycles=wfi_timeout_cycles,
+        )
     )
-    config = replace(
-        base_config,
-        verilator_extra_args=(
-            *base_config.verilator_extra_args,
-            f"-DFROST_DDR_CAPACITY_LOG2_BYTES={capacity_log2_bytes}",
-            *vector_args,
-            *wfi_args,
-        ),
-    )
-    runner = CocotbRunner.from_config(config)
     runner.coverage_label = "testrig"
     environment = runner.setup_environment()
     sim_build_dir = runner._get_sim_build_dir(environment)
@@ -998,7 +1022,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--vector-directed",
         action="store_true",
         help="add directed vector state, scalar-result, fractional LMUL, FP, "
-        "cached DDR and integer comparison traces",
+        "cached DDR, integer comparison, widening/narrowing integer, "
+        "fixed-point and single-width FP traces",
     )
     parser.add_argument(
         "--vlen",

@@ -40,6 +40,7 @@ from cocotb_tests.debug.test_debug import (
     BANNER_PASS,
     BANNER_PHASE_U,
     BANNER_START,
+    _expected_misa,
     _read_symbols,
     _reset,
     _wait_text,
@@ -276,7 +277,7 @@ async def test_debug_openocd(dut: Any) -> None:
     assert re.search(
         r"Info : Listening|Info : \S+: hart 0|Examined RISC-V core", output
     ), output
-    assert value("FROST_MISA") == 0x8000_0000_0014_112F
+    assert value("FROST_MISA") == _expected_misa()
     assert value("FROST_T0") == 0x1122334455667788
     assert value("FROST_TABLE2") == 0xA5A5A5A5A5A5A5A5
     bp = syms["bp_target"]
@@ -399,7 +400,7 @@ quit
                 output = gdb_path.read_text(errors="replace")
                 assert gdb_proc.returncode == 0, output
                 expected = {
-                    "MISA": 0x8000_0000_0014_112F,
+                    "MISA": _expected_misa(),
                     "T0": 0x1122334455667788,
                     "TABLE2": 0x5A5A1234FEDC9876,
                     "BP_PC": syms["bp_target"],

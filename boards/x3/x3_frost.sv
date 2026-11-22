@@ -472,6 +472,7 @@ module x3_frost #(
       // The vector unit, at a vector length of 256 bits.
       .VECTOR(1'b1),
       .VLEN(256),
+      .VECTOR_ADVERTISE(1'b1),
       // The transceiver's TX and RX clocks are independent, so the NIC has no
       // raw loopback; its self-test loopback is the transceiver's PMA
       // loopback (PHY_CTRL PMA_LOOPBACK).
