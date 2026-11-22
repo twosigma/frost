@@ -103,7 +103,9 @@ entry.
 | APLIC | `0x4400_0000` | 4 MiB | AIA direct and MSI delivery, M and S domains of 32 KiB each |
 | IMSIC | `0x4800_0000` | 2 MiB | 4 KiB M and S pages at `0x4800_0000` and `0x4810_0000`, with `0x1000` hart stride |
 | DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
-| DDR uncached alias | DDR address with bit 30 set (`0xC000_0000`, DDR up to 1 GiB) or bit c set (a 2^c-byte DDR window, c >= 32: `[2^c + 2^31, 2^(c+1))`) | The aliased DDR | Not in the PMA map. Svpbmt: the walker gives NC and IO leaves over DDR this alias; the MMUs make such an access MMIO (at the ROB head, no AMOs, no fetch) and the SoC turns it into a single-beat coherent DMA transfer of the real DDR address. An untranslated access, or a PMA leaf, there is an access fault |
+| DDR uncached alias | DDR address with bit 30 set (`0xC000_0000`, 1 GiB of DDR) or bit c set (a 2^c-byte DDR window, c >= 32: `[2^c + 2^31, 2^(c+1))`) | The aliased DDR | Not in the PMA map. Svpbmt: the walker gives NC and IO leaves over DDR this alias; the MMUs make such an access MMIO (at the ROB head, no AMOs, no fetch) and the SoC turns it into a single-beat coherent DMA transfer of the real DDR address. An untranslated access, or a PMA leaf, there is an access fault |
+
+With less than 1 GiB of DDR, the uncached alias is disabled and NC or IO leaves based in DDR raise an access fault.
 
 Addresses outside the defined regions, including the rest of the device
 quadrant `[0x4000_0000, 0x8000_0000)` and addresses at or beyond the
