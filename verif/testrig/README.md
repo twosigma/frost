@@ -491,6 +491,17 @@ and a cached page-boundary crossing. Every strided store reads back all
 written bytes through immediate scalar loads without reading `misa`.
 [Strided memory](vector_strided.S)
 
+The indexed memory trace checks aligned cached DDR unordered and ordered
+indexed loads and stores at 8, 16, 32 and 64-bit index widths, both unmasked
+and masked. It covers matching and cross-width element and index widths
+(fractional and multi-register index EMUL), unsigned high-bit and wide index
+values, duplicate-index gathers and ordered duplicate-index store ordering,
+legal in-place gathers, vector lengths below and equal to VLMAX,
+tail-undisturbed and mask-undisturbed readouts where defined, zero-active
+transfers, and a cached page-boundary crossing. Every indexed store reads back
+all written bytes through immediate scalar loads without reading `misa`.
+[Indexed memory](vector_indexed.S)
+
 The integer comparison trace checks vector, scalar and immediate predicates
 at SEW 32. It reads each active mask bit through an integer destination.
 The mask-undisturbed case checks enabled updates and preserved disabled bits.
@@ -507,9 +518,9 @@ implementations must return every planned trace and instruction.
 The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer source
 widths, fractional LMUL, base FP results, fused multiply-add, FP
-conversions, unit-stride memory, strided memory and integer comparisons. It
-checks `vcpop.m` for state and scalar results and FP comparisons. TestRIG
-must report each destination value mismatch.
+conversions, unit-stride memory, strided memory, indexed memory and integer
+comparisons. It checks `vcpop.m` for state and scalar results and FP
+comparisons. TestRIG must report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail

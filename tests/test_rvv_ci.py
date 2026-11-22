@@ -78,6 +78,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         ["unit-stride", "vector_unit_stride"],
         ["int-compare", "vector_int_compare"],
         ["strided", "vector_strided"],
+        ["indexed", "vector_indexed"],
     ]
 
 
