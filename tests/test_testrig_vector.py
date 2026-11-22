@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (30, instructions + 10019) if vector_directed else (15, instructions)
+    expected = (31, instructions + 11720) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -298,6 +298,7 @@ def test_vector_directed_replay(
         ("vector_segment.S", 2159, 1126),
         ("vector_fof.S", 326, 208),
         ("vector_int_widen_narrow.S", 1753, 871),
+        ("vector_fixed_point.S", 1701, 1206),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -1844,6 +1845,195 @@ def test_vector_int_widen_narrow_trace_covers_forms() -> None:
     assert {0, 1, 7} <= lmuls_seen  # m1, m2, mf2
     assert overlaps_seen == {"wadd_upper", "wadd_inplace", "ext_upper", "narrow_low"}
     assert traps_seen == 5
+    assert ctrl_count == 1
+
+
+def test_vector_fixed_point_trace_covers_forms() -> None:
+    """Check fixed-point forms, rounding modes, saturation and illegal overlap traps."""
+    trace = VERIF_DIR / "testrig" / "vector_fixed_point.S"
+    raw_lines = [
+        line
+        for line in trace.read_text().splitlines()
+        if line.startswith((".4byte ", ".assert "))
+    ]
+    blocks: list[str] = []
+    for line in raw_lines:
+        if line.startswith(".4byte "):
+            blocks.append(line)
+        else:
+            blocks[-1] += "\n" + line
+
+    vtype = 0
+    avl_mode = ""
+    vl_imm = 0
+    vxrm = 0
+    retired_forms: set[tuple[str, int, int]] = set()
+    sews_by_group: dict[str, set[int]] = {}
+    masking_by_group: dict[str, set[bool]] = {}
+    regimes_by_group: dict[str, set[str]] = {}
+    vxrm_by_group: dict[str, set[int]] = {}
+    vxrm_readbacks_checked: set[int] = set()
+    pending_vxrm_readback: int | None = None
+    vxsat_checked: set[int] = set()
+    policies_seen: set[int] = set()
+    lmuls_seen: set[int] = set()
+    overlaps_seen: set[str] = set()
+    trap_kinds: set[str] = set()
+    traps_seen = 0
+    ctrl_count = 0
+
+    ivv, mvv, ivi, ivx, mvx = 0, 2, 3, 4, 6
+    sat_f6 = {0x20, 0x21, 0x22, 0x23}
+    avg_f6 = {0x08, 0x09, 0x0A, 0x0B}
+    sshift_f6 = {0x2A, 0x2B}
+    nclip_f6 = {0x2E, 0x2F}
+
+    for block in blocks:
+        assert block.lstrip().startswith(".4byte ")
+        word = int(block.split()[1], 16)
+        if word == 0x42F0_2557:
+            ctrl_count += 1
+        opcode = word & 0x7F
+        is_vxrm_read = (
+            opcode == 0x73
+            and ((word >> 12) & 7) == 2
+            and ((word >> 20) & 0xFFF) == 0x00A
+        )
+        if pending_vxrm_readback is not None:
+            assert is_vxrm_read, "every vxrm write must be followed by csrr vxrm"
+            assert f'rd_wdata == {pending_vxrm_readback:#x} "' in block
+            vxrm_readbacks_checked.add(pending_vxrm_readback)
+            pending_vxrm_readback = None
+            continue
+        if opcode == 0x73 and ((word >> 12) & 7) in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            assert csr != 0x301  # No misa access
+            if csr == 0x00A and ((word >> 12) & 7) == 5:  # csrwi vxrm, uimm
+                vxrm = (word >> 15) & 3
+                pending_vxrm_readback = vxrm
+            if csr == 0x009 and ((word >> 12) & 7) == 2:  # csrr a0, vxsat
+                if 'rd_wdata == 0x0 "' in block:
+                    vxsat_checked.add(0)
+                if 'rd_wdata == 0x1 "' in block:
+                    vxsat_checked.add(1)
+            continue
+        if word & 0xC000_707F == 0xC000_7057:  # vsetivli
+            vtype = (word >> 20) & 0xFF
+            vl_imm = (word >> 15) & 0x1F
+            avl_mode = "imm"
+            continue
+        if word & 0x8000_707F == 0x0000_7057:  # vsetvli
+            vtype = (word >> 20) & 0xFF
+            assert ((word >> 15) & 0x1F) == 0 and ((word >> 7) & 0x1F) != 0
+            avl_mode = "vlmax"
+            continue
+        if opcode != 0x57:
+            continue
+
+        f6 = word >> 26
+        f3 = (word >> 12) & 7
+        vm = bool((word >> 25) & 1)
+        vs2 = (word >> 20) & 0x1F
+        vs1 = (word >> 15) & 0x1F
+        vd = (word >> 7) & 0x1F
+        sew = 8 << ((vtype >> 3) & 7)
+        lmul = vtype & 7
+
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            traps_seen += 1
+            if f3 == mvv and f6 == 0x30 and vd == vs2 and lmul == 0:
+                trap_kinds.add("widen_low_vs2")
+            elif f3 == mvv and f6 == 0x3B and vd == vs1 and lmul == 0:
+                trap_kinds.add("widen_low_vs1")
+            elif f3 == mvv and f6 == 0x30 and vd == vs2 and lmul == 7:
+                trap_kinds.add("widen_frac")
+            elif f3 == mvv and f6 == 0x3C and vs2 == vd + 1:
+                trap_kinds.add("wmacc_upper")
+            elif f3 == ivv and f6 == 0x2E and vd == vs2 + 1:
+                trap_kinds.add("nclip_upper")
+            elif f3 == ivv and f6 == 0x20 and not vm and vd == 0:
+                trap_kinds.add("masked_v0")
+            elif f3 == ivv and f6 == 0x2E and sew == 64:
+                trap_kinds.add("nclip_e64")
+            elif f3 == ivi and f6 == 0x2F and lmul == 3:
+                trap_kinds.add("nclip_m8")
+            continue
+
+        group = ""
+        if f3 in (ivv, ivi, ivx) and f6 in sat_f6:
+            group = "sat"
+        elif f3 in (mvv, mvx) and f6 in avg_f6:
+            group = "avg"
+        elif f3 in (ivv, ivx) and f6 == 0x27:
+            group = "smul"
+        elif f3 in (ivv, ivi, ivx) and f6 in sshift_f6:
+            group = "sshift"
+        elif f3 in (ivv, ivi, ivx) and f6 in nclip_f6:
+            group = "nclip"
+        else:
+            continue
+
+        assert re.search(r"(?m)^\.assert trap == 0\b", block)
+        retired_forms.add((group, f6, f3))
+        sews_by_group.setdefault(group, set()).add(sew)
+        masking_by_group.setdefault(group, set()).add(vm)
+        vxrm_by_group.setdefault(group, set()).add(vxrm)
+        policies_seen.add(vtype & 0xC0)
+        lmuls_seen.add(lmul)
+
+        if avl_mode == "vlmax":
+            regimes_by_group.setdefault(group, set()).add("vlmax")
+        elif vl_imm == 0:
+            regimes_by_group.setdefault(group, set()).add("zero")
+        elif all(vl_imm < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+            regimes_by_group.setdefault(group, set()).add("below_vlmax")
+
+        if group == "sat" and vd == vs2:
+            overlaps_seen.add("sat_inplace")
+        if group == "nclip" and vd == vs2:
+            overlaps_seen.add("nclip_low")
+
+    expected_forms: set[tuple[str, int, int]] = set()
+    expected_forms.update(
+        ("sat", f6, f3) for f6 in (0x20, 0x21) for f3 in (ivv, ivi, ivx)
+    )
+    expected_forms.update(("sat", f6, f3) for f6 in (0x22, 0x23) for f3 in (ivv, ivx))
+    expected_forms.update(("avg", f6, f3) for f6 in avg_f6 for f3 in (mvv, mvx))
+    expected_forms.update(("smul", 0x27, f3) for f3 in (ivv, ivx))
+    expected_forms.update(
+        ("sshift", f6, f3) for f6 in sshift_f6 for f3 in (ivv, ivi, ivx)
+    )
+    expected_forms.update(
+        ("nclip", f6, f3) for f6 in nclip_f6 for f3 in (ivv, ivi, ivx)
+    )
+    assert len(expected_forms) == 32
+    assert retired_forms == expected_forms
+
+    for group in ("sat", "avg", "smul", "sshift"):
+        assert sews_by_group[group] == {8, 16, 32, 64}
+    assert sews_by_group["nclip"] == {8, 16, 32}
+    for group in ("sat", "avg", "smul", "sshift", "nclip"):
+        assert masking_by_group[group] == {True, False}
+        assert {"below_vlmax", "vlmax", "zero"} <= regimes_by_group[group]
+    for group in ("avg", "smul", "sshift", "nclip"):
+        assert vxrm_by_group[group] == {0, 1, 2, 3}
+    assert pending_vxrm_readback is None
+    assert vxrm_readbacks_checked == {0, 1, 2, 3}
+    assert vxsat_checked == {0, 1}
+    assert {0x00, 0xC0} <= policies_seen  # tu, mu and ta, ma
+    assert {0, 1, 7} <= lmuls_seen  # m1, m2, mf2
+    assert overlaps_seen == {"sat_inplace", "nclip_low"}
+    assert traps_seen == 8
+    assert trap_kinds == {
+        "widen_low_vs2",
+        "widen_low_vs1",
+        "widen_frac",
+        "wmacc_upper",
+        "nclip_upper",
+        "masked_v0",
+        "nclip_e64",
+        "nclip_m8",
+    }
     assert ctrl_count == 1
 
 

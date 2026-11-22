@@ -542,19 +542,31 @@ multi-register group multipliers, legal register overlaps and illegal
 width and group-multiplier traps.
 [Widening and narrowing integer operations](vector_int_widen_narrow.S)
 
+The fixed-point trace checks saturating addition and subtraction,
+averaging addition and subtraction, saturating fractional multiplication,
+scaling right shifts and narrowing fixed-point clips across all supported
+element widths. It covers all four fixed-point rounding modes with `vxrm`
+CSR readbacks after each write, saturation and sticky `vxsat` updates,
+rounding before saturation on narrowing clips, inactive masked and tail
+lanes leaving `vxsat` clear, vector lengths below, equal to and zero
+relative to VLMAX, tail- and mask-undisturbed readouts, fractional and
+multi-register group multipliers, legal register overlaps and illegal
+widening, narrowing and mask-register overlap traps.
+[Fixed-point operations](vector_fixed_point.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at each
 of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
 groups from seed 42, the source-width traces and the directed state,
-fractional LMUL, FP, cached DDR, integer comparison and widening and
-narrowing integer traces. Both implementations must return every planned
-trace and instruction. The VLEN 128 job reuses its simulator to flip one
-bit in a FROST integer destination in each control replay. It checks
-`vmv.x.s` for integer source widths, fractional LMUL, base FP results,
-fused multiply-add, FP conversions, unit-stride memory, strided memory,
-indexed memory, segment memory, fault-only-first loads, integer comparisons
-and widening and narrowing integer operations. It checks `vcpop.m` for
-state and scalar results and FP comparisons. TestRIG must report each
-destination value mismatch.
+fractional LMUL, FP, cached DDR, integer comparison, widening and
+narrowing integer and fixed-point traces. Both implementations must return
+every planned trace and instruction. The VLEN 128 job reuses its simulator
+to flip one bit in a FROST integer destination in each control replay. It
+checks `vmv.x.s` for integer source widths, fractional LMUL, base FP
+results, fused multiply-add, FP conversions, unit-stride memory, strided
+memory, indexed memory, segment memory, fault-only-first loads, integer
+comparisons, widening and narrowing integer operations and fixed-point
+operations. It checks `vcpop.m` for state and scalar results and FP
+comparisons. TestRIG must report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail
