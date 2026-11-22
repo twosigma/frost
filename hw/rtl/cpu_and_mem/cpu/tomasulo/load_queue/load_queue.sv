@@ -341,6 +341,7 @@ module load_queue #(
 
 `ifndef SYNTHESIS
   logic reset_seen_q = 1'b0;
+  logic staged_payload_seen_q;
 `ifdef FORMAL
   wire sim_reset_seen_q = 1'b1;
 `else
@@ -794,7 +795,8 @@ module load_queue #(
   // the staged load keeps the stage on that edge. probe_launched_q marks the
   // verdict cycle that follows; the verdict keeps the read (probe_keep) or
   // drops it, and then the load is no longer issued (probe_unissue).
-  logic probe_launch_permitted, probe_launch_fire, probe_launch_kept;
+  (* keep = "true" *) logic probe_launch_permitted;
+  logic probe_launch_fire, probe_launch_kept;
   logic probe_settle, probe_keep, probe_unissue, probe_resp_now;
   // Without PROBE_LAUNCH, cs_spec and probe_launched_q are constant zero.
   assign cs_spec = PROBE_LAUNCH ? cs_spec_r : '0;
@@ -2128,6 +2130,7 @@ module load_queue #(
     logic payload_seen = 1'b0;
     logic pending_payload_seen = 1'b0;
     logic reset_seen = 1'b0;
+    assign staged_payload_seen_q = payload_seen;
     always_ff @(posedge i_clk) begin
       if (!i_rst_n) begin
         reset_seen <= 1'b1;
@@ -2923,13 +2926,17 @@ module load_queue #(
   always_comb if (sim_reset_seen_q) begin
     p_mem_read_en_exact : assert (o_mem_read_en == (launch_mem_issue || probe_launch_fire));
     p_launch_hit_last_exact : assert (mem_read_en == (launch_mem_issue || probe_launch_fire));
+`ifndef F_LQ_PREMATCH_ONLY
     // The launch during the probe is a probe cycle of a cached ordinary
-    // load with no address fault, never a phase-2 launch.
+    // load with no address fault, never a phase-2 launch. Reachability-only
+    // because probe_launch_ok_q is registered at staging (checked by
+    // p_staged_probe_launch_exact).
     if (i_rst_n && probe_launch_fire)
       p_probe_launch_probes : assert (o_sq_check_valid && !sq_check_phase2 &&
           !launch_mem_issue && sq_check_is_cached_region && launch_hit_blocks &&
           !coherent_address_fault && !sq_check_is_mmio_q && !sq_check_is_lr_q &&
           !sq_check_is_amo_q && is_cached_addr(launch_mem_issue_addr));
+`endif
   end
 `endif
   // The probe cycle's capture can only replace the staged load (it has no
@@ -2946,6 +2953,7 @@ module load_queue #(
   assign probe_keep = probe_settle && !cache_hit_fast_path && !probe_resp_now;
   assign probe_unissue = probe_launched_q && !probe_keep;
 `ifndef SYNTHESIS
+`ifndef F_LQ_PREMATCH_ONLY
   // In the verdict cycle the load still holds the stage in phase 2, issued,
   // and exactly one live slot, marked cs_spec, names it.
   logic [CachedSlots-1:0] probe_slot_names_stage;
@@ -2965,6 +2973,7 @@ module load_queue #(
           lq_valid[sq_check_idx] && lq_issued[sq_check_idx] && probe_launch_ok_q);
     else p_probe_spec_only_in_verdict : assert (cs_spec == '0);
   end
+`endif
 `endif
   assign launch_mem_issue_idx  = sq_check_idx;
   assign launch_mem_issue_addr = stage_mem_issue_addr;
@@ -3024,7 +3033,7 @@ module load_queue #(
   (* keep = "true" *) logic [CachedSlots-1:0] cs_capture_without_hit;
   logic [CachedSlots-1:0] cs_capture;
   assign fast_capture_without_hit = !i_mem_bus_busy &&
-      (launch_permitted || probe_launch_permitted) && !launching_is_cached;
+      launch_permitted && !launching_is_cached;
   assign fast_capture = fast_capture_without_hit && !(cache_lookup_hit && launch_hit_blocks);
   for (genvar sl = 0; sl < CachedSlots; sl++) begin : gen_cs_capture
     assign cs_capture_without_hit[sl] = !i_mem_bus_busy &&
@@ -3035,7 +3044,8 @@ module load_queue #(
   end
 `ifndef SYNTHESIS
   always_comb if (sim_reset_seen_q) begin
-    p_fast_capture_exact : assert (fast_capture == (mem_read_en && !launching_is_cached));
+    if (i_rst_n && (!PROBE_LAUNCH || staged_payload_seen_q))
+      p_fast_capture_exact : assert (fast_capture == (mem_read_en && !launching_is_cached));
     p_cs_capture_exact : assert (cs_capture == ({CachedSlots{mem_read_en && launching_is_cached}} &
         (CachedSlots'(1) << cs_alloc_idx)));
   end
@@ -4946,7 +4956,7 @@ module load_queue #(
   end
 `ifndef SYNTHESIS
   // Checked out of reset: the staging registers start arbitrary.
-  always_comb if (sim_reset_seen_q && i_rst_n) begin
+  always_comb if (sim_reset_seen_q && i_rst_n && (!PROBE_LAUNCH || staged_payload_seen_q)) begin
 `ifndef FORMAL
     if (!$isunknown({amo_launch, mem_read_en, sq_check_is_amo_q}))
 `endif
@@ -6206,6 +6216,68 @@ module load_queue #(
       end
     end
   end
+  if (PROBE_LAUNCH) begin : gen_f_probe_zero_twin
+    // Direct check of the cbo.zero pending-twin hold (conservative global
+    // hold on probe-cycle launches from a lower-sector cbo.zero push until
+    // its upper-sector twin push, surviving flushes, plus any block
+    // invalidation cycle). Note that f_zero_push and f_twin_push mirror the
+    // hold's detection interface; the independent check of the L1D contract
+    // is p_zero_pending_twin_no_read_req in coherence_l1d.sv.
+    logic f_zero_twin_pending_q;
+    logic f_zero_twin_flushed_q;
+    logic f_zero_twin_released_q;
+    logic [XLEN-1:6] f_zero_twin_block_q;
+    wire f_zero_push = i_cache_invalidate_valid && i_cache_invalidate_block &&
+        i_coherent_store_push && !i_coherent_store_push_addr[5] &&
+        i_coherent_store_push_addr[XLEN-1:6] == i_cache_invalidate_addr[XLEN-1:6];
+    wire f_twin_push = i_coherent_store_push && i_coherent_store_push_addr[5] &&
+        i_coherent_store_push_addr[XLEN-1:6] == f_zero_twin_block_q;
+    // Every probe-launch enabler except probe_zero_hold, so the blocker
+    // covers require probe_zero_hold itself to be what stops the launch.
+    wire f_launch_but_zero_hold = probe_launch_ok_q && sq_check_pending &&
+        !sq_check_phase2 && !sq_check_no_older_store_q && !i_sq_empty &&
+        !coherent_local_hold && !i_flush_en && !i_flush_all && !drop_mem_response_pending &&
+        !i_sq_commit_pending && !older_amo_write_pending && !cached_launch_hold_q &&
+        !coh_launch_hold_q && !i_mem_bus_busy && !(cache_lookup_hit && launch_hit_blocks);
+    wire f_block_inval = i_cache_invalidate_valid && i_cache_invalidate_block;
+
+    always @(posedge i_clk) begin
+      if (!i_rst_n) begin
+        f_zero_twin_pending_q  <= 1'b0;
+        f_zero_twin_flushed_q  <= 1'b0;
+        f_zero_twin_released_q <= 1'b0;
+        f_zero_twin_block_q    <= '0;
+      end else begin
+        if (f_zero_push) begin
+          f_zero_twin_pending_q  <= 1'b1;
+          f_zero_twin_flushed_q  <= 1'b0;
+          f_zero_twin_released_q <= 1'b0;
+          f_zero_twin_block_q    <= i_cache_invalidate_addr[XLEN-1:6];
+        end else if (f_twin_push && f_zero_twin_pending_q) begin
+          f_zero_twin_pending_q  <= 1'b0;
+          f_zero_twin_flushed_q  <= 1'b0;
+          f_zero_twin_released_q <= 1'b1;
+        end else if (f_zero_twin_pending_q && (i_flush_en || i_flush_all)) begin
+          f_zero_twin_flushed_q  <= 1'b1;
+        end
+        if (f_block_inval)
+          p_probe_block_inval_no_launch : assert (!probe_launch_fire);
+        if (f_zero_twin_pending_q)
+          p_probe_zero_twin_no_launch : assert (!probe_launch_fire);
+        cover_probe_zero_twin_held :
+        cover (f_zero_twin_pending_q && !f_block_inval &&
+               f_launch_but_zero_hold && !probe_launch_fire);
+        cover_probe_zero_twin_held_after_flush :
+        cover (f_zero_twin_pending_q && f_zero_twin_flushed_q && !f_block_inval &&
+               f_launch_but_zero_hold && !probe_launch_fire);
+        cover_probe_block_inval_held :
+        cover (f_block_inval && !f_zero_twin_pending_q &&
+               f_launch_but_zero_hold && !probe_launch_fire);
+        cover_probe_zero_twin_release_launch :
+        cover (f_zero_twin_released_q && probe_launch_fire);
+      end
+    end
+  end
 
   // -------------------------------------------------------------------------
   // Sequential assertions
@@ -6478,7 +6550,8 @@ module load_queue #(
       assert (!cache_fill_if_slot);
       assert (issued_lr_suppressed);
     end
-    if (mem_read_en && sq_check_is_amo_q && sq_check_is_cached_region)
+    if (mem_read_en && sq_check_is_amo_q && sq_check_is_cached_region &&
+        (!PROBE_LAUNCH || staged_payload_seen_q))
       assert (i_coherent_atomic_protected);
     if (o_coherent_arm_valid) begin
       p_atomic_arm_checks_address : assert (
@@ -6490,7 +6563,7 @@ module load_queue #(
     if (sq_check_fault_eligible && coherent_address_fault && cdb_stage_slot_available &&
         !issue_cdb_fire && !resp_bypass_fire && !i_flush_en)
       p_address_fault_progress : assert (misalign_bypass_fire);
-    if (misalign_bypass_fire)
+    if (misalign_bypass_fire && (!PROBE_LAUNCH || staged_payload_seen_q))
       p_address_fault_has_no_memory_effect : assert (
           !mem_read_en && !cache_hit_fast_path && !sq_do_forward);
     if (f_coherent_past[1] && $past(!i_rst_n || i_flush_all || coherent_holder_changed))

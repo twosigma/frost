@@ -1519,8 +1519,18 @@ jobs:
             pytest_filter: >-
               coherence_store_boundary and not
               (coherence_store_boundary_bmc_four or
-              coherence_store_boundary_bmc_intervening or amo)
+              coherence_store_boundary_bmc_intervening or amo or probe)
             timeout_minutes: 330
+          # Composed probe-launch and C2b store_ack boundary checks: other-sector
+          # BMC (100 min) and cover (40 min) in one shard; same-sector BMCs
+          # (60 + 40 min), cover (40 min) and mutation controls in a second shard.
+          - shard: Store boundary probe launch other
+            pytest_filter: coherence_store_boundary and probe and other
+            timeout_minutes: 160
+          - shard: Store boundary probe launch same
+            pytest_filter: >-
+              (coherence_store_boundary and probe and same) or test_probe_launch_mutations
+            timeout_minutes: 180
           # The eight-endpoint L1D stream BMC with arbitrary inputs and
           # stores runs to depth 32, and the four-way hit-port array BMC,
           # about 50 minutes, shares its job.
@@ -1576,7 +1586,7 @@ jobs:
             pytest_filter: >-
               load_queue_ and not load_queue_amo and not
               (coherence_ or coherent_ or _twin)
-            timeout_minutes: 130
+            timeout_minutes: 135
           # The load queue's helper blocks, its AMO datapath and the range
           # holds at its address-update port.
           - shard: Load queue blocks
@@ -1610,7 +1620,7 @@ jobs:
               cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
               reservation_station_cover or rs_mem_broadcast or
               rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
-              tage_copy_convergence or rob_retire_successor)
+              tage_copy_convergence or rob_retire_successor or test_probe_launch_mutations)
             timeout_minutes: 124
     # A task whose key has a pass marker is skipped; one in twenty of those
     # is proved again as a canary. The markers are cached per job: a main run
@@ -1673,6 +1683,7 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run pytest tests/test_run_formal.py \
             tests/test_pa_bridge_mutation.py \
+            tests/test_probe_launch_mutations.py \
             -m formal -k "$PYTEST_FILTER" --collect-only -q > ci-reuse-collected.txt \
             && status=0 || status=$?
           python3 tests/ci_reuse.py formal-record --dir "$FROST_REUSE_DIR" \
@@ -1684,6 +1695,7 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run pytest tests/test_run_formal.py \
             tests/test_pa_bridge_mutation.py \
+            tests/test_probe_launch_mutations.py \
             -m formal -k "$PYTEST_FILTER" -v --durations=0
 
       - name: Summarize proved and reused tasks

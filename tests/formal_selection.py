@@ -25,11 +25,25 @@ import yaml  # type: ignore[import-untyped]
 import ci_reuse
 import sby_config
 from test_pa_bridge_mutation import PROOF as PA_BRIDGE_PROOF
+from test_probe_launch_mutations import BOUNDARY_PROOF as PROBE_BOUNDARY_PROOF
+from test_probe_launch_mutations import LQ_PROOF as PROBE_LQ_PROOF
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PROOFS = {
     "tests/test_pa_bridge_mutation.py::test_wide_bridge_rejects_32_bit_offset": (
         PA_BRIDGE_PROOF
+    ),
+    "tests/test_probe_launch_mutations.py::test_probe_zero_hold_removed_rejected": (
+        PROBE_LQ_PROOF
+    ),
+    "tests/test_probe_launch_mutations.py::test_probe_zero_hold_flush_clear_rejected": (
+        PROBE_LQ_PROOF
+    ),
+    "tests/test_probe_launch_mutations.py::test_probe_sampled_one_cycle_late_rejected": (
+        PROBE_BOUNDARY_PROOF
+    ),
+    "tests/test_probe_launch_mutations.py::test_c2b_sector_hold_push_prev_removed_rejected": (
+        PROBE_BOUNDARY_PROOF
     ),
 }
 TOOL_CHECK = "tests/test_run_formal.py::TestFormalVerification::test_sby_installed"
