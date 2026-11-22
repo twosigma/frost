@@ -198,8 +198,8 @@ selection, debugging, and the hardware regression, and the
 
 ### Supported RISC-V Extensions
 
-FROST implements RV64GCB (G = IMAFD, Zicsr, and Zifencei). The table lists
-every supported extension and privilege mode.
+FROST implements RV64GCBV (G = IMAFD, Zicsr, and Zifencei), with V on the X3
+build. The table lists every supported extension and privilege mode.
 
 | Extension        | Description                                    |
 |------------------|------------------------------------------------|
@@ -214,6 +214,7 @@ every supported extension and privilege mode.
 | **Zcb**          | Compressed byte/halfword loads and stores, `c.zext.*`, `c.sext.*`, `c.not`, `c.mul`, expanded at instruction fill |
 | **Zcmop**        | Compressed may-be-operations `c.mop.n`, which write no register |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
+| **V**            | Vector extension, VLEN 256, on the X3 build: integer, fixed-point, floating-point, mask and permutation instructions and every vector load and store form |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
 | **Zihpm**        | Performance counters `hpmcounter3`-`10`, gated by `mcounteren`/`scounteren` |
