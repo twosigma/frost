@@ -337,7 +337,11 @@ prefetches; the cluster bench runs prefetches through its agent port. They
 run in the unit shard. The program shards
 exercise the coherent hierarchy in both memory configurations. Whole-L1D
 maintenance is active in simulation. Synthesis checks cover both line sizes
-at 32-bit and 56-bit physical widths.
+at 32-bit and 56-bit physical widths. A four-way L1D geometry check
+elaborates the tag RAMs at 32, 48, 49 and 56 bits. The block RAM
+configuration also checks all four copies for the hit port.
+It checks the change from two packed banks to four when the tag entry
+grows from 36 to 37 bits.
 
 The coherence cluster stress and fill cases run in Cocotb Unit Tests B.
 The stress cases vary memory response order and delay, grant and release
@@ -393,6 +397,10 @@ that combine behind it.
 
 `coherence_l1d` holds a probe reply across a grant and checks single grant
 application, ordered read errors and installation of the following store.
+Its probe service case supplies P after the home bytes are ready. It checks
+the first and repeated reads and a fast-cut invalidation of both a retained
+Modified copy and a downgraded Shared copy. A local AMO or successful SC
+between reads makes the next snapshot supply the new bytes.
 Its buffered-store cases check overlapping byte masks, same-sector order,
 held sector coverage, probe-driven reacquisition, frozen writeback conflicts
 and fatal acquisition errors. Stream cases witness registered LR/AMO cancellation
@@ -452,7 +460,7 @@ second-port issue, dual issue, simultaneous dispatch and issue, and flush.
 The `coherent_cpu_faults` bench injects SC refill errors after clean replacement.
 Successful local atomic cases inject interrupt and debug requests at every
 ownership phase, check a younger exception, and compare warm, fresh-sector and
-reader-downgraded SC latency.
+SC latency after a DMA read of a Modified sector.
 Every AMO operator runs at W/D widths, both word offsets and all aq/rl encodings.
 `coherent_cpu_local_contention` times a younger load's memory response to
 produce a same-set grant during local SC ownership. The grant and a DMA probe remain held
@@ -1808,9 +1816,10 @@ selections cover every property, and each task runs in exactly one CI job.
 The scripted stream checks also use complementary property groups:
 `coh_l1d_stream_bmc` retains every assertion except four wide payload identity
 and hold assertions, checked by `coh_l1d_stream_hold_bmc` in a parallel
-75-minute job. Both keep the same scripted model, interface assumptions,
-42-cycle depth and 3,600-second limit, with no assumptions between groups.
-Fast tests enforce the model match and complete property coverage.
+75-minute job. Both use the same scripted model and interface assumptions
+through 42 cycles. The control task has 5,100 seconds and includes the
+three snapshot checks. The hold task has 3,600 seconds. Fast tests enforce
+the model match and complete property coverage.
 
 The free-input no-store stream model uses the same partition at depth 24.
 `coh_l1d_stream_free_nostore_hold_bmc` checks the four payload holds in its
@@ -1829,7 +1838,10 @@ share a 180-minute job; SC and the remaining boundary cases share a
 other CI job limits. `--verbose` prints solver output.
 
 The independent `coherent_hart_cache:coh_hart_maint_owned_prove` induction
-has a 20-minute timeout in both SBY and the runner.
+has a 20-minute timeout in both SBY and the runner. The Hart snapshot
+ownership job runs the free-state PDR ownership and visibility checks.
+Each has a two-hour task limit. The 250-minute job includes ten minutes
+for setup.
 
 ## Environment and output
 
@@ -2125,7 +2137,7 @@ and Fast Python Tests jobs locally.
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
-| Formal verification | The 53 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), block proofs, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
+| Formal verification | The 55 jobs cover CSR profiling on and off (two jobs), the ROB and its retirement successor, coherence, coherence home, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, hart snapshot ownership, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), block proofs, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) synthesis and floorplanning on Nangate45, with OpenRAM's SRAM macros, in a separate workflow, which a newer push to `main` does not cancel; the rest of the flow, to GDS, runs with `./asic/orfs.py run` outside CI |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges coverage from 29 jobs into a report |

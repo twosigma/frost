@@ -4410,7 +4410,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
         python_test_module="cocotb_tests.cache.test_coherence_l1d",
         hdl_toplevel_module="coherence_l1d",
-        description="Buffered store ordering, masked hits, read turns, grants, probes, frozen writebacks and W selection after an absorbed put",
+        description="Buffered stores, masked hits, read turns, grants, snapshot versions, credited eviction, frozen writebacks and W selection after absorption",
     ),
     "coherence_local_atomics": CocotbRunConfig(
         verilator_extra_args=(
@@ -4433,7 +4433,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("--assert",),
         python_test_module="cocotb_tests.cache.test_coherence_cluster",
         hdl_toplevel_module="coherence_cluster_test_harness",
-        description="One hart, DMA, pending stores, recalls, and atomic ownership",
+        description="One hart, DMA snapshots of installed store bytes, recalls, and atomic ownership",
     ),
     "coherence_line_client": CocotbRunConfig(
         verilator_extra_args=("--assert",),

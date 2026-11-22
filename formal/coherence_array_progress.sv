@@ -40,9 +40,11 @@ module coherence_array_progress #(
     input logic i_req_data_if_hit,
     i_req_data_if_victim_modified,
     i_req_data_if_modified,
+    i_req_snapshot,
     input logic i_req_no_touch,
     i_update_touch,
     i_update_insert,
+    i_update_home_current,
     input logic [1:0] i_update_state,
     input logic [31:0] i_update_mask,
     input logic [255:0] i_update_data,
@@ -54,6 +56,7 @@ module coherence_array_progress #(
   logic [3:0] phase[2];
   logic [CountBits-1:0] count[2];
   logic [1:0] state_out[2];
+  logic [1:0] home_current;
   logic [ADDR_WIDTH-1:0] address_out[2];
 
   for (genvar n = 0; n < 2; n++) begin : gen_copy
@@ -78,6 +81,7 @@ module coherence_array_progress #(
         .i_req_no_bank,
         .i_req_data_if_hit,
         .i_req_data_if_modified,
+        .i_req_snapshot,
         .i_req_data_if_victim_modified,
         .i_req_no_touch,
         .o_resp_valid(valid[n]),
@@ -87,6 +91,7 @@ module coherence_array_progress #(
         .o_resp_way(way[n]),
         .o_resp_addr(address_out[n]),
         .o_resp_state(state_out[n]),
+        .o_resp_home_current(home_current[n]),
         .o_resp_no_bank(no_bank[n]),
         .o_resp_data_valid(),
         .o_resp_data(),
@@ -95,6 +100,7 @@ module coherence_array_progress #(
         .i_update_addr,
         .i_update_way(WAYS == 1 ? '0 : i_update_way),
         .i_update_state,
+        .i_update_home_current,
         .i_update_touch,
         .i_update_insert,
         .i_update_mask,
@@ -152,11 +158,11 @@ module coherence_array_progress #(
   // Compare the controller registers and the metadata they read on the two
   // real arrays. Each equality is an induction goal with its own reset base.
   `define PROGRESS_REGS(path) {path.phase_q, path.count_q, path.init_set_q, path.init_done_q, \
-    path.set_q, path.tag_q, path.visit_q, path.skip_data_q, path.modified_data_q, \
+    path.set_q, path.tag_q, path.visit_q, path.skip_data_q, path.modified_data_q, path.snapshot_q, \
     path.no_touch_q, path.hit_data_q, path.victim_data_q, path.tags_only_q, path.bank_owner_q, \
     path.visit_way_q, path.exclude_q, path.plru_q, path.insert_lfsr_q, path.plru_hit_q, \
     path.resp_valid_q, path.data_valid_q, path.o_resp_hit, path.o_resp_available, path.o_resp_way, \
-    path.o_resp_addr, path.o_resp_state}
+    path.o_resp_addr, path.o_resp_state, path.o_resp_home_current}
   always_ff @(posedge i_clk)
     if (started) begin
       p_induct_controller :
@@ -202,7 +208,8 @@ module coherence_array_progress #(
       if (valid[0]) begin
         p_progress_response :
         assert (hit[0] == hit[1] && state_out[0] == state_out[1] &&
-            address_out[0] == address_out[1] && (!hit[0] || way[0] == way[1]));
+            home_current[0] == home_current[1] && address_out[0] == address_out[1] &&
+            (!hit[0] || way[0] == way[1]));
       end
       if (!i_rst) begin
         c_progress_split_take :

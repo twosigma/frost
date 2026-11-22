@@ -87,6 +87,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home", "coh_home_cmo_cover"): 6000,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
+    ("coherent_hart_cache", "coh_hart_maint_free_owned_prove"): 7200,
+    ("coherent_hart_cache", "coh_hart_maint_free_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
     ("coherence_l1d", "coh_l1d_stream_bmc"): 5100,
     ("coherence_l1d", "coh_l1d_stream_hold_bmc"): 3600,
@@ -299,9 +301,13 @@ FORMAL_TARGETS = [
             "coh_hart_maint_prove",
             "coh_hart_maint_owned_prove",
             "coh_hart_maint_owned_reset_prove",
+            "coh_hart_maint_free_owned_prove",
+            "coh_hart_maint_free_prove",
             "coh_hart_maint_cover",
             "coh_hart_maint_four_bmc",
             "coh_hart_maint_four_cover",
+            "coh_hart_snapshot_bmc",
+            "coh_hart_snapshot_cover",
         ),
     ),
     FormalTarget(
@@ -647,6 +653,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_snapshot.sby",
+        "A four-way L1D and the home retain and publish successive store versions.",
+        tasks=("coh_snapshot_versions_bmc", "coh_snapshot_versions_cover"),
+    ),
+    FormalTarget(
         "coherence_array.sby",
         "Serialized array byte values and exact conditional data selection.",
         tasks=(
@@ -663,6 +674,8 @@ FORMAL_TARGETS = [
             "coh_array_cover",
             "coh_array_uram_cover",
             "coh_array4_port_cover",
+            "coh_array4_snapshot_cover",
+            "coh_array4_uram_snapshot_cover",
         ),
     ),
     FormalTarget(
@@ -2470,6 +2483,14 @@ SBY_TASKS = [
         "Four occupied records drain before a fence and final PTE publication.",
     ),
     (
+        "coh_hart_snapshot_bmc",
+        "Two CPU versions reach instruction fetch and the walker.",
+    ),
+    (
+        "coh_hart_snapshot_cover",
+        "Post-fence fetch and walking after a retained M-hit store.",
+    ),
+    (
         "coh_hart_maint_four_cover",
         "Four occupied records reach fence, instruction and PTW completion.",
     ),
@@ -2826,6 +2847,14 @@ SBY_TASKS = [
     (
         "coh_hart_maint_owned_reset_prove",
         "The same induction from the state after the reset cycle, every other register free.",
+    ),
+    (
+        "coh_hart_maint_free_owned_prove",
+        "Independent PDR proof of all maintenance ownership facts with free initial values.",
+    ),
+    (
+        "coh_hart_maint_free_prove",
+        "Maintenance visibility and completion using ownership facts on the same free-state model.",
     ),
     (
         "coh_hart_maint_cover",
@@ -3186,6 +3215,14 @@ SBY_TASKS = [
         for lane in range(64)
     ],
     ("coh_home_array_cover", "Tag, read and update ports operate concurrently."),
+    (
+        "coh_snapshot_versions_bmc",
+        "Snapshot bytes across a later M-hit store and DMA write.",
+    ),
+    (
+        "coh_snapshot_versions_cover",
+        "A held first grant, a changed byte and both publications.",
+    ),
     ("coh_array_bmc", "Coherent array byte values and held responses."),
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     ("coh_array4_bmc", "Coherent array byte values and held responses with four ways."),
@@ -3193,6 +3230,8 @@ SBY_TASKS = [
     ("coh_array_port_bmc", "Hit-port tags and byte values beside lookups, one way."),
     ("coh_array4_port_bmc", "Hit-port tags and byte values beside lookups, four ways."),
     ("coh_array4_port_cover", "Hit-port hits beside lookups and after writes."),
+    ("coh_array4_snapshot_cover", "Same-set Modified tags with different home copies."),
+    ("coh_array4_uram_snapshot_cover", "Same-set snapshot selection in packed tags."),
     ("coh_array_equiv_bmc", "Cycle equivalence with the reference array, one way."),
     ("coh_array_equiv_data0_bmc", "One-way response data equivalence in byte lane 0."),
     (
@@ -4542,6 +4581,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherent_hart_cache": [
             "coh_hart_maint_owned_prove",
             "coh_hart_maint_prove",
+            "coh_hart_maint_free_owned_prove",
+            "coh_hart_maint_free_prove",
         ],
         "coherence_store_boundary": [
             f"{prefix}_amo_{sector}_{suffix}"
@@ -4585,6 +4626,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "rob_retire_successor_cover": "ROB retirement successor",
         "coherent_hart_cache_coh_hart_maint_prove": "Hart maintenance",
         "coherent_hart_cache_coh_hart_maint_owned_prove": "Hart maintenance",
+        "coherent_hart_cache_coh_hart_maint_free_owned_prove": "Hart snapshot ownership",
+        "coherent_hart_cache_coh_hart_maint_free_prove": "Hart snapshot ownership",
         "coherence_l1d_coh_l1d_stream_bmc": "Hart maintenance",
         "coherence_l1d_coh_l1d_stream_free_nostore_bmc": "Hart maintenance",
         "coherence_l1d_coh_l1d_stream_outlier_prove": "Hart maintenance",
@@ -10627,16 +10670,16 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
     commands = {
         "hold": common
         + [
-            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 331 t:$check r:FLAVOR=assert %i",
             f"select -assert-count 4 {holds}",
             f"chformal -assert -remove t:$check r:FLAVOR=assert %i {holds} %u %u %u %d",
             "select -assert-count 4 t:$check r:FLAVOR=assert %i",
         ],
         "bmc": common
         + [
-            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 331 t:$check r:FLAVOR=assert %i",
             f"chformal -assert -remove {holds}",
-            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 327 t:$check r:FLAVOR=assert %i",
         ],
     }
 
@@ -10952,7 +10995,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",
     ]
-    script += ["select -assert-count 328 t:$check r:FLAVOR=assert %i"]
+    script += ["select -assert-count 331 t:$check r:FLAVOR=assert %i"]
     if outlier or hold:
         if hold:
             script += [
@@ -10969,7 +11012,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         script += [
             "chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable "
             "c:p_load_payload_held c:p_reply_hold",
-            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 327 t:$check r:FLAVOR=assert %i",
         ]
     if task.startswith("coh_l1d_stream_free_nostore_"):
         script += ["connect -set i_write_mask 8'h00"]
@@ -11184,6 +11227,27 @@ def test_hart_maintenance_lemma_model_matches() -> None:
         ) in models[0]
 
     validate(owned, proof)
+    # Both free-state PDR tasks use the original pair's precise property
+    # selections. Compare the entire resolved model, including staged files.
+    free_passes = {
+        "memory_map": "memory_map -keepdc",
+        "opt": "opt -keepdc",
+        "opt -fast": "opt -fast -keepdc",
+    }
+    for task, original in (
+        ("coh_hart_maint_free_owned_prove", owned),
+        ("coh_hart_maint_free_prove", proof),
+    ):
+        expected = dict(original)
+        expected["[script]"] = [
+            free_passes.get(line, line) for line in original["[script]"]
+        ]
+        expected["[options]"] = [
+            "timeout 7200" if line == "timeout 1200" else line
+            for line in original["[options]"]
+        ]
+        expected["[engines]"] = ["abc pdr -r"]
+        assert formal_task_config("coherent_hart_cache", task) == expected
     for side, section, line in (
         (0, "[script]", "chformal -assert2assume c:p_maint_owned_engine"),
         (0, "[script]", "chformal -assume -remove"),
@@ -12804,6 +12868,8 @@ def test_fatal_frame_validation(
         ("reorder_buffer", "bmc", 5400),
         ("coherent_hart_cache", "coh_hart_maint_prove", 7200),
         ("coherent_hart_cache", "coh_hart_maint_owned_prove", 1200),
+        ("coherent_hart_cache", "coh_hart_maint_free_owned_prove", 7200),
+        ("coherent_hart_cache", "coh_hart_maint_free_prove", 7200),
         ("coherent_hart_cache", "coh_hart_maint_four_bmc", 7200),
         ("coherence_l1d", "coh_l1d_stream_bmc", 5100),
         ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc", 3600),

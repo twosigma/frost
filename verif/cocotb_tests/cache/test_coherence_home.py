@@ -61,9 +61,12 @@ class Home:
         self.cycle = 0
         self.memory: dict[int, int] = {}
         self.private: dict[int, tuple[int, int]] = {}
+        self.home_current: set[int] = set()
         self.frozen: dict[int, tuple[int, int]] = {}
         self.accepted_puts: set[int] = set()
         self.probes: list[tuple[int, int, int, int]] = []
+        self.probe_cycles: list[int] = []
+        self.persisted: list[tuple[int, int]] = []
         self.transactions: list[tuple[int, int, int]] = []
         self.acks: list[tuple[int, ...]] = []
         self.read_delay = 3
@@ -82,6 +85,11 @@ class Home:
         self.prefetch_grants: list[tuple[int, ...]] = []
         # Called after each clock edge with the registered state updated.
         self.observers: list[Callable[[], None]] = []
+
+    def set_modified(self, address: int, data: int) -> None:
+        """Install private bytes and mark them owed to the home."""
+        self.private[address] = (3, data)
+        self.home_current.discard(address)
 
     def get(self, name: str) -> int:
         """Read a signal."""
@@ -108,6 +116,7 @@ class Home:
     async def reset(self, cycles: int = 2) -> None:
         """Reset all ownership and wait for tag initialization."""
         self.accepted_puts.clear()
+        self.home_current.clear()
         for signal in self.dut:
             if signal._name.startswith("i_"):
                 signal.value = 0
@@ -140,6 +149,12 @@ class Home:
                 self.responses.remove(memory)
                 if memory[5] and not memory[3]:
                     self.memory[memory[4]] = memory[2]
+            if self.get("array_updated"):
+                token = self.get("array_updated_token")
+                if token < len(self.dut.engine_idle):
+                    self.persisted.append(
+                        (self.cycle, self.get("engine_tid") >> (6 * token) & 63)
+                    )
             if self.get("array_data_valid"):
                 token = self.get("array_data_token")
                 engines = len(self.dut.engine_idle)
@@ -166,6 +181,7 @@ class Home:
                     self.get("o_p"), (2, 6, 1, self.p, 2, 2, 9, 5, 3)
                 )
                 self.probes.append((op, address, reason, tid))
+                self.probe_cycles.append(self.cycle)
                 state, data = self.private.get(address, (0, 0))
                 slot = next(
                     (s for s, item in self.frozen.items() if item[0] == address), None
@@ -175,11 +191,18 @@ class Home:
                     assert slot not in self.accepted_puts, (
                         "probe crossed an accepted Put"
                     )
-                dirty = (state == 3 or absorbed) and op != 2
+                dirty = (
+                    state == 3
+                    and (op != 3 or address not in self.home_current)
+                    or absorbed
+                ) and op != 2
                 if absorbed:
                     assert slot is not None
                     data = self.frozen[slot][1]
-                if op != 2:
+                if op == 3 and state == 3 and not absorbed:
+                    self.home_current.add(address)
+                elif op in (0, 1):
+                    self.home_current.discard(address)
                     self.private[address] = (
                         0 if op == 1 else (2 if state else 0),
                         data,
@@ -553,11 +576,11 @@ async def streaming_residency_and_dirty_hits(dut: Any) -> None:
             continue
         address = protected[0]
         dirty = int.from_bytes(bytes(range(32)), "little")
-        b.private[address] = (3, dirty)
+        b.set_modified(address, dirty)
         assert await b.read(address, 7, 1) == dirty
-        assert b.private[address][0] == 2
+        assert b.private[address][0] == 3
         dirty = int.from_bytes(bytes(range(32, 64)), "little")
-        b.private[address] = (3, dirty)
+        b.set_modified(address, dirty)
         mask = 0x80000181
         grant = await b.start(8, address, (1 << 256) - 1, mask, non_alloc=1)
         assert not grant[5]
@@ -666,11 +689,15 @@ async def dirty_data_and_dma_masks(dut: Any) -> None:
     grant = await b.start(1, address)
     assert grant[0] == 2 and grant[4] == b.expected(address)
     dirty = int.from_bytes(bytes(range(32)), "little")
-    b.private[address] = (3, dirty)
+    b.set_modified(address, dirty)
     await b.finish(grant, written=True, delay=9, completion_delay=11, release_delay=13)
     assert await b.read(address, 7) == dirty
-    assert b.private[address][0] == 2
-    assert await b.read(address, 7) == dirty
+    assert b.private[address][0] == 3
+    for opcode in (5, 6, 7):
+        grant = await b.start(opcode, address)
+        assert grant[0] == 3 and grant[4] == dirty and not grant[5]
+        assert b.probes[-1][:3] == (3, address, 0)
+        await b.finish(grant)
     payload = (1 << 256) - 1
     mask = 0x80000181
     grant = await b.start(8, address, payload, mask)
@@ -686,6 +713,57 @@ async def dirty_data_and_dma_masks(dut: Any) -> None:
 
 
 @cocotb.test()
+async def queued_reader_waits_for_the_snapshot_update(dut: Any) -> None:
+    """Discard or rewrite a private sector just after handing its image to the home."""
+    for discard in (True, False):
+        b = Home(dut)
+        await b.reset()
+        address = 0x80000100
+        first = int.from_bytes(bytes(range(32)), "little")
+        following = first ^ (0xFF << 104)
+        grant = await b.start(1, address)
+        b.set_modified(address, first)
+        await b.finish(grant, written=True)
+        b.probe_delay = 12
+        await b.submit(7, address, slot=0)
+        await b.submit(7, address, slot=1)
+        # Both demands own a home identity. Change the model only after the
+        # first R actually transfers and before its masked write completes.
+        for _ in range(200):
+            if b.arrivals and b.arrivals[-1][1] == "reply":
+                break
+            await b.tick()
+        else:
+            raise AssertionError("first snapshot R did not transfer")
+        first_cycle, _, first_tid = b.arrivals[-1]
+        assert len(b.probes) == 1 and address in b.home_current
+        assert all(tid != first_tid for _, tid in b.persisted)
+        if discard:
+            b.home_current.remove(address)
+            del b.private[address]
+        else:
+            b.set_modified(address, following)
+        await b.wait("o_g_valid")
+        held = b.get("o_g")
+        for _ in range(14):
+            await b.tick()
+            assert b.get("o_g_valid") and b.get("o_g") == held
+        first_grant = await b.take_grant()
+        assert first_grant[2] == first_tid and first_grant[4] == first
+        await b.complete(first_grant)
+        next_grant = await b.take_grant()
+        assert next_grant[2] != first_tid and next_grant[4] == (
+            first if discard else following
+        )
+        await b.complete(next_grant)
+        persist_cycle = next(cycle for cycle, tid in b.persisted if tid == first_tid)
+        assert first_cycle < persist_cycle < b.probe_cycles[1]
+        assert len(b.probes) == 2 and all(
+            op == 3 and addr == address for op, addr, _, _ in b.probes
+        )
+
+
+@cocotb.test()
 async def dma_read_fill_and_dirty_residency(dut: Any) -> None:
     """Read fills and dirty recalls survive clean reads and later eviction."""
     b = Home(dut)
@@ -697,9 +775,9 @@ async def dma_read_fill_and_dirty_residency(dut: Any) -> None:
     dirty = int.from_bytes(
         bytes((index * 29 + 3) & 255 for index in range(32)), "little"
     )
-    b.private[address] = (3, dirty)
+    b.set_modified(address, dirty)
     assert await b.read(address, 7) == dirty
-    assert b.private[address][0] == 2
+    assert b.private[address][0] == 3
     assert await b.read(address, 7) == dirty
     for index in range(1, 9):
         await b.read(address + index * 4096, 7)
@@ -728,7 +806,7 @@ async def masked_dma_writes_preserve_dirty_and_sibling_bytes(dut: Any) -> None:
                     bytes((17 * index + sector + 41) & 255 for index in range(32)),
                     "little",
                 )
-                b.private[address] = (3, expected[address])
+                b.set_modified(address, expected[address])
                 await b.finish(grant, written=True)
             for mask in (1, 0x80000000, 0xA5A55A5A, 0xFFFFFFFF):
                 payload = int.from_bytes(
@@ -761,7 +839,7 @@ async def recall_all_sectors_and_keep_victim_lock(dut: Any) -> None:
     addresses = [0x80000000 + n * b.line * 4 for n in range(9)]
     for index, address in enumerate(addresses[:4]):
         grant = await b.start(1, address)
-        b.private[address] = (3, 0xBEEF0000 + index)
+        b.set_modified(address, 0xBEEF0000 + index)
         if b.line == 64:
             b.private[address + 32] = (2, b.expected(address + 32))
         await b.finish(grant, written=True)
@@ -832,7 +910,7 @@ async def absorbed_put_cancellation_and_sc_entitlement(dut: Any) -> None:
     assert [p[0] for p in b.probes[count:]] == [2]
     await b.finish(grant)
     b.reservation = True
-    b.private[address] = (3, 0x11223344)
+    b.set_modified(address, 0x11223344)
     count = len(b.probes)
     grant = await b.start(4, address)
     assert grant[0] == 2 and grant[4] == 0x11223344
@@ -848,7 +926,7 @@ async def failed_fill_does_not_reveal_detached_victim(dut: Any) -> None:
     for index in range(4):
         address = 0x80000000 + index * b.line * 4
         grant = await b.start(1, address)
-        b.private[address] = (3, 0xCAFE0000 + index)
+        b.set_modified(address, 0xCAFE0000 + index)
         await b.finish(grant, written=True)
     failed = 0x80000000 + 4 * b.line * 4
     b.errors.add(failed)
@@ -962,7 +1040,7 @@ async def full_result_pool_keeps_both_put_slots_moving(dut: Any) -> None:
     puts = [(base + 0x1000, 0x123456), (base + 0x2000, 0x987654)]
     for address, data in puts:
         grant = await b.start(1, address)
-        b.private[address] = (3, data)
+        b.set_modified(address, data)
         await b.finish(grant, written=True)
     for slot, (address, data) in enumerate(puts):
         b.frozen[slot] = (address, data)
@@ -1053,7 +1131,7 @@ async def fatal_then_reset(dut: Any, reset_cycles: int) -> None:
     for index in range(4):
         address = base + index * b.line * 4
         grant = await b.start(1, address)
-        b.private[address] = (3, 0xDEAD0000 + index)
+        b.set_modified(address, 0xDEAD0000 + index)
         await b.finish(grant, written=True)
     b.write_delay = 50000
     await b.submit(0, base + 4 * b.line * 4, slot=0)
@@ -1209,7 +1287,7 @@ async def ready_reader_samples_after_older_unseated_writer(dut: Any) -> None:
     changed = int.from_bytes(
         bytes((index * 29 + 7) & 255 for index in range(32)), "little"
     )
-    b.private[base] = (3, changed)
+    b.set_modified(base, changed)
     await b.tick(20)
     assert not b.get("o_g_valid")
     await b.complete(writer, written=True)
@@ -1231,7 +1309,7 @@ async def dirty_reply_overrides_each_baseline_arrival_order(dut: Any) -> None:
         changed = int.from_bytes(
             bytes((index * 31 + delay) & 255 for index in range(32)), "little"
         )
-        b.private[address] = (3, changed)
+        b.set_modified(address, changed)
         b.probe_delay = delay
         b.arrivals.clear()
         grant = await b.start(7, address)
@@ -1262,7 +1340,7 @@ async def dirty_probe_error_preserves_accepted_image(dut: Any) -> None:
     changed = int.from_bytes(
         bytes((index * 13 + 9) & 255 for index in range(32)), "little"
     )
-    b.private[address] = (3, changed)
+    b.set_modified(address, changed)
     b.probe_errors.add(address)
     b.probe_delay = 0
     await b.submit(7, address)
@@ -1288,7 +1366,7 @@ async def held_probe_survives_another_engine_fatal(dut: Any) -> None:
         for address in (failed, held):
             grant = await b.start(0, address)
             await b.finish(grant)
-        b.private[failed] = (3, b.expected(failed) ^ 0x1234)
+        b.set_modified(failed, b.expected(failed) ^ 0x1234)
         b.probe_errors.add(failed)
         b.probe_delay = 1000
         before = len(b.probes)
@@ -1427,7 +1505,7 @@ async def dirty_victim_error_preserves_accepted_image(dut: Any) -> None:
     for i in range(4):
         address = base + i * 4 * b.line
         await b.read(address)
-        b.private[address] = (3, changed)
+        b.set_modified(address, changed)
         b.probe_errors.add(address)
     b.probe_delay = 0
     await b.submit(0, base + 16 * b.line)
@@ -1522,7 +1600,7 @@ async def concurrent_sibling_updates_survive_replacement(dut: Any) -> None:
     ]
     for sector in range(2):
         grant = await b.start(1, base + sector * 32)
-        b.private[base + sector * 32] = (3, changed[sector])
+        b.set_modified(base + sector * 32, changed[sector])
         await b.finish(grant, written=True)
     b.probe_delay = 9
     masks = (0x0000FFFF, 0xFF0000FF)
@@ -1759,7 +1837,7 @@ async def put_proceeds_beside_live_prefetches_of_its_sector(dut: Any) -> None:
     address = 0x80003000
     data = 0x5A5A_1234
     grant = await b.start(1, address)
-    b.private[address] = (3, data)
+    b.set_modified(address, data)
     await b.finish(grant, written=True)
     b.frozen[0] = (address, data)
     del b.private[address]
@@ -2090,7 +2168,7 @@ async def data_updates_meet_parallel_reads_of_their_set(dut: Any) -> None:
             )
             b.read_delay = 6
             if source == "probe":
-                b.private[other] = (3, changed)
+                b.set_modified(other, changed)
             fresh = base + (2 + (delay % 2)) * stride
 
             async def launch() -> None:
