@@ -60,7 +60,9 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         if step.get("name") == "Check detection of an incorrect vector result"
     )
     assert control["if"] == "matrix.vlen == 128"
-    assert control["timeout-minutes"] == 9
+    assert control["timeout-minutes"] == 15, (
+        "Vector controls need the registered budget"
+    )
     assert job["steps"].index(replay) < job["steps"].index(control)
     calls = [
         shlex.split(line)[1:3]
@@ -80,6 +82,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         ["strided", "vector_strided"],
         ["indexed", "vector_indexed"],
         ["segment", "vector_segment"],
+        ["fof", "vector_fof"],
     ]
 
 

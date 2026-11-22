@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (28, instructions + 7940) if vector_directed else (15, instructions)
+    expected = (29, instructions + 8266) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -296,6 +296,7 @@ def test_vector_directed_replay(
         ("vector_strided.S", 1846, 629),
         ("vector_indexed.S", 1924, 645),
         ("vector_segment.S", 2159, 1126),
+        ("vector_fof.S", 326, 208),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -1625,6 +1626,90 @@ def test_segment_store_readback_covers_each_element(
     mutated.write_text("\n".join(lines) + "\n")
     with pytest.raises(AssertionError, match=error):
         _check_vector_store_readbacks([mutated])
+
+
+def test_vector_fof_trace_covers_forms() -> None:
+    """Check fault-only-first widths, masking, vl trimming, elem-0 traps and no misa."""
+    trace = VERIF_DIR / "testrig" / "vector_fof.S"
+    blocks = TRACE_WORD.split(trace.read_text())[1:]
+    words = [int(block.split()[1], 0) for block in blocks]
+    vtype = 0
+    avl_mode = ""
+    vl_imm = 0
+    scalar_fault_checked = False
+    trim_widths: set[int] = set()
+    trap_widths: set[int] = set()
+    masked_trim_seen = False
+    masked_trap_seen = False
+    masked_no_trim_seen = False
+    m2_trim_seen = False
+    vlmax_trim_seen = False
+    zero_vl_seen = False
+    for index, (block, word) in enumerate(zip(blocks, words, strict=True)):
+        opcode = word & 0x7F
+        if opcode == 0x73 and ((word >> 12) & 7) in (1, 2, 3, 5, 6, 7):
+            assert ((word >> 20) & 0xFFF) != 0x301  # No misa access
+        elif opcode == 0x03 and re.search(r"(?m)^\.assert trap == 1\b", block):
+            scalar_fault_checked = True
+        elif word & 0xC000_707F == 0xC000_7057:  # vsetivli
+            vtype = (word >> 20) & 0xFF
+            vl_imm = (word >> 15) & 0x1F
+            avl_mode = "imm"
+        elif word & 0x8000_707F == 0x0000_7057:  # vsetvli
+            vtype = (word >> 20) & 0xFF
+            assert ((word >> 15) & 0x1F) == 0 and ((word >> 7) & 0x1F) != 0
+            avl_mode = "vlmax"
+        elif opcode == 0x07 and ((word >> 12) & 7) in _VMEM_WIDTH_BYTES:
+            mop = (word >> 26) & 3
+            nf = (word >> 29) & 7
+            lumop = (word >> 20) & 0x1F
+            assert mop == 0 and nf == 0 and lumop == 0x10
+            unmasked = bool((word >> 25) & 1)
+            eew = _VMEM_WIDTH_BYTES[(word >> 12) & 7] * 8
+            lmul = vtype & 7
+            assert not test_testrig.run_stats.is_vector_store(word)
+            if re.search(r"(?m)^\.assert trap == 1\b", block):
+                if unmasked:
+                    trap_widths.add(eew)
+                else:
+                    masked_trap_seen = True
+            else:
+                assert re.search(r"(?m)^\.assert trap == 0\b", block)
+                if avl_mode == "imm" and vl_imm == 0:
+                    zero_vl_seen = True
+                    continue
+                # Find the following csrr ..., vl assertion before the next vset*
+                vl_read = None
+                for scan in range(index + 1, len(words)):
+                    next_w = words[scan]
+                    if (next_w & 0x707F) == 0x7057:
+                        break
+                    if (next_w & 0xFFF0_707F) == 0xC200_2073:  # csrr rd, vl
+                        m = re.search(
+                            r"(?m)^\.assert rd_wdata == (0x[0-9a-f]+)\b", blocks[scan]
+                        )
+                        assert m is not None
+                        vl_read = int(m.group(1), 16)
+                        break
+                assert vl_read is not None
+                if avl_mode == "vlmax":
+                    if vl_read < 4:
+                        vlmax_trim_seen = True
+                elif vl_read < vl_imm:
+                    if unmasked:
+                        trim_widths.add(eew)
+                        if lmul == 1:
+                            m2_trim_seen = True
+                    else:
+                        masked_trim_seen = True
+                elif not unmasked and vl_read == vl_imm:
+                    masked_no_trim_seen = True
+
+    assert scalar_fault_checked
+    assert trim_widths == {8, 16, 32, 64}
+    assert trap_widths == {8, 16, 32, 64}
+    assert masked_trim_seen and masked_trap_seen and masked_no_trim_seen
+    assert m2_trim_seen and vlmax_trim_seen and zero_vl_seen
 
 
 def test_readout_sees_every_register_and_vxsat() -> None:
