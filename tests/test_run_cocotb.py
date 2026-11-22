@@ -4292,11 +4292,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Speculative fills, load replay, attached signed and unsigned extraction, vector holds, flush recovery and LR cuts",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
     ),
+    "coherent_stream_order_probe_launch": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_stream_order",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Speculative fills, load replay, vector holds, flush recovery and LR cuts with PROBE_LAUNCH=1",
+        verilator_extra_args=(
+            "--assert",
+            "-GDIRECT_CACHE_READS=1",
+            "-GCACHE_MISSES=8",
+            "-GLQ_PROBE_LAUNCH=1",
+        ),
+    ),
     "hitpath_probe_order": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_hitpath_probe_order",
         hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
         description="Same-address load order across an invalidating probe and the L1D hit path",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
+    ),
+    "hitpath_probe_order_probe_launch": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_hitpath_probe_order",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Same-address load order across an invalidating probe and the L1D hit path with PROBE_LAUNCH=1",
+        verilator_extra_args=(
+            "--assert",
+            "-GDIRECT_CACHE_READS=1",
+            "-GCACHE_MISSES=8",
+            "-GLQ_PROBE_LAUNCH=1",
+        ),
     ),
     "coherent_cut_fabric": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut_fabric",
