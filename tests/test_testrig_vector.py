@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (26, instructions + 3857) if vector_directed else (15, instructions)
+    expected = (27, instructions + 5781) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -294,6 +294,7 @@ def test_vector_directed_replay(
         ("vector_unit_stride.S", 926, 336),
         ("vector_int_compare.S", 261, 210),
         ("vector_strided.S", 1846, 629),
+        ("vector_indexed.S", 1924, 645),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -331,30 +332,256 @@ def _signed12(word: int) -> int:
     return imm - 0x1000 if imm & 0x800 else imm
 
 
+def _signed5(value: int) -> int:
+    return value - 32 if value & 16 else value
+
+
+def _signed32(value: int) -> int:
+    value &= 0xFFFF_FFFF
+    return value - 0x1_0000_0000 if value & 0x8000_0000 else value
+
+
+def _sext64(value: int) -> int:
+    value &= 0xFFFF_FFFF_FFFF_FFFF
+    return value - 0x1_0000_0000_0000_0000 if value & 0x8000_0000_0000_0000 else value
+
+
+def _lmul_regs(lmul_code: int) -> int:
+    num, den = _LMUL_NUM_DEN[lmul_code]
+    return max(1, num // den)
+
+
 def _update_int_reg_tracking(reg_val: dict[int, int | None], word: int) -> None:
-    """Track simple addi rd, zero, imm constants and clear on any other rd write."""
+    """Track simple scalar constant arithmetic and clear on any other rd write."""
     opcode = word & 0x7F
     if opcode not in _INT_RD_OPCODES:
         return
     rd = (word >> 7) & 0x1F
     if rd == 0:
         return
-    if opcode == 0x13 and ((word >> 12) & 7) == 0 and ((word >> 15) & 0x1F) == 0:
-        reg_val[rd] = _signed12(word)
-    else:
-        reg_val[rd] = None
+    if opcode == 0x37:  # lui
+        reg_val[rd] = _signed32(word & 0xFFFF_F000)
+        return
+    if opcode == 0x13:
+        funct3 = (word >> 12) & 7
+        rs1 = (word >> 15) & 0x1F
+        src = reg_val.get(rs1)
+        if src is None:
+            reg_val[rd] = None
+        elif funct3 == 0:  # addi
+            reg_val[rd] = _sext64(src + _signed12(word))
+        elif funct3 == 1 and (word >> 26) == 0:  # slli
+            shamt = (word >> 20) & 0x3F
+            reg_val[rd] = _sext64((src & 0xFFFF_FFFF_FFFF_FFFF) << shamt)
+        elif funct3 == 5 and (word >> 26) == 0:  # srli
+            shamt = (word >> 20) & 0x3F
+            reg_val[rd] = _sext64((src & 0xFFFF_FFFF_FFFF_FFFF) >> shamt)
+        else:
+            reg_val[rd] = None
+        return
+    if opcode == 0x33 and ((word >> 12) & 7) == 6 and (word >> 25) == 0:  # or
+        a = reg_val.get((word >> 15) & 0x1F)
+        b = reg_val.get((word >> 20) & 0x1F)
+        if a is not None and b is not None:
+            reg_val[rd] = _sext64(
+                (a & 0xFFFF_FFFF_FFFF_FFFF) | (b & 0xFFFF_FFFF_FFFF_FFFF)
+            )
+            return
+    reg_val[rd] = None
+
+
+def _read_vgroup(
+    regs: list[bytearray | None], base: int, count: int
+) -> bytearray | None:
+    if count == 0:
+        return bytearray()
+    if base + count > 32:
+        return None
+    out = bytearray()
+    for reg in regs[base : base + count]:
+        if reg is None:
+            return None
+        out.extend(reg)
+    return out
+
+
+def _write_vgroup(
+    regs: list[bytearray | None], base: int, count: int, buf: bytearray, vlenb: int
+) -> None:
+    for offset in range(count):
+        regs[base + offset] = bytearray(buf[offset * vlenb : (offset + 1) * vlenb])
+
+
+def _invalidate_vgroup(
+    vrf: dict[int, list[bytearray | None]], base: int, count: int
+) -> None:
+    for regs in vrf.values():
+        for reg in range(base, min(32, base + count)):
+            regs[reg] = None
+
+
+def _update_vec_reg_tracking(
+    vrf: dict[int, list[bytearray | None]],
+    reg_val: dict[int, int | None],
+    sew: int | None,
+    lmul_code: int | None,
+    vl_by_vlen: dict[int, int] | None,
+    word: int,
+) -> None:
+    """Track simple unmasked vector index builders and invalidate untracked writes."""
+    opcode = word & 0x7F
+    if opcode == 0x07:
+        width = (word >> 12) & 7
+        if width not in _VMEM_WIDTH_BYTES:
+            return
+        vd = (word >> 7) & 0x1F
+        mop = (word >> 26) & 3
+        umop = (word >> 20) & 0x1F
+        if sew is None or lmul_code is None:
+            _invalidate_vgroup(vrf, vd, 8)
+            return
+        num, den = _LMUL_NUM_DEN[lmul_code]
+        if mop in (1, 3):
+            count = max(1, num // den)
+        elif mop == 0 and umop == 0x0B:
+            count = 1
+        else:
+            eew = _VMEM_WIDTH_BYTES[width] * 8
+            count = min(8, max(1, (eew * num + sew * den - 1) // (sew * den)))
+        _invalidate_vgroup(vrf, vd, count)
+        return
+    if opcode != 0x57:
+        return
+    funct3 = (word >> 12) & 7
+    if funct3 == 7:
+        return
+    funct6 = word >> 26
+    if funct6 == 0x10 and funct3 == 2:  # vmv.x.s / vcpop.m / vfirst.m
+        return
+    vd = (word >> 7) & 0x1F
+    if sew is None or lmul_code is None or vl_by_vlen is None:
+        _invalidate_vgroup(vrf, vd, 8)
+        return
+    vm = (word >> 25) & 1
+    vs2 = (word >> 20) & 0x1F
+    vs1 = (word >> 15) & 0x1F
+    count = _lmul_regs(lmul_code)
+    elem_bytes = sew // 8
+    mask = (1 << sew) - 1
+
+    if vm == 1 and funct6 == 0x17 and funct3 in (3, 4) and vs2 == 0:  # vmv.v.i / .x
+        sval = _signed5(vs1) if funct3 == 3 else reg_val.get(vs1)
+        if sval is None:
+            _invalidate_vgroup(vrf, vd, count)
+            return
+        enc = (sval & mask).to_bytes(elem_bytes, "little")
+        for v, vl in vl_by_vlen.items():
+            vlenb = v // 8
+            buf = (
+                bytearray(count * vlenb)
+                if vl == _vlmax(v, sew, lmul_code)
+                else _read_vgroup(vrf[v], vd, count)
+            )
+            if buf is None:
+                _invalidate_vgroup({v: vrf[v]}, vd, count)
+                continue
+            for idx in range(vl):
+                buf[idx * elem_bytes : (idx + 1) * elem_bytes] = enc
+            _write_vgroup(vrf[v], vd, count, buf, vlenb)
+        return
+    if vm == 1 and funct6 == 0x10 and funct3 == 6 and vs2 == 0:  # vmv.s.x
+        sval = reg_val.get(vs1)
+        if sval is None:
+            _invalidate_vgroup(vrf, vd, 1)
+            return
+        enc = (sval & mask).to_bytes(elem_bytes, "little")
+        for v, vl in vl_by_vlen.items():
+            if vl > 0 and vrf[v][vd] is not None:
+                vrf[v][vd][0:elem_bytes] = enc  # type: ignore[index]
+        return
+    if vm == 1 and funct6 == 0x0E and funct3 == 6:  # vslide1up.vx
+        sval = reg_val.get(vs1)
+        if sval is None:
+            _invalidate_vgroup(vrf, vd, count)
+            return
+        enc0 = (sval & mask).to_bytes(elem_bytes, "little")
+        for v, vl in vl_by_vlen.items():
+            vlenb = v // 8
+            src = _read_vgroup(vrf[v], vs2, count)
+            dst = (
+                bytearray(count * vlenb)
+                if vl == _vlmax(v, sew, lmul_code)
+                else _read_vgroup(vrf[v], vd, count)
+            )
+            if src is None or dst is None:
+                _invalidate_vgroup({v: vrf[v]}, vd, count)
+                continue
+            if vl > 0:
+                dst[0:elem_bytes] = enc0
+                for idx in range(1, vl):
+                    dst[idx * elem_bytes : (idx + 1) * elem_bytes] = src[
+                        (idx - 1) * elem_bytes : idx * elem_bytes
+                    ]
+            _write_vgroup(vrf[v], vd, count, dst, vlenb)
+        return
+    if vm == 1 and funct6 == 0x14 and funct3 == 2 and vs2 == 0 and vs1 == 0x11:  # vid.v
+        for v, vl in vl_by_vlen.items():
+            vlenb = v // 8
+            dst = (
+                bytearray(count * vlenb)
+                if vl == _vlmax(v, sew, lmul_code)
+                else _read_vgroup(vrf[v], vd, count)
+            )
+            if dst is None:
+                _invalidate_vgroup({v: vrf[v]}, vd, count)
+                continue
+            for idx in range(vl):
+                dst[idx * elem_bytes : (idx + 1) * elem_bytes] = (idx & mask).to_bytes(
+                    elem_bytes, "little"
+                )
+            _write_vgroup(vrf[v], vd, count, dst, vlenb)
+        return
+    if vm == 1 and funct6 in (0x0B, 0x25) and funct3 == 3:  # vxor.vi / vsll.vi
+        imm = (_signed5(vs1) & mask) if funct6 == 0x0B else (vs1 & (sew - 1))
+        for v, vl in vl_by_vlen.items():
+            vlenb = v // 8
+            src = _read_vgroup(vrf[v], vs2, count)
+            dst = (
+                bytearray(count * vlenb)
+                if vl == _vlmax(v, sew, lmul_code)
+                else _read_vgroup(vrf[v], vd, count)
+            )
+            if src is None or dst is None:
+                _invalidate_vgroup({v: vrf[v]}, vd, count)
+                continue
+            for idx in range(vl):
+                val = int.from_bytes(
+                    src[idx * elem_bytes : (idx + 1) * elem_bytes], "little"
+                )
+                out = ((val ^ imm) if funct6 == 0x0B else (val << imm)) & mask
+                dst[idx * elem_bytes : (idx + 1) * elem_bytes] = out.to_bytes(
+                    elem_bytes, "little"
+                )
+            _write_vgroup(vrf[v], vd, count, dst, vlenb)
+        return
+    _invalidate_vgroup(vrf, vd, min(8, 2 * count))
 
 
 def _check_vector_mem_store_readbacks(
     trace: Path, blocks: list[str], words: list[int]
 ) -> None:
-    """Verify every unit-stride, mask or strided vector store is immediately read back."""
+    """Verify every unit-stride, mask, strided or indexed store is immediately read back."""
     for block in blocks:
         assert block.lstrip().startswith(".4byte "), (
             f"{trace.name}: compressed instruction not allowed in vector store trace"
         )
     vl_by_vlen: dict[int, int] | None = None
+    sew: int | None = None
+    lmul: int | None = None
     reg_val: dict[int, int | None] = {0: 0}
+    vrf: dict[int, list[bytearray | None]] = {
+        v: [None] * 32 for v in vector.VECTOR_LENGTHS
+    }
     for index, word in enumerate(words):
         opcode = word & 0x7F
         if opcode == 0x73:
@@ -388,7 +615,9 @@ def _check_vector_mem_store_readbacks(
         elif word & 0xFE00_707F == 0x8000_7057:  # vsetvl
             raise AssertionError(f"{trace.name}: vsetvl at index {index} hides VL")
         elif test_testrig.run_stats.is_vector_store(word):
-            assert vl_by_vlen is not None, f"{trace.name}: store before vset* config"
+            assert vl_by_vlen is not None and sew is not None, (
+                f"{trace.name}: store before vset* config"
+            )
             assert re.search(r"(?m)^\.assert trap == 0\b", blocks[index]), (
                 f"{trace.name}: retiring vector store at index {index} needs trap == 0"
             )
@@ -397,7 +626,7 @@ def _check_vector_mem_store_readbacks(
             rs2_or_sumop = (word >> 20) & 0x1F
             width = (word >> 12) & 7
             rs1 = (word >> 15) & 0x1F
-            assert nf == 0 and mop in (0, 2), (
+            assert nf == 0 and mop in (0, 1, 2, 3), (
                 f"{trace.name}: unsupported vector store form at index {index}"
             )
             is_vsm = mop == 0 and rs2_or_sumop == 0x0B
@@ -415,7 +644,7 @@ def _check_vector_mem_store_readbacks(
                     per_vlen = {
                         v: set(range(vl * elem_bytes)) for v, vl in vl_by_vlen.items()
                     }
-            else:  # strided (mop == 2)
+            elif mop == 2:  # strided
                 elem_bytes = _VMEM_WIDTH_BYTES[width]
                 stride = 0 if rs2_or_sumop == 0 else reg_val.get(rs2_or_sumop)
                 assert stride is not None, (
@@ -429,6 +658,31 @@ def _check_vector_mem_store_readbacks(
                     }
                     for v, vl in vl_by_vlen.items()
                 }
+            else:  # indexed (mop in (1, 3))
+                index_bytes = _VMEM_WIDTH_BYTES[width]
+                elem_bytes = sew // 8
+                per_vlen = {}
+                for v, vl in vl_by_vlen.items():
+                    vlenb = v // 8
+                    needed_regs = (vl * index_bytes + vlenb - 1) // vlenb
+                    idx_buf = _read_vgroup(vrf[v], rs2_or_sumop, needed_regs)
+                    assert idx_buf is not None, (
+                        f"{trace.name}: unknown index vector v{rs2_or_sumop} "
+                        f"at index {index}"
+                    )
+                    written: set[int] = set()
+                    for i in range(vl):
+                        offset = int.from_bytes(
+                            idx_buf[i * index_bytes : (i + 1) * index_bytes], "little"
+                        )
+                        elem_range = set(range(offset, offset + elem_bytes))
+                        if mop == 1:
+                            assert written.isdisjoint(elem_range), (
+                                f"{trace.name}: unordered indexed store at index "
+                                f"{index} has overlapping active elements"
+                            )
+                        written.update(elem_range)
+                    per_vlen[v] = written
             required = set().union(*per_vlen.values())
             always_active = set.intersection(*per_vlen.values())
             covered: set[int] = set()
@@ -470,6 +724,7 @@ def _check_vector_mem_store_readbacks(
                     f"{trace.name}: vector store at index {index} missing rd_wdata "
                     "assertion on always-active bytes"
                 )
+        _update_vec_reg_tracking(vrf, reg_val, sew, lmul, vl_by_vlen, word)
         _update_int_reg_tracking(reg_val, word)
 
 
@@ -483,7 +738,11 @@ def _check_vector_store_readbacks(traces: Iterable[Path]) -> None:
             for index, word in enumerate(words)
             if test_testrig.run_stats.is_vector_store(word)
         ]
-        if trace.name in ("vector_unit_stride.S", "vector_strided.S"):
+        if trace.name in (
+            "vector_unit_stride.S",
+            "vector_strided.S",
+            "vector_indexed.S",
+        ):
             assert stores, f"{trace.name}: expected vector stores"
             _check_vector_mem_store_readbacks(trace, blocks, words)
             continue
@@ -1002,6 +1261,172 @@ def test_strided_store_readback_covers_each_element(
             del lines[first_load]
         elif mutation == "overwrite-before-readback":
             lines.insert(first_load, ".4byte 0x00648023  # sb t1, 0(s1)")
+    mutated.write_text("\n".join(lines) + "\n")
+    with pytest.raises(AssertionError, match=error):
+        _check_vector_store_readbacks([mutated])
+
+
+def test_vector_indexed_trace_covers_forms() -> None:
+    """Check indexed load/store widths, ordering, masking, cross-width, VL and no misa."""
+    trace = VERIF_DIR / "testrig" / "vector_indexed.S"
+    vtype = 0
+    avl_mode = ""
+    vl_imm = 0
+    forms_seen: set[tuple[str, int, bool]] = set()
+    regimes_seen: set[tuple[str, str]] = set()
+    cross_width_seen: set[tuple[str, str]] = set()
+    policies_seen: set[tuple[str, int]] = set()
+    in_place_gather = False
+    for line in trace.read_text().splitlines():
+        if not line.startswith(".4byte "):
+            continue
+        word = int(line.split()[1], 16)
+        opcode = word & 0x7F
+        if opcode == 0x73 and ((word >> 12) & 7) in (1, 2, 3, 5, 6, 7):
+            assert ((word >> 20) & 0xFFF) != 0x301  # No misa access
+        elif word & 0xC000_707F == 0xC000_7057:  # vsetivli
+            vtype = (word >> 20) & 0xFF
+            vl_imm = (word >> 15) & 0x1F
+            avl_mode = "imm"
+        elif word & 0x8000_707F == 0x0000_7057:  # vsetvli
+            vtype = (word >> 20) & 0xFF
+            assert ((word >> 15) & 0x1F) == 0 and ((word >> 7) & 0x1F) != 0
+            avl_mode = "vlmax"
+        elif opcode in (0x07, 0x27) and ((word >> 12) & 7) in _VMEM_WIDTH_BYTES:
+            mop = (word >> 26) & 3
+            nf = (word >> 29) & 7
+            vs2 = (word >> 20) & 0x1F
+            vd = (word >> 7) & 0x1F
+            assert mop in (1, 3) and nf == 0
+            unmasked = bool((word >> 25) & 1)
+            idx_eew = _VMEM_WIDTH_BYTES[(word >> 12) & 7] * 8
+            if opcode == 0x07:
+                kind = "vluxei" if mop == 1 else "vloxei"
+                if vd == vs2:
+                    in_place_gather = True
+            else:
+                kind = "vsuxei" if mop == 1 else "vsoxei"
+            forms_seen.add((kind, idx_eew, unmasked))
+            sew = 8 << ((vtype >> 3) & 7)
+            lmul = vtype & 7
+            direction = "load" if opcode == 0x07 else "store"
+            if idx_eew < sew:
+                cross_width_seen.add((direction, "narrow_idx"))
+            elif idx_eew > sew:
+                cross_width_seen.add((direction, "wide_idx"))
+            if avl_mode == "vlmax":
+                regimes_seen.add((kind, "vlmax"))
+            elif vl_imm == 0:
+                regimes_seen.add((kind, "zero"))
+            elif all(vl_imm < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+                regimes_seen.add((kind, "below_vlmax"))
+            policies_seen.add((direction, vtype & 0xC0))
+
+    expected_forms = {
+        (kind, idx_eew, unmasked)
+        for kind in ("vluxei", "vloxei", "vsuxei", "vsoxei")
+        for idx_eew in (8, 16, 32, 64)
+        for unmasked in (True, False)
+    }
+    assert forms_seen == expected_forms
+    for kind in ("vluxei", "vloxei", "vsuxei", "vsoxei"):
+        assert (kind, "below_vlmax") in regimes_seen
+        assert (kind, "vlmax") in regimes_seen
+    for direction in ("load", "store"):
+        assert (direction, "narrow_idx") in cross_width_seen
+        assert (direction, "wide_idx") in cross_width_seen
+    assert ("load", 0x00) in policies_seen  # tu, mu
+    assert ("load", 0xC0) in policies_seen  # ta, ma
+    assert in_place_gather
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        pytest.param(
+            "vsetvli-after", "missing immediate scalar readback", id="vsetvli"
+        ),
+        pytest.param(
+            "vsetvl-after", "missing immediate scalar readback", id="vsetvl-after"
+        ),
+        pytest.param("vsetvl-before", "vsetvl", id="vsetvl-before"),
+        pytest.param(
+            "vstart-after", "missing immediate scalar readback", id="vstart-after"
+        ),
+        pytest.param("vstart-before", "vstart write", id="vstart-before"),
+        pytest.param(
+            "drop-ux-readback", "missing immediate scalar readback", id="drop-ux"
+        ),
+        pytest.param(
+            "drop-ox-readback", "missing immediate scalar readback", id="drop-ox"
+        ),
+        pytest.param(
+            "drop-vlmax-high-readback",
+            "missing immediate scalar readback",
+            id="drop-vlmax-high",
+        ),
+        pytest.param(
+            "overwrite-before-readback",
+            "missing immediate scalar readback",
+            id="overwrite",
+        ),
+    ],
+)
+def test_indexed_store_readback_covers_each_element(
+    tmp_path: Path, mutation: str, error: str
+) -> None:
+    """Every indexed store must read back all written bytes immediately."""
+    source_trace = VERIF_DIR / "testrig" / "vector_indexed.S"
+    _check_vector_store_readbacks([source_trace])
+
+    mutated = tmp_path / "vector_indexed.S"
+    lines = source_trace.read_text().splitlines()
+    if mutation == "drop-ox-readback":
+        anchor = next(
+            i for i, line in enumerate(lines) if line.startswith(".4byte 0x0f048427 ")
+        )
+        drop_idx = next(
+            i
+            for i in range(anchor + 1, len(lines))
+            if lines[i].startswith(".4byte 0x0844c503 ")  # lbu a0, 132(s1)
+        )
+        del lines[drop_idx]
+    elif mutation == "drop-vlmax-high-readback":
+        # Last masked VLMAX vsuxei32.v v8, (s1), v16, v0.t (0x0504e427).
+        anchor = [
+            i for i, line in enumerate(lines) if line.startswith(".4byte 0x0504e427 ")
+        ][-1]
+        drop_idx = next(
+            i
+            for i in range(anchor + 1, len(lines))
+            if lines[i].startswith(".4byte 0x0784b503 ")  # ld a0, 120(s1)
+        )
+        del lines[drop_idx]
+    else:
+        anchor = next(
+            i for i, line in enumerate(lines) if line.startswith(".4byte 0x07048427 ")
+        )
+        first_load = next(
+            i
+            for i in range(anchor + 1, len(lines))
+            if lines[i].startswith(".4byte 0x0844c503 ")  # lbu a0, 132(s1)
+        )
+        if mutation == "vsetvli-after":
+            lines.insert(
+                first_load, ".4byte 0x00007657  # vsetvli a2, zero, e8, m1, tu, mu"
+            )
+        elif mutation == "vsetvl-after":
+            lines.insert(first_load, ".4byte 0x80037057  # vsetvl zero, t1, t0")
+        elif mutation == "vsetvl-before":
+            lines.insert(anchor, ".4byte 0x80037057  # vsetvl zero, t1, t0")
+        elif mutation == "vstart-after":
+            lines.insert(first_load, ".4byte 0x00805073  # csrwi vstart, 0")
+        elif mutation == "vstart-before":
+            lines.insert(anchor, ".4byte 0x00805073  # csrwi vstart, 0")
+        elif mutation == "drop-ux-readback":
+            del lines[first_load]
+        elif mutation == "overwrite-before-readback":
+            lines.insert(first_load, ".4byte 0x08648223  # sb t1, 132(s1)")
     mutated.write_text("\n".join(lines) + "\n")
     with pytest.raises(AssertionError, match=error):
         _check_vector_store_readbacks([mutated])
