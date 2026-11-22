@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (33, instructions + 13995) if vector_directed else (15, instructions)
+    expected = (34, instructions + 15514) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -301,6 +301,7 @@ def test_vector_directed_replay(
         ("vector_fixed_point.S", 1701, 1206),
         ("vector_fp_single.S", 1446, 1068),
         ("vector_whole_reg.S", 826, 662),
+        ("vector_fp_widen.S", 1519, 1149),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -2622,6 +2623,205 @@ def test_whole_reg_store_readback_covers_each_element(
     mutated.write_text("\n".join(lines) + "\n")
     with pytest.raises(AssertionError, match=error):
         _check_vector_store_readbacks([mutated])
+
+
+def test_vector_fp_widen_trace_covers_forms() -> None:
+    """Check all 18 widening FP encodings, all 5 frm modes, flags, LMULs, overlaps and traps."""
+    trace = VERIF_DIR / "testrig" / "vector_fp_widen.S"
+    blocks = TRACE_WORD.split(trace.read_text())[1:]
+    opfvv, opfvf = 0b001, 0b101
+    widen_f6s = {
+        0x30: "waddsub",
+        0x32: "waddsub",
+        0x34: "waddsub_w",
+        0x36: "waddsub_w",
+        0x38: "wmul",
+        0x3C: "wfma",
+        0x3D: "wfma",
+        0x3E: "wfma",
+        0x3F: "wfma",
+    }
+    vtype = 0
+    vill = False
+    avl_mode = ""
+    vl_imm = 0
+    frm = 0
+    pending_frm_readback: int | None = None
+    frm_readbacks_checked: set[int] = set()
+    retired_forms: set[tuple[int, int]] = set()
+    frm_by_op: dict[tuple[int, int], set[int]] = {}
+    masking_by_group: dict[str, set[bool]] = {}
+    regimes_by_group: dict[str, set[str]] = {}
+    policies_seen: set[int] = set()
+    lmuls_seen: set[int] = set()
+    fflags_checked: set[int] = set()
+    legal_overlaps: set[str] = set()
+    trap_kinds: set[str] = set()
+    traps_seen = 0
+    ctrl_count = 0
+
+    for block in blocks:
+        word = int(block.split()[1], 0)
+        if word == 0x42A0_2557:  # vmv.x.s a0, v10 control
+            ctrl_count += 1
+        opcode = word & 0x7F
+        if pending_frm_readback is not None:
+            assert (
+                opcode == 0x73
+                and ((word >> 12) & 7) == 2
+                and ((word >> 20) & 0xFFF) == 0x002
+            ), f"expected csrr frm after csrwi frm={pending_frm_readback}"
+            assert re.search(
+                rf'(?m)^\.assert rd_wdata == {pending_frm_readback:#x} "', block
+            )
+            frm_readbacks_checked.add(pending_frm_readback)
+            pending_frm_readback = None
+            continue
+        if opcode == 0x73 and ((word >> 12) & 7) in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            f3 = (word >> 12) & 7
+            rs1_or_uimm = (word >> 15) & 0x1F
+            assert csr != 0x301  # No misa access
+            assert not (csr == 0x008 and (f3 in (1, 5) or rs1_or_uimm != 0))
+            if csr == 0x002 and f3 == 5:  # csrwi frm, uimm
+                frm = rs1_or_uimm & 7
+                pending_frm_readback = frm
+            elif csr == 0x001 and f3 == 2:  # csrr fflags
+                m = re.search(r'(?m)^\.assert rd_wdata == (0x[0-9a-f]+) "', block)
+                if m is not None:
+                    fflags_checked.add(int(m.group(1), 16))
+            continue
+        if word & 0xC000_707F == 0xC000_7057:  # vsetivli
+            vtype = (word >> 20) & 0xFF
+            vl_imm = (word >> 15) & 0x1F
+            avl_mode = "imm"
+            sew_code = (vtype >> 3) & 7
+            lmul = vtype & 7
+            sew = 8 << sew_code
+            vill = (
+                sew_code > 3
+                or lmul not in _LMUL_NUM_DEN
+                or sew * _LMUL_NUM_DEN[lmul][1] > 64 * _LMUL_NUM_DEN[lmul][0]
+            )
+            continue
+        if word & 0x8000_707F == 0x0000_7057:  # vsetvli
+            vtype = (word >> 20) & 0xFF
+            assert ((word >> 15) & 0x1F) == 0 and ((word >> 7) & 0x1F) != 0
+            avl_mode = "vlmax"
+            sew_code = (vtype >> 3) & 7
+            lmul = vtype & 7
+            sew = 8 << sew_code
+            vill = (
+                sew_code > 3
+                or lmul not in _LMUL_NUM_DEN
+                or sew * _LMUL_NUM_DEN[lmul][1] > 64 * _LMUL_NUM_DEN[lmul][0]
+            )
+            continue
+        if opcode != 0x57:
+            continue
+        f6 = word >> 26
+        f3 = (word >> 12) & 7
+        if f3 not in (opfvv, opfvf) or f6 not in widen_f6s:
+            continue
+        vm = bool((word >> 25) & 1)
+        vs2 = (word >> 20) & 0x1F
+        vs1 = (word >> 15) & 0x1F
+        vd = (word >> 7) & 0x1F
+        sew = 8 << ((vtype >> 3) & 7)
+        lmul = vtype & 7
+        group = widen_f6s[f6]
+
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            traps_seen += 1
+            if vill:
+                trap_kinds.add("vill")
+            elif sew == 64:
+                trap_kinds.add("sew64")
+            elif sew == 8:
+                trap_kinds.add("sew8")
+            elif lmul == 3:
+                trap_kinds.add("lmul_m8")
+            elif frm == 5:
+                trap_kinds.add("reserved_frm")
+            elif not vm and vd == 0:
+                trap_kinds.add("masked_v0")
+            elif not vm and vs2 == 0:
+                trap_kinds.add("masked_vs2_v0")
+            elif lmul == 0 and (vd & 1):
+                trap_kinds.add("misaligned_vd")
+            elif group == "waddsub_w" and lmul == 0 and (vs2 & 1):
+                trap_kinds.add("misaligned_vs2")
+            elif group == "waddsub_w" and f3 == opfvv and (vs1 & ~1) == (vs2 & ~1):
+                trap_kinds.add("wide_src_overlap")
+            elif group == "wfma" and f3 == opfvv and (vs2 & ~1) == (vd & ~1):
+                trap_kinds.add("fwfma_vs2_overlap")
+            elif group == "wfma" and f3 == opfvv and (vs1 & ~1) == (vd & ~1):
+                trap_kinds.add("fwfma_vs1_overlap")
+            elif lmul == 7 and vd == vs2:
+                trap_kinds.add("mf2_overlap")
+            elif lmul == 0 and vd == vs2:
+                trap_kinds.add("low_half_overlap")
+            continue
+
+        assert re.search(r"(?m)^\.assert trap == 0\b", block)
+        assert not vill and sew == 32
+        retired_forms.add((f6, f3))
+        frm_by_op.setdefault((f6, f3), set()).add(frm)
+        masking_by_group.setdefault(group, set()).add(vm)
+        policies_seen.add(vtype & 0xC0)
+        lmuls_seen.add(lmul)
+        if avl_mode == "vlmax":
+            regimes_by_group.setdefault(group, set()).add("vlmax")
+        elif vl_imm == 0:
+            regimes_by_group.setdefault(group, set()).add("zero")
+        elif all(vl_imm < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+            regimes_by_group.setdefault(group, set()).add("below_vlmax")
+        if group == "waddsub" and vs2 == vd + 1:
+            legal_overlaps.add("upper_vs2")
+        elif group == "wmul" and f3 == opfvv and vs1 == vd + 1:
+            legal_overlaps.add("upper_vs1")
+        elif group == "waddsub_w" and vd == vs2:
+            legal_overlaps.add("inplace_wide")
+
+    expected_forms = {(f6, f3) for f6 in widen_f6s for f3 in (opfvv, opfvf)}
+    assert len(expected_forms) == 18
+    assert retired_forms == expected_forms
+    for f6, f3 in expected_forms:
+        if (
+            f6 != 0x38
+        ):  # All 16 rounding-capable widening encodings cover all 5 frm modes
+            assert frm_by_op[(f6, f3)] == {0, 1, 2, 3, 4}, (
+                hex(f6),
+                f3,
+                frm_by_op[(f6, f3)],
+            )
+    assert pending_frm_readback is None
+    assert frm_readbacks_checked == {0, 1, 2, 3, 4, 5}
+    for group in ("waddsub", "waddsub_w", "wmul", "wfma"):
+        assert masking_by_group[group] == {True, False}
+        assert {"below_vlmax", "vlmax", "zero"} <= regimes_by_group[group]
+    assert {0x00, 0x01, 0x05, 0x10} <= fflags_checked
+    assert {0x00, 0xC0} <= policies_seen
+    assert {7, 0, 1, 2} <= lmuls_seen  # mf2, m1, m2, m4
+    assert legal_overlaps == {"upper_vs2", "upper_vs1", "inplace_wide"}
+    assert traps_seen == 14
+    assert trap_kinds == {
+        "sew64",
+        "sew8",
+        "lmul_m8",
+        "reserved_frm",
+        "misaligned_vd",
+        "misaligned_vs2",
+        "masked_v0",
+        "masked_vs2_v0",
+        "low_half_overlap",
+        "mf2_overlap",
+        "wide_src_overlap",
+        "fwfma_vs2_overlap",
+        "fwfma_vs1_overlap",
+        "vill",
+    }
+    assert ctrl_count == 1
 
 
 def test_readout_sees_every_register_and_vxsat() -> None:
