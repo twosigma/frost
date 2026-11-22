@@ -69,6 +69,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home", "coh_home_control_prove"): 1800,
     ("coherence_home", "coh_home_control64_prove"): 1800,
     ("coherence_home", "coh_home_control_partition_prove"): 1800,
+    ("coherence_home", "coh_home_control_ultra_prove"): 900,
     ("coherence_home", "coh_home_fill_cover"): 1800,
     ("coherence_home", "coh_home_control4_bmc"): 1200,
     ("coherence_home", "coh_home_control4_ultra_bmc"): 1200,
@@ -586,6 +587,7 @@ FORMAL_TARGETS = [
             "coh_home_control_prove",
             "coh_home_control64_prove",
             "coh_home_control_partition_prove",
+            "coh_home_control_ultra_prove",
             "coh_home_control4_bmc",
             "coh_home_control4_ultra_bmc",
             "coh_home_fill_cover",
@@ -624,12 +626,15 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_array.sby",
-        "Independent L2 ports and one-way parallel reads preserve byte values, tokens "
-        "and physical-row exclusions. An open read at the output follows a stalled reply.",
+        "Independent L2 ports and one- and four-way parallel UltraRAM reads preserve "
+        "byte values, tokens and physical-row exclusions. An open read at the output "
+        "follows a stalled reply.",
         tasks=(
             "coh_home_array_prove",
             *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
+            *(f"coh_home_array_uram4_byte{lane}_prove" for lane in (0, 31, 32, 63)),
             "coh_home_array_cover",
+            "coh_home_array_uram_cover",
         ),
     ),
     FormalTarget(
@@ -3157,6 +3162,10 @@ SBY_TASKS = [
         "Composed home ownership with a completion slot kept for prefetches.",
     ),
     (
+        "coh_home_control_ultra_prove",
+        "Composed home ownership and parallel-read delivery bounds with UltraRAM.",
+    ),
+    (
         "coh_home_control4_bmc",
         "Bounded home checks with four ways, three fills and a fill reserve.",
     ),
@@ -3185,7 +3194,21 @@ SBY_TASKS = [
         )
         for lane in range(64)
     ],
-    ("coh_home_array_cover", "Tag, read and update ports operate concurrently."),
+    (
+        "coh_home_array_cover",
+        "Tag, read and update ports operate concurrently in block RAM.",
+    ),
+    *[
+        (
+            f"coh_home_array_uram4_byte{lane}_prove",
+            f"Four-way banked UltraRAM L2 ports preserve byte {lane} across parallel reads.",
+        )
+        for lane in (0, 31, 32, 63)
+    ],
+    (
+        "coh_home_array_uram_cover",
+        "Four-way UltraRAM ports operate concurrently and reach a kept parallel read.",
+    ),
     ("coh_array_bmc", "Coherent array byte values and held responses."),
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     ("coh_array4_bmc", "Coherent array byte values and held responses with four ways."),
