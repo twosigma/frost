@@ -1044,7 +1044,7 @@ jobs:
       ${{ !cancelled() && needs.build-docker.result == 'success' &&
       needs.gate.outputs.full == 'true' &&
       (github.event_name == 'push' || github.event_name == 'pull_request') }}
-    timeout-minutes: 50
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
@@ -1086,7 +1086,7 @@ jobs:
 
       - name: Check detection of an incorrect vector result
         if: matrix.vlen == 128
-        timeout-minutes: 30
+        timeout-minutes: 35
         run: |
           check_vector_result() {
             local selector=$1 trace=$2 record=$3 mismatch=$4
@@ -1138,6 +1138,8 @@ jobs:
             'order=49 insn=0x42f02557 rd=x10' '0x7f != 0x7e'
           check_vector_result fp-single vector_fp_single \
             'order=30 insn=0x42d02557 rd=x10' '0x40100000 != 0x40100001'
+          check_vector_result whole-reg vector_whole_reg \
+            'order=45 insn=0x42c02557 rd=x10' '0x135724689acebdf1 != 0x135724689acebdf0'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()

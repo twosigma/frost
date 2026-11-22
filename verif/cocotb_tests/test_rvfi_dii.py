@@ -85,6 +85,7 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "int-widen-narrow": 0x42E0_2557,  # vmv.x.s a0, v14 in the widening/narrowing integer trace
     "fixed-point": 0x42F0_2557,  # vmv.x.s a0, v15 in the fixed-point trace
     "fp-single": 0x42D0_2557,  # vmv.x.s a0, v13 in the single-width FP trace
+    "whole-reg": 0x42C0_2557,  # vmv.x.s a0, v12 in the whole-register memory trace
 }
 
 # frost_rvfi_dii's error_flags bits.
