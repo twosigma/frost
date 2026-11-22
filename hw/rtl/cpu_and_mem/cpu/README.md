@@ -1510,8 +1510,12 @@ The fast-lookup training contract is pinned per mechanism:
   `if_stage`, `odd_halfword_pred_test`, and `fast_btb_contract_test`.
 - **Fault suppression and fault-packet veto**: `if_fault_ras_veto` formal
   proof, `if_stage` (`test_faulting_fetch_suppresses_trained_btb_redirect`,
-  including spanning second-word faults), `odd_halfword_pred_test`, and live
-  `p_prediction_pma_fault_cofactor_exact` in `if_stage`.
+  including spanning second-word faults, and
+  `test_slot2_fault_suppresses_trained_call_and_replay_ras`, covering live,
+  spanning, and stall-replayed slot-2 calls), `odd_halfword_pred_test`, and
+  live `p_prediction_pma_fault_cofactor_exact` in `if_stage`. The explicit
+  slot-2 veto stays as a defensive guard, and the directed test pins the
+  observable behavior of faulting slot-2 calls.
 - **Invalidation events and four-cycle hold**: `btb_invalidate_hold` formal
   proof, `branch_predictor` and `branch_prediction_controller` benches (hold
   length and clear-over-update priority), `btb_mode_alias_test` (bare/Sv39
