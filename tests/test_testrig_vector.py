@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (27, instructions + 5781) if vector_directed else (15, instructions)
+    expected = (28, instructions + 7940) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -295,6 +295,7 @@ def test_vector_directed_replay(
         ("vector_int_compare.S", 261, 210),
         ("vector_strided.S", 1846, 629),
         ("vector_indexed.S", 1924, 645),
+        ("vector_segment.S", 2159, 1126),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -570,7 +571,7 @@ def _update_vec_reg_tracking(
 def _check_vector_mem_store_readbacks(
     trace: Path, blocks: list[str], words: list[int]
 ) -> None:
-    """Verify every unit-stride, mask, strided or indexed store is immediately read back."""
+    """Verify immediate readback for unit-stride, mask, strided, indexed and segment stores."""
     for block in blocks:
         assert block.lstrip().startswith(".4byte "), (
             f"{trace.name}: compressed instruction not allowed in vector store trace"
@@ -623,10 +624,11 @@ def _check_vector_mem_store_readbacks(
             )
             mop = (word >> 26) & 3
             nf = (word >> 29) & 7
+            nfields = nf + 1
             rs2_or_sumop = (word >> 20) & 0x1F
             width = (word >> 12) & 7
             rs1 = (word >> 15) & 0x1F
-            assert nf == 0 and mop in (0, 1, 2, 3), (
+            assert nf == 0 or mop in (0, 2), (
                 f"{trace.name}: unsupported vector store form at index {index}"
             )
             is_vsm = mop == 0 and rs2_or_sumop == 0x0B
@@ -635,17 +637,19 @@ def _check_vector_mem_store_readbacks(
                     f"{trace.name}: unsupported unit-stride sumop at index {index}"
                 )
                 if is_vsm:
-                    assert width == 0 and bool((word >> 25) & 1)
+                    assert nf == 0 and width == 0 and bool((word >> 25) & 1)
                     per_vlen = {
                         v: set(range((vl + 7) // 8)) for v, vl in vl_by_vlen.items()
                     }
                 else:
                     elem_bytes = _VMEM_WIDTH_BYTES[width]
+                    seg_bytes = nfields * elem_bytes
                     per_vlen = {
-                        v: set(range(vl * elem_bytes)) for v, vl in vl_by_vlen.items()
+                        v: set(range(vl * seg_bytes)) for v, vl in vl_by_vlen.items()
                     }
-            elif mop == 2:  # strided
+            elif mop == 2:  # strided or strided-segment
                 elem_bytes = _VMEM_WIDTH_BYTES[width]
+                seg_bytes = nfields * elem_bytes
                 stride = 0 if rs2_or_sumop == 0 else reg_val.get(rs2_or_sumop)
                 assert stride is not None, (
                     f"{trace.name}: unknown stride x{rs2_or_sumop} at index {index}"
@@ -654,7 +658,7 @@ def _check_vector_mem_store_readbacks(
                     v: {
                         i * stride + byte
                         for i in range(vl)
-                        for byte in range(elem_bytes)
+                        for byte in range(seg_bytes)
                     }
                     for v, vl in vl_by_vlen.items()
                 }
@@ -742,6 +746,7 @@ def _check_vector_store_readbacks(traces: Iterable[Path]) -> None:
             "vector_unit_stride.S",
             "vector_strided.S",
             "vector_indexed.S",
+            "vector_segment.S",
         ):
             assert stores, f"{trace.name}: expected vector stores"
             _check_vector_mem_store_readbacks(trace, blocks, words)
@@ -1427,6 +1432,196 @@ def test_indexed_store_readback_covers_each_element(
             del lines[first_load]
         elif mutation == "overwrite-before-readback":
             lines.insert(first_load, ".4byte 0x08648223  # sb t1, 132(s1)")
+    mutated.write_text("\n".join(lines) + "\n")
+    with pytest.raises(AssertionError, match=error):
+        _check_vector_store_readbacks([mutated])
+
+
+def test_vector_segment_trace_covers_forms() -> None:
+    """Check unit-stride and strided segment field counts, widths, masking and no misa."""
+    trace = VERIF_DIR / "testrig" / "vector_segment.S"
+    vtype = 0
+    avl_mode = ""
+    vl_imm = 0
+    reg_val: dict[int, int | None] = {0: 0}
+    nfields_seen: set[tuple[str, int]] = set()
+    width_mask_seen: set[tuple[str, int, bool]] = set()
+    regimes_seen: set[tuple[str, str]] = set()
+    stride_kinds_seen: set[tuple[str, str]] = set()
+    emuls_seen: set[tuple[str, tuple[int, int]]] = set()
+    policies_seen: set[tuple[str, int]] = set()
+    for line in trace.read_text().splitlines():
+        if not line.startswith(".4byte "):
+            continue
+        word = int(line.split()[1], 16)
+        opcode = word & 0x7F
+        if opcode == 0x73 and ((word >> 12) & 7) in (1, 2, 3, 5, 6, 7):
+            assert ((word >> 20) & 0xFFF) != 0x301  # No misa access
+        elif word & 0xC000_707F == 0xC000_7057:  # vsetivli
+            vtype = (word >> 20) & 0xFF
+            vl_imm = (word >> 15) & 0x1F
+            avl_mode = "imm"
+        elif word & 0x8000_707F == 0x0000_7057:  # vsetvli
+            vtype = (word >> 20) & 0xFF
+            assert ((word >> 15) & 0x1F) == 0 and ((word >> 7) & 0x1F) != 0
+            avl_mode = "vlmax"
+        elif opcode in (0x07, 0x27) and ((word >> 12) & 7) in _VMEM_WIDTH_BYTES:
+            mop = (word >> 26) & 3
+            nf = (word >> 29) & 7
+            rs2_or_umop = (word >> 20) & 0x1F
+            assert mop in (0, 2) and 1 <= nf <= 7
+            if mop == 0:
+                assert rs2_or_umop == 0
+            nfields = nf + 1
+            unmasked = bool((word >> 25) & 1)
+            elem_bytes = _VMEM_WIDTH_BYTES[(word >> 12) & 7]
+            eew = elem_bytes * 8
+            if mop == 0:
+                kind = "vlseg" if opcode == 0x07 else "vsseg"
+            else:
+                kind = "vlsseg" if opcode == 0x07 else "vssseg"
+                stride = 0 if rs2_or_umop == 0 else reg_val.get(rs2_or_umop)
+                assert stride is not None
+                if rs2_or_umop == 0:
+                    stride_kinds_seen.add((kind, "zero_x0"))
+                elif stride == 0:
+                    stride_kinds_seen.add((kind, "zero_reg"))
+                elif stride < 0:
+                    stride_kinds_seen.add((kind, "negative"))
+                else:
+                    stride_kinds_seen.add((kind, "positive"))
+            nfields_seen.add((kind, nfields))
+            width_mask_seen.add((kind, eew, unmasked))
+            sew = 8 << ((vtype >> 3) & 7)
+            lmul = vtype & 7
+            num, den = _LMUL_NUM_DEN[lmul]
+            emul_num = num * eew
+            emul_den = den * sew
+            if emul_num % emul_den == 0:
+                emul_ratio = (emul_num // emul_den, 1)
+            else:
+                emul_ratio = (1, emul_den // emul_num)
+            emuls_seen.add((kind, emul_ratio))
+            if avl_mode == "vlmax":
+                regimes_seen.add((kind, "vlmax"))
+            elif vl_imm == 0:
+                regimes_seen.add((kind, "zero"))
+            elif all(vl_imm < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+                regimes_seen.add((kind, "below_vlmax"))
+            policies_seen.add((kind, vtype & 0xC0))
+        _update_int_reg_tracking(reg_val, word)
+
+    for kind in ("vlseg", "vsseg"):
+        for nfields in range(2, 9):
+            assert (kind, nfields) in nfields_seen
+        for regime in ("below_vlmax", "vlmax", "zero"):
+            assert (kind, regime) in regimes_seen
+    for kind in ("vlsseg", "vssseg"):
+        for nfields in (2, 3, 4, 8):
+            assert (kind, nfields) in nfields_seen
+        for regime in ("below_vlmax", "zero"):
+            assert (kind, regime) in regimes_seen
+        for stride_kind in ("positive", "negative", "zero_x0", "zero_reg"):
+            assert (kind, stride_kind) in stride_kinds_seen
+    for kind in ("vlseg", "vsseg", "vlsseg", "vssseg"):
+        for eew in (8, 16, 32, 64):
+            assert (kind, eew, True) in width_mask_seen
+        assert any(k == kind and not unmasked for k, _, unmasked in width_mask_seen)
+        assert (kind, (2, 1)) in emuls_seen
+    assert ("vlseg", (1, 2)) in emuls_seen and ("vsseg", (1, 2)) in emuls_seen
+    assert ("vlseg", 0x00) in policies_seen and ("vlsseg", 0x00) in policies_seen
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        pytest.param(
+            "vsetvli-after", "missing immediate scalar readback", id="vsetvli"
+        ),
+        pytest.param(
+            "vsetvl-after", "missing immediate scalar readback", id="vsetvl-after"
+        ),
+        pytest.param("vsetvl-before", "vsetvl", id="vsetvl-before"),
+        pytest.param(
+            "vstart-after", "missing immediate scalar readback", id="vstart-after"
+        ),
+        pytest.param("vstart-before", "vstart write", id="vstart-before"),
+        pytest.param(
+            "drop-unit-field",
+            "missing immediate scalar readback",
+            id="drop-unit-field",
+        ),
+        pytest.param(
+            "drop-strided-field",
+            "missing immediate scalar readback",
+            id="drop-strided-field",
+        ),
+        pytest.param(
+            "drop-neg-field",
+            "missing immediate scalar readback",
+            id="drop-neg-field",
+        ),
+        pytest.param(
+            "overwrite-before-readback",
+            "missing immediate scalar readback",
+            id="overwrite",
+        ),
+    ],
+)
+def test_segment_store_readback_covers_each_element(
+    tmp_path: Path, mutation: str, error: str
+) -> None:
+    """Every unit-stride and strided segment store must read back all bytes."""
+    source_trace = VERIF_DIR / "testrig" / "vector_segment.S"
+    _check_vector_store_readbacks([source_trace])
+
+    mutated = tmp_path / "vector_segment.S"
+    lines = source_trace.read_text().splitlines()
+    if mutation == "drop-strided-field":
+        anchor = next(
+            i for i, line in enumerate(lines) if line.startswith(".4byte 0x2bd4e427 ")
+        )
+        drop_idx = next(
+            i
+            for i in range(anchor + 1, len(lines))
+            if lines[i].startswith(".4byte 0x0044e503 ")  # lwu a0, 4(s1)
+        )
+        del lines[drop_idx]
+    elif mutation == "drop-neg-field":
+        anchor = next(
+            i for i, line in enumerate(lines) if line.startswith(".4byte 0x4bd9e427 ")
+        )
+        drop_idx = next(
+            i
+            for i in range(anchor + 1, len(lines))
+            if lines[i].startswith(".4byte 0x0049e503 ")  # lwu a0, 4(s3)
+        )
+        del lines[drop_idx]
+    else:
+        anchor = next(
+            i for i, line in enumerate(lines) if line.startswith(".4byte 0x2204ef27 ")
+        )
+        first_load = next(
+            i
+            for i in range(anchor + 1, len(lines))
+            if lines[i].startswith(".4byte 0x0044e503 ")  # lwu a0, 4(s1)
+        )
+        if mutation == "vsetvli-after":
+            lines.insert(
+                first_load, ".4byte 0x01007657  # vsetvli a2, zero, e32, m1, tu, mu"
+            )
+        elif mutation == "vsetvl-after":
+            lines.insert(first_load, ".4byte 0x80037057  # vsetvl zero, t1, t0")
+        elif mutation == "vsetvl-before":
+            lines.insert(anchor, ".4byte 0x80037057  # vsetvl zero, t1, t0")
+        elif mutation == "vstart-after":
+            lines.insert(first_load, ".4byte 0x00805073  # csrwi vstart, 0")
+        elif mutation == "vstart-before":
+            lines.insert(anchor, ".4byte 0x00805073  # csrwi vstart, 0")
+        elif mutation == "drop-unit-field":
+            del lines[first_load]
+        elif mutation == "overwrite-before-readback":
+            lines.insert(first_load, ".4byte 0x0064a223  # sw t1, 4(s1)")
     mutated.write_text("\n".join(lines) + "\n")
     with pytest.raises(AssertionError, match=error):
         _check_vector_store_readbacks([mutated])

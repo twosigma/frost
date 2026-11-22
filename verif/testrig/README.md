@@ -502,6 +502,17 @@ transfers, and a cached page-boundary crossing. Every indexed store reads back
 all written bytes through immediate scalar loads without reading `misa`.
 [Indexed memory](vector_indexed.S)
 
+The segment memory trace checks aligned cached DDR unit-stride segment loads
+and stores (`vlseg` and `vsseg`) for two through eight fields across 8, 16, 32
+and 64-bit element widths, and strided segment loads and stores (`vlsseg` and
+`vssseg`) across all four widths, both unmasked and masked. It covers positive,
+negative and zero strides, vector lengths below and equal to VLMAX,
+tail-undisturbed and mask-undisturbed readouts where defined, multi-register
+and fractional EMUL field groups, zero-active transfers, and a cached
+page-boundary crossing inside a segment. Every segment store reads back all
+written bytes through immediate scalar loads without reading `misa`.
+[Segment memory](vector_segment.S)
+
 The integer comparison trace checks vector, scalar and immediate predicates
 at SEW 32. It reads each active mask bit through an integer destination.
 The mask-undisturbed case checks enabled updates and preserved disabled bits.
@@ -518,7 +529,7 @@ implementations must return every planned trace and instruction.
 The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer source
 widths, fractional LMUL, base FP results, fused multiply-add, FP
-conversions, unit-stride memory, strided memory, indexed memory and integer
+conversions, unit-stride memory, strided memory, indexed memory, segment memory and integer
 comparisons. It checks `vcpop.m` for state and scalar results and FP
 comparisons. TestRIG must report each destination value mismatch.
 
