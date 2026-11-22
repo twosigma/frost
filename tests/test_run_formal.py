@@ -1543,6 +1543,11 @@ FORMAL_TARGETS = [
         tasks=("bmc16", "bmc8", "bmc4", "prove"),
     ),
     FormalTarget(
+        "fp_engine_op_class.sby",
+        "FP_RS engine-gate and fp_shim pipelined opcode classifications agree for every opcode",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "fp_forward_wake.sby",
         "FP forward offers, ROB tag ownership and both station wakeup lanes in the wrapper",
         tasks=(
@@ -4417,6 +4422,43 @@ def test_store_completion_cofactor_production_inputs(tmp_path: Path) -> None:
             assert (staged / name).read_bytes() == path.read_bytes(), (task, name)
 
 
+def test_fp_engine_op_formal_matches_wrapper_params() -> None:
+    """The engine-op harness uses the wrapper's FP_RS and fp_shim settings and selects mutations."""
+    from formal_selection import FIXTURE_PROOFS, ROOT, affected_nodes
+
+    wrapper = (
+        ROOT / "hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv"
+    ).read_text(encoding="utf-8")
+    harness = (ROOT / "formal/fp_engine_op_formal.sv").read_text(encoding="utf-8")
+
+    def params_of(text: str, module: str, inst: str) -> dict[str, str]:
+        match = re.search(rf"\b{module}\s*#\s*\((.*?)\)\s*{inst}\b", text, re.S)
+        assert match, (module, inst)
+        body = re.sub(r"//.*", "", match[1])
+        return dict(re.findall(r"\.(\w+)\s*\(\s*([^)]+?)\s*\)", body))
+
+    wrap_rs = params_of(wrapper, "reservation_station", "u_fp_rs")
+    harm_rs = params_of(harness, "reservation_station", "u_fp_rs")
+    for key in ("DIVIDE_ISSUE_GATE", "FP_ENGINE_GATE", "FWD_WAKE", "HAS_SRC3"):
+        assert wrap_rs[key] == harm_rs[key] == "1'b1", (key, wrap_rs, harm_rs)
+    wrap_shim = params_of(wrapper, "fp_shim", "u_fp_shim")
+    harm_shim = params_of(harness, "fp_shim", "u_fp_shim")
+    for key in ("LAUNCH_SQUASH", "PIPELINE"):
+        assert wrap_shim[key] == harm_shim[key] == "1'b1", (key, wrap_shim, harm_shim)
+
+    prefix = (
+        "tests/test_fp_forward_wake_mutations.py::test_fp_forward_wake_rejects_fault"
+    )
+    nodes = [node for node in FIXTURE_PROOFS if node.startswith(prefix)]
+    assert set(affected_nodes(nodes, {ROOT / "formal/fp_engine_op_formal.sv"})) == {
+        f"{prefix}[engine_op_rs_mismatch]",
+        f"{prefix}[engine_op_shim_mismatch]",
+    }
+    assert set(
+        affected_nodes(nodes, {ROOT / "tests/test_fp_forward_wake_mutations.py"})
+    ) == set(nodes)
+
+
 def test_formal_target_tasks_are_registered() -> None:
     """Every SBY file and task must participate in CLI and pytest execution."""
     formal_dir = Path(__file__).resolve().parents[1] / FORMAL_DIR
@@ -4683,6 +4725,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "tests/test_run_formal.py",
             "tests/test_pa_bridge_mutation.py",
             "tests/test_predictor_mutations.py",
+            "tests/test_fp_forward_wake_mutations.py",
             "--collect-only",
             "-q",
             "-m",
@@ -4740,6 +4783,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         assert len(matches) == 1, (node, matches)
         shard_name = matches[0]
         if node.startswith("tests/test_predictor_mutations.py::"):
+            assert shard_name == "Other tasks", node
+        if node.startswith("tests/test_fp_forward_wake_mutations.py::"):
             assert shard_name == "Other tasks", node
         selected_by_shard[shard_name].append(node)
         if node.startswith("tests/test_run_formal.py::") and "[" in node:

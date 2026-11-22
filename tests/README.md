@@ -1776,6 +1776,16 @@ indirect redirect. The fetch case inverts the branch flag on a live second slot
 and requires the packet checker to identify that flag. Each case requires a
 counterexample at a named assertion and a saved solver trace.
 
+In the Other tasks shard, `test_fp_forward_wake_mutations.py` injects isolated
+RTL faults into private staged copies of the proofs for John Goodacre's
+pipelined scalar FP execution and forward-wake design (`fp_engine_op_class`,
+`fp_forward_wake`, and `rs_divide_gate`). The cases cover opcode-class
+agreement, FIFO credit and payload tracking, CDB route retention and grant
+delivery, FP station engine gating, wrapper forward-word delivery on both
+lanes, wakeup-lane and source-select exclusion, consumer flush coverage, fresh
+tag issue, ROB tag reallocation, and busy-input transitions. Each case requires
+a counterexample at its target assertion and a saved solver trace.
+
 `test_pa_bridge_mutation.py` runs the 64 GiB proof on a private fixture for
 each AXI address channel and requires a counterexample at that channel's
 full-offset assertion. The standalone `aplic_msi_mutations.py` diagnostic
