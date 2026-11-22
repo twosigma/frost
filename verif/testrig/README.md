@@ -392,7 +392,8 @@ picks one and prints it. They are written to `tests/testrig_logs/atomics/`.
 QuickCheckVEngine has no vector templates, so `--vector N` replays N tests
 from [`vector.py`](vector.py) as raw instruction words, as `--atomics` does.
 It needs a core built with the vector unit, which the runner requests with
-`-GVECTOR=1 -GVLEN=<--vlen>`, and a Sail configuration for the same length:
+`-GVECTOR=1 -GVLEN=<--vlen> -GVECTOR_ADVERTISE=1`, and a Sail configuration
+for the same length:
 `sail_frost.json` with the matching `sail_frost_vlen*.json` overlay, which
 turns V on, makes `misa.V` read-only, and lets `mstatus.VS` take all four
 states.
@@ -422,7 +423,7 @@ legal controls. The memory trace checks traps before an access.
 · [Memory](vector_source_widths_memory.S)
 
 The `--vector-directed` option includes a state and scalar-result trace
-for vector CSRs, VS state, `vsetivli`, `vsetvl`, `vcpop.m`, `vfirst.m`
+for `misa.V`, vector CSRs, VS state, `vsetivli`, `vsetvl`, `vcpop.m`, `vfirst.m`
 and `vfmv.f.s`. The trace
 asserts the scalar results and selected trap outcomes. The mask operations
 read five active bits from initialized mask bytes. FP extraction reads

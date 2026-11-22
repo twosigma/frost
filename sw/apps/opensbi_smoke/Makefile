@@ -14,7 +14,7 @@
 
 # OpenSBI fw_jump boots an S-mode payload using the FROST boot layout.
 # linux/opensbi_build.py builds the firmware from linux/opensbi; link.ld
-# keeps the payload below the DTB. MEM_CONFIG is ignored.
+# keeps the payload below the scalar VCU118 DTB. MEM_CONFIG is ignored.
 #
 # The helper checks firmware inputs on every make and discards build/opensbi
 # when the configuration, source, build options or toolchain changes.
@@ -74,6 +74,7 @@ payload.S: payload.elf
 # launch competing packers that overwrite the shared DTS/DTB and shim files.
 sw.mem sw.txt sw_ddr.mem sw_ddr.txt &: payload.bin $(FW_BIN) $(OPENSBI_SMOKE_PACKER) $(BOARD_DIR)/frost_boot_image.py $(CONFIG_STAMP)
 	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) python3 $(OPENSBI_SMOKE_PACKER) \
+	    --board vcu118 \
 	    --firmware $(FW_BIN) --payload payload.bin --out . --cross $(RISCV_PREFIX) \
 	    --bootargs "" --model "FROST OpenSBI smoke"
 

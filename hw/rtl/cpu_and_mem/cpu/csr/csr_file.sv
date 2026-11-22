@@ -40,11 +40,11 @@
 
   VECTOR=1 adds the vector state: mstatus.VS and its sstatus view, vstart,
   vxsat, vxrm, vcsr, and the read-only vl, vtype and vlenb. VS resets to Off,
-  and vector CSR accesses are illegal while it is Off; vector instructions are
-  illegal in every state. Writes to vstart, vxsat, vxrm and vcsr set VS to
+  and vector CSR accesses and instructions are illegal while it is Off.
+  Writes to vstart, vxsat, vxrm and vcsr set VS to
   Dirty. vl resets to 0 and vtype to vill. With VECTOR=0 the vector CSRs do
-  not exist and VS reads zero. VECTOR_ADVERTISE would set misa.V; elaboration
-  rejects it because this build does not implement the vector instructions.
+  not exist and VS reads zero. VECTOR && VECTOR_ADVERTISE sets misa.V.
+  VECTOR_ADVERTISE requires VECTOR=1.
 
   Debug CSRs follow RISC-V Debug Spec 0.13.2 and require Debug Mode.
   dcsr implements ebreakm/ebreaks/ebreaku, step, and prv as writable fields;
@@ -136,8 +136,7 @@ module csr_file #(
     // Vector register width in bits: 128, 256 or 512. Sets vlenb and the
     // vstart width.
     parameter int unsigned VLEN = 256,
-    // 1 would set misa.V. Elaboration rejects it while the vector
-    // instructions are not implemented; software enables the vector state
+    // 1 sets misa.V when VECTOR=1. Software enables the vector state
     // through mstatus.VS.
     parameter bit VECTOR_ADVERTISE = 1'b0
 ) (
@@ -1704,8 +1703,6 @@ module csr_file #(
     initial begin
       if (VLEN != 128 && VLEN != 256 && VLEN != 512)
         $fatal(1, "csr_file: VLEN must be 128, 256 or 512");
-      if (VECTOR_ADVERTISE)
-        $fatal(1, "csr_file: VECTOR_ADVERTISE needs the vector instructions, not implemented");
     end
     logic [VstartBits-1:0] vstart_q;
     logic vxsat_q;
@@ -1839,6 +1836,9 @@ module csr_file #(
         mstatus_vs <= FsDirty;
     end
   end else begin : gen_no_vector_csrs
+    initial begin
+      if (VECTOR_ADVERTISE) $fatal(1, "csr_file: VECTOR_ADVERTISE requires VECTOR=1");
+    end
     assign vec_read_value = '0;
     assign o_vec_vl = '0;
     assign o_vec_vtype = '0;

@@ -1109,7 +1109,7 @@ jobs:
           check_vector_result 1 vector_source_widths_integer \
             'order=17 insn=0x43002557 rd=x10' '0x8 != 0x9'
           check_vector_result state vector_state_results \
-            'order=49 insn=0x42182557 rd=x10' '0x3 != 0x2'
+            'order=52 insn=0x42182557 rd=x10' '0x3 != 0x2'
           check_vector_result fractional-lmul vector_fractional_lmul \
             'order=14 insn=0x42902557 rd=x10' '0x9 != 0x8'
           check_vector_result base-fp vector_fp_results_flags \

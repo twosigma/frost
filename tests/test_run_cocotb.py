@@ -1266,9 +1266,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         nic_mac_clocks=False,
         description=(
             "Vector state with the vector unit at VLEN 256: mstatus.VS, the vector CSRs "
-            "and their legality"
+            "and their legality, with misa.V advertised"
         ),
-        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256"),
+        verilator_extra_args=("-GVECTOR=1", "-GVLEN=256", "-GVECTOR_ADVERTISE=1"),
         extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=256"),),
     ),
     "vec_state_test_v128": CocotbRunConfig(
@@ -2640,7 +2640,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="opensbi_smoke",
         rerun_after_reset=False,
         description=(
-            "OpenSBI boot, SBI services, SRST presence, unsupported shutdown and "
+            "Scalar OpenSBI boot, SBI services, SRST presence, unsupported shutdown and "
             "delegated APLIC interrupts (fixed memory layout)"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
@@ -2686,7 +2686,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="opensbi_smoke",
         rerun_after_reset=False,
         description=(
-            "OpenSBI boot, SBI services, SRST presence and unsupported shutdown, "
+            "Scalar OpenSBI boot, SBI services, SRST presence and unsupported shutdown, "
             "with OpenSBI emulating misaligned accesses (no misaligned-access engine)"
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "20000000"),),
@@ -6496,7 +6496,11 @@ TEST_REGISTRY["debug_fatal_stop_with_engine"] = replace(
 # times each program's Spike instruction count at VLEN 128 (vec_string counted
 # with -DVT_QUICK; vec_dot_fp estimated); tighten it from the first simulation.
 VECTOR_BRING_UP_PROGRAMS = {
-    "vec_smoke": ("vsetvl and CSR configuration, VS states", 3_000_000, ""),
+    "vec_smoke": (
+        "vsetvl and CSR configuration, VS states and advertised misa.V",
+        3_000_000,
+        "",
+    ),
     "vec_ldst": (
         "vector loads and stores, segments, fault-only-first, faults",
         50_000_000,
@@ -6526,7 +6530,11 @@ for _program, (_what, _budget, _cflags) in VECTOR_BRING_UP_PROGRAMS.items():
             description=f"{_what}, with the vector unit at VLEN {_vlen}; CLI-only",
             include_in_pytest=False,
             rerun_after_reset=False,
-            verilator_extra_args=("-GVECTOR=1", f"-GVLEN={_vlen}"),
+            verilator_extra_args=(
+                "-GVECTOR=1",
+                f"-GVLEN={_vlen}",
+                *(("-GVECTOR_ADVERTISE=1",) if _program == "vec_smoke" else ()),
+            ),
             extra_env=(
                 ("VLEN", str(_vlen)),
                 ("COCOTB_MAX_CYCLES", str(_budget)),
@@ -7125,9 +7133,14 @@ class CocotbRunner:
 
         apps_dir = self.repository_root_directory / "sw" / "apps"
         sys.path.insert(0, str(apps_dir))
+        previous_cflags = os.environ.get("EXTRA_CFLAGS")
         try:
             from compile_app import compile_app
 
+            if self.app_name in {"vec_smoke", "vec_state_test"}:
+                os.environ["EXTRA_CFLAGS"] = (
+                    f"{previous_cflags or ''} -DVEC_ADVERTISE={self._expected_misa_v()}"
+                ).strip()
             return compile_app(
                 self.app_name,
                 verbose=True,
@@ -7135,7 +7148,26 @@ class CocotbRunner:
                 clean_first=True,
             )
         finally:
+            if previous_cflags is None:
+                os.environ.pop("EXTRA_CFLAGS", None)
+            else:
+                os.environ["EXTRA_CFLAGS"] = previous_cflags
             sys.path.pop(0)
+
+    def _expected_misa_v(self) -> int:
+        """Return misa.V from the frost build parameters, including external overrides."""
+        parameters = {"VECTOR": 0, "VECTOR_ADVERTISE": 0}
+        arguments = (
+            *self.verilator_extra_args,
+            *os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "").split(),
+        )
+        for argument in arguments:
+            name, _, value = argument.removeprefix("-G").partition("=")
+            if argument.startswith("-G") and name in parameters:
+                parameters[name] = int(value, 0)
+        if parameters["VECTOR_ADVERTISE"] and not parameters["VECTOR"]:
+            raise ValueError("VECTOR_ADVERTISE=1 requires VECTOR=1")
+        return int(bool(parameters["VECTOR_ADVERTISE"]))
 
     def _get_program_memory_file(self) -> str | None:
         """Return the sw.mem path for the current app, or None without an app."""
@@ -7170,6 +7202,8 @@ class CocotbRunner:
     def setup_environment(self) -> dict[str, str]:
         """Return a copy of os.environ with the simulation settings applied."""
         environment_variables = os.environ.copy()
+        if self.hdl_toplevel_module == "frost":
+            environment_variables["FROST_EXPECT_MISA_V"] = str(self._expected_misa_v())
 
         seed = os.environ.get(RANDOM_START_SEED_VARIABLE, "").strip()
         if seed:
