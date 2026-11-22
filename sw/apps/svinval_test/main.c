@@ -320,18 +320,23 @@ __asm__(".section .text\n"
         "    csrw satp, s4\n"
         WORD_INSN(SINVAL_ALL_BITS)
         /* Evict A's code page inside the window while keeping the caller's
-         * global translation resident. */
+         * global translation resident. Keep every fetch-restarting satp switch
+         * and invalidation batch inside the walk-counter window as well so an
+         * unwanted walk from an early predicted JALR on a warm boot cannot
+         * finish before sampling. Switch to B before invalidating A so a
+         * speculative JALR fetch ahead of sfence.inval.ir stays in B's
+         * resident translation rather than refilling A early. */
         CALL_AFTER(WORD_INSN(SINVAL_S3_A6_BITS), 62, 63)
         CALL_AFTER("    csrw satp, s5\n", 64, 65)
-        "    csrw satp, s4\n"
-        CALL_AFTER("", 66, 67)
+        CALL_AFTER("    csrw satp, s4\n", 66, 67)
         "    li   t2, 0x20485C4B\n" /* PTE_PPN(PA_CA2) | V R X A */
         "    sd   t2, 16(s9)\n"
-        WORD_INSN(SFENCE_W_INVAL_BITS)
-        WORD_INSN(SINVAL_S3_A6_BITS)
-        WORD_INSN(SFENCE_INVAL_IR_BITS)
         "    csrw satp, s5\n"
-        CALL_AFTER("", 68, 69)
+        CALL_AFTER(WORD_INSN(SFENCE_W_INVAL_BITS)
+                   WORD_INSN(SINVAL_S3_A6_BITS)
+                   WORD_INSN(SFENCE_INVAL_IR_BITS),
+                   68,
+                   69)
         CALL_AFTER("    csrw satp, s4\n", 70, 71)
         /* 9. sinval.vma x0, x0 flushes all resident entries (A, B, global).
          *    Warm VA_X and VA_G first (step 8 started with sinval.vma x0, x0). */

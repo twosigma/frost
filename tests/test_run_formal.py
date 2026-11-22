@@ -4806,9 +4806,9 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         assert len(matches) == 1, (node, matches)
         shard_name = matches[0]
         if node.startswith("tests/test_predictor_mutations.py::"):
-            assert shard_name == "Other tasks", node
+            assert shard_name == "Frontend and predictor", node
         if node.startswith("tests/test_fp_forward_wake_mutations.py::"):
-            assert shard_name == "Other tasks", node
+            assert shard_name == "Floating-point and vector memory", node
         selected_by_shard[shard_name].append(node)
         if node.startswith("tests/test_run_formal.py::") and "[" in node:
             test_id = node.split("[", 1)[1].rstrip("]")
@@ -4832,6 +4832,34 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             node.endswith(f"[nic_tx_hold_{task}]")
             for node in selected_by_shard["Other tasks"]
         )
+    split_shard_limits_minutes = {
+        "Frontend and predictor": 150,
+        "Block proofs": 150,
+        "Floating-point and vector memory": 140,
+        "Other tasks": 124,
+    }
+    for shard_name, minutes in split_shard_limits_minutes.items():
+        assert shard_timeouts_s[shard_name] == minutes * 60, (
+            shard_name,
+            shard_timeouts_s.get(shard_name),
+        )
+    for test_id, expected_shard in (
+        ("backing_btb_bmc_four_way", "Frontend and predictor"),
+        ("prediction_handoff_bmc", "Frontend and predictor"),
+        ("predictor_fetch_contract_cover_backing", "Frontend and predictor"),
+        ("cache_flash_valid_bmc_fast", "Block proofs"),
+        ("rs_payload_twin_bmc_operands", "Block proofs"),
+        ("fp_forward_wake_bmc", "Floating-point and vector memory"),
+        ("vec_head_mmu_stride_bmc", "Floating-point and vector memory"),
+        ("vec_hold_rows_vhold_sq_bmc", "Floating-point and vector memory"),
+        ("store_queue_bmc", "Other tasks"),
+    ):
+        assert any(
+            node.endswith(f"[{test_id}]") for node in selected_by_shard[expected_shard]
+        ), (test_id, expected_shard)
+    assert all(selected_by_shard.values()), {
+        name for name, items in selected_by_shard.items() if not items
+    }
     check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
 
 
