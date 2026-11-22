@@ -26,8 +26,11 @@ ABI. Two larger pieces come before the second hart:
   the Zvfhmin conversions), `vmv.x.s`, `vcpop.m`, `vfirst.m` and `vfmv.f.s`, and
   every vector load and store form. The X3 build includes the unit. It also
   executes vector carry-less multiply, AES rounds and key schedules, SHA-256
-  and SHA-512 compression and message schedules, and GHASH. The vector
-  extensions are unadvertised. Strided, indexed, segment and
+  and SHA-512 compression and message schedules, and GHASH. The X3 sets
+  `misa.V` with `VECTOR_ADVERTISE=1` and `VLEN=256`. Its device tree advertises
+  V, Zve32x, Zve32f, Zve64x, Zve64f and Zve64d, and Zvl32b, Zvl64b,
+  Zvl128b and Zvl256b. The additional Zv extensions are unadvertised.
+  Strided, indexed, segment and
   fault-only-first loads and stores run one element at a time, and an interrupt
   or debug halt that arrives after such a run has begun waits until the
   instruction finishes; taking them between elements, with `vstart` naming the
@@ -73,7 +76,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
 | Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Partial (state, `vsetvl*`, integer, fixed-point, mask, reduction, permutation and floating-point execution; all load and store forms; unadvertised) | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy) at three vector lengths), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
+| V | Implemented with `VECTOR=1`; advertised by the X3 with `VLEN=256` | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy) at three vector lengths), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
 | Zvfhmin | Implemented with `VECTOR=1` (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at SEW 16; unadvertised) | `vec_fp_test`, `test_vec_fcvt.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy), one program per form at three vector lengths) |
 | Zvbb | Implemented with `VECTOR=1` (including `vwsll`; unadvertised) | `test_vec_int_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py` |
 | Zvkt | Implemented with `VECTOR=1` (data-independent execution latency for the listed vector instructions; unadvertised) | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py`, `test_vec_crypto_exec.py` |

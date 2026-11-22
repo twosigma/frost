@@ -19,7 +19,7 @@
  *
  * Built with VEC_VLEN=<n> for a core with the vector unit (VECTOR=1,
  * VLEN=<n>), or with VEC_VLEN=0 for a core without it. With the unit:
- *   - VS resets to Off and misa.V stays clear (the build does not advertise V);
+ *   - VS resets to Off and misa.V matches VEC_ADVERTISE;
  *   - with VS Off, every vector CSR access raises illegal-instruction;
  *   - with VS on, vlenb reads VLEN/8, vl reads 0 and vtype reads vill;
  *     vstart keeps log2(VLEN) bits; vxrm, vxsat and vcsr alias each other;
@@ -49,6 +49,9 @@
 
 #ifndef VEC_VLEN
 #define VEC_VLEN 0
+#endif
+#ifndef VEC_ADVERTISE
+#define VEC_ADVERTISE (VEC_VLEN != 0)
 #endif
 
 #define MSTATUS_VS (3ul << 9)
@@ -372,7 +375,7 @@ int main(void)
     set_trap_handler(vec_trap_handler);
     uart_printf("vec_state_test VLEN=%u\n", (unsigned) VEC_VLEN);
 
-    check_eq("misa.V clear", csr_read(misa) & MISA_V, 0);
+    check_eq("misa.V matches build", csr_read(misa) & MISA_V, VEC_ADVERTISE ? MISA_V : 0);
 
 #if VEC_VLEN == 0
     set_vs(VS_DIRTY);

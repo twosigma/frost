@@ -97,6 +97,13 @@ MTIME_LO_ADDR = 0x4000_0010
 DDR_SCRATCH_ADDR = 0x8010_0000
 
 
+def _expected_misa() -> int:
+    """Return the ISA register value selected by the simulation build."""
+    return 0x8000_0000_0014_112F | (
+        int(os.environ.get("FROST_EXPECT_MISA_V", "0")) << 21
+    )
+
+
 def _read_symbols() -> dict[str, int]:
     """Return the symbol table of the running program (tests/sw.mem -> <app>/sw.mem)."""
     sw_mem = Path("sw.mem")
@@ -354,7 +361,7 @@ async def test_debug(dut: Any) -> None:
 
     # ---- CSRs through the program buffer -------------------------------------
     misa = await dm.read_csr(CSR_MISA)
-    assert misa == 0x8000_0000_0014_112F, f"misa {misa:#x}"
+    assert misa == _expected_misa(), f"misa {misa:#x}"
     assert (await dm.read_csr(CSR_MTVEC)) == syms["trap_entry"]
     await dm.write_csr(CSR_DSCRATCH0, 0xDEADBEEFCAFEF00D)
     assert (await dm.read_csr(CSR_DSCRATCH0)) == 0xDEADBEEFCAFEF00D

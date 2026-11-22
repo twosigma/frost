@@ -1583,9 +1583,10 @@ provides Sail and the engine.
 ```
 
 `--vector N` replays generated vector traces from `verif/testrig/vector.py`
-with both implementations configured for `--vlen` (128, 256 or 512).
+with both implementations configured for `--vlen` (128, 256 or 512) and
+advertising `misa.V=1`.
 `--vector-source-widths` includes the directed integer, FP and memory
-source-width traces. `--vector-directed` includes the vector CSR,
+source-width traces. `--vector-directed` includes the `misa.V`, vector CSR,
 scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison,
 FP conversion, cached DDR probe, unit-stride memory, strided memory,
 indexed memory, segment memory, fault-only-first load, integer comparison,

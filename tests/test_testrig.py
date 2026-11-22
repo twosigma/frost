@@ -212,7 +212,7 @@ def write_sail_config(
 
     `sscofpmf` selects the dedicated Sscofpmf control config filename suffix;
     the vector unit at `vlen` is for the --vector traces, which FROST must be
-    built for with -GVECTOR=1 -GVLEN.
+    built for with -GVECTOR=1 -GVLEN and -GVECTOR_ADVERTISE=1.
     """
     if capacity_log2_bytes not in range(30, 38):
         raise ValueError("DDR capacity must be 1, 2, 4, 8, 16, 32, 64 or 128 GiB")
@@ -288,7 +288,9 @@ def simulator_config(
 ) -> CocotbRunConfig:
     """Return the RVFI-DII elaboration selected for the Sail comparison."""
     base_config = TEST_REGISTRY["rvfi_dii"]
-    vector_args = ("-GVECTOR=1", f"-GVLEN={vlen}") if vlen else ()
+    vector_args = (
+        ("-GVECTOR=1", f"-GVLEN={vlen}", "-GVECTOR_ADVERTISE=1") if vlen else ()
+    )
     wfi_args = (
         (f"-DFROST_RVFI_DII_WFI_TIMEOUT={wfi_timeout_cycles}",)
         if wfi_timeout_cycles

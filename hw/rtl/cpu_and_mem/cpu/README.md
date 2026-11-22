@@ -1143,10 +1143,14 @@ registered commit, memory and vector-to-scalar instructions at the head,
 `vsetvli x0, x0` at its commit); a vector arithmetic instruction right behind the
 load reads it on the next edge, with no cycle to spare.
 
-`misa.V` stays clear: `VECTOR_ADVERTISE=1`, which would set it, is rejected at
-elaboration while the vector implementation is incomplete, and bare-metal
-software enables the state by writing `mstatus.VS`. With `VECTOR=0` the vector CSRs do
-not exist and VS reads zero.
+The X3 configuration uses `VECTOR=1`, `VLEN=256` and `VECTOR_ADVERTISE=1`, so
+`misa.V` reads one. Its device tree advertises V, Zve32x, Zve32f, Zve64x,
+Zve64f and Zve64d, with the Zvl32b, Zvl64b, Zvl128b and Zvl256b length
+guarantees. Software enables the state by writing `mstatus.VS`.
+`VECTOR_ADVERTISE=0` leaves `misa.V` clear without removing the unit.
+With `VECTOR=0` the vector CSRs do not exist, VS reads zero and `misa.V`
+reads zero. This configuration requires `VECTOR_ADVERTISE=0`; advertising
+V without the vector unit is an elaboration error.
 
 The vector unit's datapath blocks live in `vector/`, each with its own
 unit bench. `vec_int_lane` is one 64-bit integer lane: add, subtract and

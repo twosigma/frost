@@ -81,27 +81,107 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     ), "Vector result controls need the 180-second response timeout"
     assert job["steps"].index(replay) < job["steps"].index(control)
     calls = [
-        shlex.split(line)[1:3]
+        shlex.split(line)[1:]
         for line in control["run"].replace("\\\n", "").splitlines()
         if line.startswith("check_vector_result ")
     ]
     assert calls == [
-        ["1", "vector_source_widths_integer"],
-        ["state", "vector_state_results"],
-        ["fractional-lmul", "vector_fractional_lmul"],
-        ["base-fp", "vector_fp_results_flags"],
-        ["fma", "vector_fma"],
-        ["fp-compare", "vector_fp_compare"],
-        ["fp-convert", "vector_fp_convert"],
-        ["unit-stride", "vector_unit_stride"],
-        ["int-compare", "vector_int_compare"],
-        ["strided", "vector_strided"],
-        ["indexed", "vector_indexed"],
-        ["segment", "vector_segment"],
-        ["fof", "vector_fof"],
-        ["int-widen-narrow", "vector_int_widen_narrow"],
-        ["fixed-point", "vector_fixed_point"],
-        ["fp-single", "vector_fp_single"],
+        [
+            "1",
+            "vector_source_widths_integer",
+            "order=17 insn=0x43002557 rd=x10",
+            "0x8 != 0x9",
+        ],
+        [
+            "state",
+            "vector_state_results",
+            "order=52 insn=0x42182557 rd=x10",
+            "0x3 != 0x2",
+        ],
+        [
+            "fractional-lmul",
+            "vector_fractional_lmul",
+            "order=14 insn=0x42902557 rd=x10",
+            "0x9 != 0x8",
+        ],
+        [
+            "base-fp",
+            "vector_fp_results_flags",
+            "order=10 insn=0x43102557 rd=x10",
+            "0x40400000 != 0x40400001",
+        ],
+        [
+            "fma",
+            "vector_fma",
+            "order=14 insn=0x43602557 rd=x10",
+            "0xffffffffa8800000 != 0xffffffffa8800001",
+        ],
+        [
+            "fp-compare",
+            "vector_fp_compare",
+            "order=15 insn=0x43882557 rd=x10",
+            "0x1 != 0x0",
+        ],
+        [
+            "fp-convert",
+            "vector_fp_convert",
+            "order=9 insn=0x43802557 rd=x10",
+            "0x3 != 0x2",
+        ],
+        [
+            "unit-stride",
+            "vector_unit_stride",
+            "order=109 insn=0x43a02557 rd=x10",
+            "0x12345678 != 0x12345679",
+        ],
+        [
+            "int-compare",
+            "vector_int_compare",
+            "order=21 insn=0x43902557 rd=x10",
+            "0x0 != 0x1",
+        ],
+        [
+            "strided",
+            "vector_strided",
+            "order=158 insn=0x43b02557 rd=x10",
+            "0x24681356 != 0x24681357",
+        ],
+        [
+            "indexed",
+            "vector_indexed",
+            "order=217 insn=0x43c02557 rd=x10",
+            "0x31415926 != 0x31415927",
+        ],
+        [
+            "segment",
+            "vector_segment",
+            "order=45 insn=0x43e02557 rd=x10",
+            "0x19475b81 != 0x19475b80",
+        ],
+        [
+            "fof",
+            "vector_fof",
+            "order=29 insn=0x43f02557 rd=x10",
+            "0x13572468 != 0x13572469",
+        ],
+        [
+            "int-widen-narrow",
+            "vector_int_widen_narrow",
+            "order=72 insn=0x42e02557 rd=x10",
+            "0x1fe != 0x1ff",
+        ],
+        [
+            "fixed-point",
+            "vector_fixed_point",
+            "order=49 insn=0x42f02557 rd=x10",
+            "0x7f != 0x7e",
+        ],
+        [
+            "fp-single",
+            "vector_fp_single",
+            "order=30 insn=0x42d02557 rd=x10",
+            "0x40100000 != 0x40100001",
+        ],
     ]
 
 

@@ -44,6 +44,91 @@ def _failed_simulation() -> subprocess.CompletedProcess[str]:
     )
 
 
+@pytest.mark.parametrize("app", ["vec_smoke", "vec_state_test"])
+@pytest.mark.parametrize(
+    ("arguments", "external", "expected"),
+    [
+        ((), "", 0),
+        (("-GVECTOR=1",), "", 0),
+        (("-GVECTOR=1", "-GVECTOR_ADVERTISE=1"), "", 1),
+        (("-GVECTOR=1", "-GVECTOR_ADVERTISE=1"), "-GVECTOR_ADVERTISE=0", 0),
+        (("-GVECTOR=1",), "-GVECTOR_ADVERTISE=1", 1),
+        (
+            ("-GVECTOR=1", "-GVECTOR_ADVERTISE=1"),
+            "-GVECTOR=0 -GVECTOR_ADVERTISE=0",
+            0,
+        ),
+    ],
+)
+def test_misa_expectation_follows_simulation_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+    app: str,
+    arguments: tuple[str, ...],
+    external: str,
+    expected: int,
+) -> None:
+    """Program builds and debugger checks agree with the final vector parameters."""
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "sw/apps"))
+    import compile_app
+
+    monkeypatch.setenv("FROST_VERILATOR_EXTRA_ARGS", external)
+    monkeypatch.setenv("EXTRA_CFLAGS", "-DVEC_VLEN=256")
+    observed = []
+
+    def compile_fixture(*args: object, **kwargs: object) -> bool:
+        observed.append(os.environ["EXTRA_CFLAGS"])
+        return True
+
+    monkeypatch.setattr(compile_app, "compile_app", compile_fixture)
+    runner = test_run_cocotb.CocotbRunner(
+        "cocotb_tests.test_real_program", "frost", app, arguments
+    )
+    try:
+        assert runner.setup_environment()["FROST_EXPECT_MISA_V"] == str(expected)
+        assert runner._compile_app()
+        assert observed == [f"-DVEC_VLEN=256 -DVEC_ADVERTISE={expected}"]
+        assert os.environ["EXTRA_CFLAGS"] == "-DVEC_VLEN=256"
+    finally:
+        runner.restore_environment()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "external"),
+    [
+        (("-GVECTOR_ADVERTISE=1",), ""),
+        (("-GVECTOR=1", "-GVECTOR_ADVERTISE=1"), "-GVECTOR=0"),
+        ((), "-GVECTOR=0 -GVECTOR_ADVERTISE=1"),
+    ],
+)
+def test_vector_advertisement_requires_the_unit(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: tuple[str, ...],
+    external: str,
+) -> None:
+    """Reject a vector ISA claim when the final parameters remove the unit."""
+    monkeypatch.setenv("FROST_VERILATOR_EXTRA_ARGS", external)
+    runner = test_run_cocotb.CocotbRunner(
+        "cocotb_tests.test_real_program", "frost", "vec_state_test", arguments
+    )
+    try:
+        with pytest.raises(ValueError, match="VECTOR_ADVERTISE=1 requires VECTOR=1"):
+            runner.setup_environment()
+    finally:
+        runner.restore_environment()
+
+
+@pytest.mark.parametrize("vlen", (128, 256, 512))
+def test_registered_vector_smoke_expects_advertisement(
+    monkeypatch: pytest.MonkeyPatch, vlen: int
+) -> None:
+    """The standalone smoke entry checks the advertised vector configuration."""
+    monkeypatch.delenv("FROST_VERILATOR_EXTRA_ARGS", raising=False)
+    runner = test_run_cocotb.CocotbRunner.from_config(
+        test_run_cocotb.TEST_REGISTRY[f"vec_smoke_v{vlen}"]
+    )
+    assert runner._expected_misa_v() == 1
+
+
 def test_riscv_nonzero_simulator_exit_is_a_failure(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
