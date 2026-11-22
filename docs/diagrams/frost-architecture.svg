@@ -1,74 +1,105 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1576" viewBox="0 0 1200 1576" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2060" viewBox="0 0 1200 2060" role="img" aria-labelledby="title desc">
   <title id="title">FROST CPU and X3 memory architecture</title>
   <desc id="desc">
-    RV64GCB out-of-order CPU. IF, PD and ID feed two-wide dispatch and INT/FP
-    register renaming with eight branch checkpoints. Dispatch allocates the
-    32-entry reorder buffer, four reservation stations, and memory queues.
-    The INT, MUL, FP and MEM stations have 16, 4, 2 and 8 entries. INT issues
-    to two ALUs; pipe 0 resolves branches. Other stations serve integer
-    multiply/divide and carry-less multiply, every floating-point compute
-    operation (one engine with iterative arithmetic and fast paths), and memory operations. Two CDB lanes
-    broadcast results to the reservation stations and ROB. The ROB commits
-    up to two instructions in order to INT/FP register files and releases
-    stores. CSR accesses execute at commit; traps support M/S/U delegation.
-    Conditional-branch mispredictions redirect fetch and restore the RAT the
-    cycle after resolution, then flush younger backend work the following cycle.
-    JALR mispredictions and traps recover at commit.
-    Sv39 uses a 16-entry ITLB in IF and a 16-entry DTLB ahead of the
-    eight-entry load and store queues. The load queue contains a direct-mapped
-    512-entry, eight-byte-granule L0 cache in FROST and receives store forwarding.
-    Matching I and D badges connect the CPU to the system view below.
-    Cached instruction fetch uses a two-line fetch buffer and 16 KiB L1I with
-    two miss slots; cached data uses a 128 KiB MSI L1D with eight read slots,
-    eight request endpoints (seven available for ordinary load misses) and
-    four ordered store records. A read-hit pipeline serves eligible loads
-    beside the controller's miss, store, grant and probe service.
-    One shared page-table walker serves both TLBs. Its ReadOncePTW requests
-    reach the L2 home, which probes L1D and merges dirty data. Instruction
-    refills use ReadOnceIF through the same home. The NIC and DMA test engine
-    use a 256-bit AXI4 mux and bridge in the SoC to reach coherent ingress.
-    The home orders DMA through private-cache probes and load-queue cuts.
-    Tagged channels join L1D, instruction, walker and DMA requests at the
-    2 MiB UltraRAM L2 home. A separate coherent prefetch agent follows data
-    and instruction streams and fills the L2. The home has eight fills.
-    The private sectors are 32 bytes and the home
-    lines are 64 bytes. All three DDR caches are four-way. A 512-bit AXI4
-    master reaches the board DDR4
-    controller. Software sees a 1 GiB cached region at 0x80000000.
-    The same master serves low BRAM and MMIO. Low BRAM has an 8 KiB instruction
-    cache, L0 data reads and write-through stores; debug-page data bypasses L0.
-    SoC devices include UART, FIFO0/1, CLINT, APLIC and the NIC and DMA engine's
-    64-bit AXI4-Lite registers. The NIC is at 0x40030000 and raises APLIC source 4.
-    APLIC supports direct delivery and MSIs to the CPU's M/S IMSIC files.
-    JTAG connects through the
-    DTM to the debug module for halt, resume and single-step. Capacities show
-    the X3 configuration. Only selected connections are drawn; memory arrows
-    follow requests, with responses omitted.
+    RV64GCBV out-of-order CPU with a VLEN 256 vector unit. IF, PD and ID feed
+    a four-bundle decoded queue, two-wide dispatch and INT/FP register renaming
+    with eight branch checkpoints and a speculative vtype tracker. Branch
+    prediction combines a 256-entry BTB, a 1024-entry two-way backing BTB, a
+    1024-entry bimodal predictor, a four-table 4 x 1024 tagged direction
+    predictor, a three-table 3 x 256 indirect target predictor and an 8-entry
+    return address stack. Dispatch allocates the 32-entry reorder buffer, four
+    reservation stations, memory queues and the four-entry vector memory table.
+    The INT, MUL, FP and MEM stations have 16, 4, 6 and 8 entries. INT issues
+    to two ALUs with branch and JALR resolution on pipe 0. MUL serves integer
+    multiply, divide, carry-less multiply and vector configuration (vset*). FP
+    uses a seven-stage FMA pipeline for add, subtract, multiply and FMA, a
+    radix-16 divider and an FP engine for square root, conversions and misc
+    operations. Two CDB lanes broadcast results across eight FU slots to the
+    reservation stations and ROB; staged loads and the FP pipeline also wake
+    dependents early. The ROB commits up to two instructions in order to INT/FP
+    register files, releases stores, and enqueues committed vector arithmetic
+    into the vector unit's eight-entry issue window (VIQ). CSR accesses execute
+    at commit; traps support M/S/U delegation and vector CSRs. Conditional
+    branch and JALR mispredictions redirect fetch and restore the RAT the cycle
+    after resolution, then flush younger backend work the following cycle. JAL
+    mispredictions and traps recover at commit. A hardware misaligned-access
+    engine assists plain misaligned cached DDR loads and stores at commit.
+    The VLEN 256 vector unit contains vector control (vtype tracking, dispatch
+    legality, per-ROB-tag state and ROB-head VTOX/VTOF completion on CDB slot
+    6), an eight-entry post-commit issue window (VIQ), the vector engine
+    (32 x 256-bit 5R/2W vector register file, four 64-bit integer lanes, an
+    integer execution unit, a floating-point unit for FP16/32/64 and Zvfh, and
+    a crypto unit for Zvbc/Zvkng AES, SHA-2, GHASH and CLMUL), the four-entry
+    vector memory table (VMT) with head translation and ordering range holds
+    checked by the load and store queues, and the vector memory unit (VMU) with
+    six 32-byte sector slots supporting unit-stride, whole-register, mask,
+    strided, indexed and segment operations over an eight-ID coherent hart line
+    client shared with the misaligned-access engine. Sv39 uses a 16-entry ITLB
+    in IF, a 16-entry DTLB ahead of the eight-entry load and store queues, a
+    shared 512-entry four-way L2 TLB with a 32-entry superpage side array, and
+    one shared page-table walker with a pointer walk cache. The load queue
+    contains a direct-mapped 512-entry, eight-byte-granule L0 cache and
+    receives store forwarding. Matching I, D and V badges connect the CPU to
+    the system view below. Cached instruction fetch uses a two-active,
+    six-victim fetch buffer and 16 KiB L1I with two miss slots; cached data
+    uses a 128 KiB MSI L1D with eight read slots, eight request endpoints
+    (seven available for ordinary load misses, two supporting stream prefetch),
+    four ordered store records and a Zicbom CMO requester. A read-hit pipeline
+    serves eligible loads beside miss, store, grant and probe service. The
+    shared walker's ReadOncePTW requests and instruction ReadOnceIF refills
+    reach the L2 home, which probes L1D and merges dirty data. Coherent ingress
+    joins the 256-bit AXI4 DMA mux (NIC, DMA test engine and Svpbmt uncached
+    DDR alias, eight slots) and the eight-ID hart line client (VMU and
+    misaligned-access engine); the home orders them through L1D probes,
+    dirty-data merges and load-queue cuts. Tagged channels join L1D, IF, PTW,
+    VMU/MA, CMO, DMA and prefetch requests at the 2 MiB UltraRAM L2 home
+    (four-way, 64-byte lines, eight fills). A coherent prefetch agent tracks
+    four data and two instruction streams (three data and one instruction
+    request in flight) and fills the L2. Private sectors are 32 bytes and home
+    lines are 64 bytes; all three DDR caches are four-way. A 512-bit AXI4
+    master reaches the board DDR4 controller for a 1 GiB cached region at
+    0x80000000, and also serves 256 KiB low BRAM (with an 8 KiB instruction
+    cache, L0 data reads and write-through stores) and SoC MMIO. SoC devices
+    include UART, FIFO0/1, CLINT, a five-source APLIC with direct and MSI
+    delivery to the CPU's M/S IMSIC files, the memory error unit, SYSRESET, and
+    the NIC and DMA engine's 64-bit AXI4-Lite registers. JTAG connects through
+    the DTM to the debug module for halt, resume and single-step. Capacities
+    show the X3 configuration. Only selected connections are drawn; memory
+    arrows follow requests, with responses omitted.
   </desc>
   <!--
     Self-contained SVG; edit the text, boxes and paths directly.
     Source map (paths relative to the repository root):
-      hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv: ROB/RS/LQ/SQ/checkpoint capacities.
-      hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv: dispatch, commit, shared PTW.
+      hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv: ROB/RS/LQ/SQ/checkpoint/VMT/predictor
+        capacities, FP pipeline depth, decoded bundle queue depth, early recovery.
+      hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv: dispatch, commit, L2 TLB,
+        shared PTW, misaligned-access engine, vector unit and VMT integration.
       hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv:
-        RS-to-FU routing, dual ALUs, both CDB lanes, DMMU, LQ/SQ and forwarding.
+        RS-to-FU routing, dual ALUs, pipelined FP shim, both CDB lanes, DMMU,
+        LQ/SQ forwarding and VMT ordering hookup.
       hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/: BTB, backing BTB,
-        bimodal, RAS.
-      hw/rtl/cpu_and_mem/cpu/mmu/{immu,dmmu}.sv: ITLB/DTLB integration.
+        bimodal, 4-table TAGE, 3-table ITTAGE, RAS.
+      hw/rtl/cpu_and_mem/cpu/mmu/{immu,dmmu,l2tlb,ptw}.sv: ITLB, DTLB, 512-entry
+        L2 TLB with 32-entry superpage side array, shared PTW with walk cache.
       hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv: L0 geometry.
+      hw/rtl/cpu_and_mem/cpu/misaligned/ma_engine.sv: misaligned-access engine.
+      hw/rtl/cpu_and_mem/cpu/vector/{vec_unit,vec_engine,vec_vrf,vec_int_lane,
+        vec_int_exec,vec_fp_exec,vec_crypto_exec,vec_vmt,vec_head_mmu,vec_vmu,
+        vec_vtype_tracker,vec_dispatch_legality,vec_cfg_unit}.sv: vector unit.
       hw/rtl/platform_top.sv + cpu_top/{cpu_top,frost_hart,frost_cluster_memory}.sv
-        + soc_top/soc_top.sv: fetch buffer, memory, MMIO, debug.
-      hw/rtl/lib/cache/coherent_hart_cache.sv: private caches and IF/PTW bridges.
-      hw/rtl/lib/cache/coherence_l1d.sv: read-hit pipeline and store records.
+        + soc_top/soc_top.sv: fetch buffer, hart line client, memory, MMIO, debug.
+      hw/rtl/lib/cache/coherent_hart_cache.sv: private caches, IF/PTW/CMO bridges.
+      hw/rtl/lib/cache/coherence_l1d.sv: read-hit pipeline, store records,
+        L1D stream prefetcher.
       hw/rtl/lib/cache/coherence_home.sv: shared home and victim recall.
       hw/rtl/lib/cache/coherence_home_engine.sv: probes and dirty-data merge.
-      hw/rtl/lib/cache/coherence_prefetch_agent.sv: data/instruction prefetch.
-      hw/rtl/peripherals/nic/nic_top.sv: the NIC's register window, rings,
-        DMA front and interrupt.
+      hw/rtl/lib/cache/coherence_prefetch_agent.sv: data/instruction L2 prefetch.
+      hw/rtl/cpu_and_mem/memory_error_unit.sv: DDR ECC and AXI error reporting.
+      hw/rtl/peripherals/nic/nic_top.sv: NIC registers, rings, DMA and IRQ.
       hw/rtl/frost.sv, boards/{xilinx_frost_subsystem,x3/x3_frost}.sv:
-        X3 cache/BRAM capacities and hardware DDR configuration.
-    Functional overview, not an exhaustive netlist or pipeline timing diagram.
-    The shared PTW is drawn in the memory view but instantiated in cpu_ooo.
+        X3 cache/BRAM capacities, VLEN 256, MISALIGNED_HW and DDR configuration.
+    Functional overview, not an exhaustive netlist or pipeline diagram.
+    The L2 TLB and shared PTW are drawn in the memory view but instantiated in cpu_ooo.
   -->
   <defs>
     <linearGradient id="background" x2="1" y2="1">
@@ -95,11 +126,14 @@
       text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #edf3fc; }
       .heading { font-size: 23px; font-weight: 650; }
       .label { font-size: 20px; font-weight: 600; }
+      .sublabel { font-size: 17px; font-weight: 600; }
       .body { font-size: 18px; fill: #bdcbde; }
       .small { font-size: 17px; fill: #bdcbde; }
+      .xs { font-size: 15px; fill: #bdcbde; }
       .section { font-size: 17px; font-weight: 650; letter-spacing: 1.6px; fill: #adbed5; }
       .center { text-anchor: middle; }
       .panel { fill: #101d30; stroke: #2b3c55; stroke-width: 1.5; }
+      .subpanel { fill: #122136; stroke: #354c69; stroke-width: 1.5; }
       .front { fill: #153149; stroke: #42748f; stroke-width: 1.5; }
       .station { fill: #173148; stroke: #42748f; stroke-width: 1.5; }
       .execution { fill: #16283d; stroke: #3b5573; stroke-width: 1.5; }
@@ -111,16 +145,17 @@
       .broadcast { fill: none; stroke: #b5a1f8; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
       .commit { fill: none; stroke: #edc37d; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
       .memlink { fill: none; stroke: #7ed8bc; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+      .halo { fill: none; stroke: #101d30; stroke-width: 6; stroke-linejoin: round; stroke-linecap: round; }
       .port { fill: #7ed8bc; stroke: #101d30; stroke-width: 2; }
       .port-text { font-size: 16px; font-weight: 750; fill: #0a221c; text-anchor: middle; }
     </style>
   </defs>
 
-  <rect width="1200" height="1576" rx="24" fill="url(#background)"/>
+  <rect width="1200" height="2060" rx="24" fill="url(#background)"/>
   <rect x="44" y="37" width="5" height="57" rx="2.5" fill="url(#header-accent)"/>
   <text x="66" y="68" font-size="38" font-weight="750" letter-spacing="1">FROST</text>
   <text x="226" y="67" font-size="29" fill="#cbd8eb">Architecture</text>
-  <text x="67" y="94" class="body">Out-of-order RISC-V · RV64GCB · FPGA-native SystemVerilog</text>
+  <text x="67" y="94" class="body">Out-of-order RISC-V · RV64GCBV · FPGA-native SystemVerilog</text>
   <g class="small">
     <circle cx="790" cy="56" r="4" fill="#6dcee9"/>
     <text x="803" y="62">Instruction flow</text>
@@ -132,13 +167,13 @@
     <text x="1002" y="92">Memory</text>
   </g>
 
-  <!-- CPU: dispatch allocates ROB and RS in parallel; RS issue to FUs. -->
-  <rect x="28" y="122" width="1144" height="770" rx="20" class="panel"/>
+  <!-- CPU: dispatch allocates ROB, RS, queues and VMT in parallel; vector engine executes post-commit. -->
+  <rect x="28" y="122" width="1144" height="1252" rx="20" class="panel"/>
   <text x="52" y="158" class="section">01 / CPU CORE</text>
-  <text x="1136" y="158" class="body" text-anchor="end">2-wide decode, dispatch and commit</text>
+  <text x="1136" y="158" class="body" text-anchor="end">2-wide decode, dispatch and commit · VLEN 256</text>
 
   <rect x="80" y="184" width="672" height="30" rx="8" fill="#1b2a40"/>
-  <text x="416" y="205" class="small center">BTB 256 · 2-way backing BTB 1024 · bimodal 1024 × 2b · tagged 2 × 1024 · RAS 8</text>
+  <text x="416" y="204" class="xs center">BTB 256 · 2-way backing 1024 · bimodal 1024×2b · TAGE 4×1024 · ITTAGE 3×256 · RAS 8</text>
 
   <g id="front-end">
     <rect x="80" y="230" width="208" height="100" rx="12" class="front"/>
@@ -153,13 +188,13 @@
     <path d="M 520 280 H 544" class="flow" marker-end="url(#flow-arrow)"/>
     <rect x="544" y="230" width="208" height="100" rx="12" class="front"/>
     <text x="568" y="261" class="heading">ID / Decode</text>
-    <text x="568" y="288" class="body">Dual decode packets</text>
-    <text x="568" y="313" class="body">CSR decode</text>
+    <text x="568" y="288" class="body">2-wide · 4-bundle Q</text>
+    <text x="568" y="313" class="body">CSR + vector decode</text>
     <path d="M 752 280 H 786" class="flow" marker-end="url(#flow-arrow)"/>
     <rect x="786" y="230" width="350" height="100" rx="12" class="front"/>
     <text x="810" y="261" class="heading">Dispatch &amp; rename</text>
     <text x="810" y="288" class="body">2-wide · INT + FP alias tables</text>
-    <text x="810" y="313" class="body">8 branch checkpoints</text>
+    <text x="810" y="313" class="body">8 checkpoints · vtype tracker</text>
     <path d="M 80 288 H 65" class="memlink"/>
     <circle cx="64" cy="288" r="13" class="port"/>
     <text x="64" y="294" class="port-text">I</text>
@@ -186,7 +221,7 @@
     <text x="270" y="471" class="small">4 entries</text>
     <rect x="344" y="416" width="380" height="68" rx="10" class="station"/>
     <text x="534" y="445" class="heading">FP</text>
-    <text x="534" y="471" class="small">2 entries</text>
+    <text x="534" y="471" class="small">6 entries</text>
     <rect x="740" y="416" width="116" height="68" rx="10" class="station"/>
     <text x="798" y="445" class="heading">MEM</text>
     <text x="798" y="471" class="small">8 entries</text>
@@ -206,11 +241,11 @@
     <rect x="212" y="510" width="116" height="126" rx="10" class="execution"/>
     <text x="270" y="545" class="label">MUL / DIV</text>
     <text x="270" y="575" class="small">MUL / CLMUL</text>
-    <text x="270" y="600" class="small">Divide / rem.</text>
+    <text x="270" y="600" class="small">Div · vset*</text>
     <rect x="344" y="510" width="380" height="126" rx="10" class="execution"/>
-    <text x="534" y="545" class="label">FP engine</text>
-    <text x="534" y="575" class="small">Add · multiply · FMA · divide · square root</text>
-    <text x="534" y="600" class="small">Convert · compare · one operation at a time</text>
+    <text x="534" y="545" class="label">FP units (3)</text>
+    <text x="534" y="575" class="small">7-stage FMA pipe · add / sub / mul / FMA</text>
+    <text x="534" y="600" class="small">Radix-16 div · FP engine (sqrt / cvt / cmp)</text>
     <rect x="740" y="510" width="116" height="220" rx="10" class="memory"/>
     <text x="798" y="543" class="label">DMMU</text>
     <text x="798" y="571" class="small">DTLB · 16</text>
@@ -221,9 +256,6 @@
     <text x="790" y="712" class="label">SQ · 8</text>
     <path d="M 828 704 H 846 V 617 H 830" class="memlink" marker-end="url(#memory-arrow)"/>
   </g>
-  <path d="M 856 711 H 879" class="memlink"/>
-  <circle cx="879" cy="711" r="13" class="port"/>
-  <text x="879" y="717" class="port-text">D</text>
 
   <g class="broadcast" marker-end="url(#result-arrow)">
     <path d="M 138 636 V 664"/>
@@ -232,12 +264,12 @@
   </g>
   <rect x="80" y="664" width="644" height="66" rx="10" class="result"/>
   <text x="402" y="692" class="label center">FU completion buffers / adapters</text>
-  <text x="402" y="718" class="small center">Buffered arithmetic completions · ungranted results wait</text>
+  <text x="402" y="718" class="small center">Buffered arithmetic completions · early load &amp; FP wakeup</text>
   <path d="M 402 730 V 756" class="broadcast" marker-end="url(#result-arrow)"/>
   <path d="M 798 730 V 756" class="broadcast" marker-end="url(#result-arrow)"/>
   <rect x="80" y="756" width="776" height="62" rx="12" class="result"/>
   <text x="468" y="783" class="heading center">Common data bus · 2 result lanes</text>
-  <text x="468" y="806" class="small center">Fixed priority · wakes reservation stations + completes ROB entries</text>
+  <text x="468" y="806" class="small center">Fixed priority (8 FU slots) · wakes reservation stations + completes ROB entries</text>
   <path d="M 80 787 H 58 V 450 H 72" class="broadcast" marker-end="url(#result-arrow)"/>
   <path d="M 856 787 H 904 V 451 H 926" class="broadcast" marker-end="url(#result-arrow)"/>
 
@@ -251,91 +283,201 @@
     <rect x="926" y="538" width="210" height="98" rx="12" class="retire"/>
     <text x="1031" y="569" class="heading">2-wide commit</text>
     <text x="1031" y="596" class="small">In-order retirement</text>
-    <text x="1031" y="621" class="small">Release cached stores</text>
+    <text x="1031" y="621" class="small">Stores · vec · MA assist</text>
     <path d="M 1031 636 V 668" class="commit" marker-end="url(#commit-arrow)"/>
     <rect x="926" y="668" width="210" height="70" rx="12" class="retire"/>
     <text x="1031" y="697" class="label">INT / FP regfiles</text>
     <text x="1031" y="724" class="small">2 write ports each</text>
-    <path d="M 1136 587 H 1151 V 812 H 1136" class="commit" marker-end="url(#commit-arrow)"/>
+    <path d="M 1136 587 H 1148 V 812 H 1136" class="commit" marker-end="url(#commit-arrow)"/>
     <rect x="926" y="776" width="210" height="92" rx="12" class="retire"/>
     <text x="1031" y="805" class="label">CSRs / IMSIC / traps</text>
-    <text x="1031" y="832" class="small">CSR access at commit</text>
+    <text x="1031" y="832" class="small">CSR/vec at commit</text>
     <text x="1031" y="855" class="small">M/S/U · delegation</text>
   </g>
-  <text x="80" y="849" font-size="19" fill="#edc37d">Conditional-branch misprediction: next-cycle redirect + RAT restore, then backend flush</text>
-  <text x="80" y="875" class="small">JALR mispredictions and traps recover at commit. Queue allocation occurs at dispatch.</text>
 
-  <!-- I/D badges connect the core ports above to the selected system paths. -->
-  <rect x="28" y="916" width="1144" height="626" rx="20" class="panel"/>
-  <text x="52" y="954" class="section">02 / CPU MEMORY &amp; SOC</text>
-  <text x="1136" y="954" class="body" text-anchor="end">Cache capacities shown for X3</text>
+  <!-- Vector unit attachments: dispatch (blue), commit (gold), CDB slot 6 (purple), LQ/SQ & D (green). -->
+  <text x="80" y="854" class="section">VECTOR UNIT · VLEN 256</text>
+  <text x="850" y="854" class="small" text-anchor="end">Slot-1 dispatch · post-commit engine · coherent memory</text>
 
-  <circle cx="80" cy="990" r="13" class="port"/>
-  <text x="80" y="996" class="port-text">I</text>
-  <text x="104" y="996" class="body">Cached fetch</text>
-  <text x="462" y="996" class="body center">ITLB + DTLB misses</text>
-  <circle cx="632" cy="990" r="13" class="port"/>
-  <text x="632" y="996" class="port-text">D</text>
-  <text x="656" y="996" class="body">Cached loads / stores</text>
-  <text x="1014" y="996" class="body center">NIC + DMA → AXI4 mux</text>
+  <!-- Blue dispatch bus (outer rail) from Dispatch & rename into Vector control and VMT (4). -->
+  <path d="M 1136 280 H 1160 V 902 H 190 V 948" class="flow" marker-end="url(#flow-arrow)"/>
+  <path d="M 960 902 V 948" class="flow" marker-end="url(#flow-arrow)"/>
+
+  <!-- Gold commit bus (inner rail) from 2-wide commit into VIQ (8) and VMT (4), with halos over blue. -->
+  <path d="M 1148 812 V 884 H 584" class="commit"/>
+  <path d="M 584 888 V 948" class="halo"/>
+  <path d="M 584 884 V 948" class="commit" marker-end="url(#commit-arrow)"/>
+  <path d="M 1040 888 V 948" class="halo"/>
+  <path d="M 1040 884 V 948" class="commit" marker-end="url(#commit-arrow)"/>
+
+  <!-- Purple CDB slot-6 return from Vector control up to CDB (with halo over dispatch bus). -->
+  <path d="M 340 948 V 818" class="halo"/>
+  <path d="M 340 948 V 818" class="broadcast" marker-end="url(#result-arrow)"/>
+
+  <!-- Green memory & ordering trunk from LQ/SQ via D badge down into VMT (4) (with halos at crossings). -->
+  <path d="M 856 711 H 879" class="memlink"/>
+  <path d="M 879 724 V 948" class="halo"/>
+  <path d="M 879 724 V 948" class="memlink" marker-start="url(#memory-arrow)" marker-end="url(#memory-arrow)"/>
+  <circle cx="879" cy="711" r="13" class="port"/>
+  <text x="879" y="717" class="port-text">D</text>
+
+  <!-- Vector unit enclosing frame -->
+  <rect x="72" y="934" width="1064" height="372" rx="14" fill="none" stroke="#54617c" stroke-dasharray="4 5"/>
+
+  <g id="vector-unit">
+    <!-- Top row: vector control, issue window (VIQ), and vector memory table (VMT). -->
+    <g class="center">
+      <rect x="88" y="948" width="316" height="78" rx="10" class="front"/>
+      <text x="246" y="974" class="label">Vector control</text>
+      <text x="246" y="997" class="xs">vtype tracker · dispatch legality</text>
+      <text x="246" y="1016" class="xs">ROB-head VTOX/F · CDB slot 6</text>
+
+      <path d="M 404 987 H 428" class="flow" marker-end="url(#flow-arrow)"/>
+
+      <rect x="428" y="948" width="312" height="78" rx="10" class="station"/>
+      <text x="584" y="974" class="label">Issue window · VIQ (8)</text>
+      <text x="584" y="997" class="xs">8-entry post-commit queue</text>
+      <text x="584" y="1016" class="xs">In-order issue to vec_engine</text>
+
+      <rect x="764" y="948" width="356" height="78" rx="10" class="memory"/>
+      <text x="942" y="974" class="label">Vector memory table · VMT (4)</text>
+      <text x="942" y="997" class="xs">4 entries · LQ/SQ range holds</text>
+      <text x="942" y="1016" class="xs">vec_head_mmu · SQ drain wait</text>
+    </g>
+
+    <path d="M 584 1026 V 1052" class="flow" marker-end="url(#flow-arrow)"/>
+    <path d="M 942 1026 V 1052" class="memlink" marker-end="url(#memory-arrow)"/>
+
+    <!-- Bottom left: Vector engine (VRF + 4 lanes + INT + FP + Crypto). -->
+    <rect x="88" y="1052" width="652" height="242" rx="12" class="subpanel"/>
+    <text x="104" y="1075" class="sublabel">Vector engine</text>
+    <text x="724" y="1075" class="xs" text-anchor="end">vec_engine · VLEN 256 · 1 op at a time</text>
+
+    <rect x="104" y="1086" width="620" height="42" rx="8" class="retire"/>
+    <text x="414" y="1113" class="sublabel center">Vector register file · 32 × 256 b (v0–v31 · 5R / 2W)</text>
+
+    <g class="center">
+      <rect x="104" y="1138" width="304" height="66" rx="8" class="execution"/>
+      <text x="256" y="1160" class="sublabel">4 × 64-bit lanes</text>
+      <text x="256" y="1179" class="xs">vec_int_lane · single-width</text>
+      <text x="256" y="1196" class="xs">ALU · compare · merge · Zvbb</text>
+
+      <rect x="420" y="1138" width="304" height="66" rx="8" class="execution"/>
+      <text x="572" y="1160" class="sublabel">Floating-point unit</text>
+      <text x="572" y="1179" class="xs">vec_fp_exec · FP16 / 32 / 64</text>
+      <text x="572" y="1196" class="xs">FMA · div/sqrt · cvt · Zvfh</text>
+
+      <rect x="104" y="1216" width="304" height="66" rx="8" class="execution"/>
+      <text x="256" y="1238" class="sublabel">Integer unit</text>
+      <text x="256" y="1257" class="xs">vec_int_exec · mul / div</text>
+      <text x="256" y="1274" class="xs">Fixed-pt · mask · red · perm</text>
+
+      <rect x="420" y="1216" width="304" height="66" rx="8" class="execution"/>
+      <text x="572" y="1238" class="sublabel">Crypto unit</text>
+      <text x="572" y="1257" class="xs">vec_crypto_exec · Zvbc · Zvkng</text>
+      <text x="572" y="1274" class="xs">AES · SHA-2 · GHASH · CLMUL</text>
+    </g>
+
+    <!-- Bidirectional memory-side VRF read/write link between vec_vrf and vec_vmu. -->
+    <path d="M 728 1107 H 762" class="memlink" marker-start="url(#memory-arrow)" marker-end="url(#memory-arrow)"/>
+
+    <!-- Bottom right: VMU and coherent hart line client. -->
+    <g class="center">
+      <rect x="764" y="1052" width="356" height="116" rx="10" class="memory"/>
+      <text x="942" y="1080" class="label">Vector memory unit · VMU</text>
+      <text x="942" y="1105" class="small">6 × 32 B sector slots (IDs 2..7)</text>
+      <text x="942" y="1129" class="xs">Unit · whole-reg · mask spans</text>
+      <text x="942" y="1150" class="xs">Strided · indexed · segment ops</text>
+
+      <path d="M 942 1168 V 1192" class="memlink" marker-end="url(#memory-arrow)"/>
+
+      <rect x="764" y="1192" width="356" height="102" rx="10" class="memory"/>
+      <text x="942" y="1223" class="label">Hart line client · 8 IDs</text>
+      <text x="942" y="1250" class="small">VMU (6) + misaligned engine (2)</text>
+      <text x="942" y="1274" class="xs">Coherent sector reads &amp; masked writes</text>
+    </g>
+
+    <path d="M 1120 1243 H 1136" class="memlink"/>
+    <circle cx="1136" cy="1243" r="13" class="port"/>
+    <text x="1136" y="1249" class="port-text">V</text>
+  </g>
+
+  <text x="80" y="1334" font-size="18.5" fill="#edc37d">Branch &amp; JALR misprediction: next-cycle redirect + RAT restore, then backend flush</text>
+  <text x="80" y="1359" class="small">Traps and JAL recover at commit. Queue &amp; VMT allocation occur at dispatch; MA engine assists misaligned DDR ops.</text>
+
+  <!-- I/D/V badges connect the core ports above to the selected system paths. -->
+  <rect x="28" y="1398" width="1144" height="626" rx="20" class="panel"/>
+  <text x="52" y="1436" class="section">02 / CPU MEMORY &amp; SOC</text>
+  <text x="1136" y="1436" class="body" text-anchor="end">Cache capacities shown for X3</text>
+
+  <circle cx="80" cy="1472" r="13" class="port"/>
+  <text x="80" y="1478" class="port-text">I</text>
+  <text x="104" y="1478" class="body">Cached fetch</text>
+  <text x="462" y="1478" class="body center">ITLB / DTLB + VEC / MA</text>
+  <circle cx="632" cy="1472" r="13" class="port"/>
+  <text x="632" y="1478" class="port-text">D</text>
+  <text x="656" y="1478" class="body">Cached loads / stores</text>
+  <circle cx="908" cy="1472" r="13" class="port"/>
+  <text x="908" y="1478" class="port-text">V</text>
+  <text x="930" y="1478" class="body">VMU/MA + NIC/DMA</text>
 
   <g id="l1-and-walker" class="center">
-    <rect x="64" y="1016" width="244" height="100" rx="12" class="memory"/>
-    <text x="186" y="1048" class="heading">Fetch buf. → L1I</text>
-    <text x="186" y="1075" class="body">2-line · 16 KiB L1I</text>
-    <text x="186" y="1101" class="small">4-way · BRAM · 2 miss slots</text>
-    <rect x="340" y="1016" width="244" height="100" rx="12" class="memory"/>
-    <text x="462" y="1048" class="heading">Sv39 walker</text>
-    <text x="462" y="1075" class="body">Shared · one walk</text>
-    <text x="462" y="1101" class="small">ReadOncePTW via home</text>
-    <rect x="616" y="1016" width="244" height="100" rx="12" class="memory"/>
-    <text x="738" y="1048" class="heading">L1D · 128 KiB</text>
-    <text x="738" y="1075" class="body">Pipelined hits · 4 stores</text>
-    <text x="738" y="1101" class="small">4-way BRAM · 8 endpoints</text>
-    <rect x="892" y="1016" width="244" height="100" rx="12" class="memory"/>
-    <text x="1014" y="1048" class="heading">Coherent ingress</text>
-    <text x="1014" y="1075" class="body">SoC AXI4 → line bridge</text>
-    <text x="1014" y="1101" class="small">L1D probes + LQ cuts</text>
+    <rect x="64" y="1498" width="244" height="100" rx="12" class="memory"/>
+    <text x="186" y="1530" class="heading">Fetch buf. → L1I</text>
+    <text x="186" y="1557" class="small">2+6 buf · 16 KiB L1I</text>
+    <text x="186" y="1582" class="xs">4-way · BRAM · 2 miss slots</text>
+    <rect x="340" y="1498" width="244" height="100" rx="12" class="memory"/>
+    <text x="462" y="1530" class="heading">L2 TLB → Sv39 PTW</text>
+    <text x="462" y="1557" class="xs">512 (4-way) + 32 superpage</text>
+    <text x="462" y="1582" class="xs">Walk cache · ReadOncePTW</text>
+    <rect x="616" y="1498" width="244" height="100" rx="12" class="memory"/>
+    <text x="738" y="1530" class="heading">L1D · 128 KiB</text>
+    <text x="738" y="1557" class="small">Hits · 4 stores · prefetch</text>
+    <text x="738" y="1582" class="small">4-way BRAM · 8 endpoints</text>
+    <rect x="892" y="1498" width="244" height="100" rx="12" class="memory"/>
+    <text x="1014" y="1530" class="heading">Coherent ingress</text>
+    <text x="1014" y="1557" class="small">DMA (8) + VMU/MA (8)</text>
+    <text x="1014" y="1582" class="small">L1D probes · LQ cuts</text>
   </g>
   <g class="memlink" marker-end="url(#memory-arrow)">
-    <path d="M 186 1116 V 1144"/>
-    <path d="M 462 1116 V 1144"/>
-    <path d="M 738 1116 V 1144"/>
-    <path d="M 1014 1116 V 1144"/>
+    <path d="M 186 1598 V 1626"/>
+    <path d="M 462 1598 V 1626"/>
+    <path d="M 738 1598 V 1626"/>
+    <path d="M 1014 1598 V 1626"/>
   </g>
-  <rect x="64" y="1144" width="1072" height="50" rx="10" class="memory"/>
-  <text x="600" y="1176" class="label center">Coherent requests · L1D, IF, PTW, DMA and prefetch · home probes private data</text>
-  <path d="M 226 1194 V 1222" class="memlink" marker-end="url(#memory-arrow)"/>
+  <rect x="64" y="1626" width="1072" height="50" rx="10" class="memory"/>
+  <text x="600" y="1658" class="label center">Coherent requests · L1D, IF, PTW, VMU/MA, CMO, DMA &amp; prefetch · home probes L1D</text>
+  <path d="M 226 1676 V 1704" class="memlink" marker-end="url(#memory-arrow)"/>
   <g id="l2-and-ddr" class="center">
-    <rect x="64" y="1222" width="324" height="88" rx="12" class="memory"/>
-    <text x="226" y="1258" class="heading">L2 home · 2 MiB</text>
-    <text x="226" y="1288" class="body">4-way · 64 B · URAM · 8 fills</text>
-    <path d="M 388 1266 H 438" class="memlink" marker-end="url(#memory-arrow)"/>
-    <rect x="438" y="1222" width="324" height="88" rx="12" class="memory"/>
-    <text x="600" y="1258" class="heading">512-bit AXI4 master</text>
-    <text x="600" y="1288" class="body">Cached + narrow uncached traffic</text>
-    <path d="M 762 1266 H 812" class="memlink" marker-end="url(#memory-arrow)"/>
-    <rect x="812" y="1222" width="324" height="88" rx="12" class="memory"/>
-    <text x="974" y="1258" class="heading">SoC decode → board DDR4</text>
-    <text x="974" y="1288" class="body">1 GiB region @ 0x8000_0000</text>
+    <rect x="64" y="1704" width="324" height="88" rx="12" class="memory"/>
+    <text x="226" y="1740" class="heading">L2 home · 2 MiB</text>
+    <text x="226" y="1770" class="body">4-way · 64 B · URAM · 8 fills</text>
+    <path d="M 388 1748 H 438" class="memlink" marker-end="url(#memory-arrow)"/>
+    <rect x="438" y="1704" width="324" height="88" rx="12" class="memory"/>
+    <text x="600" y="1740" class="heading">512-bit AXI4 master</text>
+    <text x="600" y="1770" class="body">Cached + narrow uncached traffic</text>
+    <path d="M 762 1748 H 812" class="memlink" marker-end="url(#memory-arrow)"/>
+    <rect x="812" y="1704" width="324" height="88" rx="12" class="memory"/>
+    <text x="974" y="1740" class="heading">SoC decode → board DDR4</text>
+    <text x="974" y="1770" class="body">1 GiB region @ 0x8000_0000</text>
   </g>
-  <text x="600" y="1338" class="small center">32 B private sectors, 64 B home lines. Instruction and PTE reads obtain dirty data through home probes.</text>
+  <text x="600" y="1820" class="small center">32 B private sectors, 64 B home lines. IF, PTW, VMU/MA &amp; DMA probe L1D; L2 prefetch: 4 data / 2 IF streams.</text>
 
-  <path d="M 64 1359 H 1136" stroke="#2b3c55"/>
-  <text x="64" y="1388" class="section">SOC SERVICES · OUTSIDE CPU_TOP</text>
+  <path d="M 64 1841 H 1136" stroke="#2b3c55"/>
+  <text x="64" y="1870" class="section">SOC SERVICES · OUTSIDE CPU_TOP</text>
   <g id="system-services">
-    <rect x="64" y="1404" width="324" height="112" rx="12" class="system"/>
-    <text x="84" y="1437" class="heading">Low BRAM · 256 KiB</text>
-    <text x="84" y="1467" class="body">CPU reads: 8 KiB I-cache + L0</text>
-    <text x="84" y="1495" class="small">0x0000_0000 · write-through stores</text>
-    <rect x="438" y="1404" width="324" height="112" rx="12" class="system"/>
-    <text x="458" y="1437" class="heading">AXI → SoC MMIO</text>
-    <text x="458" y="1467" class="body">UART · FIFOs · NIC / DMA AXI-Lite</text>
-    <text x="458" y="1495" class="small">APLIC → M/S IMSIC; CLINT</text>
-    <rect x="812" y="1404" width="324" height="112" rx="12" class="system"/>
-    <text x="832" y="1437" class="heading">JTAG debug</text>
-    <text x="832" y="1467" class="body">DTM → debug module → core</text>
-    <text x="832" y="1495" class="small">Halt · resume · single-step</text>
+    <rect x="64" y="1886" width="324" height="112" rx="12" class="system"/>
+    <text x="84" y="1919" class="heading">Low BRAM · 256 KiB</text>
+    <text x="84" y="1949" class="body">CPU reads: 8 KiB I-cache + L0</text>
+    <text x="84" y="1977" class="small">0x0000_0000 · write-through stores</text>
+    <rect x="438" y="1886" width="324" height="112" rx="12" class="system"/>
+    <text x="458" y="1919" class="heading">AXI → SoC MMIO</text>
+    <text x="458" y="1949" class="body">UART · FIFOs · NIC / DMA AXI-Lite</text>
+    <text x="458" y="1977" class="xs">APLIC (5) → M/S IMSIC · CLINT · MemErr</text>
+    <rect x="812" y="1886" width="324" height="112" rx="12" class="system"/>
+    <text x="832" y="1919" class="heading">JTAG debug</text>
+    <text x="832" y="1949" class="body">DTM → debug module → core</text>
+    <text x="832" y="1977" class="small">Halt · resume · single-step</text>
   </g>
-  <text x="52" y="1564" font-size="16" fill="#a9bad0">Functional overview · selected connections · I / D badges link the two views</text>
+  <text x="52" y="2046" font-size="16" fill="#a9bad0">Functional overview · selected connections · I / D / V badges link the two views</text>
 </svg>
