@@ -970,7 +970,7 @@ jobs:
 
       - name: Check detection of an incorrect vector result
         if: matrix.vlen == 128
-        timeout-minutes: 20
+        timeout-minutes: 25
         run: |
           check_vector_result() {
             local selector=$1 trace=$2 record=$3 mismatch=$4
@@ -1018,6 +1018,8 @@ jobs:
             'order=29 insn=0x43f02557 rd=x10' '0x13572468 != 0x13572469'
           check_vector_result int-widen-narrow vector_int_widen_narrow \
             'order=72 insn=0x42e02557 rd=x10' '0x1fe != 0x1ff'
+          check_vector_result fixed-point vector_fixed_point \
+            'order=49 insn=0x42f02557 rd=x10' '0x7f != 0x7e'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
@@ -1680,7 +1682,7 @@ jobs:
         if: steps.plan.outputs.need_image == 'true'
         run: |
           ./scripts/frost.py --image frost-dev:latest run pytest tests/test_run_formal.py \
-            tests/test_pa_bridge_mutation.py \
+            tests/test_pa_bridge_mutation.py tests/test_predictor_mutations.py \
             -m formal -k "$PYTEST_FILTER" --collect-only -q > ci-reuse-collected.txt \
             && status=0 || status=$?
           python3 tests/ci_reuse.py formal-record --dir "$FROST_REUSE_DIR" \
@@ -1691,7 +1693,7 @@ jobs:
         if: steps.plan.outputs.need_image == 'true'
         run: |
           ./scripts/frost.py --image frost-dev:latest run pytest tests/test_run_formal.py \
-            tests/test_pa_bridge_mutation.py \
+            tests/test_pa_bridge_mutation.py tests/test_predictor_mutations.py \
             -m formal -k "$PYTEST_FILTER" -v --durations=0
 
       - name: Summarize proved and reused tasks

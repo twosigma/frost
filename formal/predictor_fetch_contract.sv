@@ -14,7 +14,8 @@
  *    limitations under the License.
  */
 
-// Check the packet produced by IF using the original PD input contract.
+// IF proves the packet and registered restore conditions here. The PD/history
+// comparison assumes the same conditions on its inputs after the initial reset.
 module predictor_fetch_contract (
     input logic i_clk,
     i_reset,

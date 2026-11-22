@@ -60,7 +60,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         if step.get("name") == "Check detection of an incorrect vector result"
     )
     assert control["if"] == "matrix.vlen == 128"
-    assert control["timeout-minutes"] == 20, (
+    assert control["timeout-minutes"] == 25, (
         "Vector controls need the registered budget"
     )
     assert job["steps"].index(replay) < job["steps"].index(control)
@@ -84,6 +84,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         ["segment", "vector_segment"],
         ["fof", "vector_fof"],
         ["int-widen-narrow", "vector_int_widen_narrow"],
+        ["fixed-point", "vector_fixed_point"],
     ]
 
 

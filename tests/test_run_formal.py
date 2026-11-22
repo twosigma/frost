@@ -1277,7 +1277,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ptw_pbmt_alias.sby",
-        "Svpbmt alias bit predicates equal the full-address range check for every address",
+        "Svpbmt alias decode on enabled maps and NC/IO leaf faults on the small map",
         tasks=(
             "bmc_small",
             "bmc_1g",
@@ -3477,7 +3477,7 @@ SBY_TASKS = [
     ("bmc16", "Bounded local equivalence at depth 16"),
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
-    ("bmc_small", "Svpbmt alias range equivalence at a 256 MiB DDR capacity"),
+    ("bmc_small", "Disabled alias decode and NC/IO leaf faults on the 256 MiB DDR map"),
     ("bmc_2g", "Svpbmt translation and alias refusal at a 2 GiB DDR capacity"),
     ("cover_2g", "Svpbmt no-alias faults and device-page translations at 2 GiB"),
     ("bmc_4g", "Svpbmt alias range equivalence at a 4 GiB DDR capacity"),
@@ -4317,6 +4317,23 @@ def test_predictor_twins_use_the_core_connections() -> None:
         assert expr(twin, name).replace("i.", "") == expected
 
 
+def test_fetch_contract_selects_its_mutation_cases() -> None:
+    """Editing the shared monitor selects the IF case and both PD cases."""
+    from formal_selection import FIXTURE_PROOFS, ROOT, affected_nodes
+
+    prefix = "tests/test_predictor_mutations.py::test_predictor_rejects_difference"
+    nodes = [node for node in FIXTURE_PROOFS if node.startswith(prefix)]
+    selected = affected_nodes(nodes, {ROOT / "formal/predictor_fetch_contract.sv"})
+    assert set(selected) == {
+        f"{prefix}[fetch_slot2_branch]",
+        f"{prefix}[direction_history]",
+        f"{prefix}[pd_indirect_class]",
+    }
+    unknown = f"{prefix}[unmapped]"
+    with pytest.raises(ValueError, match="No proof mapping"):
+        affected_nodes([unknown], {ROOT / "tests/test_predictor_mutations.py"})
+
+
 def test_predictor_reference_sources_are_frozen() -> None:
     """The reference side is the exact source tree before the predictor register changes."""
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR / "predictor_reference"
@@ -4688,6 +4705,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "pytest",
             "tests/test_run_formal.py",
             "tests/test_pa_bridge_mutation.py",
+            "tests/test_predictor_mutations.py",
             "--collect-only",
             "-q",
             "-m",
@@ -4744,6 +4762,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         ]
         assert len(matches) == 1, (node, matches)
         shard_name = matches[0]
+        if node.startswith("tests/test_predictor_mutations.py::"):
+            assert shard_name == "Other tasks", node
         selected_by_shard[shard_name].append(node)
         if node.startswith("tests/test_run_formal.py::") and "[" in node:
             test_id = node.split("[", 1)[1].rstrip("]")
@@ -5949,8 +5969,8 @@ PREDICTOR_ASSERTION_TASKS = {
         ),
         (
             "pd_history_twin",
-            ("pd_history_twin.sv", "pd_fetch_contract.sv"),
-            "b89bfac2b4cebd615305ac506deee2726beeadf5a48c4318f2f42b3db009a5ca",
+            ("pd_history_twin.sv", "predictor_fetch_contract.sv"),
+            "829871a49e6eff8f602c4c23d19e9bdbb0f881366ece942162ee506a5feee49d",
             (12, 3, 7),
         ),
         (
@@ -12471,9 +12491,9 @@ def test_registered_proofs_require_empty_predicate_list(
         ),
         (
             "pd_history_twin",
-            "pd_fetch_contract.sv",
-            "assume (!i_backing_hit[1]",
-            "assume (i_backing_hit[1]",
+            "predictor_fetch_contract.sv",
+            "assert (!i_backing_hit[1]",
+            "assert (i_backing_hit[1]",
         ),
         (
             "ittage_predictor_twin",

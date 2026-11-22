@@ -516,3 +516,140 @@ async def test_held_read_only_answers_its_fetch_path(dut: Any) -> None:
         dut.i_redirect.value = 0
         await _cycle(dut)
         assert int(dut.o_hit.value) == 0
+
+
+def _slot2_by_size(dut: Any) -> list[tuple[bool, int]]:
+    """Return slot 2's (return, target) pair for native (0) and compressed (1) slot 1."""
+    bits = _target_bits(dut)
+    returns = int(dut.o_slot2_return_by_size.value)
+    targets = int(dut.o_slot2_target_by_size.value)
+    return [
+        (
+            bool((returns >> size) & 1),
+            ((targets >> (size * bits)) & ((1 << bits) - 1)) << 1,
+        )
+        for size in range(2)
+    ]
+
+
+async def _redirect(dut: Any) -> None:
+    """Pulse i_redirect for one cycle to discard outstanding and held reads."""
+    dut.i_redirect.value = 1
+    await _cycle(dut)
+    dut.i_redirect.value = 0
+
+
+@cocotb.test()
+async def test_shifted_read_hits_slot1_and_same_word_slot2(dut: Any) -> None:
+    """When the packet is in S+1, image 1 answers slot 1 and a same-word slot 2."""
+    await _setup(dut)
+    s0 = PC_A
+    s1 = PC_A + 4
+    # Native jump at S+1 lower halfword hits in slot 1 when S was read.
+    await _update(dut, s1, TARGET_A)
+    hit, size, target = await _lookup(dut, s1, index_pc=s0)
+    assert hit == [True, False] and not size[0]
+    assert target[0] == _low(dut, TARGET_A)
+    assert _returns(dut) == [False, False]
+
+    # Retrain S+1 lower halfword as compressed and add a compressed return at
+    # S+1 upper halfword (+2): both slots lie in S+1 and hit via image 1.
+    await _update(dut, s1, TARGET_A + 0x20, compressed=True)
+    await _update(dut, s1 + 2, TARGET_B, compressed=True, ret=True)
+    for lookup_pc in (s0, s0 + 16):
+        # First pass is a live shifted read; second pass moves the lookup away
+        # so the held shifted read answers both slots and by-size outputs.
+        hit, size, target = await _lookup(dut, s1, compressed=True, index_pc=lookup_pc)
+        assert hit == [True, True] and size == [True, True]
+        assert _returns(dut) == [False, True]
+        assert target[0] == _low(dut, TARGET_A + 0x20)
+        assert target[1] == _low(dut, TARGET_B)
+        assert _slot2_by_size(dut) == [(False, 0), (True, _low(dut, TARGET_B))]
+
+    # Packet starting at the upper halfword of S+1: slot 1 hits S+1 upper.
+    hit, size, target = await _lookup(dut, s1 + 2, compressed=True, index_pc=s0)
+    assert hit == [True, False] and size[0]
+    assert _returns(dut) == [True, False]
+    assert target[0] == _low(dut, TARGET_B)
+
+
+@cocotb.test()
+async def test_shifted_read_misses_slot2_in_s_plus_2(dut: Any) -> None:
+    """A shifted packet in S+1 with slot 2 in S+2 reports no slot-2 hit."""
+    await _setup(dut)
+    s0 = PC_A
+    s1 = PC_A + 4
+    s2 = PC_A + 8
+    # Train both halfwords of S+1 before S+2 so an unguarded shifted slot-2
+    # match would alias S+1's own entries onto S+2.
+    await _update(dut, s1, TARGET_A, compressed=False)
+    await _update(dut, s1 + 2, TARGET_B, compressed=True, ret=True)
+
+    # Native slot 1 at S+1 lower -> slot 2 is at S+2 lower (halfword 0).
+    hit, _, target = await _lookup(dut, s1, compressed=False, index_pc=s0)
+    assert hit == [True, False], f"false slot-2 hit from S+1 entry: {hit}"
+    assert target[0] == _low(dut, TARGET_A)
+
+    # Compressed slot 1 at S+1 upper -> slot 2 is at S+2 lower (halfword 0).
+    hit, _, target = await _lookup(dut, s1 + 2, compressed=True, index_pc=s0)
+    assert hit == [True, False], f"false slot-2 hit from S+1 entry: {hit}"
+    assert target[0] == _low(dut, TARGET_B)
+
+    # Native slot 1 at S+1 upper -> slot 2 is at S+2 upper (halfword 1), both
+    # live shifted and held shifted.
+    await _update(dut, s1 + 2, TARGET_B + 0x40, compressed=False)
+    for lookup_pc in (s0, s0 + 16):
+        hit, _, target = await _lookup(
+            dut, s1 + 2, compressed=False, index_pc=lookup_pc
+        )
+        assert hit == [True, False], f"false slot-2 hit from S+1 upper entry: {hit}"
+        assert target[0] == _low(dut, TARGET_B + 0x40)
+
+    # With trained entries in S+2, reading S never serves S+2 in slot 2, and
+    # packets at S+2 or S-1 (with held reads cleared) miss in both slots.
+    await _update(dut, s2, TARGET_A + 0x80)
+    await _update(dut, s2 + 2, TARGET_B + 0x80, compressed=True)
+    hit, _, _ = await _lookup(dut, s1, compressed=False, index_pc=s0)
+    assert hit == [True, False]
+    hit, _, _ = await _lookup(dut, s1 + 2, compressed=True, index_pc=s0)
+    assert hit == [True, False]
+    hit, _, _ = await _lookup(dut, s2, index_pc=s0)
+    assert hit == [False, False]
+    await _redirect(dut)
+    hit, _, _ = await _lookup(dut, s0, index_pc=s1)
+    assert hit == [False, False]
+
+
+@cocotb.test()
+async def test_shifted_read_wraps_cleanly_across_last_set(dut: Any) -> None:
+    """Reading the last set serves a shifted packet at set 0 of the next block."""
+    await _setup(dut)
+    block = PC_A & ~((_sets(dut) << 2) - 1) & MASK_XLEN
+    last = block + ((_sets(dut) - 1) << 2)
+    next_block = (last + 4) & MASK_XLEN
+
+    # Entries in set 0 of the current block do not match next_block's upper PC.
+    await _update(dut, block, TARGET_A, compressed=True)
+    await _update(dut, block + 2, TARGET_A + 0x20, compressed=True)
+    hit, _, _ = await _lookup(dut, next_block, compressed=True, index_pc=last)
+    assert hit == [False, False]
+
+    # Entries in set 0 of the next block live in image 1 at row last and hit in
+    # both slots on live and held shifted reads.
+    await _update(dut, next_block, TARGET_B, compressed=True)
+    await _update(dut, next_block + 2, TARGET_B + 0x40, compressed=True, ret=True)
+    for lookup_pc in (last, block + 16):
+        hit, size, target = await _lookup(
+            dut, next_block, compressed=True, index_pc=lookup_pc
+        )
+        assert hit == [True, True] and size == [True, True]
+        assert _returns(dut) == [False, True]
+        assert target[0] == _low(dut, TARGET_B)
+        assert target[1] == _low(dut, TARGET_B + 0x40)
+
+    # Native slot 1 at next_block puts slot 2 in S+2 (miss), and an aligned
+    # lookup at last blocks a cross-block slot 2.
+    hit, _, _ = await _lookup(dut, next_block, compressed=False, index_pc=last)
+    assert hit == [True, False]
+    hit, _, _ = await _lookup(dut, last, compressed=False, index_pc=last)
+    assert hit == [False, False]
