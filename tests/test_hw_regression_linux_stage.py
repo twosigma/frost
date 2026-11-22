@@ -2496,7 +2496,8 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
         "tomasulo_test",
         "uart_echo",
         "umode_test",
-        # The vector test programs run where the build has the vector unit.
+        # The vector-only test programs run where the build has the vector unit;
+        # vec_state_test runs on every board with its RTL vector configuration.
         *(
             [
                 "vec_arith_test",
@@ -2511,13 +2512,14 @@ def test_default_stages_match_board(board: str, board_apps: list[str]) -> None:
                 "vec_order_test",
                 "vec_segment_test",
                 "vec_source_eew_test",
+                "vec_state_test",
                 "vec_stride_test",
                 "vec_vsetvl_test",
                 "vec_vstart_reload_test",
                 "vec_vtype_handoff_test",
             ]
             if board == "x3"
-            else []
+            else ["vec_state_test"]
         ),
         "vm_test",
         "coremark_pro",
@@ -2694,6 +2696,192 @@ def test_vcu118_accepts_explicit_bootrom_stage(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(hw.sys, "argv", ["runner", "--board", "vcu118", "bootrom"])
     assert hw.main() == 0
     assert list(seen) == ["bootrom"]
+
+
+def test_stage_loader_extra_forwards_vector_options_selectively() -> None:
+    """--vlen reaches only VEC_VLEN_APPS; --vec-advertise reaches only vec_state_test."""
+    assert hw.stage_loader_extra(
+        "vec_state_test", ["--ddr"], vlen=128, vec_advertise=True
+    ) == ["--ddr", "--vlen", "128", "--vec-advertise"]
+    assert hw.stage_loader_extra(
+        "vec_state_test", [], vlen=256, vec_advertise=False
+    ) == ["--vlen", "256", "--no-vec-advertise"]
+    assert hw.stage_loader_extra(
+        "vec_fp_test", ["--ddr"], vlen=512, vec_advertise=True
+    ) == ["--ddr", "--vlen", "512"]
+    assert hw.stage_loader_extra(
+        "vec_arith_test", ["--ddr"], vlen=128, vec_advertise=True
+    ) == ["--ddr"]
+    assert hw.stage_loader_extra("hello_world", [], vlen=128, vec_advertise=False) == []
+
+
+@pytest.mark.parametrize(
+    "board,extra_args,stages,expected_make_vars",
+    [
+        (
+            "x3",
+            ["--vlen", "128", "--vec-advertise"],
+            ["vec_arith_test", "vec_fp_test", "vec_state_test"],
+            {
+                "vec_arith_test": {},
+                "vec_fp_test": {"EXTRA_CFLAGS": "-DVEC_VLEN=128"},
+                "vec_state_test": {"EXTRA_CFLAGS": "-DVEC_VLEN=128 -DVEC_ADVERTISE=1"},
+            },
+        ),
+        (
+            "x3",
+            ["--vlen", "512", "--no-vec-advertise"],
+            ["vec_integer_test", "vec_state_test"],
+            {
+                "vec_integer_test": {"EXTRA_CFLAGS": "-DVEC_VLEN=512"},
+                "vec_state_test": {"EXTRA_CFLAGS": "-DVEC_VLEN=512 -DVEC_ADVERTISE=0"},
+            },
+        ),
+        (
+            "x3",
+            ["--vlen", "0"],
+            ["vec_state_test"],
+            {"vec_state_test": {"EXTRA_CFLAGS": "-DVEC_VLEN=0 -DVEC_ADVERTISE=0"}},
+        ),
+        (
+            "vcu118",
+            [],
+            ["vec_state_test"],
+            {"vec_state_test": {"EXTRA_CFLAGS": "-DVEC_VLEN=0 -DVEC_ADVERTISE=0"}},
+        ),
+        (
+            "vcu118",
+            ["--vlen", "0"],
+            ["vec_state_test"],
+            {"vec_state_test": {"EXTRA_CFLAGS": "-DVEC_VLEN=0 -DVEC_ADVERTISE=0"}},
+        ),
+        (
+            "vcu118",
+            ["--vlen", "256", "--vec-advertise"],
+            ["vec_state_test"],
+            {"vec_state_test": {"EXTRA_CFLAGS": "-DVEC_VLEN=256 -DVEC_ADVERTISE=1"}},
+        ),
+    ],
+)
+def test_regression_vector_options_reach_loader_make_vars(
+    monkeypatch: pytest.MonkeyPatch,
+    board: str,
+    extra_args: list[str],
+    stages: list[str],
+    expected_make_vars: dict[str, dict[str, str]],
+) -> None:
+    """hw_regression.py forwards vector flags into load_software.py make_vars."""
+    seen_make_vars: dict[str, dict[str, str]] = {}
+
+    def fake_compile(*args: Any, **kwargs: Any) -> bool:
+        seen_make_vars[args[0]] = dict(args[4])
+        return True
+
+    def fake_run_stage(
+        _repo: Path,
+        _serial_fd: int,
+        selected_board: str,
+        stage: Any,
+        _timeout_s: float,
+        loader_extra: list[str],
+        target: str,
+        _loader_env: Any = None,
+    ) -> dict[str, Any]:
+        cmd = [
+            "./fpga/load_software/load_software.py",
+            selected_board,
+            stage.app,
+            "--target",
+            target,
+            *loader_extra,
+            "--build-only",
+        ]
+        with monkeypatch.context() as invocation:
+            invocation.setattr(sys, "argv", cmd)
+            load_software.main()
+        return {"stage": stage.app, "status": "PASS", "elapsed": 0.0, "note": ""}
+
+    monkeypatch.delenv("FROST_CPU_CLK_HZ", raising=False)
+    monkeypatch.delenv("EXTRA_CFLAGS", raising=False)
+    monkeypatch.setattr(load_software, "compile_app_for_board", fake_compile)
+    monkeypatch.setattr(load_software, "validate_prebuilt_app", lambda *a, **k: {})
+    monkeypatch.setattr(
+        load_software, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    monkeypatch.setattr(hw, "serial_holders", lambda _serial: [])
+    monkeypatch.setattr(
+        hw, "configure_serial", lambda _serial: os.open(os.devnull, os.O_RDONLY)
+    )
+    monkeypatch.setattr(hw, "run_uart_stage", fake_run_stage)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["runner", "--board", board, "--serial", "test", *extra_args, *stages],
+    )
+    assert hw.main() == 0
+    assert seen_make_vars == expected_make_vars
+
+
+@pytest.mark.parametrize(
+    "argv,reason",
+    [
+        (
+            ["--board", "x3", "--vlen", "0", "--vec-advertise", "vec_state_test"],
+            "--vec-advertise requires a nonzero --vlen",
+        ),
+        (
+            ["--board", "x3", "--vlen", "0", "vec_fp_test"],
+            "--vlen 0 cannot run vector-unit stages: vec_fp_test",
+        ),
+        (
+            ["--board", "x3", "--vlen", "0", "vec_arith_test", "vec_state_test"],
+            "--vlen 0 cannot run vector-unit stages: vec_arith_test",
+        ),
+        (
+            ["--board", "vcu118", "--vec-advertise", "vec_state_test"],
+            "--vec-advertise requires a nonzero --vlen",
+        ),
+        (
+            [
+                "--board",
+                "x3",
+                "--vlen",
+                "128",
+                "--loader-extra=--vlen=256",
+                "vec_state_test",
+            ],
+            "--vlen cannot also be passed through --loader-extra",
+        ),
+        (
+            [
+                "--board",
+                "x3",
+                "--vec-advertise",
+                "--loader-extra=--no-vec-advertise",
+                "vec_state_test",
+            ],
+            "--vec-advertise/--no-vec-advertise cannot also be passed",
+        ),
+    ],
+)
+def test_regression_rejects_invalid_vector_options_before_board_access(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    reason: str,
+) -> None:
+    """Conflicting or impossible vector options fail before serial or Linux checks."""
+    monkeypatch.setattr(hw.sys, "argv", ["runner", *argv])
+    monkeypatch.setattr(
+        hw, "serial_holders", lambda *args: pytest.fail("serial preflight started")
+    )
+    monkeypatch.setattr(
+        hw, "linux_root_from_env", lambda: pytest.fail("Linux preflight started")
+    )
+    with pytest.raises(SystemExit) as rejected:
+        hw.main()
+    assert rejected.value.code == 2
+    assert reason in capsys.readouterr().err
 
 
 def test_ecc_stage_verdict_follows_the_script_exit(monkeypatch: Any) -> None:

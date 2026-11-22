@@ -61,6 +61,8 @@ Vivado connection does not stop the server or release the cable.
 ./fpga/load_software/load_software.py x3 hello_world --ddr
 ./fpga/load_software/load_software.py x3 coremark_pro_core -v1
 ./fpga/load_software/load_software.py x3 coremark_pro_radix2 -v0
+./fpga/load_software/load_software.py x3 vec_state_test --vlen 128
+./fpga/load_software/load_software.py vcu118 vec_state_test
 ```
 
 Run with `--help` for the list of applications. CoreMark-PRO needs `-v1`
@@ -77,13 +79,28 @@ the CPU starts when the board's image-reset timer expires (see the
 | `--debug` | Debug build (`-Og -g3` for C) |
 | `--build-only` | Build and validate the images without touching the cable |
 | `--skip-build` | Load the existing build after checking its images and build settings |
-| `--expected-build-config-sha256 HASH` | With `--skip-build`, require the configuration hash reported by `--build-only --debug` |
+| `--expected-build-config-sha256 HASH` | With `--skip-build`, require the configuration hash reported by `--build-only` |
+| `--vlen BITS` | Override `VEC_VLEN` for vector-width applications (`128`, `256`, or `512`; `vec_state_test` also accepts `0` for scalar) |
+| `--vec-advertise` / `--no-vec-advertise` | Override `VEC_ADVERTISE` (`1` or `0`) for `vec_state_test` |
 
 `--debug` and `--skip-build` apply to single-ELF applications, not the
 composite `linux_boot` and `opensbi_smoke` images. `--skip-build` does not
 check that the build matches the sources. Leave the build files alone until
 the load finishes and debug with that same ELF; the CoreMark-PRO workloads
 share one build directory, so building another one meanwhile replaces them.
+
+The compile-time vector-width applications (`vec_crypto_exec_test`,
+`vec_fp_test`, `vec_integer_test`, `vec_source_eew_test`, `vec_state_test`,
+`vec_vstart_reload_test`, and `vec_vtype_handoff_test`) default to the vector
+width and advertisement state declared in `boards/<board>/<board>_frost.sv`
+and `boards/xilinx_frost_subsystem.sv`. Pass `--vlen` when targeting an FPGA
+image built at another width, or `--vlen 0` to build `vec_state_test` for a
+scalar core (which clears `VEC_ADVERTISE` and rejects `--vec-advertise`).
+The loader passes `-DVEC_VLEN` (and `-DVEC_ADVERTISE` for `vec_state_test`)
+through `EXTRA_CFLAGS`, so `.frost-build-config.bin` and its SHA-256 hash
+distinguish each width and advertisement configuration, and `--skip-build`
+rejects mismatched prebuilt images. Conflicting `VEC_VLEN` or `VEC_ADVERTISE`
+definitions in an inherited `EXTRA_CFLAGS` environment variable are rejected.
 
 ## Divided-clock builds
 
@@ -343,6 +360,13 @@ preparation and flash reads. A larger `--timeout` extends that budget.
 On X3, `vec_crypto_exec_test` uses cached DDR for its vector operands.
 To place the program in cached DDR as well, select the stage with
 `./fpga/hw_regression.py --board x3 --loader-extra=--ddr vec_crypto_exec_test`.
+`vec_state_test` is registered for both X3 and VCU118 and compiles with each
+board's RTL vector width and advertisement state by default. Pass `--vlen`
+(and `--vec-advertise` or `--no-vec-advertise` for `vec_state_test`) on
+`hw_regression.py` to match an FPGA image built with different vector
+settings; the runner forwards `--vlen` only to vector-width stages and
+`--vec-advertise` / `--no-vec-advertise` only to `vec_state_test`, and rejects
+`--vlen 0` alongside vector-unit-only stages.
 
 The interactive `debug_target` and external-link `nic_echo` and `nic_bench`
 applications are excluded from the default sequence.
