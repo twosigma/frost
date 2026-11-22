@@ -49,14 +49,14 @@ CYCLE_PROFILE = Path("tests/fixtures/rvv_ci_profile.csv")
 FORM_PROFILE = Path("tests/fixtures/rvv_ci_form_times.csv")
 COMPLETE_PROFILE = Path("tests/fixtures/rvv_ci_complete_times.csv")
 FORM_PLANS = {
-    128: ShardPlan(4, 92, 130),
-    256: ShardPlan(7, 92, 130),
-    512: ShardPlan(13, 96, 134),
+    128: ShardPlan(4, 92, 135),
+    256: ShardPlan(7, 92, 135),
+    512: ShardPlan(13, 96, 139),
 }
 COMPLETE_PLANS = {
-    128: ShardPlan(7, 297, 335),
-    256: ShardPlan(11, 296, 334),
-    512: ShardPlan(25, 316, 354),
+    128: ShardPlan(7, 297, 340),
+    256: ShardPlan(11, 296, 339),
+    512: ShardPlan(25, 316, 359),
 }
 PROGRAMS_PER_WIDTH = 3017
 FORMS_PER_WIDTH = 665

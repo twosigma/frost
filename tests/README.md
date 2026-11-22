@@ -806,9 +806,10 @@ therefore requires evidence from the driven reset, not an initial scheduling edg
 
 The Cocotb, physical-address and scalar TestRIG CI jobs set
 `FROST_STARTUP_SWEEP=1`. After a successful simulation, the runner reuses
-each compiled system model for short startup checks. Programs sharing a
-binary share its completed check. The selected builds divide a 180-second
-estimated job budget; the seed count is fixed before the checks run.
+each compiled system model for short startup checks. Programs sharing an
+executable, DDR timing and startup base share its completed check. The
+selected builds divide a 180-second estimated job budget; the seed count is
+fixed before the checks run.
 SRAM and large-cache models use their own per-seed cost estimates.
 The allocation reserves three starts per cached-tier model: two assertion
 controls that must fail after reset with their original diagnostics, and
@@ -1265,9 +1266,9 @@ line naming the program on standard error.
 
 | Main VLEN | Jobs | Inner deadline (min) | Step limit (min) | Job limit (min) |
 | ---: | ---: | ---: | ---: | ---: |
-| 128 | 4 | 92 | 95 | 130 |
-| 256 | 7 | 92 | 95 | 130 |
-| 512 | 13 | 96 | 99 | 134 |
+| 128 | 4 | 92 | 95 | 135 |
+| 256 | 7 | 92 | 95 | 135 |
+| 512 | 13 | 96 | 99 | 139 |
 
 To refresh the main profile, download the vector artifacts from the
 calibration runs and verify their published SHA-256, revision, native
@@ -1293,8 +1294,8 @@ whose modeled inner time stays below 54 minutes at each width. Each width's
 inner deadline is 1.8 times its longest modeled inner time, rounded up to
 a whole minute.
 The vector step gets three additional minutes for container startup and
-saving partial results. The job limit is the vector step limit plus 30
-minutes for the four setup steps (5, 5, 15 and 5 minutes) and five
+saving partial results. The job limit is the vector step limit plus 35
+minutes for the five setup steps (5, 5, 15, 5 and 5 minutes) and five
 minutes for the summary and artifact upload. Actual times depend on the
 runner and DDR seed.
 
@@ -1303,9 +1304,9 @@ at least three waves on 20 runners.
 
 | Complete VLEN | Jobs | Inner deadline (min) | Step limit (min) | Job limit (min) |
 | ---: | ---: | ---: | ---: | ---: |
-| 128 | 7 | 297 | 300 | 335 |
-| 256 | 11 | 296 | 299 | 334 |
-| 512 | 25 | 316 | 319 | 354 |
+| 128 | 7 | 297 | 300 | 340 |
+| 256 | 11 | 296 | 299 | 339 |
+| 512 | 25 | 316 | 319 | 359 |
 
 The complete profile weights each measured program by its process wall time.
 Each width uses its largest measured model build. Guest preparation uses
@@ -1346,19 +1347,21 @@ formal and synthesis checks.
 
 To replay one slice, keep `rotation` and set `slice` to 0 through 19.
 Only the image build and three vector shards run. To run all 9,051
-programs, choose `complete` and leave `slice` empty. Only the image
-build, the complete vector shards and the campaign report run. Both
-manual vector runs get their own concurrency group and skip regular CI jobs,
-including lint, fast Python tests, formal and synthesis, even with
-`reprove` selected. Each dispatch draws a DDR seed from its run ID.
-Rerunning failed jobs repeats that seed. A complete dispatch keeps the
-shared image and shard artifacts for 14 days so the report can use the
-same image after the last shard finishes. Other runs keep the shared
-image for one day. After it expires, check out the tested commit and
-run the command in the shard summary.
+programs, choose `complete` and leave `slice` empty. The image build,
+one simulator build per width, the complete vector shards and the
+campaign report run. Both manual vector runs get their own concurrency
+group and skip regular CI jobs, including lint, fast Python tests,
+formal and synthesis, even with `reprove` selected. Each dispatch draws
+a DDR seed from its run ID. Rerunning failed jobs repeats that seed. A
+complete dispatch keeps the shared image, shared vector simulators and
+shard artifacts for 14 days so the report and reruns can use the same
+image after the last shard finishes. Other runs keep the shared image
+for one day. After it expires, check out the tested commit and run the
+command in the shard summary.
 
-Each shard builds a four-thread simulator, checks its executable and
-source manifest, and runs one program at a time. Before sharding, the
+Each shard uses a four-thread simulator. Shards at the same width share
+one build. A lone shard builds locally. Each checks the executable and
+source manifest and runs one program at a time. Before sharding, the
 selection must contain 665 programs per width for one per form or
 3,017 for the complete suite. An empty shard, missing results or a
 pass without armed assertions fails the job. Each program has a
@@ -1850,7 +1853,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `COCOTB_RANDOM_SEED` | Random seed (set by `--random-seed`) |
 | `FROST_COCOTB_MEM_CONFIG` | Application memory tier (`bram` default, or `ddr`) |
 | `FROST_RANDOM_START_SEED` | Seed string enabling random register and memory power-up state; each run prints the string and Verilator seed |
-| `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 160 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
+| `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 160 cycles), latency jitter, and out-of-order completion for whole-SoC simulations from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
 | `WAVES=1` | Write FST waveforms to `tests/dump.fst` |
 | `FROST_COVERAGE=1` | Build with line and branch coverage and the cover points (see [Coverage](#coverage)) |
 | `FROST_COVERAGE_TOGGLE` | With `FROST_COVERAGE=1`: `0` disables toggle coverage, `1` collects the default set, and `control` selects control signals |
@@ -2148,6 +2151,27 @@ and 32 GiB, available through `./scripts/frost.py cocotb <test_name>`.
 The AXI bridge unit tests cover all eight power-of-two capacities in CI.
 The standalone `test_ddr_width_config.sv` and `test_ptw_high_addr.sv`
 harnesses are not registered with the test runners or invoked by CI.
+
+The Build simulator jobs compile the Verilator configurations used more than
+once in the run. The workflow derives them from the selected shards, registry
+arguments, coverage and toggle modes, random-start mode, clock selection and
+memory geometry. Jobs that use the same set of small benches download those
+executables together. A configuration used once builds in its test job.
+
+Cocotb consumers verify the run, checkout, Docker image, compiler arguments,
+source contents and checksums of the executable and its Verilator build
+record. Adjacent decimal overrides of distinct named parameters can appear in
+either order. Repeated overrides of one parameter keep their original order.
+Each job runs its own programs, startup checks and coverage collection.
+The program image and memory tier are selected at runtime. Decimal DDR latency,
+jitter and reordering overrides reach the behavioral memory as plusargs. The
+registry and environment use the same parameter precedence for local and CI
+runs. A missing or incompatible artifact fails the job.
+
+Generated vector shards that share a vector length download the four-thread
+native executable for that width. A single shard for a width compiles it
+locally. The native runner checks its source, configuration and executable
+digest before running the selected programs.
 
 The generated vector shards share a DDR seed and use a cold reset.
 The whole-SoC cocotb shards draw DDR model timing and power-up

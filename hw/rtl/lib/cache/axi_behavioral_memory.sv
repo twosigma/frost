@@ -147,6 +147,28 @@ module axi_behavioral_memory #(
 `endif
 `endif
 
+  // Whole-system cocotb runs supply the job's DDR draw at process startup.
+`ifdef FROST_RUNTIME_DDR
+  // Keep simulator option parsing out of the memory's coverage report.
+  /* verilator coverage_off */
+  int unsigned latency = LATENCY;
+  int unsigned latency_jitter = LATENCY_JITTER;
+  int unsigned reorder = REORDER;
+  initial begin
+    void'($value$plusargs("DDR_MODEL_LATENCY=%d", latency));
+    void'($value$plusargs("DDR_MODEL_LATENCY_JITTER=%d", latency_jitter));
+    void'($value$plusargs("DDR_MODEL_REORDER=%d", reorder));
+  end
+  /* verilator coverage_on */
+`define FROST_AXI_LATENCY latency
+`define FROST_AXI_JITTER latency_jitter
+`define FROST_AXI_REORDER reorder
+`else
+`define FROST_AXI_LATENCY LATENCY
+`define FROST_AXI_JITTER LATENCY_JITTER
+`define FROST_AXI_REORDER REORDER
+`endif
+
   // ---- Latency jitter LFSR (free-running; see LATENCY_JITTER / REORDER) ------
   logic [15:0] jitter_lfsr_q;
   always_ff @(posedge i_clk) begin
@@ -162,8 +184,9 @@ module axi_behavioral_memory #(
   // REORDER adds 0..7 cycles from the high LFSR bits. Start the countdown
   // one below the total, since selection first runs after slot allocation.
   logic [15:0] total_latency, new_latency;
-  assign total_latency = 16'(LATENCY) + 16'(32'(jitter_lfsr_q) % (LATENCY_JITTER + 1)) +
-      ((REORDER != 0) ? 16'(jitter_lfsr_q[15:13]) : 16'd0);
+  assign total_latency = 16'(`FROST_AXI_LATENCY) +
+      16'(32'(jitter_lfsr_q) % (`FROST_AXI_JITTER + 1)) +
+      ((`FROST_AXI_REORDER != 0) ? 16'(jitter_lfsr_q[15:13]) : 16'd0);
   assign new_latency = (total_latency == 16'd0) ? 16'd0 : total_latency - 16'd1;
 
   // ---- Pending-transaction slots ----------------------------------------------
@@ -248,7 +271,7 @@ module axi_behavioral_memory #(
     end
     rd_pick_valid = 1'b0;
     rd_pick = '0;
-    if (REORDER == 0) begin
+    if (`FROST_AXI_REORDER == 0) begin
       if (found && rd_lat_q[oldest] == 16'd0) begin
         rd_pick_valid = 1'b1;
         rd_pick = oldest;
@@ -281,7 +304,7 @@ module axi_behavioral_memory #(
     end
     wr_pick_valid = 1'b0;
     wr_pick = '0;
-    if (REORDER == 0) begin
+    if (`FROST_AXI_REORDER == 0) begin
       if (found && wr_lat_q[oldest] == 16'd0) begin
         wr_pick_valid = 1'b1;
         wr_pick = oldest;
@@ -648,6 +671,9 @@ module axi_behavioral_memory #(
   end
 `endif
 
+`undef FROST_AXI_LATENCY
+`undef FROST_AXI_JITTER
+`undef FROST_AXI_REORDER
 endmodule : axi_behavioral_memory
 `ifdef FROST_SPARSE_DDR_MEMORY
 `undef FROST_SPARSE_DDR_MEMORY

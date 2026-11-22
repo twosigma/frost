@@ -170,8 +170,8 @@ def ddr_model_settings(environment: Mapping[str, str]) -> dict[str, int]:
 
     A -G argument in FROST_VERILATOR_EXTRA_ARGS sets a parameter, the last one
     winning as in Verilator; tests/Makefile passes DDR_MODEL_LATENCY ahead of
-    those arguments. FROST_DDR_MODEL_SEED's draw reaches the simulation as
-    such arguments.
+    those arguments. The runner records the selected values before the Makefile
+    passes decimal DDR overrides to the simulator as plusargs.
     """
     settings = dict(DDR_MODEL_DEFAULTS)
     latency = environment.get("DDR_MODEL_LATENCY", "").strip()
