@@ -933,7 +933,7 @@ jobs:
     if: >-
       ${{ needs.gate.outputs.full == 'true' &&
       (github.event_name == 'push' || github.event_name == 'pull_request') }}
-    timeout-minutes: 45
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -970,7 +970,7 @@ jobs:
 
       - name: Check detection of an incorrect vector result
         if: matrix.vlen == 128
-        timeout-minutes: 25
+        timeout-minutes: 30
         run: |
           check_vector_result() {
             local selector=$1 trace=$2 record=$3 mismatch=$4
@@ -1020,6 +1020,8 @@ jobs:
             'order=72 insn=0x42e02557 rd=x10' '0x1fe != 0x1ff'
           check_vector_result fixed-point vector_fixed_point \
             'order=49 insn=0x42f02557 rd=x10' '0x7f != 0x7e'
+          check_vector_result fp-single vector_fp_single \
+            'order=30 insn=0x42d02557 rd=x10' '0x40100000 != 0x40100001'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
