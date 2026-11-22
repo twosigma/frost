@@ -5311,6 +5311,13 @@ module tomasulo_wrapper #(
         end else begin
           // Keep the raw previous wake for the two-cycle exclusion, including
           // a wake coincident with a flush. Only surviving offers capture data.
+          // offer_q rises on the wake edge while take_word_q captures word_q
+          // one cycle later from fp_fwd_value. The registered-CDB word check
+          // reads word_q without gating out that capture cycle because the
+          // fp_shim result FIFO has no same-cycle bypass, so a broadcast for
+          // tag cannot arrive before word_q is loaded. Adding a FIFO bypass
+          // would require gating the word_q check or comparing fp_fwd_value
+          // while take_word_q is high.
           wake_q <= wake;
           take_word_q <= wake && !killed;
           if (take_word_q) word_q <= fp_fwd_value;
