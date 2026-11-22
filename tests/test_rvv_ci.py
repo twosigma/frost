@@ -97,7 +97,7 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert inputs["slice"]["type"] == "string"
     jobs = workflow["jobs"]
     job = jobs["test-rvv"]
-    assert job["needs"] == "build-docker"
+    assert set(job["needs"]) == {"build-docker", "build-sim-models"}
     assert job["if"] == (
         "${{ !cancelled() && needs.build-docker.result == 'success' && !inputs.toggle_coverage }}"
     )
@@ -115,17 +115,17 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert int(default) == ci.SLICES == 20
     run = next(s for s in job["steps"] if s.get("name") == "Run vector programs")
     setup = [s["timeout-minutes"] for s in job["steps"][: job["steps"].index(run)]]
-    assert setup == [5, 5, 15, 5]
+    assert setup == [5, 5, 15, 5, 5]
     setup_minutes = sum(setup)
     assert ci.FORM_PLANS == {
-        128: ci.ShardPlan(4, 92, 130),
-        256: ci.ShardPlan(7, 92, 130),
-        512: ci.ShardPlan(13, 96, 134),
+        128: ci.ShardPlan(4, 92, 135),
+        256: ci.ShardPlan(7, 92, 135),
+        512: ci.ShardPlan(13, 96, 139),
     }
     assert ci.COMPLETE_PLANS == {
-        128: ci.ShardPlan(7, 297, 335),
-        256: ci.ShardPlan(11, 296, 334),
-        512: ci.ShardPlan(25, 316, 354),
+        128: ci.ShardPlan(7, 297, 340),
+        256: ci.ShardPlan(11, 296, 339),
+        512: ci.ShardPlan(25, 316, 359),
     }
     for event, campaign, part, count, per_run, mode, parts in [
         ("push", "rotation", "", "0", default, "forms", []),
@@ -277,9 +277,15 @@ def test_campaign_report_image_lifetime() -> None:
 
 
 VECTOR_JOBS = {"build-docker", "test-rvv"}
-CAMPAIGN_JOBS = VECTOR_JOBS | {"rvv-campaign-report"}
-TOGGLE_JOBS = {"build-docker", "test-verilator", "coverage-report"}
+CAMPAIGN_JOBS = VECTOR_JOBS | {"build-sim-models", "rvv-campaign-report"}
+TOGGLE_JOBS = {
+    "build-docker",
+    "build-sim-models",
+    "test-verilator",
+    "coverage-report",
+}
 REGULAR_CI = VECTOR_JOBS | {
+    "build-sim-models",
     "gate",
     "lint",
     "test-python",
@@ -390,6 +396,7 @@ def test_ci_job_scope(
         ).lower(),
         "needs.gate.outputs.full": "",
         "needs.build-docker.outputs.verilator_matrix": "",
+        "needs.build-docker.outputs.sim_matrix": "",
     }
     for key, spec in workflow[True]["workflow_dispatch"]["inputs"].items():
         value = (
@@ -445,6 +452,13 @@ def test_ci_job_scope(
             )
             if has_verilator:
                 context["needs.build-docker.outputs.verilator_matrix"] = "planned"
+            context["needs.build-docker.outputs.sim_matrix"] = (
+                "models"
+                if context["needs.gate.outputs.full"] == "true"
+                or context["inputs.toggle_coverage"] == "true"
+                or inputs.get("campaign") == "complete"
+                else "{}"
+            )
     assert enabled == expected
 
 
@@ -648,7 +662,7 @@ def test_complete_shards_fit_measured_time(
     mean_if_fewer_ms = setup_ms + program_ms / (plan.shards - 1)
     assert (
         mean_if_fewer_ms >= target_ms
-        or ceil(1.8 * mean_if_fewer_ms / 60_000) + 38 > 360
+        or ceil(1.8 * mean_if_fewer_ms / 60_000) + 43 > 360
     )
 
 

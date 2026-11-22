@@ -196,6 +196,8 @@ jobs:
       tools_id: ${{ steps.identity.outputs.tools_id }}
       verilator_matrix: ${{ steps.verilator.outputs.matrix }}
       rvv_matrix: ${{ steps.rvv.outputs.matrix }}
+      sim_matrix: ${{ steps.models.outputs.sim_matrix }}
+      sim_consumers: ${{ steps.models.outputs.sim_consumers }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -255,6 +257,21 @@ jobs:
           echo "tools_id=$(python3 tests/ci_reuse.py image-id --archive /tmp/frost-dev.tar)" \
             >> "$GITHUB_OUTPUT"
 
+      - name: Group the selected simulations by build configuration
+        id: models
+        env:
+          FULL: ${{ needs.gate.outputs.full || 'false' }}
+          TOGGLE: ${{ github.event_name == 'workflow_dispatch' && inputs.toggle_coverage && 'true' || 'false' }}
+          EVENT: ${{ github.event_name }}
+          VECTORS: ${{ steps.rvv.outputs.matrix }}
+          FROST_SKIP_SUBMODULE_INIT: "1"
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/ci_sim_plan.py --full "$FULL" --toggle "$TOGGLE" \
+              --event "$EVENT" --vectors "$VECTORS" > sim-plan.txt
+          cat sim-plan.txt >> "$GITHUB_OUTPUT"
+
       - name: Upload Docker image artifact
         uses: actions/upload-artifact@v7.0.2
         with:
@@ -262,13 +279,50 @@ jobs:
           path: /tmp/frost-dev.tar
           retention-days: ${{ inputs.campaign == 'complete' && !inputs.toggle_coverage && 14 || 1 }}
 
+  build-sim-models:
+    name: Build simulator (${{ matrix.artifact }})
+    needs: build-docker
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.build-docker.outputs.sim_matrix != '{}' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.build-docker.outputs.sim_matrix) }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: frost-docker-image
+          path: /tmp
+      - name: Build in the run's image
+        env:
+          MODELS: ${{ toJSON(matrix.models) }}
+          FROST_DDR_MODEL_SEED: rvv-${{ github.run_id }}
+          FROST_SKIP_SUBMODULE_INIT: "1"
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
+          export FROST_SIM_SCOPE="$GITHUB_RUN_ID:$(docker image inspect frost-dev:latest --format '{{.Id}}')"
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/ci_sim_models.py build "$MODELS" sim-model-export
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: sim-model-export/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: ${{ inputs.campaign == 'complete' && !inputs.toggle_coverage && 14 || 3 }}
+
   # Run programs in both memory tiers; separate long runs and group matching builds.
   # CPU architecture comes from the shared RTL defaults used by FPGA builds.
   # Unit benches and DDR probes/fetch fuzz run only on the BRAM axis.
   test-verilator:
     name: Cocotb ${{ matrix.shard.name }} (Verilator / ${{ matrix.mem_config }})
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, build-sim-models]
     if: >-
       ${{ !cancelled() && needs.build-docker.result == 'success' &&
       needs.build-docker.outputs.verilator_matrix != '' }}
@@ -295,6 +349,11 @@ jobs:
         run: |
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
+
+      - name: Fetch the simulators selected for this job
+        uses: ./.github/actions/sim-models
+        with:
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][format('{0}/{1}', matrix.mem_config, matrix.shard.name)]) }}
 
       - name: Run Cocotb ${{ matrix.shard.name }} with Verilator (${{ matrix.mem_config }})
         env:
@@ -381,9 +440,12 @@ jobs:
   # Exercise configured DDR apertures at their software-visible edges.
   test-pa-width:
     name: Physical address aperture (${{ matrix.capacity_gib }} GiB / ${{ matrix.shard.name }})
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-26.04
-    needs: [build-docker, gate]
-    if: ${{ needs.gate.outputs.full == 'true' }}
+    needs: [build-docker, gate, build-sim-models]
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -437,6 +499,11 @@ jobs:
         run: |
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
+
+      - name: Fetch the simulators selected for this job
+        uses: ./.github/actions/sim-models
+        with:
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][format('{0}/{1}', matrix.capacity_gib, matrix.shard.name)]) }}
 
       - name: Run aperture checks
         env:
@@ -545,10 +612,13 @@ jobs:
   # it is diagnostic, not a compliance target.
   test-arch-compliance:
     name: Arch Tests (${{ matrix.extensions }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-26.04
     timeout-minutes: ${{ matrix.timeout_minutes || 120 }}
-    needs: [build-docker, gate]
-    if: ${{ needs.gate.outputs.full == 'true' }}
+    needs: [build-docker, gate, build-sim-models]
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -584,6 +654,11 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
+      - name: Fetch the simulators selected for this job
+        uses: ./.github/actions/sim-models
+        with:
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][strategy.job-index]) }}
+
       - name: Run arch compliance tests (${{ matrix.extensions }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
@@ -593,7 +668,7 @@ jobs:
           # Fail a hung test after 20 minutes, well before the job timeout.
           FROST_ARCH_SIM_TIMEOUT_SEC: "1200"
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE -e FROST_ARCH_SIM_TIMEOUT_SEC \
+          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE -e FROST_ARCH_SIM_TIMEOUT_SEC \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_arch_compliance.py --extensions ${{ matrix.extensions }} \
               --mem-config ${{ matrix.mem_config }} \
@@ -624,9 +699,12 @@ jobs:
   # Each job runs a group of suites on one Verilator build.
   test-riscv-tests:
     name: riscv-tests (${{ matrix.label || matrix.suites }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-26.04
-    needs: [build-docker, gate]
-    if: ${{ needs.gate.outputs.full == 'true' }}
+    needs: [build-docker, gate, build-sim-models]
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -661,6 +739,11 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
+      - name: Fetch the simulators selected for this job
+        uses: ./.github/actions/sim-models
+        with:
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][strategy.job-index]) }}
+
       - name: Run riscv-tests ISA suites (${{ matrix.label || matrix.suites }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
@@ -668,7 +751,7 @@ jobs:
           # Line and branch coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: ${{ matrix.coverage }}
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE \
+          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --suites ${{ matrix.suites }} \
               --mem-config ${{ matrix.mem_config }} --env ${{ matrix.env }}
@@ -699,9 +782,12 @@ jobs:
   # tests/test_riscv_tests.py by the setup time.
   test-riscv-benchmarks:
     name: riscv-tests Benchmarks (${{ matrix.benchmarks }} / ${{ matrix.mem_config }})
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-26.04
-    needs: [build-docker, gate]
-    if: ${{ needs.gate.outputs.full == 'true' }}
+    needs: [build-docker, gate, build-sim-models]
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.gate.outputs.full == 'true' }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
@@ -728,12 +814,17 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
+      - name: Fetch the simulators selected for this job
+        uses: ./.github/actions/sim-models
+        with:
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][strategy.job-index]) }}
+
       - name: Run riscv-tests benchmarks (${{ matrix.benchmarks }} / ${{ matrix.mem_config }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED \
+          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmarks }} \
               --mem-config ${{ matrix.mem_config }}
@@ -742,9 +833,12 @@ jobs:
   # an S-mode Sv39 identity map for all instruction and data accesses.
   test-riscv-torture:
     name: riscv-torture Tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-26.04
-    needs: [build-docker, gate]
-    if: ${{ needs.gate.outputs.full == 'true' }}
+    needs: [build-docker, gate, build-sim-models]
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.gate.outputs.full == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -769,6 +863,11 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
+      - name: Fetch the simulators selected for this job
+        uses: ./.github/actions/sim-models
+        with:
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][strategy.job-index]) }}
+
       - name: Run riscv-torture tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
@@ -776,7 +875,7 @@ jobs:
           # Line and branch coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: ${{ matrix.coverage }}
         run: |
-          docker run --rm -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE \
+          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_torture.py --all \
               --mem-config ${{ matrix.mem_config }} ${{ matrix.paged && '--paged' || '' }}
@@ -809,9 +908,12 @@ jobs:
   # counterexample in the uploaded artifact, which --trace replays.
   test-testrig:
     name: TestRIG (FROST vs Sail / ${{ matrix.shard }}/4)
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-26.04
-    needs: [build-docker, gate]
-    if: ${{ needs.gate.outputs.full == 'true' }}
+    needs: [build-docker, gate, build-sim-models]
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.gate.outputs.full == 'true' }}
     timeout-minutes: ${{ matrix.timeout_minutes || 120 }}
     strategy:
       fail-fast: false
@@ -844,6 +946,11 @@ jobs:
         run: |
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
+
+      - name: Fetch the simulators selected for this job
+        uses: ./.github/actions/sim-models
+        with:
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][matrix.shard]) }}
 
       - name: Replay saved TestRIG counterexamples and counter controls
         if: matrix.shard == 1
@@ -928,10 +1035,14 @@ jobs:
 
   test-testrig-vector:
     name: TestRIG (FROST vs Sail / VLEN ${{ matrix.vlen }})
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-26.04
-    needs: [build-docker, gate]
+    needs: [build-docker, gate, build-sim-models]
     if: >-
-      ${{ needs.gate.outputs.full == 'true' &&
+      ${{ !cancelled() && needs.build-docker.result == 'success' &&
+      needs.gate.outputs.full == 'true' &&
       (github.event_name == 'push' || github.event_name == 'pull_request') }}
     timeout-minutes: 45
     strategy:
@@ -957,6 +1068,11 @@ jobs:
         run: |
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
+
+      - name: Fetch the simulators selected for this job
+        uses: ./.github/actions/sim-models
+        with:
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][matrix.vlen]) }}
 
       - name: Compare seeded and directed vector traces
         run: |
@@ -1779,9 +1895,12 @@ jobs:
   # ticks, and UART bytes, and verify demo/run_demo.sh.
   test-native:
     name: Native Simulator (hello_world and BRAM CoreMark)
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-26.04
-    needs: [build-docker, gate]
-    if: ${{ needs.gate.outputs.full == 'true' }}
+    needs: [build-docker, gate, build-sim-models]
+    if: ${{ !cancelled() && needs.build-docker.result == 'success' && needs.gate.outputs.full == 'true' }}
     timeout-minutes: 45
     steps:
       - name: Checkout repository
@@ -1802,6 +1921,11 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
+      - name: Fetch the simulators selected for this job
+        uses: ./.github/actions/sim-models
+        with:
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job]['live']) }}
+
       - name: Compare live cocotb hello_world and check native simulator
         env:
           FROST_SKIP_SUBMODULE_INIT: "1"
@@ -1813,8 +1937,11 @@ jobs:
     name: >-
       Generated vectors (${{ matrix.vlen }},
       ${{ matrix.mode }} ${{ matrix.part }})
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-26.04
-    needs: build-docker
+    needs: [build-docker, build-sim-models]
     if: ${{ !cancelled() && needs.build-docker.result == 'success' && !inputs.toggle_coverage }}
     timeout-minutes: ${{ matrix.job_minutes || 140 }}
     strategy:
@@ -1843,6 +1970,11 @@ jobs:
         run: |
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
+      - name: Fetch the simulators selected for this job
+        uses: ./.github/actions/sim-models
+        timeout-minutes: 5
+        with:
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][matrix.vlen]) }}
       - name: Run vector programs
         id: programs
         timeout-minutes: ${{ matrix.step_minutes || 100 }}
@@ -1851,8 +1983,13 @@ jobs:
           MODE: ${{ matrix.mode }}
           PART: ${{ matrix.part }}
         run: |
+          test -f .ci-sim-models/selection.json
+          args=()
+          if jq -e '.shared | length > 0' .ci-sim-models/selection.json >/dev/null; then
+            args+=(--prebuilt-sim ".ci-sim-models/rvv-$VLEN/frost-native")
+          fi
           ./scripts/frost.py --image frost-dev:latest run \
-            python3 tests/rvv_ci.py run "$VLEN" "$MODE" "$PART"
+            python3 tests/rvv_ci.py run "$VLEN" "$MODE" "$PART" "${args[@]}"
       - name: Summarize the shard
         if: ${{ !cancelled() }}
         env:

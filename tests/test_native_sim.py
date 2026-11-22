@@ -317,6 +317,11 @@ def parse_native_verilator_flags(makefile_text: str) -> set[str]:
 
 def parse_cocotb_frost_verilator_flags(makefile_text: str) -> set[str]:
     """Extract default ``TOPLEVEL=frost`` Verilator flags from ``tests/Makefile``."""
+    # The unseeded reference has no decimal DDR overrides to filter.
+    makefile_text = makefile_text.replace(
+        "$(filter-out $(DDR_RUNTIME_PATTERNS),$(FROST_VERILATOR_EXTRA_ARGS))",
+        "$(FROST_VERILATOR_EXTRA_ARGS)",
+    )
     joined = re.sub(r"\\\n[ \t]*", " ", makefile_text)
     lines = joined.splitlines()
     flags: set[str] = set()
@@ -1865,10 +1870,10 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
         assert cocotb_g.get(param_name) == expected_expr
 
     cocotb_frost_flags = parse_cocotb_frost_verilator_flags(cocotb_text)
-    assert (
-        cocotb_frost_flags - {"-j $(NUMBER_OF_CPU_CORES)"}
-        == EXPECTED_SHARED_VERILATOR_FLAGS
-    )
+    assert cocotb_frost_flags == EXPECTED_SHARED_VERILATOR_FLAGS | {
+        "-j $(NUMBER_OF_CPU_CORES)",
+        "+define+FROST_RUNTIME_DDR",
+    }
 
     native_verilator_flags = parse_native_verilator_flags(native_text)
     assert EXPECTED_SHARED_VERILATOR_FLAGS.issubset(native_verilator_flags)
@@ -2470,7 +2475,7 @@ def test_ci_workflow_runs_native_and_demo_image_jobs() -> None:
 
     assert "test-native" in jobs
     native_job = jobs["test-native"]
-    assert set(native_job["needs"]) == {"build-docker", "gate"}
+    assert set(native_job["needs"]) == {"build-docker", "build-sim-models", "gate"}
     assert "needs.gate.outputs.full == 'true'" in native_job["if"]
     assert int(native_job["timeout-minutes"]) >= 35
     native_cmds = "\n".join(
