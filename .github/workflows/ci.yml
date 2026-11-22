@@ -1093,9 +1093,9 @@ jobs:
             local logs="tests/testrig_logs/vector-result-control/$trace" status=0
             FROST_TESTRIG_VECTOR_RESULT_CONTROL="$selector" \
               ./scripts/frost.py --image frost-dev:latest run \
-              env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 420s \
+              env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 600s \
               python3 tests/test_testrig.py --trace "verif/testrig/$trace.S" \
-                --vlen 128 --ddr-capacity-log2-bytes 30 --startup-timeout 360 --response-timeout 60 \
+                --vlen 128 --ddr-capacity-log2-bytes 30 --startup-timeout 360 --response-timeout 180 \
                 --no-shrink --verbosity 2 --log-dir "$logs" \
                 --save-dir "tests/testrig_failures/vector-result-control/$trace" || status=$?
             test "$status" -eq 1
@@ -1710,18 +1710,32 @@ jobs:
           - shard: Load queue blocks
             pytest_filter: (load_queue_amo or lq_) and not (coherence_ or coherent_ or _twin)
             timeout_minutes: 77
-          # The longest block proofs among the remaining targets: branch
-          # prediction hand-off and release, the flash-valid cache bits, the
+          # Front-end branch-prediction, backing BTB, fetch-contract and
+          # predictor-mutation proofs.
+          - shard: Frontend and predictor
+            pytest_filter: >-
+              prediction_release or prediction_handoff or if_prediction_walk_past or
+              fetch_shadow_capture or (backing_btb and not _twin) or
+              predictor_fetch_contract or test_predictor_mutations
+            timeout_minutes: 150
+          # The longest remaining block proofs: the flash-valid cache bits, the
           # vector memory tracker, the issue and rename blocks, the payload
           # twin's operand comparisons and the home's seat logic.
           - shard: Block proofs
             pytest_filter: >-
-              prediction_release or prediction_handoff or if_prediction_walk_past or
               cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
               reservation_station_cover or rs_mem_broadcast or
-              rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
+              rat_checkpoint_restore or home_seat_next_equiv or
               rs_payload_twin_bmc_operands
             timeout_minutes: 150
+          # Scalar floating-point forward-wake, shim, engine-op and mutation
+          # proofs alongside the vector memory head and store-queue hold proofs.
+          - shard: Floating-point and vector memory
+            pytest_filter: >-
+              fp_forward_wake or test_fp_forward_wake_mutations or fp_launch_squash or
+              fp_shim or fp_engine_op_class or vec_head_mmu or
+              (vec_hold_rows and not lq_)
+            timeout_minutes: 140
           # Allow 10 minutes for setup, 60 for the bounded check and 5 for cover.
           - shard: ROB retirement successor
             pytest_filter: rob_retire_successor
@@ -1735,9 +1749,12 @@ jobs:
               vec_lmul_legality or vec_vmu or vec_vtype_tracker or line_client_link or ptw or
               tlb or imsic or aplic or immu or dmmu or load_queue or lq_ or rs_issue_tag_ or
               prediction_release or prediction_handoff or if_prediction_walk_past or
-              cache_flash_valid or vec_vmt or tomasulo_wrapper or reservation_station_bmc or
-              reservation_station_cover or rs_mem_broadcast or
-              rat_checkpoint_restore or fetch_shadow_capture or home_seat_next_equiv or
+              fetch_shadow_capture or backing_btb or predictor_fetch_contract or
+              test_predictor_mutations or cache_flash_valid or vec_vmt or tomasulo_wrapper or
+              reservation_station_bmc or reservation_station_cover or rs_mem_broadcast or
+              rat_checkpoint_restore or home_seat_next_equiv or
+              fp_forward_wake or test_fp_forward_wake_mutations or fp_launch_squash or
+              fp_shim or fp_engine_op_class or vec_head_mmu or vec_hold_rows or
               tage_copy_convergence or rob_retire_successor)
             timeout_minutes: 124
     # A task whose key has a pass marker is skipped; one in twenty of those

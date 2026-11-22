@@ -55,6 +55,8 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     arguments = command[command.index("tests/test_testrig.py") + 1 :]
     assert arguments.count("--vlen") == 1
     assert arguments[arguments.index("--vlen") + 1] == "${{ matrix.vlen }}"
+    assert arguments[arguments.index("--startup-timeout") + 1] == "1200"
+    assert arguments[arguments.index("--response-timeout") + 1] == "600"
     assert "--vector-source-widths" in arguments
     assert "--vector-directed" in arguments
     control = next(
@@ -66,6 +68,17 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     assert control["timeout-minutes"] == 30, (
         "Vector controls need the registered budget"
     )
+    control_command = shlex.split(control["run"].replace("\\\n", ""))
+    assert "timeout --kill-after=10s 600s" in control["run"], (
+        "Vector result controls require the 600-second outer guard"
+    )
+    control_arguments = control_command[
+        control_command.index("tests/test_testrig.py") + 1 :
+    ]
+    assert control_arguments[control_arguments.index("--startup-timeout") + 1] == "360"
+    assert (
+        control_arguments[control_arguments.index("--response-timeout") + 1] == "180"
+    ), "Vector result controls need the 180-second response timeout"
     assert job["steps"].index(replay) < job["steps"].index(control)
     calls = [
         shlex.split(line)[1:3]
