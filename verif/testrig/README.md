@@ -570,20 +570,36 @@ readouts, fractional and multi-register group multipliers, legal
 in-place overlap and illegal single-width FP traps.
 [Single-width FP operations](vector_fp_single.S)
 
+The whole-register memory trace checks all sixteen whole-register loads
+(`vl1re`, `vl2re`, `vl4re` and `vl8re` at 8, 16, 32 and 64-bit element
+widths) and all four whole-register stores (`vs1r.v`, `vs2r.v`,
+`vs4r.v` and `vs8r.v`) in cached DDR. It covers neighboring-register
+preservation, whole-register transfers while `vtype.vill` is set,
+independence from `vl`, `vtype` and `v0`, odd-address byte-aligned
+transfers, a cached 4 KiB page-boundary crossing, Page-0 access faults
+and Page-1 faults at `0xC0000000` checking `vstart` granularity and
+resumption across all four load widths, and illegal-instruction traps
+for misaligned register groups, reserved field counts, masked forms,
+nonzero store widths and `mew = 1`. Every retiring whole-register store
+reads back all written bytes through immediate scalar loads without
+reading `misa`. [Whole-register memory](vector_whole_reg.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at
 each of VLEN 128, 256 and 512. Each replays 12 generated traces of 20
 operation groups from seed 42, the source-width traces and the directed
 state, fractional LMUL, FP, cached DDR, integer comparison, widening and
-narrowing integer, fixed-point and single-width FP traces. Both
+narrowing integer, fixed-point, single-width FP and whole-register
+memory traces. Both
 implementations must return every planned trace and instruction. The
 VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer
 source widths, fractional LMUL, base FP results, fused multiply-add, FP
 conversions, unit-stride memory, strided memory, indexed memory, segment
 memory, fault-only-first loads, integer comparisons, widening and
-narrowing integer operations, fixed-point operations and single-width FP
-operations. It checks `vcpop.m` for state and scalar results and FP
-comparisons. TestRIG must report each destination value mismatch.
+narrowing integer operations, fixed-point operations, single-width FP
+operations and whole-register memory. It checks `vcpop.m` for state and
+scalar results and FP comparisons. TestRIG must report each destination
+value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail

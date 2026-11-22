@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (32, instructions + 13169) if vector_directed else (15, instructions)
+    expected = (33, instructions + 13995) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -300,6 +300,7 @@ def test_vector_directed_replay(
         ("vector_int_widen_narrow.S", 1753, 871),
         ("vector_fixed_point.S", 1701, 1206),
         ("vector_fp_single.S", 1446, 1068),
+        ("vector_whole_reg.S", 826, 662),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -361,6 +362,10 @@ def _update_int_reg_tracking(reg_val: dict[int, int | None], word: int) -> None:
     opcode = word & 0x7F
     if opcode not in _INT_RD_OPCODES:
         return
+    if opcode == 0x57:
+        funct3 = (word >> 12) & 7
+        if funct3 != 7 and not (funct3 == 2 and (word >> 26) == 0x10):
+            return
     rd = (word >> 7) & 0x1F
     if rd == 0:
         return
@@ -442,7 +447,11 @@ def _update_vec_reg_tracking(
         vd = (word >> 7) & 0x1F
         mop = (word >> 26) & 3
         umop = (word >> 20) & 0x1F
-        if sew is None or lmul_code is None:
+        if mop == 0 and umop == 0x08:
+            count = ((word >> 29) & 7) + 1
+            _invalidate_vgroup(vrf, vd, count)
+            return
+        if sew is None or lmul_code is None or lmul_code not in _LMUL_NUM_DEN:
             _invalidate_vgroup(vrf, vd, 8)
             return
         num, den = _LMUL_NUM_DEN[lmul_code]
@@ -575,7 +584,7 @@ def _update_vec_reg_tracking(
 def _check_vector_mem_store_readbacks(
     trace: Path, blocks: list[str], words: list[int]
 ) -> None:
-    """Verify immediate readback for unit-stride, mask, strided, indexed and segment stores."""
+    """Verify immediate readback for unit-stride, mask, strided, indexed, segment and whole-register stores."""
     for block in blocks:
         assert block.lstrip().startswith(".4byte "), (
             f"{trace.name}: compressed instruction not allowed in vector store trace"
@@ -583,6 +592,7 @@ def _check_vector_mem_store_readbacks(
     vl_by_vlen: dict[int, int] | None = None
     sew: int | None = None
     lmul: int | None = None
+    vill = False
     reg_val: dict[int, int | None] = {0: 0}
     vrf: dict[int, list[bytearray | None]] = {
         v: [None] * 32 for v in vector.VECTOR_LENGTHS
@@ -602,11 +612,21 @@ def _check_vector_mem_store_readbacks(
         elif word & 0xC000_707F == 0xC000_7057:  # vsetivli
             vtype = (word >> 20) & 0xFF
             uimm = (word >> 15) & 0x1F
-            sew = 8 << ((vtype >> 3) & 7)
+            sew_code = (vtype >> 3) & 7
+            sew = 8 << sew_code
             lmul = vtype & 7
-            vl_by_vlen = {
-                v: min(uimm, _vlmax(v, sew, lmul)) for v in vector.VECTOR_LENGTHS
-            }
+            if (
+                sew_code > 3
+                or lmul not in _LMUL_NUM_DEN
+                or sew * _LMUL_NUM_DEN[lmul][1] > 64 * _LMUL_NUM_DEN[lmul][0]
+            ):
+                vill = True
+                vl_by_vlen = {v: 0 for v in vector.VECTOR_LENGTHS}
+            else:
+                vill = False
+                vl_by_vlen = {
+                    v: min(uimm, _vlmax(v, sew, lmul)) for v in vector.VECTOR_LENGTHS
+                }
         elif word & 0x8000_707F == 0x0000_7057:  # vsetvli
             rs1 = (word >> 15) & 0x1F
             rd = (word >> 7) & 0x1F
@@ -614,17 +634,29 @@ def _check_vector_mem_store_readbacks(
                 f"{trace.name}: dynamic vsetvli at index {index} hides VL"
             )
             vtype = (word >> 20) & 0xFF
-            sew = 8 << ((vtype >> 3) & 7)
+            sew_code = (vtype >> 3) & 7
+            sew = 8 << sew_code
             lmul = vtype & 7
-            vl_by_vlen = {v: _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS}
+            if (
+                sew_code > 3
+                or lmul not in _LMUL_NUM_DEN
+                or sew * _LMUL_NUM_DEN[lmul][1] > 64 * _LMUL_NUM_DEN[lmul][0]
+            ):
+                vill = True
+                vl_by_vlen = {v: 0 for v in vector.VECTOR_LENGTHS}
+            else:
+                vill = False
+                vl_by_vlen = {v: _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS}
         elif word & 0xFE00_707F == 0x8000_7057:  # vsetvl
             raise AssertionError(f"{trace.name}: vsetvl at index {index} hides VL")
         elif test_testrig.run_stats.is_vector_store(word):
-            assert vl_by_vlen is not None and sew is not None, (
-                f"{trace.name}: store before vset* config"
-            )
+            if re.search(r'(?m)^\.assert trap == 1(?:[ \t]+"|[ \t]*$)', blocks[index]):
+                continue  # The replay enforces the trap assertion on each such store.
             assert re.search(r"(?m)^\.assert trap == 0\b", blocks[index]), (
                 f"{trace.name}: retiring vector store at index {index} needs trap == 0"
+            )
+            assert ((word >> 28) & 1) == 0, (
+                f"{trace.name}: reserved mew=1 store at index {index}"
             )
             mop = (word >> 26) & 3
             nf = (word >> 29) & 7
@@ -632,65 +664,79 @@ def _check_vector_mem_store_readbacks(
             rs2_or_sumop = (word >> 20) & 0x1F
             width = (word >> 12) & 7
             rs1 = (word >> 15) & 0x1F
-            assert nf == 0 or mop in (0, 2), (
-                f"{trace.name}: unsupported vector store form at index {index}"
-            )
             is_vsm = mop == 0 and rs2_or_sumop == 0x0B
-            if mop == 0:
-                assert rs2_or_sumop in (0, 0x0B), (
-                    f"{trace.name}: unsupported unit-stride sumop at index {index}"
-                )
-                if is_vsm:
-                    assert nf == 0 and width == 0 and bool((word >> 25) & 1)
-                    per_vlen = {
-                        v: set(range((vl + 7) // 8)) for v, vl in vl_by_vlen.items()
-                    }
-                else:
-                    elem_bytes = _VMEM_WIDTH_BYTES[width]
-                    seg_bytes = nfields * elem_bytes
-                    per_vlen = {
-                        v: set(range(vl * seg_bytes)) for v, vl in vl_by_vlen.items()
-                    }
-            elif mop == 2:  # strided or strided-segment
-                elem_bytes = _VMEM_WIDTH_BYTES[width]
-                seg_bytes = nfields * elem_bytes
-                stride = 0 if rs2_or_sumop == 0 else reg_val.get(rs2_or_sumop)
-                assert stride is not None, (
-                    f"{trace.name}: unknown stride x{rs2_or_sumop} at index {index}"
+            is_whole = mop == 0 and rs2_or_sumop == 0x08
+            if is_whole:
+                assert nf in (0, 1, 3, 7) and width == 0 and bool((word >> 25) & 1), (
+                    f"{trace.name}: illegal whole-register store at index {index}"
                 )
                 per_vlen = {
-                    v: {
-                        i * stride + byte
-                        for i in range(vl)
-                        for byte in range(seg_bytes)
-                    }
-                    for v, vl in vl_by_vlen.items()
+                    v: set(range(nfields * (v // 8))) for v in vector.VECTOR_LENGTHS
                 }
-            else:  # indexed (mop in (1, 3))
-                index_bytes = _VMEM_WIDTH_BYTES[width]
-                elem_bytes = sew // 8
-                per_vlen = {}
-                for v, vl in vl_by_vlen.items():
-                    vlenb = v // 8
-                    needed_regs = (vl * index_bytes + vlenb - 1) // vlenb
-                    idx_buf = _read_vgroup(vrf[v], rs2_or_sumop, needed_regs)
-                    assert idx_buf is not None, (
-                        f"{trace.name}: unknown index vector v{rs2_or_sumop} "
-                        f"at index {index}"
+            else:
+                assert not vill and vl_by_vlen is not None and sew is not None, (
+                    f"{trace.name}: store before valid vset* config"
+                )
+                assert nf == 0 or mop in (0, 2), (
+                    f"{trace.name}: unsupported vector store form at index {index}"
+                )
+                if mop == 0:
+                    assert rs2_or_sumop in (0, 0x0B), (
+                        f"{trace.name}: unsupported unit-stride sumop at index {index}"
                     )
-                    written: set[int] = set()
-                    for i in range(vl):
-                        offset = int.from_bytes(
-                            idx_buf[i * index_bytes : (i + 1) * index_bytes], "little"
+                    if is_vsm:
+                        assert nf == 0 and width == 0 and bool((word >> 25) & 1)
+                        per_vlen = {
+                            v: set(range((vl + 7) // 8)) for v, vl in vl_by_vlen.items()
+                        }
+                    else:
+                        elem_bytes = _VMEM_WIDTH_BYTES[width]
+                        seg_bytes = nfields * elem_bytes
+                        per_vlen = {
+                            v: set(range(vl * seg_bytes))
+                            for v, vl in vl_by_vlen.items()
+                        }
+                elif mop == 2:  # strided or strided-segment
+                    elem_bytes = _VMEM_WIDTH_BYTES[width]
+                    seg_bytes = nfields * elem_bytes
+                    stride = 0 if rs2_or_sumop == 0 else reg_val.get(rs2_or_sumop)
+                    assert stride is not None, (
+                        f"{trace.name}: unknown stride x{rs2_or_sumop} at index {index}"
+                    )
+                    per_vlen = {
+                        v: {
+                            i * stride + byte
+                            for i in range(vl)
+                            for byte in range(seg_bytes)
+                        }
+                        for v, vl in vl_by_vlen.items()
+                    }
+                else:  # indexed (mop in (1, 3))
+                    index_bytes = _VMEM_WIDTH_BYTES[width]
+                    elem_bytes = sew // 8
+                    per_vlen = {}
+                    for v, vl in vl_by_vlen.items():
+                        vlenb = v // 8
+                        needed_regs = (vl * index_bytes + vlenb - 1) // vlenb
+                        idx_buf = _read_vgroup(vrf[v], rs2_or_sumop, needed_regs)
+                        assert idx_buf is not None, (
+                            f"{trace.name}: unknown index vector v{rs2_or_sumop} "
+                            f"at index {index}"
                         )
-                        elem_range = set(range(offset, offset + elem_bytes))
-                        if mop == 1:
-                            assert written.isdisjoint(elem_range), (
-                                f"{trace.name}: unordered indexed store at index "
-                                f"{index} has overlapping active elements"
+                        written: set[int] = set()
+                        for i in range(vl):
+                            offset = int.from_bytes(
+                                idx_buf[i * index_bytes : (i + 1) * index_bytes],
+                                "little",
                             )
-                        written.update(elem_range)
-                    per_vlen[v] = written
+                            elem_range = set(range(offset, offset + elem_bytes))
+                            if mop == 1:
+                                assert written.isdisjoint(elem_range), (
+                                    f"{trace.name}: unordered indexed store at index "
+                                    f"{index} has overlapping active elements"
+                                )
+                            written.update(elem_range)
+                        per_vlen[v] = written
             required = set().union(*per_vlen.values())
             always_active = set.intersection(*per_vlen.values())
             covered: set[int] = set()
@@ -751,6 +797,7 @@ def _check_vector_store_readbacks(traces: Iterable[Path]) -> None:
             "vector_strided.S",
             "vector_indexed.S",
             "vector_segment.S",
+            "vector_whole_reg.S",
         ):
             assert stores, f"{trace.name}: expected vector stores"
             _check_vector_mem_store_readbacks(trace, blocks, words)
@@ -2289,6 +2336,292 @@ def test_vector_fp_single_trace_covers_forms() -> None:
         "reserved_vfmv_sf",
     }
     assert ctrl_count == 1
+
+
+def test_vector_whole_reg_trace_covers_forms() -> None:
+    """Check all 20 whole-register forms, mode independence, vstart and traps."""
+    trace = VERIF_DIR / "testrig" / "vector_whole_reg.S"
+    blocks = TRACE_WORD.split(trace.read_text())[1:]
+    words = [int(block.split()[1], 0) for block in blocks]
+    reg_val: dict[int, int | None] = {0: 0}
+    vill = False
+    vl_zero = False
+    sew = 0
+    lmul = 0
+    vtype_raw = 0
+    retired_forms: set[tuple[str, int, int]] = set()
+    vill_retiring: set[str] = set()
+    vl0_retiring: set[str] = set()
+    vl0_faults: set[str] = set()
+    mismatched_vtype_retiring: set[str] = set()
+    odd_addr_retiring: set[str] = set()
+    non8_load_offsets: set[tuple[int, int]] = set()
+    page_cross_retiring: set[str] = set()
+    p1_fault_vstarts: dict[int, int] = {}
+    p1_resumed: set[int] = set()
+    p0_store_fault_seen = False
+    illegal_traps: set[str] = set()
+    vill_csr_checks = 0
+    ctrl_count = 0
+    pending_p1_eew: int | None = None
+
+    for idx, (block, word) in enumerate(zip(blocks, words, strict=True)):
+        if word == 0x42C0_2557:  # vmv.x.s a0, v12 control
+            ctrl_count += 1
+        opcode = word & 0x7F
+        if opcode == 0x73 and ((word >> 12) & 7) in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            assert csr != 0x301  # No misa access
+            rs1_or_uimm = (word >> 15) & 0x1F
+            f3 = (word >> 12) & 7
+            assert not (csr == 0x008 and (f3 in (1, 5) or rs1_or_uimm != 0))
+            if csr == 0xC21 and f3 == 2:  # csrr vtype
+                if re.search(r'(?m)^\.assert rd_wdata == 0x8000000000000000 "', block):
+                    vill_csr_checks += 1
+            elif csr == 0x008 and f3 == 2 and pending_p1_eew is not None:  # csrr vstart
+                m = re.search(r'(?m)^\.assert rd_wdata == (0x[0-9a-f]+) "', block)
+                if m is not None:
+                    val = int(m.group(1), 16)
+                    if val > 0:
+                        p1_fault_vstarts[pending_p1_eew] = val
+                    elif val == 0 and pending_p1_eew in p1_fault_vstarts:
+                        p1_resumed.add(pending_p1_eew)
+                        pending_p1_eew = None
+        elif word & 0xC000_707F == 0xC000_7057:  # vsetivli
+            vtype_raw = (word >> 20) & 0xFF
+            uimm = (word >> 15) & 0x1F
+            sew_code = (vtype_raw >> 3) & 7
+            sew = 8 << sew_code
+            lmul = vtype_raw & 7
+            vill = (
+                sew_code > 3
+                or lmul not in _LMUL_NUM_DEN
+                or sew * _LMUL_NUM_DEN[lmul][1] > 64 * _LMUL_NUM_DEN[lmul][0]
+            )
+            vl_zero = vill or uimm == 0
+        elif word & 0x8000_707F == 0x0000_7057:  # vsetvli
+            vtype_raw = (word >> 20) & 0xFF
+            assert ((word >> 15) & 0x1F) == 0 and ((word >> 7) & 0x1F) != 0
+            sew_code = (vtype_raw >> 3) & 7
+            sew = 8 << sew_code
+            lmul = vtype_raw & 7
+            vill = (
+                sew_code > 3
+                or lmul not in _LMUL_NUM_DEN
+                or sew * _LMUL_NUM_DEN[lmul][1] > 64 * _LMUL_NUM_DEN[lmul][0]
+            )
+            vl_zero = vill
+        elif opcode in (0x07, 0x27) and ((word >> 12) & 7) in _VMEM_WIDTH_BYTES:
+            mop = (word >> 26) & 3
+            umop = (word >> 20) & 0x1F
+            assert mop == 0 and umop == 0x08
+            nf = (word >> 29) & 7
+            nr = nf + 1
+            mew = (word >> 28) & 1
+            vm = (word >> 25) & 1
+            width = (word >> 12) & 7
+            eew = _VMEM_WIDTH_BYTES[width] * 8
+            vd = (word >> 7) & 0x1F
+            rs1 = (word >> 15) & 0x1F
+            base = reg_val.get(rs1)
+            kind = "vl" if opcode == 0x07 else "vs"
+            if re.search(r"(?m)^\.assert trap == 1\b", block):
+                if mew == 1:
+                    illegal_traps.add(f"{kind}_mew1")
+                elif vm == 0:
+                    illegal_traps.add(f"{kind}_vm0")
+                elif kind == "vs" and width != 0:
+                    illegal_traps.add(f"vs_width_{eew}")
+                elif nf not in (0, 1, 3, 7):
+                    illegal_traps.add(f"{kind}_nf{nf}")
+                elif (vd & nf) != 0:
+                    illegal_traps.add(
+                        f"{kind}_misalign_nr{nr}{'_vill' if vill else ''}"
+                    )
+                elif base == 0xC000_0000:
+                    if vl_zero and not vill:
+                        vl0_faults.add(kind)
+                    elif kind == "vs":
+                        p0_store_fault_seen = True
+                elif base == 0xBFFF_FFF8 and kind == "vl" and nr == 1:
+                    pending_p1_eew = eew
+            else:
+                assert re.search(r"(?m)^\.assert trap == 0\b", block)
+                assert mew == 0 and vm == 1 and nf in (0, 1, 3, 7) and (vd & nf) == 0
+                if kind == "vs":
+                    assert width == 0
+                retired_forms.add((kind, nr, eew))
+                if vill:
+                    vill_retiring.add(f"{kind}{nr}")
+                elif vl_zero:
+                    vl0_retiring.add(f"{kind}{nr}")
+                if sew == 8 and lmul == 5 and (vtype_raw & 0xC0) == 0xC0:
+                    mismatched_vtype_retiring.add(f"{kind}{nr}")
+                assert base is not None
+                addr = base & 0xFFFF_FFFF_FFFF_FFFF
+                if addr & 1:
+                    odd_addr_retiring.add(f"{kind}{nr}")
+                if kind == "vl" and nr == 1 and (addr & 7) in (2, 4):
+                    non8_load_offsets.add((eew, addr & 7))
+                if (addr & 0xFFF) == 0xFF8:
+                    page_cross_retiring.add(f"{kind}{nr}")
+        _update_int_reg_tracking(reg_val, word)
+
+    expected_forms = {
+        ("vl", nr, eew) for nr in (1, 2, 4, 8) for eew in (8, 16, 32, 64)
+    } | {("vs", nr, 8) for nr in (1, 2, 4, 8)}
+    assert len(expected_forms) == 20
+    assert retired_forms == expected_forms
+    assert vill_csr_checks >= 2
+    assert {"vl1", "vs1", "vl2", "vs2"} <= vill_retiring
+    assert {"vl1", "vs1"} <= vl0_retiring
+    assert vl0_faults == {"vl", "vs"}
+    assert {"vl2", "vs2"} <= mismatched_vtype_retiring
+    assert {"vl1", "vs1"} <= odd_addr_retiring
+    assert {(16, 2), (32, 4)} <= non8_load_offsets
+    assert {"vl2", "vs2"} <= page_cross_retiring
+    assert p1_fault_vstarts == {8: 8, 16: 4, 32: 2, 64: 1}
+    assert p1_resumed == {8, 16, 32, 64}
+    assert p0_store_fault_seen
+    expected_illegal_traps = {
+        "vl_misalign_nr2_vill",
+        "vs_misalign_nr2_vill",
+        "vl_misalign_nr2",
+        "vl_misalign_nr4",
+        "vl_misalign_nr8",
+        "vs_misalign_nr2",
+        "vs_misalign_nr4",
+        "vs_misalign_nr8",
+        "vl_nf2",
+        "vl_nf4",
+        "vl_nf5",
+        "vl_nf6",
+        "vs_nf2",
+        "vs_nf4",
+        "vs_nf5",
+        "vs_nf6",
+        "vl_vm0",
+        "vs_vm0",
+        "vs_width_16",
+        "vs_width_32",
+        "vs_width_64",
+        "vl_mew1",
+        "vs_mew1",
+    }
+    assert illegal_traps == expected_illegal_traps
+    assert ctrl_count == 1
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        pytest.param(
+            "drop-always-active",
+            "missing immediate scalar readback",
+            id="drop-always-active",
+        ),
+        pytest.param(
+            "drop-vlen512-byte",
+            "missing immediate scalar readback",
+            id="drop-vlen512-byte",
+        ),
+        pytest.param(
+            "drop-odd-byte",
+            "missing immediate scalar readback",
+            id="drop-odd-byte",
+        ),
+        pytest.param(
+            "drop-vill-readback",
+            "missing immediate scalar readback",
+            id="drop-vill-readback",
+        ),
+        pytest.param(
+            "drop-assert",
+            "missing rd_wdata assertion",
+            id="drop-assert",
+        ),
+        pytest.param(
+            "overwrite-before-readback",
+            "missing immediate scalar readback",
+            id="overwrite",
+        ),
+        pytest.param("vstart-before", "vstart write", id="vstart-before"),
+        pytest.param("vsetvl-before", "vsetvl", id="vsetvl-before"),
+    ],
+)
+def test_whole_reg_store_readback_covers_each_element(
+    tmp_path: Path, mutation: str, error: str
+) -> None:
+    """Every retiring whole-register store must read back all written bytes."""
+    source_trace = VERIF_DIR / "testrig" / "vector_whole_reg.S"
+    _check_vector_store_readbacks([source_trace])
+
+    mutated = tmp_path / "vector_whole_reg.S"
+    lines = source_trace.read_text().splitlines()
+    if mutation == "drop-vlen512-byte":
+        # Target vs8r.v v16, (s4) (0xe28a0827) and drop its last 512-bit dw readback (504(s4)).
+        anchor = next(
+            i for i, line in enumerate(lines) if line.startswith(".4byte 0xe28a0827 ")
+        )
+        drop_idx = next(
+            i for i in range(anchor + 1, len(lines)) if "# ld a0, 504(s4)" in lines[i]
+        )
+        del lines[drop_idx]
+    elif mutation == "drop-odd-byte":
+        # Target odd-address vs1r.v v8, (s5) (0x028a8427) and drop byte 63 readback.
+        anchor = next(
+            i
+            for i, line in enumerate(lines)
+            if line.startswith(".4byte 0x028a8427 ") and "odd-address" in lines[i + 1]
+        )
+        drop_idx = next(
+            i for i in range(anchor + 1, len(lines)) if "# lbu a0, 63(s5)" in lines[i]
+        )
+        del lines[drop_idx]
+    elif mutation == "drop-vill-readback":
+        # Target vs1r.v v8, (s5) under vill=1 and drop its first readback.
+        anchor = next(
+            i
+            for i, line in enumerate(lines)
+            if line.startswith(".4byte 0x028a8427 ") and "vill1" in lines[i + 1]
+        )
+        drop_idx = next(
+            i for i in range(anchor + 1, len(lines)) if "# ld a0, 0(s5)" in lines[i]
+        )
+        del lines[drop_idx]
+    elif mutation == "drop-assert":
+        # Target vs1r.v v8, (s1) (0x02848427) and remove rd_wdata assertion on offset 0.
+        anchor = next(
+            i
+            for i, line in enumerate(lines)
+            if line.startswith(".4byte 0x02848427 ") and "base" in lines[i + 1]
+        )
+        drop_idx = next(
+            i
+            for i in range(anchor + 1, len(lines))
+            if lines[i].startswith(".assert rd_wdata == ")
+        )
+        del lines[drop_idx]
+    else:
+        anchor = next(
+            i
+            for i, line in enumerate(lines)
+            if line.startswith(".4byte 0x02848427 ") and "base" in lines[i + 1]
+        )
+        first_load = next(
+            i for i in range(anchor + 1, len(lines)) if "# ld a0, 0(s1)" in lines[i]
+        )
+        if mutation == "drop-always-active":
+            del lines[first_load]
+        elif mutation == "overwrite-before-readback":
+            lines.insert(first_load, ".4byte 0x0064b023  # sd t1, 0(s1)")
+        elif mutation == "vstart-before":
+            lines.insert(anchor, ".4byte 0x00805073  # csrwi vstart, 0")
+        elif mutation == "vsetvl-before":
+            lines.insert(anchor, ".4byte 0x80037057  # vsetvl zero, t1, t0")
+    mutated.write_text("\n".join(lines) + "\n")
+    with pytest.raises(AssertionError, match=error):
+        _check_vector_store_readbacks([mutated])
 
 
 def test_readout_sees_every_register_and_vxsat() -> None:
