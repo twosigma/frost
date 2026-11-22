@@ -554,17 +554,33 @@ multi-register group multipliers, legal register overlaps and illegal
 widening, narrowing and mask-register overlap traps.
 [Fixed-point operations](vector_fixed_point.S)
 
-On main pushes and pull requests labelled `run-ci`, CI runs one job at each
-of VLEN 128, 256 and 512. Each replays 12 generated traces of 20 operation
-groups from seed 42, the source-width traces and the directed state,
-fractional LMUL, FP, cached DDR, integer comparison, widening and
-narrowing integer and fixed-point traces. Both implementations must return
-every planned trace and instruction. The VLEN 128 job reuses its simulator
-to flip one bit in a FROST integer destination in each control replay. It
-checks `vmv.x.s` for integer source widths, fractional LMUL, base FP
-results, fused multiply-add, FP conversions, unit-stride memory, strided
-memory, indexed memory, segment memory, fault-only-first loads, integer
-comparisons, widening and narrowing integer operations and fixed-point
+The single-width floating-point trace checks binary32 and binary64
+addition, subtraction, reverse subtraction, multiplication, division,
+reverse division, square root, reciprocal and reciprocal-square-root
+estimates, minimum and maximum, sign injection, classification,
+floating-point merge, and scalar-vector floating-point moves. It covers
+all five rounding modes with `frm` CSR readbacks after each write across
+addition, multiplication, division, reverse division, square root and
+reciprocal estimates, all five accrued exception flags, signed-zero and
+NaN-propagation corners, improperly NaN-boxed scalars, all ten
+classification classes, masked and unmasked forms, vector lengths below,
+equal to and zero relative to VLMAX, tail- and mask-undisturbed
+readouts, fractional and multi-register group multipliers, legal
+in-place overlap and illegal single-width FP traps.
+[Single-width FP operations](vector_fp_single.S)
+
+On main pushes and pull requests labelled `run-ci`, CI runs one job at
+each of VLEN 128, 256 and 512. Each replays 12 generated traces of 20
+operation groups from seed 42, the source-width traces and the directed
+state, fractional LMUL, FP, cached DDR, integer comparison, widening and
+narrowing integer, fixed-point and single-width FP traces. Both
+implementations must return every planned trace and instruction. The
+VLEN 128 job reuses its simulator to flip one bit in a FROST integer
+destination in each control replay. It checks `vmv.x.s` for integer
+source widths, fractional LMUL, base FP results, fused multiply-add, FP
+conversions, unit-stride memory, strided memory, indexed memory, segment
+memory, fault-only-first loads, integer comparisons, widening and
+narrowing integer operations, fixed-point operations and single-width FP
 operations. It checks `vcpop.m` for state and scalar results and FP
 comparisons. TestRIG must report each destination value mismatch.
 
