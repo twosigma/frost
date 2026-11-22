@@ -693,9 +693,9 @@ and targeted microbenchmarks give these items:
    holder of its sector; retrying refused loads, and refusing only for probes
    to the load's sector, would answer more of them. The controller still
    shadows a load that it selects while the hit path holds it, which starting
-   misses from the hit path's tag result would avoid, and tags-only lookups
-   would keep stores, look-ahead stores and prefetch hints out of the data
-   banks.
+   misses from the hit path's tag result would avoid. An ordinary buffered
+   store checks its tags while a load reads another sector. Look-ahead stores
+   and prefetch hints still reserve the data banks during their tag lookups.
 10. Compressed code. Linux and its user space are built with the C
     extension. CoreMark's score uses a build without compressed instructions;
     built with them (`COREMARK_COMPRESSED=1`) it takes about 8% more cycles

@@ -54,7 +54,8 @@ capture: chformal -assert -remove t:$check r:FLAVOR=assert %i c:*p_read_capture_
 idle: select -assert-count 1 c:p_idle_select_exact t:$check %i r:FLAVOR=assert %i
 idle: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_idle_select_exact %d
 phasereg: select -assert-count 1 c:p_idle_phase_taken t:$check %i r:FLAVOR=assert %i
-phasereg: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_idle_phase_taken %d
+phasereg: select -assert-count 1 c:p_read_install_class t:$check %i r:FLAVOR=assert %i
+phasereg: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_idle_phase_taken %d c:p_read_install_class %d
 kind: select -assert-count 1 c:p_read_kind_exact t:$check %i r:FLAVOR=assert %i
 kind: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_read_kind_exact %d
 reply: select -assert-count 1 c:p_array_reply_exact t:$check %i r:FLAVOR=assert %i
@@ -77,7 +78,7 @@ setundef -anyseq
 chformal -lower
 capture: select -assert-count 1 t:$assert
 idle: select -assert-count 1 t:$assert
-phasereg: select -assert-count 1 t:$assert
+phasereg: select -assert-count 2 t:$assert
 kind: select -assert-count 1 t:$assert
 reply: select -assert-count 1 t:$assert
 select -assert-none t:$assume

@@ -1336,7 +1336,8 @@ jobs:
               ((coherence_ or coherent_) and not
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
               coherence_store_home or coherence_link or coherent_local_atomic or coh_hart_maint_prove or
-              coh_hart_maint_owned_prove or coherence_array_equiv or
+              coh_hart_maint_owned_prove or coherence_array_equiv or coherence_array_progress or
+              coherence_store_bank or
               coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
             timeout_minutes: 330
@@ -1344,6 +1345,9 @@ jobs:
           - shard: Coherence home
             pytest_filter: coherence_home_coh_home_
             timeout_minutes: 340
+          - shard: Coherence store lookup banks
+            pytest_filter: coherence_array_progress or coherence_store_bank
+            timeout_minutes: 152
           # The coherent array's equivalence with its reference array: the
           # one-way, UltraRAM and hit-port tasks with the cover, and the
           # four-way tasks, each about an hour of BMC tasks.

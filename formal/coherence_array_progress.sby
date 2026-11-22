@@ -1,0 +1,47 @@
+[tasks]
+coh_progress_prove prove basic
+coh_progress4_prove prove four basic
+coh_progress4_56_prove prove wide
+coh_progress4_cover cover four
+
+[options]
+prove: mode prove
+cover: mode cover
+depth 30
+wide: depth 3
+timeout 300
+coh_progress4_prove: timeout 400
+basic: aigsmt boolector
+
+[engines]
+basic: abc pdr
+wide: smtbmc boolector
+cover: smtbmc boolector
+
+[script]
+~wide: read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+~wide: read -sv -D ARRAY_PROGRESS_PROOF coherence_array.sv
+~wide: read -formal -sv coherence_array_progress.sv
+four: chparam -set WAYS 4 coherence_array_progress
+# The wide comparison names the real metadata rows and read registers.
+wide: read_slang --top coherence_array_progress --single-unit -DSYNTHESIS -DARRAY_PROGRESS_PROOF -DPROGRESS_INDUCT -GWAYS=4 -GADDR_WIDTH=56 sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv coherence_array_progress.sv
+hierarchy -top coherence_array_progress
+script free_undefined.ys
+prep -top coherence_array_progress -flatten
+select -assert-count 2 c:p_progress_*
+select -assert-count 12 c:c_progress_*
+wide: select -assert-count 20 c:*p_induct_*
+memory_map -keepdc
+opt -keepdc
+basic: techmap
+basic: opt -fast -keepdc
+basic: setundef -anyseq
+opt_clean
+
+[files]
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_array.sv
+coherence_array_progress.sv
+free_undefined.ys

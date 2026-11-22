@@ -291,15 +291,15 @@ L2 controller and `coherence_home_array`, whose tag, data-read and masked-update
 ports have independent service. The L1D's `coherence_array` serializes its
 lookup, read and update operations in block RAM. Its data array has a bank
 per way, rows by set. The final tag-read cycle selects the private way, and
-every bank reads the set's row in that cycle; the banks' output registers are
+a lookup that owns the banks reads the set's row in each way; the banks' output registers are
 the second cycle of the read latency, and a way multiplexer passes the
 selected way's row to the response. With `HIT_PORT`, the array also has a
 hit port: a copy of the tags, written with them, and the banks' read address
-in every cycle but a data-reading lookup's final tag-read cycle. A request
+when no controller lookup owns the address. A request
 taken with `o_hp_ready` reads the copy and every bank's row of its set on one
 edge; its hit shows two cycles later and the hit way's dword a cycle after
-that, both as of that edge. The port is not ready in that tag-read cycle, in
-a cycle that writes its set, or before the reset sweep ends. Victim selection uses the tag request's
+that, both as of that edge. The port waits while the controller owns the address, during a write to its
+set and until the reset sweep ends. Victim selection uses the tag request's
 matching PLRU response. Each tree bit of the replacement state has its own
 RAM, and a touch writes only the bits on its way's path. A hit writes them
 from the registered way during data service or the reply, before
@@ -322,6 +322,14 @@ Response data is meaningful only with `o_resp_data_valid`. A tag-only or
 skipped read keeps the prior response data without reading the data array.
 A lookup marked `i_req_tags_only` reads no data and replies after the tag
 read, so it leaves the banks to the hit port.
+An ordinary buffered store sets `i_req_no_bank` when checking ownership.
+The array registers bank ownership at acceptance. The store leaves the data
+address available to the hit port and returns no valid row. A miss still
+spends the ordinary data-read cycles before its reply. The scratch register
+can then hold another set's row. The installed store supplies its own bytes
+and mask. A visit or a request for hit, Modified or victim data retains the
+banks. DMA, cache-block operations and the L2 stream prefetcher reach the
+L1D through home probes, which retain their existing ownership.
 A lookup marked `i_req_data_if_hit` needs data only on a hit, and one
 marked `i_req_data_if_victim_modified` only when it misses and its selected
 victim is Modified; a maintenance visit always waits for its data.
@@ -347,8 +355,8 @@ newest unsealed record of the same sector. Byte masks select the most recent
 value of each written byte. A record holds at most 32 contributors and seals
 at that limit or when selected as the head for installation. A simultaneous
 contributor is included before sealing. A, B, A stores occupy separate records.
-New-record metadata decodes the next free record directly; combining selects
-the youngest record separately. A zero write always allocates and aligns its
+The buffer decodes the next free record and the youngest matching record
+from the address and pointers before the write strobe selects the record. A zero write always allocates and aligns its
 lower record to the 64-byte block.
 Launch credit reserves an arriving scalar without comparing its address or
 borrowing a simultaneous installation. The lookahead scheduler samples physical
@@ -428,8 +436,9 @@ the grant's first lookup cycle, before installation, so the answered read slot
 can hold a later read while the line installs; that read becomes selectable
 when the installation completes. The same cycle answers every ordinary load
 attached to the endpoint, each from its own dword of the grant; a speculative
-grant answers its attached loads the same way. Endpoint 0 answers its reads
-after installation. A load endpoint's Done, and the waits of LR and other
+grant answers its attached loads the same way. On endpoint 0 the update
+handshake records whether a read is due. The selected slot captures its data
+when the array becomes ready after installation. A load endpoint's Done, and the waits of LR and other
 loads on it, follow installation.
 
 With stream look-ahead enabled, a successful demand installation
@@ -644,7 +653,9 @@ selection stays ahead of grant selection.
 Loads also have a hit path beside the controller. In the cycle after a load
 arrives, the L1D offers it to the array's hit port from registers, unless a
 probe is in service, an owner holds its slot, or a holder blocks its sector
-by the rule above. A hit completes the slot's read four cycles after its
+by the rule above. The sector hold lasts through the older store's masked
+write, including when another sector reads beside its ownership lookup.
+A hit completes the slot's read four cycles after its
 arrival, and the response leaves like any other. In stage 4, as the hit path
 answers it, the slot is out of read selection. A read that the controller
 selects while the hit path holds it, including one selected in its stage-3
@@ -1165,7 +1176,10 @@ output for output on every cycle, a reference array with one data RAM of
 reads beside the lookups. The `coherence_array` target checks the hit port's
 tags and bytes against the values written before its read edge, and that the
 port never reads the banks beside a data-reading lookup or a write to its
-set.
+set. The `coherence_array_progress` target compares the controllers of two
+arrays with independent load inputs. The `coherence_store_bank` target
+tracks scratch rows through the L1D to masked writes, frozen victims, probe
+replies and load answers.
 
 The `coherence_store_buffer` target proves scalar and byte conservation by
 induction. A 48-cycle saturation case holds an older record while 33 writes

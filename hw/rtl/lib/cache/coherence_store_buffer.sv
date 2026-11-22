@@ -87,8 +87,8 @@ module coherence_store_buffer #(
     output logic [1:0] o_twin_index,
     output logic [ADDR_WIDTH-1:0] o_twin_addr
 );
-  logic [1:0] next_q, youngest, write_index;
-  logic merge, allocate;
+  logic [1:0] next_q, youngest;
+  logic same_sector, merge, allocate;
   logic twin_pending_q;
   logic [3:0] zero_q, twin_q, full_q, upper_q;
   localparam bit TwinLine = ZERO_LINE || FULL_LINE;
@@ -106,11 +106,11 @@ module coherence_store_buffer #(
   logic [ADDR_WIDTH-1:0] twin_addr_q;
   logic [TAG_BITS-1:0] twin_tag_q;
   assign youngest = next_q - 2'd1;
-  assign merge = !zero_in && o_count != 0 && !o_sealed[youngest] &&
+  assign same_sector = o_count != 0 && !o_sealed[youngest] &&
       o_addr[youngest][ADDR_WIDTH-1:5] == i_addr[ADDR_WIDTH-1:5];
+  assign merge = !zero_in && same_sector;
   assign allocate = i_push && !merge;
   assign o_combined = i_push && merge;
-  assign write_index = merge ? youngest : next_q;
   // The twin takes the next record once one is free. No write arrives while
   // it waits; a pop on the same cycle supplies no record.
   assign o_twin_pending = twin_pending;
@@ -159,6 +159,16 @@ module coherence_store_buffer #(
     end
   end
   for (genvar slot = 0; slot < 4; slot++) begin : gen_record
+    // Decode the address and pointers in parallel with the write strobe.
+    // A zero or its twin always writes the next record.
+    (* keep = "true" *) logic scalar_slot;
+    logic next_slot, combine_slot, scalar_write, zero_write, twin_write;
+    assign next_slot = next_q == 2'(slot);
+    assign combine_slot = same_sector && youngest == 2'(slot);
+    assign scalar_slot = combine_slot || (!same_sector && next_slot);
+    assign scalar_write = i_push && !zero_in && scalar_slot;
+    assign zero_write = i_push && zero_in && next_slot;
+    assign twin_write = o_twin_alloc && next_slot;
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         o_valid[slot] <= 1'b0;
@@ -180,7 +190,7 @@ module coherence_store_buffer #(
         if (i_pop && o_head == 2'(slot - 1)) upper_q[slot] <= 1'b0;
         // Allocation always targets next_q. Decode it directly, independently
         // of the combining record's address and the zero-write choice.
-        if (allocate && next_q == 2'(slot)) begin
+        if (i_push && next_slot && (zero_in || !same_sector)) begin
           o_valid[slot] <= 1'b1;
           o_sealed[slot] <= zero_in;
           o_acquired[slot] <= 1'b0;
@@ -195,22 +205,19 @@ module coherence_store_buffer #(
           // A pop of the youngest on this edge leaves no predecessor.
           upper_q[slot] <= alloc_upper && !(i_pop && o_head == youngest);
         end
-        if (i_push && write_index == 2'(slot)) begin
-          if (zero_in) begin
-            o_data[slot] <= '0;
-          end else begin
-            if (merge) begin
-              o_mask[slot] <= o_mask[slot] | (32'(i_mask) << {i_addr[4:3], 3'b000});
-              full_q[slot] <= &(o_mask[slot] | (32'(i_mask) << {i_addr[4:3], 3'b000}));
-              o_contributors[slot] <= o_contributors[slot] + 6'd1;
-              if (o_contributors[slot] == 31) o_sealed[slot] <= 1'b1;
-            end
-            for (int byte_index = 0; byte_index < 32; byte_index++)
-            if (i_addr[4:3] == 2'(byte_index / 8) && i_mask[byte_index%8])
-              o_data[slot][8*byte_index+:8] <= i_data[8*(byte_index%8)+:8];
-          end
+        if (i_push && !zero_in && combine_slot) begin
+          o_mask[slot] <= o_mask[slot] | (32'(i_mask) << {i_addr[4:3], 3'b000});
+          full_q[slot] <= &(o_mask[slot] | (32'(i_mask) << {i_addr[4:3], 3'b000}));
+          o_contributors[slot] <= o_contributors[slot] + 6'd1;
+          if (o_contributors[slot] == 31) o_sealed[slot] <= 1'b1;
         end
-        if (o_twin_alloc && next_q == 2'(slot)) begin
+        if (zero_write || twin_write) o_data[slot] <= '0;
+        else if (scalar_write) begin
+          for (int byte_index = 0; byte_index < 32; byte_index++)
+          if (i_addr[4:3] == 2'(byte_index / 8) && i_mask[byte_index%8])
+            o_data[slot][8*byte_index+:8] <= i_data[8*(byte_index%8)+:8];
+        end
+        if (twin_write) begin
           o_valid[slot] <= 1'b1;
           o_sealed[slot] <= 1'b1;
           o_acquired[slot] <= 1'b0;
@@ -218,7 +225,6 @@ module coherence_store_buffer #(
           o_addr[slot] <= twin_addr_q;
           o_tag[slot] <= twin_tag_q;
           o_mask[slot] <= '1;
-          o_data[slot] <= '0;
           o_contributors[slot] <= 6'd0;
           zero_q[slot] <= 1'b1;
           twin_q[slot] <= 1'b1;
@@ -241,6 +247,7 @@ module coherence_store_buffer #(
     end
   end
 `ifdef FORMAL
+  wire [1:0] write_index = merge ? youngest : next_q;
 `ifdef ZERO_INDEX_PROOF
   // The L1D samples older upper-sector conflicts and invalidates its look
   // snapshot on a pop or on a push that allocates; with full-line stores a

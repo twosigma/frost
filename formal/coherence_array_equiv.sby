@@ -42,6 +42,7 @@ lane31: chparam -set DATA_BYTE 31 coherence_array_equiv
 port: chparam -set HIT_PORT 1 coherence_array_equiv
 prep -top coherence_array_equiv
 select -assert-count 3 c:p_equiv_*
+select -assert-count 2 c:c_equiv_store_*
 # Out-of-range bits of the four-way selections are unreachable constants.
 memory_map -keepdc
 opt -keepdc
