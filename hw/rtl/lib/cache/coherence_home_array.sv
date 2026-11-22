@@ -667,6 +667,8 @@ module coherence_home_array #(
       // A resolved stage belongs to its token's read owner. An open stage
       // is the lookup in service's parallel read, at the index its tag-read
       // cycles give (later only while the response waits).
+      p_control_read_valid : assert (o_read_valid == (read_valid_q[DATA_READ_LATENCY] &&
+          !read_open_q[DATA_READ_LATENCY]));
       assert ($countones(read_open_q) <= 1);
       assert ((read_open_q & ~read_valid_q) == '0);
       if (!SpecRead) assert (read_open_q == '0);
