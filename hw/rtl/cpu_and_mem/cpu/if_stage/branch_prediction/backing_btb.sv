@@ -931,6 +931,7 @@ module backing_btb #(
       cover (o_hit[1] && !aligned && held_aligned);
       cover (o_hit[0] && !aligned && !held_aligned && shifted);
       cover (o_hit[1] && !aligned && !held_aligned && shifted);
+      cover (o_hit[0] && !aligned && !held_aligned && shifted && last_set);
       cover (o_hit[0] && !aligned && !held_aligned && !shifted && held_shifted);
       cover (c_valid && c_refresh);
       cover (b_valid && b_refresh && !b_hit);
@@ -939,6 +940,18 @@ module backing_btb #(
       cover (b_valid && !b_refresh && !b_hit && &b_way_valid);
     end
   end
+`endif
+
+`ifndef SYNTHESIS
+`ifdef FROST_COVERAGE
+  // Cover points for simulation coverage (tests/README.md).
+  // A shifted lookup serves slot 1 from image 1.
+  cover_backing_btb_s1_slot1_hit :
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_reset) shift_answer && o_hit[0]);
+  // A shifted lookup serves a same-word slot 2 from image 1.
+  cover_backing_btb_s1_slot2_hit :
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || i_reset) shift_answer && o_hit[1]);
+`endif
 `endif
 
 `ifdef BACKING_BTB_FORMAL_MIRROR_READ

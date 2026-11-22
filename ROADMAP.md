@@ -598,9 +598,15 @@ and targeted microbenchmarks give these items:
    streaming scale, add and triad loops spend less than 0.3%. Taking
    ownership of a single 32-byte sector without fetching its 64-byte home
    line would still need per-sector L2 validity tracking.
-2. Data translation. A last-page bypass sends eligible translated accesses
-   directly to DMMU stage S2. Other translated accesses use S1 and S2.
-   Reducing that path would improve cross-page translation latency.
+2. Data translation. Under Sv39, translated loads and stores outside the
+   single-entry last-page buffer wait for DMMU stage S1 before reaching S2;
+   replacing that buffer with a 16-entry DTLB bypass lets any clean resident
+   hit enter S2 directly, leaving faults, concurrent refills and
+   mixed-attribute superpages on S1. The L1D store-lookup change (item 9)
+   and per-entry DTLB verdicts are on `main`, with the 16-entry bypass next.
+   On a DTLB miss, the shared 512-entry second-level TLB waits for S1 to
+   report the miss; starting that lookup on the bypass miss whenever the
+   port is idle removes that wait while keeping instruction-TLB priority.
 3. TLB reach. The DTLB and ITLB have 16 entries each, backed by a 512-entry
    second-level TLB, ASIDs with global pages, selective `sfence.vma`, and a
    walker cache of upper-level page-table pointers. In simulation a
@@ -683,7 +689,18 @@ and targeted microbenchmarks give these items:
    add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
-   line installs.
+   line installs. Planned work trims the L1D-miss to L2-hit round trip in
+   order. First, the home holds an accepted request before entering L2 tag
+   lookup; starting the lookup as the request is accepted, with live
+   line-conflict checks on that edge, removes that wait. Second, the home's
+   speculative L2 data read waits after the tag request; launching both on
+   the same edge removes that wait. Third, an accepted grant pauses at the
+   L1D endpoint before reaching the core; answering the core straight from
+   the accepted grant removes that wait. Fourth, on the request path from L1D
+   to home, a miss waits after endpoint acquisition, at an idle request
+   arbiter, and for the controller's own lookup; presenting the request at
+   acquisition, passing a lone offer straight through an idle arbiter, and
+   optionally acquiring from the hit path's miss result remove those waits.
 9. L1D read hits. A dependent load that hits in the L1D takes about nine
    cycles from one load launch to the next. A hit path beside the coherent
    L1D's controller answers loads that hit. Its answers still wait a cycle in
@@ -713,6 +730,18 @@ and targeted microbenchmarks give these items:
     the start of a fetch word that does not pair with the next one, and
     alignment flags (`-falign-loops`, `-falign-jumps`) for self-built
     software.
+11. Cached load launch. When the store queue is not empty, a staged load to
+    cached DDR waits for its store-queue probe verdict before launching its
+    read; an option on `main`, switched off by default (`LQ_PROBE_LAUNCH`),
+    lets an ordinary cached DDR load that misses the L0 launch during the
+    probe instead. If the verdict finds no overlapping older store and the
+    load misses the L0, the read is kept; if an older store forwards, blocks
+    or has an unknown address, or if the L0 hits or a flush occurs, the
+    speculative read is discarded. Device loads, LRs, AMOs, misaligned or
+    faulting loads, and low-BRAM loads keep waiting for the verdict. Enabling
+    the option for cached memory is in progress, with an optional filter to
+    skip early launch on matching older store addresses if forwarding
+    discards too many reads.
 
 ## Core area
 
