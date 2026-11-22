@@ -81,6 +81,7 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "strided": 0x43B0_2557,  # vmv.x.s a0, v27 in the strided memory trace
     "indexed": 0x43C0_2557,  # vmv.x.s a0, v28 in the indexed memory trace
     "segment": 0x43E0_2557,  # vmv.x.s a0, v30 in the segment memory trace
+    "fof": 0x43F0_2557,  # vmv.x.s a0, v31 in the fault-only-first load trace
 }
 
 # frost_rvfi_dii's error_flags bits.

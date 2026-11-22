@@ -513,6 +513,16 @@ page-boundary crossing inside a segment. Every segment store reads back all
 written bytes through immediate scalar loads without reading `misa`.
 [Segment memory](vector_segment.S)
 
+The fault-only-first load trace checks aligned `vle8ff.v`, `vle16ff.v`,
+`vle32ff.v` and `vle64ff.v` loads, both unmasked and masked, across the upper
+boundary of the 1 GiB cached DDR window at `0xC0000000`. It starts with a
+scalar load at `0xC0000000` to check load access-fault agreement, then checks
+later-element faults that trim `vl` while leaving post-fault lanes undisturbed
+across all four widths, multi-register and VLMAX configurations, masked-off
+faulting elements that preserve `vl`, non-faulting and zero-active loads, and
+element-zero faults that trap with `mcause`, `mtval`, `vstart` and unchanged
+`vl`, without reading `misa`. [Fault-only-first loads](vector_fof.S)
+
 The integer comparison trace checks vector, scalar and immediate predicates
 at SEW 32. It reads each active mask bit through an integer destination.
 The mask-undisturbed case checks enabled updates and preserved disabled bits.
@@ -529,9 +539,10 @@ implementations must return every planned trace and instruction.
 The VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer source
 widths, fractional LMUL, base FP results, fused multiply-add, FP
-conversions, unit-stride memory, strided memory, indexed memory, segment memory and integer
-comparisons. It checks `vcpop.m` for state and scalar results and FP
-comparisons. TestRIG must report each destination value mismatch.
+conversions, unit-stride memory, strided memory, indexed memory, segment
+memory, fault-only-first loads and integer comparisons. It checks `vcpop.m`
+for state and scalar results and FP comparisons. TestRIG must report each
+destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail
