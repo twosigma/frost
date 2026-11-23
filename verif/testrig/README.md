@@ -826,6 +826,27 @@ summation, subnormal widening, masked-off identity and verbatim `sNaN` seed
 copy, `vl == 0`, `tu` preservation, portable `VLMAX` and illegal traps.
 [Zvfh compares, misc and reductions](vector_zvfh_cmp_misc_red.S)
 
+The Zvfh widening arithmetic and FMA trace checks all eighteen FP16-to-FP32
+widening modes at `SEW = 16`: `vfwadd.{vv,vf,wv,wf}`, `vfwsub.{vv,vf,wv,wf}`,
+`vfwmul.{vv,vf}`, and `vfwmacc`, `vfwnmacc`, `vfwmsac` and `vfwnmsac` in
+`.vv` and `.vf` forms. It covers all five rounding modes with `frm`
+readbacks, subnormal FP16 widening, improperly NaN-boxed `.vf` scalars,
+masked `tu`/`mu` with disabled `sNaN` flag suppression, `vl == 0`, portable
+`VLMAX` from `mf4` through `m4`, legal upper-half overlaps and illegal
+widening traps.
+[Zvfh widening FP16 to FP32](vector_zvfh_widen.S)
+
+The Zvfh conversions trace checks the remaining nineteen FP16 conversion
+modes: thirteen at `SEW = 16` (`vfcvt.{xu,x,rtz.xu,rtz.x}.f.v`,
+`vfcvt.f.{xu,x}.v`, `vfwcvt.{xu,x,rtz.xu,rtz.x}.f.v`, `vfncvt.f.{xu,x}.w`
+and `vfncvt.rod.f.f.w`) and all six `SEW = 8` `int8 <-> FP16` modes
+(`vfwcvt.f.{xu,x}.v` and `vfncvt.{xu,x,rtz.xu,rtz.x}.f.w`). It covers all
+five rounding modes with `frm` readbacks, round-to-odd distinctness from
+standard `frm` modes including overflow and tiny subnormals, saturation and
+`NV` flags, masked `tu`/`mu` with disabled `sNaN` suppression, `vl == 0`,
+portable `VLMAX`, legal overlaps and illegal `SEW = 8` FP traps.
+[Zvfh conversions](vector_zvfh_cvt.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs three vector
 TestRIG shards (`core`, `segment` and `ext`) at each of VLEN 128, 256 and 512,
 sharing one prebuilt simulator per vector length. The `core` shard replays
@@ -853,10 +874,11 @@ reporting and resumption, and `nf * EMUL <= 8`, register-wrap, indexed
 restores the `core` shard's replay and control timeouts to 55 and 50
 minutes. Together, `core` and `segment` retire all 627
 base-V machine encodings. The `ext` shard runs `--vector-ext` (`16m` replay /
-`11m` controls), replaying `vector_zvfhmin.S`, `vector_zvbb.S`,
-`vector_zvbc_zvkned_zvkg.S`, `vector_zvknhb.S`, `vector_zvfh_arith_fma.S`
-and `vector_zvfh_cmp_misc_red.S` (with `Zvfhmin`, `Zvfh`, `Zvbb`, `Zvbc`,
-`Zvkg`, `Zvkned`, `Zvknha`, `Zvknhb` and `Zvkt` enabled in
+`11m` controls), replaying all eight RVA23 vector extension traces
+(`vector_zvfhmin.S`, `vector_zvbb.S`, `vector_zvbc_zvkned_zvkg.S`,
+`vector_zvknhb.S`, `vector_zvfh_arith_fma.S`, `vector_zvfh_cmp_misc_red.S`,
+`vector_zvfh_widen.S` and `vector_zvfh_cvt.S`, with `Zvfhmin`, `Zvfh`,
+`Zvbb`, `Zvbc`, `Zvkg`, `Zvkned`, `Zvknha`, `Zvknhb` and `Zvkt` enabled in
 `sail_frost_vlen*.json`). Both
 implementations must return every planned trace and instruction. The
 VLEN 128 `core`, `segment` and `ext` shards each reuse their simulator to flip one
@@ -871,11 +893,9 @@ carry/borrow, mask-register, integer multiply-add and integer scalar/merge
 operations, and checks `vcpop.m` for state and scalar results and FP
 comparisons. The `segment` shard checks `vmv.x.s` for both the directed
 segment trace (`segment`) and field 1 of the generated unit-stride segment
-control load (`segment-matrix`). The `ext` shard checks `vmv.x.s` for
-`vector_zvfhmin.S` (`zvfhmin`), `vector_zvbb.S` (`zvbb`),
-`vector_zvbc_zvkned_zvkg.S` (`zvbc-zvkned-zvkg`), `vector_zvknhb.S`
-(`zvknhb`), `vector_zvfh_arith_fma.S` (`zvfh-arith`) and
-`vector_zvfh_cmp_misc_red.S` (`zvfh-misc-red`). TestRIG must report
+control load (`segment-matrix`). The `ext` shard checks `vmv.x.s` for all
+eight extension traces (`zvfhmin`, `zvbb`, `zvbc-zvkned-zvkg`, `zvknhb`,
+`zvfh-arith`, `zvfh-misc-red`, `zvfh-widen` and `zvfh-cvt`). TestRIG must report
 each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs

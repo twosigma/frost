@@ -127,6 +127,8 @@ VECTOR_EXT_TRACES = tuple(
         "zvknhb",
         "zvfh_arith_fma",
         "zvfh_cmp_misc_red",
+        "zvfh_widen",
+        "zvfh_cvt",
     )
 )
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"

@@ -100,6 +100,8 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "zvknhb": 0x4240_2557,  # vmv.x.s a0, v4 in the Zvknhb SHA-2 trace
     "zvfh-arith": 0x4250_2557,  # vmv.x.s a0, v5 in the Zvfh arith/FMA trace
     "zvfh-misc-red": 0x4260_2557,  # vmv.x.s a0, v6 in the Zvfh cmp/misc/red trace
+    "zvfh-widen": 0x4270_2557,  # vmv.x.s a0, v7 in the Zvfh widening FP trace
+    "zvfh-cvt": 0x4280_2557,  # vmv.x.s a0, v8 in the Zvfh conversion trace
 }
 
 # frost_rvfi_dii's error_flags bits.

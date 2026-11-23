@@ -767,6 +767,8 @@ def _workflow_runtime_cases(
                 "zvknhb",
                 "zvfh-arith",
                 "zvfh-misc-red",
+                "zvfh-widen",
+                "zvfh-cvt",
             ),
         }
         for row in expand_matrix(jobs["test-testrig-vector"]["strategy"]["matrix"]):

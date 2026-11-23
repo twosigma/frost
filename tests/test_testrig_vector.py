@@ -4435,8 +4435,8 @@ def test_vector_ext_replay_and_coverage(tmp_path: Path) -> None:
     ext_dir = tmp_path / "vector_ext"
     assert plan.command == ["-d", str(ext_dir)]
     assert (plan.traces, plan.instructions) == (
-        6,
-        738 + 1260 + 1370 + 1129 + 2138 + 688,
+        8,
+        738 + 1260 + 1370 + 1129 + 2138 + 688 + 1318 + 1212,
     )
 
     zvfhmin_trace = ext_dir / "vector_zvfhmin.S"
@@ -4889,6 +4889,65 @@ def test_vector_ext_replay_and_coverage(tmp_path: Path) -> None:
     assert m_traps >= 6
     assert m_ctrls == [39]
     assert a_modes.isdisjoint(m_modes) and len(a_modes | m_modes) == 62
+
+    # Zvfh widening (18 modes at e16) and conversions (13 at e16 + 6 at e8 = 19 modes) -> 99 Zvfh + 2 Zvfhmin = 101 FP16 modes!
+    widen_trace = ext_dir / "vector_zvfh_widen.S"
+    assert (
+        sum(line.startswith(".4byte ") for line in widen_trace.read_text().splitlines())
+        == 1318
+    )
+    assert (
+        sum(
+            line.startswith(".assert ") for line in widen_trace.read_text().splitlines()
+        )
+        == 954
+    )
+    w_modes, w_frm_by_mode, w_frm, w_traps, w_ctrls = _scan_zvfh(
+        widen_trace, 0x4270_2557
+    )
+    assert len(w_modes) == 18 and all(s == 16 for s, _, _, _ in w_modes)
+    for mode in w_modes:
+        if mode[1] != 0x38:  # vfwmul.vv/.vf are exact in f32
+            assert w_frm_by_mode[mode] == {0, 1, 2, 3, 4}, (
+                mode,
+                w_frm_by_mode.get(mode),
+            )
+    assert w_frm == {0, 1, 2, 3, 4}
+    assert w_traps >= 9
+    assert w_ctrls == [26]
+
+    cvt_trace = ext_dir / "vector_zvfh_cvt.S"
+    assert (
+        sum(line.startswith(".4byte ") for line in cvt_trace.read_text().splitlines())
+        == 1212
+    )
+    assert (
+        sum(line.startswith(".assert ") for line in cvt_trace.read_text().splitlines())
+        == 1060
+    )
+    cv_modes, cv_frm_by_mode, cv_frm, cv_traps, cv_ctrls = _scan_zvfh(
+        cvt_trace, 0x4280_2557
+    )
+    cv_e16 = {m for m in cv_modes if m[0] == 16}
+    cv_e8 = {m for m in cv_modes if m[0] == 8}
+    assert len(cv_e16) == 13 and len(cv_e8) == 6
+    assert (16, 0x12, 1, 21) in cv_e16  # vfncvt.rod.f.f.w
+    for mode in cv_modes:
+        sew_m, _, _, sub_m = mode
+        if (sew_m == 16 and sub_m in {0, 1, 2, 3, 8, 9, 18, 19}) or (
+            sew_m == 8 and sub_m in {16, 17}
+        ):
+            assert cv_frm_by_mode[mode] == {0, 1, 2, 3, 4}, (
+                mode,
+                cv_frm_by_mode.get(mode),
+            )
+    assert cv_frm == {0, 1, 2, 3, 4}
+    assert cv_traps >= 12
+    assert cv_ctrls == [27]
+    all_zvfh = a_modes | m_modes | w_modes | cv_modes
+    assert len(all_zvfh) == 99
+    zvfhmin_modes = {(16, 0x12, 1, 12), (16, 0x12, 1, 20)}
+    assert all_zvfh.isdisjoint(zvfhmin_modes) and len(all_zvfh | zvfhmin_modes) == 101
 
 
 @pytest.mark.parametrize("vlen", vector.VECTOR_LENGTHS)
