@@ -614,20 +614,44 @@ assumes that dispatch comes with an allocation and uses that cycle's ROB tag,
 that a partial flush names a live ROB entry, and that address translation is
 off (the `tlb` and `ptw` targets and `vm_test` cover translation). INT_RS's
 issue-tag copies and the tags they copy have no reset: their initial values
-are assumed equal, and every later cycle asserts the equality (to depth 4;
-`rs_issue_tag_copies` proves it by induction from any initial state). At depth 4
-the proof does not reach ROB tag wraparound; simulation covers tag reuse.
-Nor does it reach an early load wakeup (a load takes at least four cycles
-from dispatch to its staged result), so `p_int_early_load_matches_mem`,
-`p_fp_early_load_matches_mem`, `p_early_load_accepted_or_recovering` and
-`p_early_load_really_broadcasts` are not exercised here. The wrapper is
-built with its default parameters, not the core's: `SPLIT_RS_DISPATCH`,
+are assumed equal, and every later cycle asserts the equality (to depth 4 in
+`bmc`, to depth 6 in `bmc_depth6`, and by induction from any initial state in
+`rs_issue_tag_copies`). Depth 4 (`bmc`, `fp_repair_bmc`) keeps the concrete
+ALU, integer multipliers, and FP engine/divider; depth 6 (`bmc_depth6`,
+`bmc_wakeup_depth6`, `fp_repair_bmc_depth6`) abstracts those leaf arithmetic
+units (`FP_SHIM_ABSTRACT_PROOF` plus freeing `alu`, `multiplier`,
+`dsp_tiled_multiplier_unsigned`, and `cl_multiplier` outputs with `anyseq`,
+since formal mode reads only their data results) and uses `abc bmc3 -c`. At
+depth 4 or 6 the proof does not reach ROB tag wraparound; simulation covers
+tag reuse. Depth 4 checks frames 0 through 3; depth 6 checks frames 4 and 5,
+reaching port-0 ALU2 redirect (`p_alu_held_result_presents_via_alu2`,
+`p_alu_redirect_port1_idle`, `p_alu_redirect_packet`), held-ALU-result commit
+stalls (`p_commit_waits_for_held_alu_result`,
+`p_commit_2_waits_for_held_alu_result`), and staged faulting loads in
+`mem_wakeup_merge`. `bmc_depth6` checks all 773 station and non-commit-bus
+wrapper assertions with the same 56 assumptions and free `i_fu_complete_*`
+ports. A non-faulting load reaches its staged result at frame 6, so
+`p_int_early_load_matches_mem`, `p_fp_early_load_matches_mem`,
+`p_early_load_accepted_or_recovering`, and `p_early_load_really_broadcasts`
+are not exercised at depth 4 or 6. The three commit-bus properties
+(`p_registered_native_fence_implies_flush`,
+`p_native_fence_copy_matches_non_translation_flush`, and
+`p_rename_wins_over_commit`) are proved to depth 10 in
+`tomasulo_wrapper_commit_bus`, which supplies the ROB's one-class allocation
+and slot-2 rename contracts. `bmc_wakeup_depth6` checks all 44
+`mem_wakeup_merge` assertions at depth 6 (including the four
+`duplicates_registered_lane` checks) with unused test-injection ports
+`i_fu_complete_0..7` tied to zero (matching `cpu_ooo` with `VECTOR=0`) and
+`TOMASULO_WRAPPER_LQ_SQ_DISJOINT` matching `instr_operand_classifier`'s
+mutually exclusive `needs_lq`/`needs_sq` outputs. The wrapper is built with
+its default parameters, not the core's: `SPLIT_RS_DISPATCH`,
 `ROB_SHARED_LINK_BANK`, `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS`,
 `CACHE_NORMAL_MEMORY`, `CMO_HOME` and `VECTOR` are 0 and `L0_CACHE_DEPTH` is
-128 (`fp_repair_bmc` sets `ENABLE_DISPATCH_DONE_REPAIR`).
-`fp_repair_bmc` enables the FP dispatch done repair, as the CPU does, and
-assumes the repair channels carry the pending FP instruction's source
-readiness and tags.
+128 (`fp_repair_bmc` and `fp_repair_bmc_depth6` set
+`ENABLE_DISPATCH_DONE_REPAIR`).
+`fp_repair_bmc` and `fp_repair_bmc_depth6` enable the FP dispatch done repair,
+as the CPU does, and assume the repair channels carry the pending FP
+instruction's source readiness and tags.
 `cover_alu_issue` holds the three ALU-issue covers (port 0's result passing
 through the ALU2 adapter, granted or held, and a done head waiting for the
 link the ALU adapter holds), and `cover` the others. With 12 checkpoints the

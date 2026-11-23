@@ -2048,7 +2048,15 @@ FORMAL_TARGETS = [
     FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo commit and flush integration, including FP dispatch done repair",
-        tasks=("bmc", "cover", "cover_alu_issue", "fp_repair_bmc"),
+        tasks=(
+            "bmc",
+            "cover",
+            "cover_alu_issue",
+            "fp_repair_bmc",
+            "bmc_depth6",
+            "bmc_wakeup_depth6",
+            "fp_repair_bmc_depth6",
+        ),
     ),
     FormalTarget(
         "tomasulo_wrapper_commit_bus.sby",
@@ -3824,6 +3832,18 @@ SBY_TASKS = [
     (
         "fp_repair_bmc",
         "Bounded model checking with production FP dispatch done repair enabled",
+    ),
+    (
+        "bmc_depth6",
+        "Depth-6 bounded model checking of station and wrapper assertions with abstract leaf FUs",
+    ),
+    (
+        "bmc_wakeup_depth6",
+        "Depth-6 bounded model checking of early-load wakeup merger assertions with abstract leaf FUs",
+    ),
+    (
+        "fp_repair_bmc_depth6",
+        "Depth-6 bounded model checking with FP dispatch done repair enabled and abstract leaf FUs",
     ),
     (
         "cover_alu_issue",

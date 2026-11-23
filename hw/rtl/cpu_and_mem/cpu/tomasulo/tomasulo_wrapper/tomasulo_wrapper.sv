@@ -5928,6 +5928,17 @@ module tomasulo_wrapper #(
     if (o_rs_full) assume (!i_rs_dispatch.valid);
   end
 
+`ifdef TOMASULO_WRAPPER_LQ_SQ_DISJOINT
+  // instr_operand_classifier sets at most one of needs_lq or needs_sq for any
+  // decoded instruction.
+  always_comb begin
+    if (i_rs_dispatch.valid) begin
+      a_dispatch_lq_sq_disjoint :
+      assume (!(i_rs_dispatch.mem_needs_lq && i_rs_dispatch.mem_needs_sq));
+    end
+  end
+`endif
+
   // No MEM_RS load dispatch when LQ is full
   always_comb begin
     if (o_lq_full && i_rs_dispatch.mem_needs_lq) assume (!mem_rs_dispatch_valid);

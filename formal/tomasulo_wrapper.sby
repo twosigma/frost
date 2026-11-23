@@ -1,8 +1,11 @@
 [tasks]
-bmc
-cover
-cover_alu_issue
-fp_repair_bmc
+bmc concrete
+cover concrete
+cover_alu_issue concrete
+fp_repair_bmc concrete
+bmc_depth6 depth6 depth6_all
+bmc_wakeup_depth6 depth6
+fp_repair_bmc_depth6 depth6 depth6_all
 
 [options]
 bmc: mode bmc
@@ -15,6 +18,9 @@ cover_alu_issue: depth 6
 cover_alu_issue: vcd off
 fp_repair_bmc: mode bmc
 fp_repair_bmc: depth 4
+depth6: mode bmc
+depth6: depth 6
+depth6: aigsmt boolector
 
 [engines]
 bmc: smtbmc boolector
@@ -24,6 +30,7 @@ cover_alu_issue: smtbmc boolector
 # harness and assumptions; only the internal ENABLE_DISPATCH_DONE_REPAIR
 # logic differs. This retains a check against contradictory assumptions.
 fp_repair_bmc: smtbmc --nopresat boolector
+depth6: abc bmc3 -c
 
 [script]
 read -formal -sv riscv_pkg.sv vec_hold_rows.sv
@@ -69,16 +76,60 @@ read -sv divider.sv
 read -sv dsp_tiled_multiplier_unsigned.sv
 read -sv multiplier.sv cl_multiplier.sv
 read -sv alu.sv
-read -sv fp_engine.sv
+concrete: read -sv fp_engine.sv
 # The FMA datapath's results are abstracted (fp_fma_pipe_equiv checks them).
 read -formal -D FP_FMA_PIPE_ABSTRACT -sv fp_pipe_lzc.sv fp_fma_pipe.sv
-read -sv fp_div_unit.sv
-read -sv fp_shim.sv
-read -formal -sv tomasulo_wrapper.sv
+concrete: read -sv fp_div_unit.sv
+concrete: read -sv fp_shim.sv
+depth6: read -sv -D FP_SHIM_ABSTRACT_PROOF fp_shim.sv
+concrete: read -formal -sv tomasulo_wrapper.sv
+depth6_all: read -formal -sv tomasulo_wrapper.sv
+bmc_wakeup_depth6: read -formal -D TOMASULO_WRAPPER_LQ_SQ_DISJOINT -sv tomasulo_wrapper.sv
 fp_repair_bmc: chparam -set ENABLE_DISPATCH_DONE_REPAIR 1 tomasulo_wrapper
+fp_repair_bmc_depth6: chparam -set ENABLE_DISPATCH_DONE_REPAIR 1 tomasulo_wrapper
 hierarchy -top tomasulo_wrapper
 script free_undefined.ys
+# Depth-6 tasks abstract leaf arithmetic datapaths whose control outputs are
+# unused in formal mode (ALU and integer/word/carry-less multipliers) and the
+# multi-cycle FP engine/divider via FP_SHIM_ABSTRACT_PROOF.
+depth6: delete t:alu t:multiplier t:dsp_tiled_multiplier_unsigned t:cl_multiplier
+depth6: setundef -undriven -anyseq
+# The three commit-bus properties (p_registered_native_fence_implies_flush,
+# p_native_fence_copy_matches_non_translation_flush and
+# p_rename_wins_over_commit) are proved to depth 10 in
+# tomasulo_wrapper_commit_bus with the ROB's one-class and slot-2 rename
+# contracts. bmc_wakeup_depth6 checks all 44 mem_wakeup_merge assertions.
+depth6_all: chformal -assert -remove tomasulo_wrapper/c:p_registered_native_fence_implies_flush tomasulo_wrapper/c:p_native_fence_copy_matches_non_translation_flush tomasulo_wrapper/c:p_rename_wins_over_commit *mem_wakeup_merge*/*
+bmc_wakeup_depth6: chformal -assert -remove t:$check r:FLAVOR=assert %i *mem_wakeup_merge*/* %d
+depth6: setattr -mod -unset keep_hierarchy *
+depth6: setattr -unset keep_hierarchy */c:*
+depth6: flatten
+# Production cpu_ooo ties i_fu_complete_0..5,7 to zero and i_fu_complete_6 to
+# zero when VECTOR=0; tying those test-injection ports prevents synthetic
+# duplicate-tag CDB collisions against live loads in mem_wakeup_merge.
+bmc_wakeup_depth6: connect -nomap -set i_fu_complete_0 81'b0
+bmc_wakeup_depth6: connect -nomap -set i_fu_complete_1 81'b0
+bmc_wakeup_depth6: connect -nomap -set i_fu_complete_2 81'b0
+bmc_wakeup_depth6: connect -nomap -set i_fu_complete_3 81'b0
+bmc_wakeup_depth6: connect -nomap -set i_fu_complete_4 81'b0
+bmc_wakeup_depth6: connect -nomap -set i_fu_complete_5 81'b0
+bmc_wakeup_depth6: connect -nomap -set i_fu_complete_6 81'b0
+bmc_wakeup_depth6: connect -nomap -set i_fu_complete_7 81'b0
+bmc_depth6: select -assert-count 773 t:$check r:FLAVOR=assert %i
+bmc_depth6: select -assert-count 56 t:$check r:FLAVOR=assume %i
+bmc_wakeup_depth6: select -assert-count 44 t:$check r:FLAVOR=assert %i
+bmc_wakeup_depth6: select -assert-count 57 t:$check r:FLAVOR=assume %i
+fp_repair_bmc_depth6: select -assert-count 809 t:$check r:FLAVOR=assert %i
+fp_repair_bmc_depth6: select -assert-count 62 t:$check r:FLAVOR=assume %i
+depth6: setattr -unset keep */w:* */c:*
+depth6: opt_clean -purge
 prep -top tomasulo_wrapper
+depth6: memory_map -keepdc
+depth6: opt -fast -keepdc
+depth6: techmap
+depth6: opt -fast -keepdc
+depth6: setundef -anyseq
+depth6: opt_clean
 # cover_alu_issue keeps only the three ALU-issue covers and cover the others.
 # With 12 checkpoints the three took 50 to 60 minutes to reach at step 5 of a
 # single task; the others are reached by step 3.
