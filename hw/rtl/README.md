@@ -19,8 +19,9 @@ compilation order.
 
 The [CPU and system architecture diagram](../../docs/diagrams/frost-architecture.svg)
 shows the datapath, translation, memory tiers, MMIO, and debug interfaces.
-The [component cache diagram](../../docs/diagrams/cache-hierarchy.svg) shows
-the line-cache hierarchy used by the component benches.
+The [cache hierarchy diagram](../../docs/diagrams/cache-hierarchy.svg) shows
+both the coherent CPU cache hierarchy and the line-cache hierarchy used by the
+component benches.
 
 `frost.sv` wraps `platform_top` with reset synchronization, UART clock
 crossings, and MMIO FIFOs. `platform_top` connects the reusable
