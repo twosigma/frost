@@ -171,7 +171,7 @@ def cocotb_jobs(
             env = {"FROST_RANDOM_START": "1", "FROST_COVERAGE": "0"}
             yield (
                 "test-testrig-vector",
-                str(row["vlen"]),
+                f"{row['vlen']}/{row['shard']}",
                 [
                     config_for(
                         simulator_config(DEFAULT_DDR_CAPACITY_LOG2_BYTES, row["vlen"]),

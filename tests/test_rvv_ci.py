@@ -45,14 +45,18 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     assert job["timeout-minutes"] == 80, (
         "Vector TestRIG job needs the registered budget"
     )
-    assert job["strategy"]["matrix"]["vlen"] == [128, 256, 512]
+    assert job["strategy"]["matrix"] == {
+        "vlen": [128, 256, 512],
+        "shard": ["core", "segment"],
+    }
     replay = next(
         step
         for step in job["steps"]
         if step.get("name") == "Compare seeded and directed vector traces"
     )
+    assert replay["if"] == "matrix.shard == 'core'"
     command = shlex.split(replay["run"].replace("\\\n", ""))
-    assert command[command.index("--kill-after=10s") + 1] == "60m", (
+    assert command[command.index("--kill-after=10s") + 1] == "55m", (
         "Vector TestRIG replay needs the registered budget"
     )
     arguments = command[command.index("tests/test_testrig.py") + 1 :]
@@ -62,15 +66,58 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     assert arguments[arguments.index("--response-timeout") + 1] == "600"
     assert "--vector-source-widths" in arguments
     assert "--vector-directed" in arguments
+    seg_replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Compare vector segment traces"
+    )
+    assert seg_replay["if"] == "matrix.shard == 'segment'"
+    seg_command = shlex.split(seg_replay["run"].replace("\\\n", ""))
+    assert seg_command[seg_command.index("--kill-after=10s") + 1] == "30m"
+    seg_args = seg_command[seg_command.index("tests/test_testrig.py") + 1 :]
+    assert "--vector-segments" in seg_args
+    assert seg_args[seg_args.index("--vlen") + 1] == "${{ matrix.vlen }}"
+    assert seg_args[seg_args.index("--startup-timeout") + 1] == "1200"
+    assert seg_args[seg_args.index("--response-timeout") + 1] == "600"
     control = next(
         step
         for step in job["steps"]
         if step.get("name") == "Check detection of an incorrect vector result"
     )
-    assert control["if"] == "matrix.vlen == 128"
-    assert control["timeout-minutes"] == 55, (
+    assert control["if"] == "matrix.vlen == 128 && matrix.shard == 'core'"
+    assert control["timeout-minutes"] == 50, (
         "Vector controls need the registered budget"
     )
+    seg_control = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Check detection of an incorrect segment result"
+    )
+    assert seg_control["if"] == "matrix.vlen == 128 && matrix.shard == 'segment'"
+    assert seg_control["timeout-minutes"] == 15
+    seg_calls = [
+        shlex.split(line)[1:]
+        for line in seg_control["run"].replace("\\\n", "").splitlines()
+        if line.startswith("check_segment_result ")
+    ]
+    assert seg_calls == [
+        [
+            "segment",
+            "vector_segment",
+            "order=45 insn=0x43e02557 rd=x10",
+            "0x19475b81 != 0x19475b80",
+            "--trace",
+            "verif/testrig/vector_segment.S",
+        ],
+        [
+            "segment-matrix",
+            "vector_segments",
+            "order=147 insn=0x43d02557 rd=x10",
+            "0x42eadaac != 0x42eadaad",
+            "--vector-segments",
+        ],
+    ]
+    assert job["steps"].index(seg_replay) < job["steps"].index(seg_control)
     control_command = shlex.split(control["run"].replace("\\\n", ""))
     assert "timeout --kill-after=10s 600s" in control["run"], (
         "Vector result controls require the 600-second outer guard"
@@ -154,12 +201,6 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
             "vector_indexed",
             "order=217 insn=0x43c02557 rd=x10",
             "0x31415926 != 0x31415927",
-        ],
-        [
-            "segment",
-            "vector_segment",
-            "order=45 insn=0x43e02557 rd=x10",
-            "0x19475b81 != 0x19475b80",
         ],
         [
             "fof",

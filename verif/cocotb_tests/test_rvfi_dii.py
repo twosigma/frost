@@ -93,6 +93,7 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "mask-ops": 0x4350_2557,  # vmv.x.s a0, v21 in the mask-register ops trace
     "int-mul-add": 0x4370_2557,  # vmv.x.s a0, v23 in the integer multiply-add trace
     "int-vx-merge": 0x4340_2557,  # vmv.x.s a0, v20 in the integer scalar/merge trace
+    "segment-matrix": 0x43D0_2557,  # vmv.x.s a0, v29 in the generated segment matrix trace
 }
 
 # frost_rvfi_dii's error_flags bits.
