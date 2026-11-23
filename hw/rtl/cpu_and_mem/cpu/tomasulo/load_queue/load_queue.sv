@@ -2160,10 +2160,25 @@ module load_queue #(
   end
   assign sq_check_pma_fault = !sq_check_parked_fault &&
       sq_check_fault_eligible && !sq_check_pma_ok;
-  assign sq_check_misaligned = sq_check_parked_fault || sq_check_pma_fault ||
-      (i_trap_misaligned_accesses &&
-       sq_check_fault_eligible &&
-       coherent_staged_misaligned);
+  // Precompute staged fault qualification ahead of the late coherence holds so
+  // i_coherent_cut_hold crosses a single gate into sq_check_misaligned and
+  // u_result_valid_prepare.
+  (* keep = "true" *) logic sq_check_fault_pre_hold;
+  assign sq_check_fault_pre_hold = sq_check_entry_valid &&
+      (!(sq_check_is_lr_q || sq_check_is_amo_q)
+       || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
+      (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
+      !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q)) &&
+      coherent_address_fault;
+  assign sq_check_misaligned = sq_check_fault_pre_hold &&
+      !i_coherent_cut_hold && !coherent_sector_hold;
+`ifndef SYNTHESIS
+  always_comb if (sim_reset_seen_q) begin
+    p_sq_check_misaligned_exact : assert (sq_check_misaligned ==
+        (sq_check_parked_fault || sq_check_pma_fault ||
+         (i_trap_misaligned_accesses && sq_check_fault_eligible && coherent_staged_misaligned)));
+  end
+`endif
   assign sq_commit_check_block =
       i_sq_commit_pending && sq_check_entry_valid && sq_check_is_cached_region;
   // older_amo_write_pending releases the staged entry: a load fenced behind
@@ -2915,13 +2930,16 @@ module load_queue #(
     assign launch_if_hit = 1'b0;
     // The launch during the probe: the probe fires this cycle (its class
     // terms come from the registered stage class in probe_launch_ok), and the
-    // launch resources are free. Like the phase-2 launch it takes the bus and
-    // the L0 hit last; the hit blocks a cached ordinary load.
-    assign probe_launch_permitted = PROBE_LAUNCH && probe_launch_ok && sq_check_pending &&
+    // launch resources are free. Apply the late coherence holds at the final
+    // gate so i_coherent_cut_hold stays shallow.
+    (* keep = "true" *) logic probe_launch_pre_hold;
+    assign probe_launch_pre_hold = PROBE_LAUNCH && probe_launch_ok && sq_check_pending &&
         !sq_check_phase2 && !sq_check_no_older_store_q && !i_sq_empty &&
-        !coherent_local_hold && !i_flush_en && !i_flush_all && !drop_mem_response_pending &&
+        !i_flush_en && !i_flush_all && !drop_mem_response_pending &&
         !i_sq_commit_pending && !older_amo_write_pending && !cached_launch_hold_q &&
         !coh_launch_hold_q && !probe_zero_hold;
+    assign probe_launch_permitted = probe_launch_pre_hold &&
+        !i_coherent_cut_hold && !coherent_sector_hold;
     assign o_mem_read_en = !i_mem_bus_busy && (launch_permitted || probe_launch_permitted) &&
         !(cache_lookup_hit && launch_hit_blocks);
   end
@@ -2964,13 +2982,16 @@ module load_queue #(
   // holds and L0 hit directly rather than crossing gen_coherent_issue_gate.
   (* keep = "true" *) logic probe_verdict_early;
   (* keep = "true" *) logic probe_verdict_sq_clear;
+  (* keep = "true" *) logic probe_verdict_pre_hold;
   (* keep = "true" *) logic probe_verdict_settle;
   assign probe_verdict_early = probe_launched_q && sq_check_pending && sq_check_phase2 &&
       probe_launch_ok && !coh_launch_hold_q && !i_flush_en && !i_flush_all;
   assign probe_verdict_sq_clear = sq_check_no_older_store_q || i_sq_empty ||
       (i_sq_all_older_addrs_known && !i_sq_forward.match);
-  assign probe_verdict_settle = probe_verdict_early && probe_verdict_sq_clear &&
-      !coherent_local_hold && !i_sq_commit_pending && !older_amo_write_pending;
+  assign probe_verdict_pre_hold = probe_verdict_early && probe_verdict_sq_clear &&
+      !i_sq_commit_pending && !older_amo_write_pending;
+  assign probe_verdict_settle = probe_verdict_pre_hold &&
+      !i_coherent_cut_hold && !coherent_sector_hold;
   assign probe_settle = probe_launched_q && sq_can_issue && !i_flush_en && !i_flush_all;
   assign probe_keep = probe_verdict_settle &&
       !(ENABLE_L0_FAST_PATH && !l0_lookup_busy && cache_lookup_hit) && !probe_resp_now;
@@ -3046,10 +3067,22 @@ module load_queue #(
   end
   assign cs_router_canceled = (i_flush_all && i_mem_request_pending && last_launch_cached_q) ?
       (CachedSlots'(1) << last_launch_slot_q) : '0;
+  // Lowest free cached slot as a one-hot mask from registered cs_valid.
+  // Metadata registers are dead while a slot is invalid, so pre-capturing into
+  // the lowest free slot whenever a load is staged decouples their clock
+  // enables from the late launch and L0-hit cones without touching valid slots.
+  logic [CachedSlots-1:0] cs_alloc_free_oh;
   always_comb begin
     cs_alloc_idx = '0;
     for (int sl = int'(CachedSlots) - 1; sl >= 0; sl--) begin
       if (!cs_valid[sl]) cs_alloc_idx = CachedSlotBits'(sl);
+    end
+  end
+  for (genvar sl = 0; sl < CachedSlots; sl++) begin : gen_cs_alloc_free_oh
+    if (sl == 0) begin : gen_slot0
+      assign cs_alloc_free_oh[0] = !cs_valid[0];
+    end else begin : gen_slotn
+      assign cs_alloc_free_oh[sl] = !cs_valid[sl] && (&cs_valid[sl-1:0]);
     end
   end
   // Launch captures into the fast snapshot or a cached slot take the L0 hit
@@ -3074,6 +3107,13 @@ module load_queue #(
       p_fast_capture_exact : assert (fast_capture == (mem_read_en && !launching_is_cached));
     p_cs_capture_exact : assert (cs_capture == ({CachedSlots{mem_read_en && launching_is_cached}} &
         (CachedSlots'(1) << cs_alloc_idx)));
+`ifndef F_LQ_PREMATCH_ONLY
+`ifndef LQ_AMO_COMPUTE_LOCAL_PROOF
+    if (i_rst_n && |cs_capture)
+      p_cs_metadata_capture_covers :
+      assert ((cs_capture & ~(cs_alloc_free_oh & {CachedSlots{sq_check_pending}})) == '0);
+`endif
+`endif
   end
 `endif
   always_comb begin
@@ -3174,11 +3214,15 @@ module load_queue #(
 
   // Apply the L0 hit after the other write permissions. Reset clears every
   // valid bit, so a write in a reset cycle reaches no live entry.
+  // AMO write completion is mutually exclusive with L0 hits and SQ forwards
+  // (head AMO serialization blocks younger loads), so select port-1's address
+  // and data on amo_data_wr_fire directly rather than gating them on the late
+  // cache_hit_fast_path/sq_do_forward cones.
+  wire amo_data_wr_fire = (amo_state == AMO_WRITE_ACTIVE) && i_amo_mem_write_done;
   (* keep = "true" *) wire ram_hit_write_eligible;
   assign ram_hit_write_eligible = cache_hit_eligible;
   (* keep = "true" *) wire ram_non_hit_write;
-  assign ram_non_hit_write = !i_flush_all &&
-      (sq_do_forward || (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done));
+  assign ram_non_hit_write = !i_flush_all && (sq_do_forward || amo_data_wr_fire);
 
   always_comb begin
     lq_data_we[0] = !i_flush_all && accept_mem_response && !issued_is_amo;
@@ -3187,9 +3231,16 @@ module load_queue #(
         i_mem_read_data : FLEN'(lu_data_out);
 
     lq_data_we[1] = ram_non_hit_write || (ram_hit_write_eligible && cache_lookup_hit);
-    lq_data_wr_addr[1] = (cache_hit_fast_path || sq_do_forward) ? sq_check_idx : amo_entry_idx;
-    lq_data_wd[1] = (cache_hit_fast_path || sq_do_forward) ? ram_sq_payload : FLEN'(amo_old_value);
+    lq_data_wr_addr[1] = amo_data_wr_fire ? amo_entry_idx : sq_check_idx;
+    lq_data_wd[1] = amo_data_wr_fire ? FLEN'(amo_old_value) : ram_sq_payload;
   end
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  assert property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
+      !(amo_data_wr_fire && (cache_hit_fast_path || sq_do_forward)))
+  else $error("LQ: AMO write completion collided with L0 hit or SQ forward on port 1");
+`endif
+`endif
 
 `ifdef F_LQ_RAM_PAYLOAD_PROOF
   logic [1:0] f_ram_we;
@@ -3226,7 +3277,11 @@ module load_queue #(
     // or no match. Thus the three sources cannot collide.
     // ---------------------------------------------------------------
     if (!i_flush_all) begin
-      if (cache_hit_fast_path) begin
+      if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
+        f_ram_we[1]   = 1'b1;
+        f_ram_addr[1] = amo_entry_idx;
+        f_ram_data[1] = FLEN'(amo_old_value);
+      end else if (cache_hit_fast_path) begin
         f_ram_we[1] = 1'b1;
         f_ram_addr[1] = sq_check_idx;
         // FLD takes the full cached dword line; FLW/INT extract from it
@@ -3240,10 +3295,6 @@ module load_queue #(
         // addressed word/half/byte from the image beat.
         f_ram_data[1]      = (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE)
             ? i_sq_forward.data : FLEN'(lu_fwd_out);
-      end else if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
-        f_ram_we[1]   = 1'b1;
-        f_ram_addr[1] = amo_entry_idx;
-        f_ram_data[1] = FLEN'(amo_old_value);
       end
     end
   end
@@ -4988,7 +5039,7 @@ module load_queue #(
       fast_amo_rs2  <= lq_amo_rs2_rd;
     end
     for (int sl = 0; sl < CachedSlots; sl++) begin
-      if (cs_capture[sl]) begin
+      if (cs_alloc_free_oh[sl] && sq_check_pending) begin
         cs_idx[sl]      <= launch_mem_issue_idx;
         cs_addr[sl]     <= launch_mem_issue_addr;
         cs_size[sl]     <= launch_mem_issue_size;
@@ -5168,8 +5219,13 @@ module load_queue #(
   // equals issue_cdb_fire. The reduced bypass selects are likewise equivalent
   // under capture; omit flush and grant from payload selection for timing.
   always_ff @(posedge i_clk) begin
-    if (issue_cdb_fire || bypass_fire) begin
+    // cdb_stage_data.value is only read while cdb_stage_valid is set; updating
+    // it whenever the stage can accept a new result decouples its clock enables
+    // from the late bypass-fire cone while preserving any held valid value.
+    if (cdb_stage_slot_available) begin
       cdb_stage_data.value <= cdb_value_next;
+    end
+    if (issue_cdb_fire || bypass_fire) begin
       cdb_stage_data.exc_cause <= coherent_cdb_cause_next;
       if (issue_cdb_found) begin
         cdb_stage_data.tag       <= issue_cdb_result.tag;
