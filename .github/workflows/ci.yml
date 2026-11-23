@@ -1044,7 +1044,7 @@ jobs:
       ${{ !cancelled() && needs.build-docker.result == 'success' &&
       needs.gate.outputs.full == 'true' &&
       (github.event_name == 'push' || github.event_name == 'pull_request') }}
-    timeout-minutes: 65
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -1078,7 +1078,7 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run make -C tests clean
           ./scripts/frost.py --image frost-dev:latest run \
-            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 45m \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 50m \
             python3 tests/test_testrig.py --vector 12 --vector-length 20 \
               --vector-source-widths --vector-directed --seed 42 --vlen "${{ matrix.vlen }}" \
               --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
@@ -1086,7 +1086,7 @@ jobs:
 
       - name: Check detection of an incorrect vector result
         if: matrix.vlen == 128
-        timeout-minutes: 40
+        timeout-minutes: 45
         run: |
           check_vector_result() {
             local selector=$1 trace=$2 record=$3 mismatch=$4
@@ -1144,6 +1144,8 @@ jobs:
             'order=22 insn=0x42a02557 rd=x10' '0x400e000000000000 != 0x400e000000000001'
           check_vector_result permutes vector_permutes \
             'order=23 insn=0x42b02557 rd=x10' '0x2468ace0 != 0x2468ace1'
+          check_vector_result reductions vector_reductions \
+            'order=30 insn=0x43202557 rd=x10' '0x1234a00a != 0x1234a00b'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
