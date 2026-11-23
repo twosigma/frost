@@ -1025,8 +1025,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "if_fault_ras_veto.sby",
         "Fetch-faulted IF packets never carry a predicted-taken flag or operate "
-        "the return-address stack",
-        tasks=("bmc", "cover", "prove"),
+        "the return-address stack, and intact if_stage makes the slot-2 veto redundant",
+        tasks=("bmc", "cover", "prove", "prove_slot2_veto_redundant"),
     ),
     FormalTarget(
         "mispredict_capture.sby",
@@ -3516,6 +3516,10 @@ SBY_TASKS = [
     ("cover_direct", "Direct-fetch responses coincident with clears and errors"),
     ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
+    (
+        "prove_slot2_veto_redundant",
+        "Unbounded induction that intact if_stage makes the slot-2 fetch-fault veto redundant",
+    ),
     ("prove_copy", "Staged address copies sample identical inputs on every edge"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
     ("prove_vector", "Unbounded proof with vector state enabled"),

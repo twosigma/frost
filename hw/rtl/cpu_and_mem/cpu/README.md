@@ -1522,8 +1522,13 @@ The fast-lookup training contract is pinned per mechanism:
   including spanning second-word faults, and
   `test_slot2_fault_suppresses_trained_call_and_replay_ras`, covering live,
   spanning, and stall-replayed slot-2 calls), `odd_halfword_pred_test`, and
-  live `p_prediction_pma_fault_cofactor_exact` in `if_stage`. The explicit
-  slot-2 veto stays as a defensive guard, and the directed test pins the
+  live `p_prediction_pma_fault_cofactor_exact` in `if_stage`. Because slot 2
+  has no pending-prediction path and `served_fault_any` disables
+  `prediction_common` on every served-window fault, the explicit
+  `o_from_if_to_pd_2.fetch_fault` veto in packet assembly is redundant in
+  intact `if_stage` (`if_fault_ras_veto:prove_slot2_veto_redundant`) and
+  serves as a defensive guard pinned with `branch_prediction_controller`
+  abstracted by `if_fault_ras_veto:prove`; the directed test pins the
   observable behavior of faulting slot-2 calls.
 - **Invalidation events and four-cycle hold**: `btb_invalidate_hold` formal
   proof, `branch_predictor` and `branch_prediction_controller` benches (hold
