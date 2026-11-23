@@ -47,6 +47,7 @@ from ci_sim_models import (
     MAKEFILE_BUILD_VARIABLES,
     ddr_timing_args,
     select_model,
+    selective_visibility_enabled,
     settings,
 )
 
@@ -6465,6 +6466,32 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="cpu_tb",
         description="MOP and NTL state in M/S/U modes, dependent consumers, and reserved mtval",
     ),
+    # Negative probes invoked by tests/test_frost_signal_visibility.py to confirm
+    # that unlisted frost signals fail with a clear diagnostic and that RTL
+    # assertions fire in the selective-visibility build.
+    "frost_unlisted_signal_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_frost_visibility_probes",
+        hdl_toplevel_module="frost",
+        app_name="csr_test",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        extra_env=(("COCOTB_TEST_FILTER", "unlisted_signal_probe"),),
+        description="Negative probe: touch an unlisted internal frost signal",
+        include_in_pytest=False,
+    ),
+    "frost_deliberate_assertion_violation": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_frost_visibility_probes",
+        hdl_toplevel_module="frost",
+        app_name="csr_test",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        extra_env=(
+            ("COCOTB_TEST_FILTER", "deliberate_assertion_violation"),
+            ("COCOTB_PLUSARGS", "+frost_startup_assertion_control=nic_reset"),
+        ),
+        description="Negative probe: trip nic_engine assertion control under selective visibility",
+        include_in_pytest=False,
+    ),
 }
 
 TEST_REGISTRY["memerr_test_seeded"] = replace(
@@ -7264,6 +7291,14 @@ class CocotbRunner:
 
         environment_variables["SIM"] = "verilator"
         environment_variables["ROOT"] = str(self.repository_root_directory)
+        environment_variables.setdefault("VERILATOR_NUMA_STRATEGY", "none")
+        environment_variables["FROST_SELECTIVE_VISIBILITY"] = (
+            "1"
+            if selective_visibility_enabled(
+                self.hdl_toplevel_module, environment_variables
+            )
+            else "0"
+        )
         # Append external arguments after registry defaults so sweeps can
         # override settings such as FETCH_VALID_FUZZ_SEED.
         environment_variables["FROST_VERILATOR_EXTRA_ARGS"] = (
