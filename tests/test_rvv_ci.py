@@ -215,6 +215,12 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
             "order=48 insn=0x43302557 rd=x10",
             "0x1234a00a != 0x1234a00b",
         ],
+        [
+            "mask-ops",
+            "vector_mask_ops",
+            "order=27 insn=0x43502557 rd=x10",
+            "0xf884 != 0xf885",
+        ],
     ]
 
 

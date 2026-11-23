@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (37, instructions + 20991) if vector_directed else (15, instructions)
+    expected = (38, instructions + 22412) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -305,6 +305,7 @@ def test_vector_directed_replay(
         ("vector_permutes.S", 1876, 714),
         ("vector_reductions.S", 1731, 796),
         ("vector_carry_borrow.S", 1870, 759),
+        ("vector_mask_ops.S", 1421, 601),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -3513,6 +3514,231 @@ def test_vector_carry_borrow_trace_covers_forms() -> None:
         "misaligned_vd_m2",
         "misaligned_vs2_m2",
         "misaligned_vs1_m2",
+        "vill",
+    }
+    assert ctrl_count == 1
+
+
+def test_vector_mask_ops_trace_covers_forms() -> None:
+    """Check all 15 base-V mask-register encodings, >64b scans, SEWs, overlaps and traps."""
+    trace = VERIF_DIR / "testrig" / "vector_mask_ops.S"
+    text = trace.read_text()
+    blocks = TRACE_WORD.split(text)[1:]
+    assert blocks
+
+    opmvv = 2
+    logic_f6 = set(range(0x18, 0x20))
+    scalar_vs1 = {16, 17}  # vcpop.m, vfirst.m (f6 == 0x10)
+    scan_vs1 = {1, 2, 3}  # vmsbf.m, vmsof.m, vmsif.m (f6 == 0x14)
+    elem_vs1 = {16, 17}  # viota.m, vid.v (f6 == 0x14)
+
+    retired_forms: set[tuple[str, int, int]] = set()
+    masking_by_group: dict[str, set[bool]] = {}
+    sews_by_elem: dict[int, set[int]] = {}
+    regimes_by_group: dict[str, set[str]] = {}
+    policies_seen: set[int] = set()
+    lmuls_seen: set[int] = set()
+    legal_overlaps: set[str] = set()
+    block1_groups: set[str] = set()
+    vfirst_minus_one = False
+    vfirst_block1 = False
+    traps_seen = 0
+    trap_kinds: set[str] = set()
+    ctrl_count = 0
+
+    vtype = 0
+    vill = False
+    avl_mode = "imm"
+    vl_val = 0
+    reg_val: dict[int, int | None] = {0: 0}
+
+    for block in blocks:
+        word_match = re.match(r"^\.4byte (0x[0-9a-f]{8})\b", block)
+        assert word_match is not None
+        word = int(word_match.group(1), 16)
+        opcode = word & 0x7F
+        f3 = (word >> 12) & 0x7
+
+        if word == 0x4350_2557:
+            ctrl_count += 1
+
+        if opcode == 0x73 and f3 in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            uimm = (word >> 15) & 0x1F
+            assert csr != 0x301  # No misa access
+            assert not (csr == 0x008 and (f3 in (1, 5) or uimm != 0))
+            continue
+
+        if opcode != 0x57:
+            _update_int_reg_tracking(reg_val, word)
+            continue
+
+        if f3 == 7:
+            if (word >> 30) == 0b11:
+                vtype = (word >> 20) & 0x3FF
+                vl_val = (word >> 15) & 0x1F
+                avl_mode = "imm"
+            else:
+                vtype = (word >> 20) & 0x7FF
+                rs1 = (word >> 15) & 0x1F
+                rd = (word >> 7) & 0x1F
+                if rs1 == 0 and rd != 0:
+                    avl_mode = "vlmax"
+                    vl_val = 0
+                else:
+                    avl_mode = "reg"
+                    rv = reg_val.get(rs1)
+                    vl_val = rv if rv is not None else 0
+            sew_code = (vtype >> 3) & 7
+            lmul_code = vtype & 7
+            vill = (
+                sew_code > 3
+                or lmul_code == 4
+                or (lmul_code in (5, 6, 7) and (lmul_code - 8) < (sew_code - 3))
+            )
+            continue
+
+        f6 = (word >> 26) & 0x3F
+        vm = bool((word >> 25) & 1)
+        vs2 = (word >> 20) & 0x1F
+        vs1 = (word >> 15) & 0x1F
+        vd = (word >> 7) & 0x1F
+        sew = 8 << ((vtype >> 3) & 7)
+        lmul = vtype & 7
+
+        group = ""
+        form_id: tuple[str, int, int] | None = None
+        if f3 == opmvv and f6 in logic_f6:
+            group = "logic"
+            form_id = ("logic", f6, 0)
+        elif f3 == opmvv and f6 == 0x10 and vs1 in scalar_vs1:
+            group = "scalar"
+            form_id = ("scalar", f6, vs1)
+        elif f3 == opmvv and f6 == 0x14 and vs1 in scan_vs1:
+            group = "scan"
+            form_id = ("scan", f6, vs1)
+        elif f3 == opmvv and f6 == 0x14 and vs1 in elem_vs1:
+            group = "elem"
+            form_id = ("elem", f6, vs1)
+        else:
+            continue
+
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            traps_seen += 1
+            if vill:
+                trap_kinds.add("vill")
+            elif group == "logic" and not vm:
+                trap_kinds.add(f"logic_vm0_{f6:x}")
+            elif group == "scan" and vd == vs2:
+                trap_kinds.add(f"scan_vd_vs2_{vs1}")
+            elif group == "scan" and not vm and vd == 0:
+                trap_kinds.add(f"scan_masked_v0_{vs1}")
+            elif group == "elem" and vs1 == 16 and vd == vs2:
+                trap_kinds.add("viota_vd_vs2")
+            elif group == "elem" and not vm and vd == 0:
+                trap_kinds.add(f"elem_masked_v0_{vs1}")
+            elif group == "elem" and vs1 == 17 and vs2 != 0:
+                trap_kinds.add("vid_vs2_nz")
+            elif group == "elem" and lmul == 1 and (vd & 1):
+                trap_kinds.add(f"elem_misaligned_m2_{vs1}")
+            continue
+
+        assert re.search(r"(?m)^\.assert trap == 0\b", block)
+        assert not vill
+        assert form_id is not None
+        retired_forms.add(form_id)
+        masking_by_group.setdefault(group, set()).add(vm)
+        policies_seen.add(vtype & 0xC0)
+        lmuls_seen.add(lmul)
+
+        if group == "elem":
+            sews_by_elem.setdefault(vs1, set()).add(sew)
+        if group == "scalar" and vs1 == 17:
+            m = re.search(r'(?m)^\.assert rd_wdata == (0x[0-9a-f]+) "', block)
+            if m is not None:
+                val = int(m.group(1), 16)
+                if val == 0xFFFFFFFFFFFFFFFF:
+                    vfirst_minus_one = True
+                elif val >= 64:
+                    vfirst_block1 = True
+
+        if avl_mode == "vlmax":
+            regimes_by_group.setdefault(group, set()).add("vlmax")
+        elif vl_val == 0:
+            regimes_by_group.setdefault(group, set()).add("zero")
+        elif all(vl_val < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+            regimes_by_group.setdefault(group, set()).add("below_vlmax")
+        if vl_val >= 80:
+            block1_groups.add(group)
+
+        if group == "logic":
+            if vd == vs2 == vs1 == 0:
+                legal_overlaps.add("logic_self_v0")
+            elif vd == vs2 and (vd & 1) and lmul == 1:
+                legal_overlaps.add("logic_m2_odd_vd_vs2")
+            elif vd == vs1 and (vd & 1) and lmul == 1:
+                legal_overlaps.add("logic_m2_odd_vd_vs1")
+        elif group == "scalar" and not vm and vs2 == 0:
+            legal_overlaps.add(f"scalar_masked_vs2_v0_{vs1}")
+        elif group == "scan":
+            if vm and vd == 0:
+                legal_overlaps.add("scan_unmasked_vd_v0")
+            if not vm and vs2 == 0:
+                legal_overlaps.add("scan_masked_vs2_v0")
+        elif group == "elem":
+            if vm and vd == 0:
+                legal_overlaps.add(f"elem_unmasked_vd_v0_{vs1}")
+            if not vm and vs1 == 16 and vs2 == 0:
+                legal_overlaps.add("viota_masked_vs2_v0")
+
+    expected_forms: set[tuple[str, int, int]] = (
+        {("logic", f6, 0) for f6 in logic_f6}
+        | {("scalar", 0x10, vs1) for vs1 in scalar_vs1}
+        | {("scan", 0x14, vs1) for vs1 in scan_vs1}
+        | {("elem", 0x14, vs1) for vs1 in elem_vs1}
+    )
+    assert len(expected_forms) == 15
+    assert retired_forms == expected_forms
+
+    assert masking_by_group["logic"] == {True}
+    for group in ("scalar", "scan", "elem"):
+        assert masking_by_group[group] == {True, False}
+    for group in ("logic", "scalar", "scan", "elem"):
+        assert {"below_vlmax", "vlmax", "zero"} <= regimes_by_group[group]
+    assert sews_by_elem[16] == {8, 16, 32, 64}
+    assert sews_by_elem[17] == {8, 16, 32, 64}
+    assert {"logic", "scalar", "scan"} <= block1_groups
+    assert vfirst_minus_one and vfirst_block1
+    assert {0x00, 0xC0} <= policies_seen
+    assert {0, 1, 2, 3, 5, 6, 7} <= lmuls_seen
+    assert {
+        "logic_self_v0",
+        "logic_m2_odd_vd_vs2",
+        "logic_m2_odd_vd_vs1",
+        "scalar_masked_vs2_v0_16",
+        "scalar_masked_vs2_v0_17",
+        "scan_unmasked_vd_v0",
+        "scan_masked_vs2_v0",
+        "elem_unmasked_vd_v0_16",
+        "elem_unmasked_vd_v0_17",
+        "viota_masked_vs2_v0",
+    } <= legal_overlaps
+    assert traps_seen == 15
+    assert trap_kinds == {
+        "logic_vm0_19",
+        "logic_vm0_1b",
+        "scan_vd_vs2_1",
+        "scan_vd_vs2_2",
+        "scan_vd_vs2_3",
+        "scan_masked_v0_1",
+        "scan_masked_v0_2",
+        "scan_masked_v0_3",
+        "viota_vd_vs2",
+        "elem_masked_v0_16",
+        "elem_masked_v0_17",
+        "vid_vs2_nz",
+        "elem_misaligned_m2_16",
+        "elem_misaligned_m2_17",
         "vill",
     }
     assert ctrl_count == 1

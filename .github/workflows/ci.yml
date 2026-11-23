@@ -1148,6 +1148,8 @@ jobs:
             'order=30 insn=0x43202557 rd=x10' '0x1234a00a != 0x1234a00b'
           check_vector_result carry-borrow vector_carry_borrow \
             'order=48 insn=0x43302557 rd=x10' '0x1234a00a != 0x1234a00b'
+          check_vector_result mask-ops vector_mask_ops \
+            'order=27 insn=0x43502557 rd=x10' '0xf884 != 0xf885'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
