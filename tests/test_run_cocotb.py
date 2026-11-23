@@ -2467,8 +2467,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="wfi_seed_recovery",
         nic_mac_clocks=False,
         description=(
-            "With prediction disabled, a direct JAL exposes its fall-through WFI "
-            "at the ROB head during recovery. Each run checks that the interrupt "
+            "With prediction disabled and the JAL's allocation-time recovery held "
+            "off, a direct JAL exposes its fall-through WFI at the ROB head during "
+            "commit recovery. Each run checks that the interrupt "
             "resume PC holds the JAL target until it retires. A timeout reports "
             "if the JAL and fall-through WFI never queued behind the waiting WFI."
         ),
@@ -5532,6 +5533,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL2_CACHE_BYTES=4096",
             "-GL2_PREFETCH=0",
             "-DFROST_PMA_LEGACY_DEVICE_STORES=0",
+        ),
+    ),
+    "cpu_top_early_jal_ras_flush": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_cpu_top_early_jal_ras_flush",
+        hdl_toplevel_module="cpu_top",
+        description=(
+            "Full-flush return-stack restore with EarlyJalrRecovery cleared "
+            "and EarlyJalRecovery set"
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "+define+FROST_TEST_EARLY_JALR_OFF",
+            "-GSIM_FAST_MAINT=1",
+            "-GL1_CACHE_BYTES=2048",
+            "-GL1I_CACHE_BYTES=2048",
+            "-GL2_CACHE_BYTES=4096",
+            "-GL2_PREFETCH=0",
         ),
     ),
     "load_queue_writethrough": CocotbRunConfig(

@@ -38,11 +38,21 @@ module early_redirect_completion_formal #(
     input riscv_pkg::reorder_buffer_branch_update_t i_update,
     input riscv_pkg::reorder_buffer_commit_t i_commit,
     input riscv_pkg::reorder_buffer_commit_t i_commit_2,
-    input logic [riscv_pkg::XLEN-1:0] i_fence_i_target_pc
+    input logic [riscv_pkg::XLEN-1:0] i_fence_i_target_pc,
+    // A mispredicted JAL staged at allocation (riscv_pkg::EarlyJalRecovery).
+    input logic i_jal_launch,
+    input logic i_jal_capture,
+    input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_unresolved,
+    input logic [TagBits-1:0] i_jal_tag,
+    input logic [riscv_pkg::CheckpointIdWidth-1:0] i_jal_checkpoint_id,
+    input logic [riscv_pkg::XLEN-1:0] i_jal_pc,
+    input logic [riscv_pkg::XLEN-1:0] i_jal_target,
+    input logic i_jal_is_compressed,
+    input logic i_jal_is_call
 );
   logic trap_q, xret_q, fence_q, native_fence_q;
   logic early_active, early_pending, early_fire, backend, backend_next;
-  logic full_flush, commit_pending, partial_flush, fetch_flush, after_head, jalr;
+  logic full_flush, commit_pending, partial_flush, fetch_flush, after_head, jalr, jal;
   logic [TagBits-1:0] early_tag, backend_tag, flush_tag;
   logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint;
 
@@ -70,6 +80,16 @@ module early_redirect_completion_formal #(
       .i_flush_for_mret(xret_q),
       .i_trap_taken_reg(trap_q),
       .i_mret_taken_reg(xret_q),
+      .i_jal_launch,
+      .i_checkpoint_unresolved,
+      .i_head_tag(i_head),
+      .i_jal_capture,
+      .i_jal_tag,
+      .i_jal_checkpoint_id,
+      .i_jal_pc,
+      .i_jal_target,
+      .i_jal_is_compressed,
+      .i_jal_is_call,
       .o_early_mispredict_active(early_active),
       .o_early_mispredict_pending(early_pending),
       .o_early_mispredict_fire(early_fire),
@@ -78,7 +98,8 @@ module early_redirect_completion_formal #(
       .o_early_backend_flush_tag(backend_tag),
       .o_early_mispredict_tag(early_tag),
       .o_early_mispredict_checkpoint_id(checkpoint),
-      .o_early_mispredict_is_jalr(jalr)
+      .o_early_mispredict_is_jalr(jalr),
+      .o_early_mispredict_is_jal(jal)
   );
 
   misprediction_flush_controller flush_control (
@@ -131,7 +152,9 @@ module early_redirect_completion_formal #(
       p_redirect_completes :
       assert (full_flush || (partial_flush && flush_tag == $past(early_tag)));
       c_jalr_partial : cover ($past(jalr) && !full_flush && partial_flush && !after_head);
-      c_branch_partial : cover (!$past(jalr) && !full_flush && partial_flush && !after_head);
+      c_branch_partial :
+      cover (!$past(jalr) && !$past(jal) && !full_flush && partial_flush && !after_head);
+      c_jal_partial : cover ($past(jal) && !full_flush && partial_flush && !after_head);
       c_older_commit : cover (after_head && !full_flush && $past(i_head != early_tag));
       c_trap : cover (full_flush && trap_q);
       c_xret : cover (full_flush && xret_q);

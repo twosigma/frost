@@ -221,11 +221,13 @@ take saves the PC after the WFI.
 
 [`early_misprediction_recovery`](../../cpu_ooo/branch_recovery/early_misprediction_recovery.sv)
 starts recovery one cycle after a checkpointed conditional branch or JALR
-resolves as mispredicted. It marks the entry `early_recovered`
+resolves as mispredicted, or when a staged mispredicted JAL launches once older
+branches and JALRs resolve. It marks the entry `early_recovered`
 (`i_early_recovery_en`, `i_early_recovery_tag`) so it can retire without
 redirecting again. A JALR recovers at retirement when `EarlyJalrRecovery`
-is cleared. If a younger instruction is already recovering, an older JALR
-still records its resolved target and misprediction in the ROB. It redirects
+is cleared, and a JAL recovers at retirement when `EarlyJalRecovery` is cleared
+or its staged launch is cancelled. If another recovery is active, an older JALR
+records its resolved target and misprediction in the ROB. It redirects
 at retirement if it survives until then.
 
 ## Serializing instructions

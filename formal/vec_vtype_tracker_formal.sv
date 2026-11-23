@@ -57,7 +57,8 @@ module vec_vtype_tracker_formal (
       (alloc_op == riscv_pkg::VTOX) ||
       (alloc_op == riscv_pkg::VTOF) || (alloc_op == riscv_pkg::VLOAD) ||
       (alloc_op == riscv_pkg::VSTORE);
-  logic [NC-1:0] ckpt_owned_q, ckpt_valid_q;
+  // Full-depth shadows keep every ID-indexed read defined (no x bits for the aig engine).
+  logic [2**CW-1:0] ckpt_owned_q, ckpt_valid_q;
   logic unknown_clear_q;
 
   vec_vtype_tracker #(
@@ -89,6 +90,10 @@ module vec_vtype_tracker_formal (
     if (save) assume (alloc);  // bundles dispatch whole (p_vec_tracker_save_allocates)
     assume (!(restore && (rst || flush_all || arch_reload)));
     if (restore) assume (ckpt_valid_q[restore_id]);
+    // Checkpoint IDs name a real checkpoint (NC need not be a power of two).
+    assume (save_id < CW'(NC));
+    assume (restore_id < CW'(NC));
+    assume (watch_id < CW'(NC));
     owned_n = owned_q;
     if (alloc && clears) owned_n = 1'b1;
     if (arch_reload) owned_n = 1'b0;

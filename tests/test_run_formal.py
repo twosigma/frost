@@ -2048,7 +2048,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo commit and flush integration, including FP dispatch done repair",
-        tasks=("bmc", "cover", "fp_repair_bmc"),
+        tasks=("bmc", "cover", "cover_alu_issue", "fp_repair_bmc"),
     ),
     FormalTarget(
         "tomasulo_wrapper_commit_bus.sby",
@@ -2240,9 +2240,11 @@ FORMAL_TARGETS = [
         tasks=(
             "prove_int_active",
             "prove_int_ckpt_lo",
+            "prove_int_ckpt_mid",
             "prove_int_ckpt_hi",
             "prove_fp_active",
             "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_mid",
             "prove_fp_ckpt_hi",
             "cover",
         ),
@@ -3819,6 +3821,10 @@ SBY_TASKS = [
         "fp_repair_bmc",
         "Bounded model checking with production FP dispatch done repair enabled",
     ),
+    (
+        "cover_alu_issue",
+        "Cover search for the ALU-issue scenarios, split from the other covers",
+    ),
     # INT reservation-station features at eight-entry component capacity;
     # the wrapper target checks the production sixteen-entry station.
     (
@@ -4061,8 +4067,12 @@ SBY_TASKS = [
         "Unbounded RAT proof for integer snapshot invariants in checkpoints 0 through 3.",
     ),
     (
-        "prove_int_ckpt_hi",
+        "prove_int_ckpt_mid",
         "Unbounded RAT proof for integer snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "prove_int_ckpt_hi",
+        "Unbounded RAT proof for integer snapshot invariants in checkpoints 8 through 11.",
     ),
     (
         "prove_fp_active",
@@ -4073,8 +4083,12 @@ SBY_TASKS = [
         "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 0 through 3.",
     ),
     (
-        "prove_fp_ckpt_hi",
+        "prove_fp_ckpt_mid",
         "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "prove_fp_ckpt_hi",
+        "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 8 through 11.",
     ),
     (
         "bmc_addr1",
@@ -4661,9 +4675,11 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "rat_checkpoint_restore": [
             "prove_int_active",
             "prove_int_ckpt_lo",
+            "prove_int_ckpt_mid",
             "prove_int_ckpt_hi",
             "prove_fp_active",
             "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_mid",
             "prove_fp_ckpt_hi",
         ],
         "coherent_hart_cache": [
@@ -5526,7 +5542,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "rat_checkpoint_restore": (
         "runs memory_map and opt -full without -keepdc after the opening",
         {
-            "prove_int_active prove_int_ckpt_lo prove_int_ckpt_hi prove_fp_active prove_fp_ckpt_lo prove_fp_ckpt_hi cover": [
+            "prove_int_active prove_int_ckpt_lo prove_int_ckpt_mid prove_int_ckpt_hi prove_fp_active prove_fp_ckpt_lo prove_fp_ckpt_mid prove_fp_ckpt_hi cover": [
                 "memory_map",
                 "opt -full",
             ],

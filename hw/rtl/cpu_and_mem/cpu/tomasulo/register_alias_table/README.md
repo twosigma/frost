@@ -3,7 +3,7 @@
 The RAT maps architectural registers (x0-x31, f0-f31) to the ROB tags of
 their in-flight producers. Dispatch reads sources and writes renames; commit
 clears a mapping once the architectural register file holds the value. The
-RAT also keeps eight checkpoints of the whole mapping, so a mispredicted
+RAT also keeps twelve checkpoints of the whole mapping, so a mispredicted
 branch can restore it in one cycle. The code is
 [`register_alias_table.sv`](register_alias_table.sv).
 
@@ -29,17 +29,19 @@ valid count, and top entry), the branch's own ROB tag and generation bit,
 and its integer destination register and write-enable bit. On a misprediction,
 the snapshot replaces the active RAT in one cycle.
 
-There are eight checkpoint slots. While all are occupied, a bundle that
+There are twelve checkpoint slots (`riscv_pkg::NumCheckpoints`), named by a
+4-bit ID; the count need not be a power of two, and the allocator hands out
+the lowest free ID below it. While all are occupied, a bundle that
 contains a branch or jump waits at dispatch; other bundles still dispatch.
 Each distributed RAM slot holds 64 seven-bit entries and 83 metadata bits,
-for a total of 4,248 bits across the eight slots. An entry is a
+for a total of 6,372 bits across the twelve slots. An entry is a
 valid bit, a generation bit, and the 5-bit tag. The active RATs stay in
 flip-flops because they need parallel lookup, per-entry commit clear, and a
 bulk overwrite on restore.
 
 If slot 2 is the branch or jump that takes the checkpoint, the snapshot
-includes slot 1's same-cycle rename. Early recovery of a JALR that writes
-an integer destination restores the JALR as that register's producer,
+includes slot 1's same-cycle rename. Early recovery of a JAL or JALR that writes
+an integer destination restores the jump as that register's producer,
 including when both slots write the same register. Rename writes decode
 dispatch's pre-fire destination signals and apply the bundle fire (`i_alloc_fire`) last (see the
 [dispatch guide](../dispatch/README.md)).
