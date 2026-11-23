@@ -1693,12 +1693,15 @@ sequencer's probes into the L1D. Requests and responses pass through the
 arbiters and the adapter without a register stage, so the boundary between
 the parts adds no cycle.
 `frost_cache_hierarchy` composes the two parts for component benches.
-The CPU hierarchy uses `coherent_hart_cache` and `coherence_home`.
+The CPU hierarchy uses `coherent_hart_cache`, `coherence_home`,
+`coherence_prefetch_agent`, L1D stream prefetch, the hart line client and
+Zicbom CMO.
 
-[![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration through the line-size adapter into the L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
+[![FROST cache hierarchy: coherent CPU path (coherent_hart_cache, hart line client, DMA ingress, prefetch agent and L2 coherence home) and component-bench line-cache hierarchy (frost_hart_cache and frost_cluster_cache)](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
 
-The diagram shows the line-cache component hierarchy. Arrows follow
-requests; responses return by id prefix.
+Section 01 of the diagram shows the coherent CPU cache hierarchy; section 02
+shows the line-cache component hierarchy. Arrows follow requests and probes;
+responses return by transaction identity or ID prefix.
 
 The arbiter tree is a 2:1 `line_port_arbiter` (walker over L1I) under a 3:1
 one (L1D over that pair over DMA). With the stream prefetcher

@@ -74,6 +74,7 @@ crypto = importlib.import_module("testrig.crypto")
 mmu = importlib.import_module("testrig.mmu")
 rvfi_dii = importlib.import_module("testrig.rvfi_dii")
 vector = importlib.import_module("testrig.vector")
+vector_segments = importlib.import_module("testrig.vector_segments")
 compressed_mops = importlib.import_module("testrig.compressed_mops")
 fp_ext = importlib.import_module("testrig.fp_ext")
 svinval = importlib.import_module("testrig.svinval")
@@ -102,7 +103,6 @@ VECTOR_DIRECTED_TRACES = tuple(
         "int_compare",
         "strided",
         "indexed",
-        "segment",
         "fof",
         "int_widen_narrow",
         "fixed_point",
@@ -117,6 +117,7 @@ VECTOR_DIRECTED_TRACES = tuple(
         "int_vx_merge",
     )
 )
+VECTOR_SEGMENT_TRACE = VERIF_DIR / "testrig" / "vector_segment.S"
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
 DEFAULT_LOG_DIR = TESTS_DIR / "testrig_logs"
@@ -467,6 +468,22 @@ def prepare_inputs(
             flush=True,
         )
         command += ["-d", str(trace_dir)]
+    elif arguments.vector_segments:
+        seed = (
+            arguments.seed
+            if arguments.seed is not None
+            else vector_segments.DEFAULT_SEED
+        )
+        trace_dir = work_dir / "vector_segments"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        paths_written = vector_segments.write_traces(trace_dir, seed=seed)
+        shutil.copyfile(VECTOR_SEGMENT_TRACE, trace_dir / VECTOR_SEGMENT_TRACE.name)
+        print(
+            f"Wrote {len(paths_written)} generated segment traces (seed 0x{seed:x}) "
+            f"and {VECTOR_SEGMENT_TRACE.name} at VLEN {arguments.vlen} to {trace_dir}",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
     elif arguments.fp_ext:
         seed = (
             arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
@@ -693,7 +710,7 @@ def run(arguments: argparse.Namespace) -> int:
         ATOMICS_ARCHITECTURE
         if (arguments.atomics or arguments.mmu or arguments.cmo)
         else vector.ARCHITECTURE
-        if arguments.vector
+        if (arguments.vector or arguments.vector_segments)
         else DEFAULT_ARCHITECTURE
     )
     sail = frost = engine = None
@@ -1036,6 +1053,13 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "integer multiply-add and integer scalar/merge traces",
     )
     parser.add_argument(
+        "--vector-segments",
+        action="store_true",
+        help="replay the five seeded generated segment traces from "
+        "verif/testrig/vector_segments.py plus verif/testrig/vector_segment.S "
+        "(sets --vlen to 128 when not given)",
+    )
+    parser.add_argument(
         "--vlen",
         type=int,
         choices=vector.VECTOR_LENGTHS,
@@ -1047,8 +1071,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--seed",
         type=int,
         help=(
-            "seed for --atomics, --crypto, --zcb, --fp-ext, --mmu, --cmo, --svinval "
-            "or --vector (default: random, printed)"
+            "seed for --atomics, --crypto, --zcb, --fp-ext, --mmu, --cmo, --svinval, "
+            "--vector or --vector-segments (default: random, or fixed seed for "
+            "--vector-segments)"
         ),
     )
     parser.add_argument(
@@ -1087,7 +1112,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--vector-source-widths requires --vector")
     if arguments.vector_directed and arguments.vector is None:
         parser.error("--vector-directed requires --vector")
-    if arguments.vector and arguments.vlen is None:
+    if (arguments.vector or arguments.vector_segments) and arguments.vlen is None:
         arguments.vlen = DEFAULT_VECTOR_LENGTH
     active_modes = sum(
         bool(mode)
@@ -1104,6 +1129,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             arguments.mmu,
             arguments.cmo,
             arguments.vector,
+            arguments.vector_segments,
         )
     )
     if active_modes > 1 and not (
@@ -1111,8 +1137,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     ):
         parser.error(
             "--trace, --trace-dir, --wfi, --sscofpmf, --atomics, --crypto, --zcb, "
-            "--fp-ext, --svinval, --mmu, --cmo and --vector are mutually exclusive "
-            "(except --sscofpmf --trace)"
+            "--fp-ext, --svinval, --mmu, --cmo, --vector and --vector-segments "
+            "are mutually exclusive (except --sscofpmf --trace)"
         )
     return arguments
 

@@ -40,6 +40,7 @@ VERIF_DIR = REPO_ROOT / "verif"
 if str(VERIF_DIR) not in sys.path:
     sys.path.insert(0, str(VERIF_DIR))
 vector = importlib.import_module("testrig.vector")
+vector_segments = importlib.import_module("testrig.vector_segments")
 test_testrig = importlib.import_module("test_testrig")
 
 WORD = re.compile(r"^\.4byte (0x[0-9a-f]{8})\s+# (.+)$")
@@ -274,7 +275,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (40, instructions + 27075) if vector_directed else (15, instructions)
+    expected = (39, instructions + 24916) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -295,7 +296,6 @@ def test_vector_directed_replay(
         ("vector_int_compare.S", 261, 210),
         ("vector_strided.S", 1846, 629),
         ("vector_indexed.S", 1924, 645),
-        ("vector_segment.S", 2159, 1126),
         ("vector_fof.S", 326, 208),
         ("vector_int_widen_narrow.S", 1753, 871),
         ("vector_fixed_point.S", 1701, 1206),
@@ -684,9 +684,6 @@ def _check_vector_mem_store_readbacks(
                 assert not vill and vl_by_vlen is not None and sew is not None, (
                     f"{trace.name}: store before valid vset* config"
                 )
-                assert nf == 0 or mop in (0, 2), (
-                    f"{trace.name}: unsupported vector store form at index {index}"
-                )
                 if mop == 0:
                     assert rs2_or_sumop in (0, 0x0B), (
                         f"{trace.name}: unsupported unit-stride sumop at index {index}"
@@ -718,9 +715,10 @@ def _check_vector_mem_store_readbacks(
                         }
                         for v, vl in vl_by_vlen.items()
                     }
-                else:  # indexed (mop in (1, 3))
+                else:  # indexed or indexed-segment (mop in (1, 3))
                     index_bytes = _VMEM_WIDTH_BYTES[width]
                     elem_bytes = sew // 8
+                    seg_bytes = nfields * elem_bytes
                     per_vlen = {}
                     for v, vl in vl_by_vlen.items():
                         vlenb = v // 8
@@ -736,7 +734,7 @@ def _check_vector_mem_store_readbacks(
                                 idx_buf[i * index_bytes : (i + 1) * index_bytes],
                                 "little",
                             )
-                            elem_range = set(range(offset, offset + elem_bytes))
+                            elem_range = set(range(offset, offset + seg_bytes))
                             if mop == 1:
                                 assert written.isdisjoint(elem_range), (
                                     f"{trace.name}: unordered indexed store at index "
@@ -4147,6 +4145,280 @@ def test_vector_int_vx_merge_trace_covers_forms() -> None:
         "vill_17_0",
     }
     assert ctrl_count == 1
+
+
+def test_vector_segments_replay_and_coverage(tmp_path: Path) -> None:
+    """Check --vector-segments determinism, pinned digests, readbacks, all 252 forms, SEW!=EEW, FoF/vstart and traps."""
+    args = test_testrig.parse_arguments(["--vector-segments"])
+    assert args.vector_segments and args.vlen == 128
+    with pytest.raises(SystemExit):
+        test_testrig.parse_arguments(["--vector-segments", "--vector", "1"])
+
+    # Pin per-file SHA-256 digests of the CI-generated traces at DEFAULT_SEED
+    # and confirm determinism and seed sensitivity.
+    expected_digests = {
+        "01_segment_unit_stride.S": "c6b02c9224ec1881df45ecf75fe4cd5e319e770cc435f24b46e5c68a67c63434",
+        "02_segment_strided.S": "5cb073d5a2535c0e390f21abea9a447d770f9e1258f453a9e290185241f72db9",
+        "03_segment_indexed_load.S": "bbf03bd621de6a3bf6ae33cd14d0fb7998168ac22fa0ea79b3dcc94d1c9972f0",
+        "04_segment_indexed_store.S": "14a0855dd20339b8cfbbb2d223a9fd15bf197a78423a9a424e542e79444bb6d3",
+        "05_segment_fof.S": "b905d4672a161fd49d5d5aedaf4603621ce3901bccc690664fe05ed70f27482c",
+    }
+    assert vector_segments.trace_digests() == expected_digests
+    regen_a = vector_segments.write_traces(tmp_path / "regen_a")
+    regen_b = vector_segments.write_traces(tmp_path / "regen_b")
+    alt_seed = vector_segments.write_traces(tmp_path / "alt_seed", seed=12345)
+    for pa, pb, pc in zip(regen_a, regen_b, alt_seed, strict=True):
+        assert pa.read_bytes() == pb.read_bytes()
+        assert pa.read_bytes() != pc.read_bytes()
+
+    config = test_testrig.write_sail_config(30, tmp_path, vlen=128)
+    plan = test_testrig.prepare_inputs(args, tmp_path, config)
+    seg_dir = tmp_path / "vector_segments"
+    assert plan.command == ["-d", str(seg_dir)]
+    assert (plan.traces, plan.instructions) == (6, 7817 + 2159)
+
+    traces = sorted(seg_dir.glob("*.S"))
+    assert [p.name for p in traces] == [
+        *vector_segments.TRACE_NAMES,
+        "vector_segment.S",
+    ]
+    seg_directed = seg_dir / "vector_segment.S"
+    assert (
+        seg_directed.read_bytes()
+        == (VERIF_DIR / "testrig" / "vector_segment.S").read_bytes()
+    )
+    seg_lines = seg_directed.read_text().splitlines()
+    assert sum(line.startswith(".4byte ") for line in seg_lines) == 2159
+    assert sum(line.startswith(".assert ") for line in seg_lines) == 1126
+
+    # Every retiring segment store across all 6 traces must read back all written bytes immediately.
+    for trace in traces:
+        blocks = TRACE_WORD.split(trace.read_text())[1:]
+        words = [int(block.split()[1], 0) for block in blocks]
+        _check_vector_mem_store_readbacks(trace, blocks, words)
+
+    # Decode all retired segment encodings across the 5 generated traces:
+    # all 9 classes x nf 2..8 x eew 8/16/32/64 = 252, SEW != EEW, masking/tails/VL=0/VLMAX, FoF/vstart, traps.
+    generated_traces = [seg_dir / name for name in vector_segments.TRACE_NAMES]
+    retired_seg_forms: set[tuple[bool, int, int, bool, int]] = set()
+    xwidth_unit_strided: set[tuple[bool, int, int, int]] = set()
+    xwidth_indexed_ieew: set[tuple[bool, int]] = set()
+    xwidth_fof_eew: set[int] = set()
+    masked_kinds: set[tuple[bool, int, bool]] = set()
+    policies_seen: set[int] = set()
+    regimes_seen: set[tuple[str, str]] = set()
+    traps_by_kind: set[str] = set()
+    fof_trims_vl1 = 0
+    fof_trim_vl2 = False
+    fof_vlmax_trim = False
+    fof_vl0_no_trap = False
+    vstart_fault_seen = False
+    vstart_resume_clear_seen = False
+    ctrl_count = 0
+    ctrl_order: int | None = None
+
+    for trace in traces:
+        blocks = TRACE_WORD.split(trace.read_text())[1:]
+        for idx, block in enumerate(blocks):
+            if int(block.split()[1], 0) == vector_segments.CONTROL_INSN:
+                ctrl_count += 1
+                if trace.name == "01_segment_unit_stride.S":
+                    ctrl_order = idx
+
+    for trace in generated_traces:
+        blocks = TRACE_WORD.split(trace.read_text())[1:]
+        vtype = 0
+        sew = 8
+        vill = False
+        avl_mode = ""
+        vl_imm = 0
+        for block in blocks:
+            word = int(block.split()[1], 0)
+            opcode = word & 0x7F
+            f3 = (word >> 12) & 7
+            if opcode == 0x57 and f3 == 7:
+                is_ivli = (word >> 30) == 0b11
+                vtype = ((word >> 20) & 0x3FF) if is_ivli else ((word >> 20) & 0x7FF)
+                sew_code = (vtype >> 3) & 7
+                lmul_code = vtype & 7
+                vill = sew_code > 3 or lmul_code == 4
+                sew = 8 << min(sew_code, 3)
+                avl_mode = "imm" if is_ivli else "vlmax"
+                vl_imm = (word >> 15) & 0x1F if is_ivli else 0
+                continue
+            if opcode == 0x73 and f3 == 2 and ((word >> 20) & 0xFFF) == 0x008:
+                if 'rd_wdata == 0x1 "non-FoF vlseg2e32 fault vstart==1"' in block:
+                    vstart_fault_seen = True
+                if (
+                    'rd_wdata == 0x0 "non-FoF vlseg2e32 resume clears vstart==0"'
+                    in block
+                ):
+                    vstart_resume_clear_seen = True
+                continue
+            if opcode == 0x73 and f3 == 2 and ((word >> 20) & 0xFFF) == 0xC20:
+                if 'rd_wdata == 0x1 "vlseg' in block and "trimmed vl==1" in block:
+                    fof_trims_vl1 += 1
+                if 'rd_wdata == 0x2 "elem2 vlseg3e32ff trimmed vl==2"' in block:
+                    fof_trim_vl2 = True
+                if 'rd_wdata == 0x1 "vlmax vlseg2e32ff trimmed vl==1"' in block:
+                    fof_vlmax_trim = True
+                if 'rd_wdata == 0x0 "vl==0 vlseg2e32ff vl==0"' in block:
+                    fof_vl0_no_trap = True
+                continue
+            if opcode not in (0x07, 0x27) or f3 not in _VMEM_WIDTH_BYTES:
+                continue
+            nf = (word >> 29) & 7
+            if nf == 0:
+                continue
+            is_store = opcode == 0x27
+            mop = (word >> 26) & 3
+            umop = (word >> 20) & 0x1F
+            vm = bool((word >> 25) & 1)
+            vd = (word >> 7) & 0x1F
+            is_fof = not is_store and mop == 0 and umop == 0x10
+            eew = _VMEM_WIDTH_BYTES[f3] * 8
+            nfields = nf + 1
+            if re.search(r"(?m)^\.assert trap == 1\b", block):
+                if vill:
+                    traps_by_kind.add(f"vill_{mop}_{int(is_fof)}")
+                elif "elem0 mid-seg" in block:
+                    traps_by_kind.add("access_fof_elem0_midseg")
+                elif "access fault" in block:
+                    traps_by_kind.add(
+                        "access_fof_elem0" if is_fof else "access_non_fof_elem1"
+                    )
+                elif "xwidth nf*EMUL=10" in block:
+                    traps_by_kind.add("nf_emul_10_xwidth")
+                elif "nf*EMUL=10" in block:
+                    traps_by_kind.add(f"nf_emul_10_{mop}_{int(is_fof)}_{int(is_store)}")
+                elif "nf*EMUL" in block:
+                    traps_by_kind.add(
+                        f"nf_emul_gt8_{mop}_{int(is_fof)}_{int(is_store)}"
+                    )
+                elif "vd+nf" in block:
+                    traps_by_kind.add(f"reg_wrap_{mop}_{int(is_fof)}")
+                elif "upper vs2" in block:
+                    traps_by_kind.add("idx_overlap_upper_vs2")
+                elif "m2 vd[8..11]" in block:
+                    traps_by_kind.add("idx_overlap_upper_vd")
+                elif "overlap" in block:
+                    traps_by_kind.add(f"idx_overlap_{int(is_store)}")
+                elif not vm and (vd == 0 or (mop in (1, 3) and umop == 0)):
+                    traps_by_kind.add(f"masked_v0_{mop}_{int(is_fof)}")
+                elif "misaligned" in block:
+                    traps_by_kind.add(f"misaligned_{mop}_{int(is_fof)}")
+                continue
+            assert re.search(r"(?m)^\.assert trap == 0\b", block)
+            retired_seg_forms.add((is_store, mop, nfields, is_fof, eew))
+            if not is_fof and mop in (0, 2) and sew != eew:
+                xwidth_unit_strided.add((is_store, mop, nfields, eew))
+            if mop in (1, 3) and sew != eew:
+                xwidth_indexed_ieew.add((is_store, eew))
+            if is_fof and sew != eew:
+                xwidth_fof_eew.add(eew)
+            if not vm:
+                masked_kinds.add((is_store, mop, is_fof))
+                policies_seen.add(vtype & 0xC0)
+            family = "fof" if is_fof else f"{'store' if is_store else 'load'}_mop{mop}"
+            if avl_mode == "vlmax":
+                regimes_seen.add((family, "vlmax"))
+            elif vl_imm == 0:
+                regimes_seen.add((family, "zero"))
+
+    expected_forms: set[tuple[bool, int, int, bool, int]] = set()
+    for nfields in range(2, 9):
+        for eew in (8, 16, 32, 64):
+            expected_forms.add((False, 0, nfields, False, eew))  # vlseg
+            expected_forms.add((True, 0, nfields, False, eew))  # vsseg
+            expected_forms.add((False, 2, nfields, False, eew))  # vlsseg
+            expected_forms.add((True, 2, nfields, False, eew))  # vssseg
+            expected_forms.add((False, 1, nfields, False, eew))  # vluxseg
+            expected_forms.add((False, 3, nfields, False, eew))  # vloxseg
+            expected_forms.add((True, 1, nfields, False, eew))  # vsuxseg
+            expected_forms.add((True, 3, nfields, False, eew))  # vsoxseg
+            expected_forms.add((False, 0, nfields, True, eew))  # vlseg*ff
+    assert len(expected_forms) == 252
+    assert retired_seg_forms == expected_forms
+    # Every unit-stride and strided (nf 2..8, eew 8/16/32/64) tested with SEW != EEW
+    assert len(xwidth_unit_strided) == 112
+    assert xwidth_indexed_ieew == {
+        (False, 8),
+        (False, 16),
+        (False, 32),
+        (False, 64),
+        (True, 8),
+        (True, 32),
+    }
+    assert xwidth_fof_eew == {16, 64}
+    assert {
+        (False, 0, False),
+        (True, 0, False),
+        (False, 2, False),
+        (True, 2, False),
+        (False, 1, False),
+        (False, 3, False),
+        (True, 1, False),
+        (False, 0, True),
+    } <= masked_kinds
+    assert {0x00, 0xC0} <= policies_seen  # tu,mu and ta,ma
+    assert {
+        ("load_mop0", "zero"),
+        ("load_mop0", "vlmax"),
+        ("store_mop0", "zero"),
+        ("store_mop0", "vlmax"),
+        ("load_mop2", "zero"),
+        ("load_mop2", "vlmax"),
+        ("store_mop2", "zero"),
+        ("load_mop1", "zero"),
+        ("load_mop3", "vlmax"),
+        ("store_mop1", "zero"),
+        ("store_mop3", "vlmax"),
+        ("fof", "zero"),
+        ("fof", "vlmax"),
+    } <= regimes_seen
+    assert fof_trims_vl1 == 28
+    assert fof_trim_vl2 and fof_vlmax_trim and fof_vl0_no_trap
+    assert vstart_fault_seen and vstart_resume_clear_seen
+    assert {
+        "nf_emul_10_xwidth",
+        "nf_emul_10_0_0_0",
+        "nf_emul_10_0_0_1",
+        "nf_emul_10_2_0_0",
+        "nf_emul_10_1_0_0",
+        "nf_emul_10_1_0_1",
+        "nf_emul_10_0_1_0",
+        "nf_emul_gt8_0_0_0",
+        "nf_emul_gt8_0_0_1",
+        "nf_emul_gt8_2_0_0",
+        "nf_emul_gt8_2_0_1",
+        "nf_emul_gt8_1_0_0",
+        "nf_emul_gt8_1_0_1",
+        "nf_emul_gt8_0_1_0",
+        "reg_wrap_0_0",
+        "reg_wrap_2_0",
+        "reg_wrap_1_0",
+        "reg_wrap_0_1",
+        "idx_overlap_0",
+        "idx_overlap_1",
+        "idx_overlap_upper_vs2",
+        "idx_overlap_upper_vd",
+        "access_fof_elem0",
+        "access_fof_elem0_midseg",
+        "access_non_fof_elem1",
+    } <= traps_by_kind
+    assert ctrl_count == 1 and ctrl_order == 147
+    assert vector_segments.trace_stats()["01_segment_unit_stride.S"][3] == 0x42EADAAC
+
+
+@pytest.mark.parametrize("vlen", vector.VECTOR_LENGTHS)
+def test_vector_segments_two_sail_agree(tmp_path: Path, vlen: int) -> None:
+    """Two Sail instances agree on all five generated segment traces at each VLEN."""
+    traces = tmp_path / "seg"
+    vector_segments.write_traces(traces)
+    result = _compare_two_sail(tmp_path, traces, vlen, vlen)
+    assert result.returncode == 0 and "No Failure" in result.stdout, (
+        result.stdout[-2000:] + result.stderr[-2000:]
+    )
 
 
 def test_readout_sees_every_register_and_vxsat() -> None:

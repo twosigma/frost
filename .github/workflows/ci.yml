@@ -1042,7 +1042,7 @@ jobs:
           overwrite: true
 
   test-testrig-vector:
-    name: TestRIG (FROST vs Sail / VLEN ${{ matrix.vlen }})
+    name: TestRIG (FROST vs Sail / VLEN ${{ matrix.vlen }} / ${{ matrix.shard }})
     permissions:
       contents: read
       actions: read
@@ -1057,6 +1057,7 @@ jobs:
       fail-fast: false
       matrix:
         vlen: [128, 256, 512]
+        shard: [core, segment]
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
       FROST_DDR_MODEL_SEED: testrig-vector
@@ -1081,21 +1082,32 @@ jobs:
       - name: Fetch the simulators selected for this job
         uses: ./.github/actions/sim-models
         with:
-          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][matrix.vlen]) }}
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][format('{0}/{1}', matrix.vlen, matrix.shard)]) }}
 
       - name: Compare seeded and directed vector traces
+        if: matrix.shard == 'core'
         run: |
           ./scripts/frost.py --image frost-dev:latest run make -C tests clean
           ./scripts/frost.py --image frost-dev:latest run \
-            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 60m \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 55m \
             python3 tests/test_testrig.py --vector 12 --vector-length 20 \
               --vector-source-widths --vector-directed --seed 42 --vlen "${{ matrix.vlen }}" \
               --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
               --response-timeout 600 --no-shrink
 
+      - name: Compare vector segment traces
+        if: matrix.shard == 'segment'
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run make -C tests clean
+          ./scripts/frost.py --image frost-dev:latest run \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 30m \
+            python3 tests/test_testrig.py --vector-segments --vlen "${{ matrix.vlen }}" \
+              --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
+              --response-timeout 600 --no-shrink
+
       - name: Check detection of an incorrect vector result
-        if: matrix.vlen == 128
-        timeout-minutes: 55
+        if: matrix.vlen == 128 && matrix.shard == 'core'
+        timeout-minutes: 50
         run: |
           check_vector_result() {
             local selector=$1 trace=$2 record=$3 mismatch=$4
@@ -1137,8 +1149,6 @@ jobs:
             'order=158 insn=0x43b02557 rd=x10' '0x24681356 != 0x24681357'
           check_vector_result indexed vector_indexed \
             'order=217 insn=0x43c02557 rd=x10' '0x31415926 != 0x31415927'
-          check_vector_result segment vector_segment \
-            'order=45 insn=0x43e02557 rd=x10' '0x19475b81 != 0x19475b80'
           check_vector_result fof vector_fof \
             'order=29 insn=0x43f02557 rd=x10' '0x13572468 != 0x13572469'
           check_vector_result int-widen-narrow vector_int_widen_narrow \
@@ -1164,11 +1174,41 @@ jobs:
           check_vector_result int-vx-merge vector_int_vx_merge \
             'order=18 insn=0x43402557 rd=x10' '0x20020020 != 0x20020021'
 
+      - name: Check detection of an incorrect segment result
+        if: matrix.vlen == 128 && matrix.shard == 'segment'
+        timeout-minutes: 15
+        run: |
+          check_segment_result() {
+            local selector=$1 name=$2 record=$3 mismatch=$4
+            shift 4
+            local logs="tests/testrig_logs/vector-result-control/$name" status=0
+            FROST_TESTRIG_VECTOR_RESULT_CONTROL="$selector" \
+              ./scripts/frost.py --image frost-dev:latest run \
+              env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 600s \
+              python3 tests/test_testrig.py "$@" \
+                --vlen 128 --ddr-capacity-log2-bytes 30 --startup-timeout 360 --response-timeout 180 \
+                --no-shrink --verbosity 2 --log-dir "$logs" \
+                --save-dir "tests/testrig_failures/vector-result-control/$name" || status=$?
+            test "$status" -eq 1
+            test "$(grep -Fc 'Vector result control: ' "$logs/frost.log")" -eq 1
+            grep -Fq "Vector result control: $record" "$logs/frost.log"
+            grep -Fq 'TESTS=1 PASS=1 FAIL=0' "$logs/frost.log"
+            grep -Fq "mismatch in field rd_wdata: $mismatch" "$logs/engine.log"
+            echo "TestRIG reported the injected vector result mismatch in $name."
+          }
+
+          check_segment_result segment vector_segment \
+            'order=45 insn=0x43e02557 rd=x10' '0x19475b81 != 0x19475b80' \
+            --trace verif/testrig/vector_segment.S
+          check_segment_result segment-matrix vector_segments \
+            'order=147 insn=0x43d02557 rd=x10' '0x42eadaac != 0x42eadaad' \
+            --vector-segments
+
       - name: Upload TestRIG counterexamples and logs
         if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: testrig-vector-results-${{ matrix.vlen }}
+          name: testrig-vector-results-${{ matrix.vlen }}-${{ matrix.shard }}
           retention-days: 7
           if-no-files-found: ignore
           path: |
@@ -1223,7 +1263,7 @@ jobs:
       - name: Merge and report
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
-            make -C tests TOPLEVEL=vcu118_frost sim_build/vcu118_ddr_cone.sv
+            make -C tests coverage-sources
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/coverage_report.py report coverage-jobs \
               --output-dir coverage-report --annotate --require-ci-artifacts \

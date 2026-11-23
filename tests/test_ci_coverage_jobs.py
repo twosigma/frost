@@ -17,9 +17,12 @@
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 from fnmatch import fnmatchcase
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml  # type: ignore[import-untyped]
@@ -32,8 +35,9 @@ from ci_matrix import (
     expand_matrix,
     workflow_jobs,
 )
+from ci_sim_plan import cocotb_jobs
 from ci_verilator import job_matrix
-from coverage_report import HEADER, ci_coverage_files, main
+from coverage_report import HEADER, ci_coverage_files, main, report as run_report
 from test_rvv_ci import job_condition
 
 EXPECTED_COVERAGE_JOBS = 33
@@ -265,3 +269,324 @@ def test_verilator_toggle_coverage_expansion(event: str, requested: bool) -> Non
         ), combo
         if timeout:
             assert int(timeout) < shard.get("timeout_minutes", 240) * 60, combo
+
+
+REPO_ROOT = WORKFLOW.parents[2]
+TESTS_DIR = REPO_ROOT / "tests"
+MAKEFILE = TESTS_DIR / "Makefile"
+HDL_SOURCE_SUFFIXES = (".sv", ".v", ".svh", ".vh")
+_IGNORED_SIM_BUILD_VARS = frozenset(
+    {"SIM_BUILD", "TOGGLE_CONFIG", "TOGGLE_SCAN", "GENERATED_COVERAGE_SOURCES"}
+)
+
+
+def _join_continued_lines(text: str) -> list[str]:
+    """Join backslash-continued Makefile or shell lines."""
+    return re.sub(r"\\\n[ \t]*", " ", text).splitlines()
+
+
+def _workflow_coverage_make_commands(merge_run: str) -> list[list[str]]:
+    """Extract make commands run before coverage_report.py in Merge and report."""
+    commands: list[list[str]] = []
+    for raw in _join_continued_lines(merge_run):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = shlex.split(line)
+        if any("coverage_report.py" in token for token in tokens):
+            break
+        if tokens[:2] == ["./scripts/frost.py", "--image"] and "run" in tokens:
+            tokens = tokens[tokens.index("run") + 1 :]
+        if tokens and tokens[0] == "make":
+            commands.append(tokens)
+    return commands
+
+
+def _makefile_sim_build_selectors(makefile_text: str) -> tuple[set[str], set[str]]:
+    """Find TOPLEVEL and extra-arg tokens guarding SIM_BUILD source rules."""
+    lines = _join_continued_lines(makefile_text)
+    sim_build_vars: set[str] = set()
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        assign = re.match(r"^([A-Za-z0-9_]+)\s*(?::=|\+=|\?=|=)\s*(.+)$", stripped)
+        if assign:
+            name, value = assign.group(1), assign.group(2)
+            if name not in _IGNORED_SIM_BUILD_VARS and (
+                "$(SIM_BUILD)/" in value or "sim_build/" in value
+            ):
+                sim_build_vars.add(name)
+
+    var_pattern = (
+        re.compile(
+            r"\$\((" + "|".join(sorted(re.escape(v) for v in sim_build_vars)) + r")\)"
+        )
+        if sim_build_vars
+        else None
+    )
+    toplevels: set[str] = set()
+    extra_tokens: set[str] = set()
+    stack: list[str] = []
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith(("ifeq ", "ifneq ")):
+            stack.append(stripped)
+            continue
+        if stripped.startswith(("else ifeq ", "else ifneq ")):
+            if stack:
+                stack[-1] = stripped
+            continue
+        if stripped == "else":
+            if stack:
+                stack[-1] = "else"
+            continue
+        if stripped == "endif":
+            if stack:
+                stack.pop()
+            continue
+        if any(
+            ignored in stripped
+            for ignored in (
+                "Vtop.mk",
+                "clean-local",
+                "TOGGLE_CONFIG",
+                "TOGGLE_SCAN",
+                "GENERATED_COVERAGE_SOURCES",
+            )
+        ):
+            continue
+        touches_sim_build = (
+            "$(SIM_BUILD)/" in stripped
+            or "sim_build/" in stripped
+            or (var_pattern is not None and var_pattern.search(stripped) is not None)
+        )
+        if not touches_sim_build:
+            continue
+        for cond in stack:
+            eq_match = re.search(r"ifeq\s*\(\$\(TOPLEVEL\)\s*,\s*([^)]+)\)", cond)
+            if eq_match:
+                toplevels.add(eq_match.group(1).strip())
+            filt_match = re.search(r"filter\s+\$\(TOPLEVEL\)\s*,\s*([^)]+)\)", cond)
+            if filt_match:
+                toplevels.update(filt_match.group(1).split())
+            find_match = re.search(
+                r"findstring\s+([^,]+)\s*,\s*\$\(FROST_VERILATOR_EXTRA_ARGS\)", cond
+            )
+            if find_match:
+                extra_tokens.add(find_match.group(1).strip())
+    return toplevels, extra_tokens
+
+
+def _coverage_builds_touching_sim_build(
+    jobs: dict[str, Any], makefile_text: str
+) -> list[tuple[str, str]]:
+    """Return CI coverage (TOPLEVEL, defines) pairs that reach SIM_BUILD branches."""
+    toplevels, extra_tokens = _makefile_sim_build_selectors(makefile_text)
+    selected: set[tuple[str, str]] = set()
+    for toggle in (False, True):
+        for _, _, configs in cocotb_jobs(
+            jobs, full=not toggle, toggle=toggle, event="push"
+        ):
+            for cfg in configs:
+                if cfg.get("FROST_COVERAGE") != "1":
+                    continue
+                top = cfg["TOPLEVEL"]
+                extra = cfg.get("FROST_VERILATOR_EXTRA_ARGS", "")
+                defines = " ".join(
+                    sorted(
+                        tok
+                        for tok in shlex.split(extra)
+                        if tok.startswith(("+define+", "-D"))
+                    )
+                )
+                if top in toplevels or any(tok in extra for tok in extra_tokens):
+                    selected.add((top, defines))
+    selected.add(("frost", ""))
+    return sorted(selected)
+
+
+def _collect_sim_build_hdl_from_filelist(
+    filelist: Path, sim_build_prefix: str, visited: set[Path]
+) -> set[str]:
+    """Recursively read a generated .f filelist for generated HDL source paths."""
+    if filelist in visited or not filelist.is_file():
+        return set()
+    visited.add(filelist)
+    found: set[str] = set()
+    tokens = shlex.split(filelist.read_text(encoding="utf-8"), comments=True)
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-f" and index + 1 < len(tokens):
+            nested = tokens[index + 1]
+            if nested.startswith(sim_build_prefix):
+                found.update(
+                    _collect_sim_build_hdl_from_filelist(
+                        Path(nested), sim_build_prefix, visited
+                    )
+                )
+            index += 2
+            continue
+        if token.startswith(sim_build_prefix) and token.endswith(HDL_SOURCE_SUFFIXES):
+            found.add(token.removeprefix(sim_build_prefix))
+        index += 1
+    return found
+
+
+def _probe_makefile_coverage_generated_sources(
+    builds: list[tuple[str, str]], tmp_path: Path
+) -> set[str]:
+    """Query tests/Makefile for generated HDL sources needed by coverage builds."""
+    probe_dir = tmp_path / "probe_sim_build"
+    probe_prefix = f"{probe_dir}/"
+    probe_mk = tmp_path / "probe.mk"
+    probe_mk.write_text(
+        f"include {MAKEFILE}\n"
+        "_print_generated_sources:\n"
+        "\t@printf 'VS=%s\\nCD=%s\\nCA=%s\\n' "
+        "'$(VERILOG_SOURCES)' '$(CUSTOM_COMPILE_DEPS)' '$(COMPILE_ARGS)'\n",
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "ROOT": str(REPO_ROOT),
+        "NUMBER_OF_CPU_CORES": "4",
+        "FROST_COVERAGE": "1",
+    }
+    generated: set[str] = set()
+    for top, defs in builds:
+        common_args = [
+            "make",
+            "--no-print-directory",
+            "-C",
+            str(TESTS_DIR),
+            "-f",
+            str(probe_mk),
+            f"ROOT={REPO_ROOT}",
+            "NUMBER_OF_CPU_CORES=4",
+            "FROST_COVERAGE=1",
+            f"SIM_BUILD={probe_dir}",
+            f"TOPLEVEL={top}",
+            f"FROST_VERILATOR_EXTRA_ARGS={defs}",
+        ]
+        result = subprocess.run(
+            [*common_args, "_print_generated_sources"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        filelists: list[str] = []
+        for line in result.stdout.splitlines():
+            _, _, payload = line.partition("=")
+            tokens = shlex.split(payload)
+            for idx, token in enumerate(tokens):
+                if token.startswith(probe_prefix) and token.endswith(
+                    HDL_SOURCE_SUFFIXES
+                ):
+                    generated.add(token.removeprefix(probe_prefix))
+                if (
+                    token == "-f"
+                    and idx + 1 < len(tokens)
+                    and tokens[idx + 1].startswith(probe_prefix)
+                ):
+                    filelists.append(tokens[idx + 1])
+        if filelists:
+            subprocess.run(
+                [*common_args, *filelists],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            visited: set[Path] = set()
+            for filelist in filelists:
+                generated.update(
+                    _collect_sim_build_hdl_from_filelist(
+                        Path(filelist), probe_prefix, visited
+                    )
+                )
+    return generated
+
+
+def test_coverage_report_regenerates_all_makefile_generated_sources(
+    tmp_path: Path,
+) -> None:
+    """The Coverage Report job regenerates every generated HDL source for coverage builds."""
+    jobs = workflow_jobs()
+    merge = next(
+        s
+        for s in jobs["coverage-report"]["steps"]
+        if s.get("name") == "Merge and report"
+    )
+    make_commands = _workflow_coverage_make_commands(merge["run"])
+    assert make_commands, (
+        "Coverage Report's Merge and report step must regenerate generated sources "
+        "before running tests/coverage_report.py"
+    )
+
+    makefile_text = MAKEFILE.read_text(encoding="utf-8")
+    builds = _coverage_builds_touching_sim_build(jobs, makefile_text)
+    assert builds
+
+    if shutil.which("cocotb-config") is None:
+        pytest.skip("cocotb-config is not on PATH")
+
+    required_sources = _probe_makefile_coverage_generated_sources(builds, tmp_path)
+    assert {"vcu118_ddr_cone.sv", "riscv_pkg.sv"} <= required_sources
+
+    regen_dir = tmp_path / "regen_sim_build"
+    env = {
+        **os.environ,
+        "ROOT": str(REPO_ROOT),
+        "NUMBER_OF_CPU_CORES": "4",
+    }
+    for cmd in make_commands:
+        rewritten = [
+            f"{regen_dir}/{tok.removeprefix('sim_build/')}"
+            if tok.startswith("sim_build/")
+            else tok
+            for tok in cmd
+        ]
+        subprocess.run(
+            [*rewritten, f"SIM_BUILD={regen_dir}", f"ROOT={REPO_ROOT}"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+
+    regenerated = {
+        path.relative_to(regen_dir).as_posix()
+        for path in regen_dir.rglob("*")
+        if path.is_file()
+        and path.name.endswith(HDL_SOURCE_SUFFIXES)
+        and path.stat().st_size > 0
+    }
+    missing = sorted(required_sources - regenerated)
+    assert not missing, (
+        "Coverage Report does not regenerate generated HDL sources required by "
+        f"coverage builds: {missing} (regenerated: {sorted(regenerated)})"
+    )
+
+    if shutil.which("verilator_coverage") is not None:
+        dat = tmp_path / "generated_sources.dat"
+        records = [
+            f"C '\x01f\x02{regen_dir / rel}\x01l\x021\x01n\x021\x01t\x02line"
+            f"\x01page\x02v_line/gen_{idx}\x01o\x02block\x01h\x02gen_{idx}' 0\n"
+            for idx, rel in enumerate(sorted(required_sources))
+        ]
+        dat.write_text(HEADER + "".join(records), encoding="utf-8")
+        report_out = tmp_path / "report_out"
+        assert run_report([dat], report_out, annotate=True) == 0
+        annotated_names = {
+            p.name for p in (report_out / "annotated").rglob("*") if p.is_file()
+        }
+        assert {Path(rel).name for rel in required_sources} <= annotated_names

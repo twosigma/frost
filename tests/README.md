@@ -1621,14 +1621,20 @@ advertising `misa.V=1`.
 source-width traces. `--vector-directed` includes the `misa.V`, vector CSR,
 scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison,
 FP conversion, cached DDR probe, unit-stride memory, strided memory,
-indexed memory, segment memory, fault-only-first load, integer comparison,
+indexed memory, fault-only-first load, integer comparison,
 widening and narrowing integer, fixed-point, single-width FP, whole-register
 memory, widening FP, permute, reduction, carry/borrow, mask-register,
-integer multiply-add and integer scalar/merge traces.
+integer multiply-add and integer scalar/merge traces. `--vector-segments`
+replays the five seeded generated segment traces from
+`verif/testrig/vector_segments.py` (generated at CI time with SHA-256
+digests pinned in `tests/test_testrig_vector.py`) alongside
+`verif/testrig/vector_segment.S`, covering all 252 base-V segment loads
+and stores across `nf = 2..8` and 8/16/32/64-bit widths independent of
+`SEW`.
 Every vector store trace compares all written bytes through immediate
-scalar loads. CI compares the seeded and directed traces at each length.
-The VLEN 128 job injects one incorrect value in each control replay and
-requires TestRIG to report each mismatch.
+scalar loads. CI compares the `core` and `segment` shards at each length.
+The VLEN 128 shards inject one incorrect value in each control replay and
+require TestRIG to report each mismatch.
 
 `--atomics` replays random A-extension tests from `verif/testrig/atomics.py`
 in place of the engine's templates, from a seed the runner prints. A mismatch
@@ -2274,8 +2280,9 @@ after the other jobs finish, including jobs that fail. A missing artifact or
 one without a coverage payload fails the job. With all inputs present, the job
 merges them into the `coverage-report` artifact (the [report](#coverage) with
 annotated sources) and shows the summary on the job's page. The report job
-generates `tests/sim_build/vcu118_ddr_cone.sv` with the same Makefile target
-used by the unit bench.
+regenerates generated HDL sources into `tests/sim_build/` through
+`make -C tests coverage-sources` using the same Makefile rules used by the unit
+benches.
 
 The manual `toggle_coverage` input runs the shared image build, the two
 unit-bench jobs, the whole-SoC Verilator shards selected for toggle coverage,

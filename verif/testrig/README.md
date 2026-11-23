@@ -30,6 +30,7 @@ conformance bugs fixed for
 | [`mmu.py`](mmu.py) | Random Sv39 MMU, ASID, SFENCE.VMA, and Sstvala tests (see [Sv39 MMU, cache-block operations, and Sstvala](#sv39-mmu-cache-block-operations-and-sstvala)) |
 | [`cmo.py`](cmo.py) | Random Zicbom, Zicboz, Zicbop, Zawrs, device-window, and Sstvala tests (see [Sv39 MMU, cache-block operations, and Sstvala](#sv39-mmu-cache-block-operations-and-sstvala)) |
 | [`vector.py`](vector.py) | Random vector-instruction tests (see [The vector extension](#the-vector-extension)) |
+| [`vector_segments.py`](vector_segments.py) | Seeded deterministic generator for five segment memory matrix traces covering all 252 base-V segment encodings (`--vector-segments`) |
 | [`sail_frost.json`](sail_frost.json) | Sail settings that describe FROST |
 | `sail_frost_vlen128.json`, `sail_frost_vlen256.json`, `sail_frost_vlen512.json` | Overlays on `sail_frost.json` that turn on the vector unit at one vector length; they differ only in `V.vlen_exp` |
 | [`traces/`](traces/) | Saved counterexamples, replayed in CI |
@@ -142,8 +143,9 @@ the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--vector-length` | 20 | Operation groups per generated vector trace |
 | `--vector-source-widths` | off | Add the directed integer, FP and memory source-width traces to `--vector` |
 | `--vector-directed` | off | Add the directed vector CSR, scalar-result, fractional LMUL, FP and cached DDR memory traces to `--vector` |
-| `--vlen` | 128 with `--vector` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
-| `--seed` | random | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval`, `--crypto` and `--vector`; the runner prints the one it used |
+| `--vector-segments` | off | Replay the five seeded generated segment traces from `verif/testrig/vector_segments.py` plus `verif/testrig/vector_segment.S` (sets `--vlen` to 128 when omitted) |
+| `--vlen` | 128 with `--vector` / `--vector-segments` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
+| `--seed` | random (fixed for `--vector-segments`) | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval`, `--crypto`, `--vector` and `--vector-segments`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
 | `--include`, `--exclude` | see the runner | Template name regexes |
 | `--csr-include` | see the runner | CSRs the templates may access |
@@ -713,25 +715,48 @@ compared in TestRIG:
 - `viota.m` with `LMUL > 1` whose source mask register is an upper register
   of the destination group (for example `viota.m v8, v9` at `m2`).
 
-On main pushes and pull requests labelled `run-ci`, CI runs one job at
-each of VLEN 128, 256 and 512. Each replays 12 generated traces of 20
-operation groups from seed 42, the source-width traces and the directed
+On main pushes and pull requests labelled `run-ci`, CI runs two vector
+TestRIG shards (`core` and `segment`) at each of VLEN 128, 256 and 512,
+sharing one prebuilt simulator per vector length. The `core` shard replays
+12 generated traces of 20 operation groups from seed 42, the source-width
+traces and the directed
 state, fractional LMUL, FP, cached DDR, integer comparison, widening and
 narrowing integer, fixed-point, single-width FP, whole-register memory,
 widening FP, permute, reduction, carry/borrow, mask-register, integer
-multiply-add and integer scalar/merge traces. Both
+multiply-add and integer scalar/merge traces. The `segment` shard runs
+`--vector-segments`, which generates five traces at CI time from the seeded
+deterministic generator [`vector_segments.py`](vector_segments.py) (default
+seed `0x5e600013`, with per-file SHA-256 digests pinned in
+`tests/test_testrig_vector.py`) alongside the directed
+[`vector_segment.S`](vector_segment.S) trace. Together those six segment
+traces cover all 252 base-V segment load and store encodings (`vlseg`,
+`vsseg`, `vlsseg`, `vssseg`, `vluxseg`, `vloxseg`, `vsuxseg`, `vsoxseg` and
+`vlseg*ff` across `nf = 2..8` and 8/16/32/64-bit widths), segment field
+ordering independent of `SEW`, masked/unmasked execution (`tu`/`mu` and
+`ta`/`ma`), `vl == 0` and `VLMAX`, immediate scalar readbacks for every
+stored byte, fault-only-first `vl` trimming across element 0 versus later
+elements and mid-segment boundaries, non-fault-only-first `vstart` fault
+reporting and resumption, and `nf * EMUL <= 8`, register-wrap, indexed
+`vd`-group overlap, masked `v0`, alignment and `vill` traps. Moving
+`vector_segment.S` and its `segment` control into the `segment` shard
+restores the `core` shard's replay and control timeouts to 55 and 50
+minutes. Together, both shards retire all 627
+base-V machine encodings. Both
 implementations must return every planned trace and instruction. The
-VLEN 128 job reuses its simulator to flip one bit in a FROST integer
-destination in each control replay. It checks `vmv.x.s` for integer
+VLEN 128 `core` and `segment` shards each reuse their simulator to flip one
+bit in a FROST integer destination in each control replay. The `core` shard
+checks `vmv.x.s` for integer
 source widths, fractional LMUL, base FP results, fused multiply-add, FP
-conversions, unit-stride memory, strided memory, indexed memory, segment
-memory, fault-only-first loads, integer comparisons, widening and
+conversions, unit-stride memory, strided memory, indexed memory,
+fault-only-first loads, integer comparisons, widening and
 narrowing integer operations, fixed-point operations, single-width FP
 operations, whole-register memory, widening FP, permute, reduction,
 carry/borrow, mask-register, integer multiply-add and integer scalar/merge
-operations. It checks
-`vcpop.m` for state and scalar results and FP comparisons. TestRIG must
-report each destination value mismatch.
+operations, and checks `vcpop.m` for state and scalar results and FP
+comparisons. The `segment` shard checks `vmv.x.s` for both the directed
+segment trace (`segment`) and field 1 of the generated unit-stride segment
+control load (`segment-matrix`). TestRIG must report
+each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail
