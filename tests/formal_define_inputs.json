@@ -127,7 +127,7 @@
   "coherence_array_plru:coh_array_plru_uram_prove": ["design 0 read 1: read -formal -DF_COH_ARRAY_PLRU_PROOF -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv"],
   "coherence_array_progress:coh_progress4_56_prove": ["design 0 read 1: read_slang -DSYNTHESIS -DARRAY_PROGRESS_PROOF -DPROGRESS_INDUCT sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv coherence_array_progress.sv"],
   "coherence_array_progress:coh_progress4_cover": ["design 0 read 2: read -sv -DARRAY_PROGRESS_PROOF coherence_array.sv"],
-  "coherence_array_progress:coh_progress4_prove": ["design 0 read 2: read -sv -DARRAY_PROGRESS_PROOF coherence_array.sv"],
+  "coherence_array_progress:coh_progress4_prove": ["design 0 read 1: read_slang -DSYNTHESIS -DARRAY_PROGRESS_PROOF -DPROGRESS_INDUCT sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv coherence_array_progress.sv"],
   "coherence_array_progress:coh_progress_prove": ["design 0 read 2: read -sv -DARRAY_PROGRESS_PROOF coherence_array.sv"],
   "coherence_control:coh_arbiter24_prove": [],
   "coherence_control:coh_arbiter_held_prove": [],
