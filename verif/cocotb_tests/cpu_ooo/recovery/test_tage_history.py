@@ -124,6 +124,7 @@ def _clear_alloc(dut: Any) -> None:
     dut.i_alloc_tag.value = 0
     dut.i_alloc_cond_branch.value = 0
     dut.i_alloc_jalr.value = 0
+    dut.i_alloc_jal.value = 0
     dut.i_alloc_q.value = 0
 
 
@@ -138,6 +139,7 @@ def _clear_commit(dut: Any) -> None:
     dut.i_commit_target_bits.value = 0
     dut.i_commit_target.value = 0
     dut.i_commit_jalr.value = 0
+    dut.i_commit_jal.value = 0
     dut.i_commit_cf.value = 0
 
 
@@ -177,10 +179,11 @@ async def _accept_branch(
     base_taken: bool = False,
     hist: int = 0,
     jalr: bool = False,
+    jal: bool = False,
     cf: bool = False,
     pred_taken: bool = False,
 ) -> int:
-    """Pass a conditional branch or JALR in the selected slot and return its FTQ index."""
+    """Pass a conditional branch, JALR, or JAL in the selected slot and return its FTQ index."""
     idx = _write_index(dut)
     packed = pack_struct(TAGE_LOOKUP_FIELDS, lookup or {})
     dut.i_pd_accept.value = 1
@@ -195,10 +198,10 @@ async def _accept_branch(
     await _step(dut)
     dut.i_pd_accept.value = 0
     dut.i_tage_slot_valid.value = 0
-    dut.i_pd_q_cond_branch.value = int(not jalr) << slot
+    dut.i_pd_q_cond_branch.value = int(not jalr and not jal) << slot
     dut.i_pd_q_jalr.value = int(jalr) << slot
     dut.i_pd_q_itt_eligible.value = 0
-    dut.i_pd_q_cf.value = int(cf) << slot
+    dut.i_pd_q_cf.value = int(cf or jal) << slot
     dut.i_pd_q_pred_taken.value = int(pred_taken) << slot
     await _settle()
     return idx
@@ -212,20 +215,23 @@ async def _allocate(
     slot: int = 0,
     cond: bool = True,
     jalr: bool = False,
+    jal: bool = False,
 ) -> None:
     """Dispatch one instruction; return once its index write has landed.
 
     The ROB reports the allocation the cycle after dispatch presents it. A
-    conditional branch takes dispatch's next index, which must be idx.
+    conditional branch, JALR, or JAL takes dispatch's next index, which must
+    be idx.
     """
     dut.i_alloc_tag.value = tag << (slot * ROB_TAG_WIDTH)
     dut.i_alloc_cond_branch.value = int(cond) << slot
     dut.i_alloc_jalr.value = int(jalr) << slot
+    dut.i_alloc_jal.value = int(jal) << slot
     await _step(dut)
     _clear_alloc(dut)
     dut.i_alloc_q.value = 1 << slot
     await _settle()
-    if (cond or jalr) and idx is not None:
+    if (cond or jalr or jal) and idx is not None:
         assert int(dut.ftq_dispatch_ptr.value) == idx
     await _step(dut)
     dut.i_alloc_q.value = 0
@@ -237,6 +243,7 @@ def _drive_commit(dut: Any, slots: list[dict[str, int] | None]) -> None:
     fields = {
         "valid": "i_commit_valid",
         "jalr": "i_commit_jalr",
+        "jal": "i_commit_jal",
         "cf": "i_commit_cf",
         "cond_branch": "i_commit_cond_branch",
         "taken_cf": "i_commit_taken_cf",
@@ -740,44 +747,59 @@ async def test_slot2_pd_veto_discards_fast_btb_push_without_pushing_fallthrough(
 async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
     dut: Any,
 ) -> None:
-    """Recover both full-width histories for branches and returns in either slot."""
+    """Recover both full-width histories for branches, returns, and JALs in either slot."""
     await _setup_test(dut)
     width = len(dut.o_lookup_dir_hist)
     mask = (1 << width) - 1
     full_path = 0xD234_8901_BCDE_52A7
-    for recovering_slot, taken, path_bits, jalr, saved_path in (
-        (1, 0, 3, False, 0xD234),
-        (1, 1, 3, False, 0xD234),
-        (0, 0, 3, False, full_path),
-        (1, 1, 0, False, full_path),
-        (0, 1, 2, True, full_path),
-        (1, 1, 3, True, full_path),
+    for recovering_slot, taken, path_bits, jalr, jal, saved_path in (
+        (1, 0, 3, False, False, 0xD234),
+        (1, 1, 3, False, False, 0xD234),
+        (0, 0, 3, False, False, full_path),
+        (1, 1, 0, False, False, full_path),
+        (0, 1, 2, True, False, full_path),
+        (1, 1, 3, True, False, full_path),
+        (0, 1, 2, False, True, full_path),
+        (1, 1, 3, False, True, full_path),
     ):
-        direction_bit = path_bits & 1 if jalr else taken
+        direction_bit = path_bits & 1 if (jalr or jal) else taken
         expected = int(dut.o_lookup_dir_hist.value)
         assert int(dut.o_lookup_dir_fold.value) == _fold_dir_tables(expected)
         for n in range(width + 5):
             slot = n % 2
             bit = int(n % 5 in (0, 2))
             dut.i_pd_accept.value = 1
+            dut.i_alloc_jal.value = 1 << slot
             await _step(dut)
             dut.i_pd_accept.value = 0
+            dut.i_alloc_jal.value = 0
             dut.i_pd_q_cf.value = 1 << slot
             dut.i_pd_q_pred_taken.value = bit << slot
+            dut.i_alloc_q.value = 1 << slot
             await _settle()
             expected = ((expected << 1) | bit) & mask
             assert int(dut.o_lookup_dir_hist.value) == expected
             assert int(dut.o_lookup_dir_fold.value) == _fold_dir_tables(expected)
-        # A return owns an FTQ entry even without an indirect predictor lookup.
+        # A return or JAL owns an FTQ entry without a predictor lookup.
         index = await _accept_branch(
             dut,
             slot=recovering_slot,
             hist=saved_path,
             jalr=jalr,
+            jal=jal,
             cf=True,
             pred_taken=bool(1 - direction_bit),
         )
-        await _allocate(dut, 7, index, slot=recovering_slot, cond=not jalr, jalr=jalr)
+        dut.i_alloc_q.value = 0
+        await _allocate(
+            dut,
+            7,
+            index,
+            slot=recovering_slot,
+            cond=not (jalr or jal),
+            jalr=jalr,
+            jal=jal,
+        )
         await _accept_branch(dut, hist=0x21, cf=True, pred_taken=True)
         dut.i_early_tag.value = 7
         dut.i_early_active.value = 1
@@ -797,6 +819,8 @@ async def test_direction_snapshot_precedes_branch_and_rewinds_younger_packets(
         assert _lookup_hist(dut) == (
             _push(saved_path, path_bits) if taken else saved_path
         )
+        assert _write_index(dut) == (index + 1) & FTQ_MASK
+        assert int(dut.ftq_dispatch_ptr.value) == (index + 1) & FTQ_MASK
         await _step(dut)
         dut.i_hist_restore_arm.value = 0
         await _settle()
@@ -881,3 +905,65 @@ async def test_indirect_training_uses_its_saved_slot_and_target(dut: Any) -> Non
         assert int(dut.o_itt_train_target.value) == targets[slot]
         await _step(dut)
     assert not dut.o_itt_train_valid.value
+
+
+@cocotb.test()
+async def test_jal_entry_frees_on_commit_without_training(dut: Any) -> None:
+    """A JAL takes a history-only FTQ entry that frees at commit without training."""
+    await _setup_test(dut)
+
+    first = await _accept_branch(dut, slot=0, lookup=LOOKUP_A, cf=True)
+    await _allocate(dut, 4, first, slot=0)
+    second = await _accept_branch(dut, slot=1, lookup=LOOKUP_B, jal=True, cf=True)
+    dut.i_pd_q_itt_eligible.value = 0b10
+    await _allocate(dut, 5, second, slot=1, cond=False, jal=True)
+    dut.i_pd_q_itt_eligible.value = 0
+    dut.i_pd_q_cf.value = 0
+    third = await _accept_branch(dut, slot=0, lookup=LOOKUP_A, cf=True)
+    await _allocate(dut, 6, third, slot=0)
+    dut.i_pd_q_cond_branch.value = 0
+    dut.i_pd_q_cf.value = 0
+
+    # Retiring a conditional branch with a slot-2 JAL trains only the branch,
+    # leaves the slot-2 hold empty, and frees both FTQ entries.
+    await _commit(
+        dut,
+        [
+            {"valid": 1, "cond_branch": 1, "tag": 4, "taken": 1},
+            {"valid": 1, "jal": 1, "cf": 1, "taken_cf": 1, "tag": 5, "target_bits": 2},
+        ],
+    )
+    train = _train(dut)
+    assert train["valid"]
+    assert {k: train["lookup"][k] for k in LOOKUP_A} == LOOKUP_A
+    assert not dut.o_itt_train_valid.value
+    assert not dut.held_valid.value
+    assert int(dut.ftq_commit_ptr.value) == (second + 1) & FTQ_MASK
+
+    await _step(dut)
+    assert not _train(dut)["valid"]
+    assert not dut.o_itt_train_valid.value
+
+    dut.i_flush_full.value = 1
+    await _step(dut)
+    dut.i_flush_full.value = 0
+    await _settle()
+    assert _write_index(dut) == (second + 1) & FTQ_MASK
+    assert int(dut.ftq_dispatch_ptr.value) == (second + 1) & FTQ_MASK
+
+    # A lone slot-1 JAL frees its entry and produces neither training pulse.
+    fourth = await _accept_branch(dut, slot=0, lookup=LOOKUP_B, jal=True, cf=True)
+    dut.i_pd_q_itt_eligible.value = 0b01
+    await _allocate(dut, 9, fourth, slot=0, cond=False, jal=True)
+    dut.i_pd_q_itt_eligible.value = 0
+    dut.i_pd_q_cf.value = 0
+    await _commit(
+        dut,
+        [
+            {"valid": 1, "jal": 1, "cf": 1, "taken_cf": 1, "tag": 9, "target_bits": 1},
+            None,
+        ],
+    )
+    assert not _train(dut)["valid"]
+    assert not dut.o_itt_train_valid.value
+    assert int(dut.ftq_commit_ptr.value) == (fourth + 1) & FTQ_MASK
