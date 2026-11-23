@@ -38,9 +38,11 @@ from cocotb_tests.test_real_program import (
 def load_startup_loop(dut: Any) -> None:
     """Install the entry self loop after reset; the sweep preloads its banks."""
     platform = dut.cpu_and_memory_subsystem
-    soc = platform.soc if hasattr(platform, "soc") else platform
+    has_soc = hasattr(platform, "soc")
+    soc = platform.soc if has_soc else platform
     assert int(soc.rst_core.value), "startup loop load requires system reset"
-    if hasattr(platform, "u_rvfi_dii"):
+    if not has_soc:
+        _ = platform.u_rvfi_dii
         # An empty injected stream supplies C.NOP instructions.
         return
     memory = soc.instruction_memory
@@ -80,11 +82,14 @@ async def startup_smoke(dut: Any) -> None:
     if withheld:
         assert control == "bridge"
         assert cocotb.plusargs.get("frost_startup_withhold_assertions") == "1"
+    inputs_zeroed = 0
     for signal in dut:
         if signal._name.startswith("i_"):
             signal.value = Immediate(0)
+            inputs_zeroed += 1
+    assert inputs_zeroed > 0, "no top-level i_* inputs visible on dut"
     platform = dut.cpu_and_memory_subsystem
-    if hasattr(platform, "u_rvfi_dii"):
+    if not hasattr(platform, "soc"):
         harness = platform.u_rvfi_dii
         harness.dii_count.value = Immediate(0)
         harness.event_target.value = Immediate(1024)
@@ -104,8 +109,7 @@ async def startup_smoke(dut: Any) -> None:
         await RisingEdge(dut.i_clk)
     await wait_for_power_on_reset(dut)
     dut.i_rst_n.value = 1
-    if hasattr(dut, "i_ddr_axi_rst_n"):
-        dut.i_ddr_axi_rst_n.value = 1
+    dut.i_ddr_axi_rst_n.value = 1
     if control:
         await ClockCycles(dut.i_clk, 8)
         await ReadWrite()

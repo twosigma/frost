@@ -740,10 +740,22 @@ export PYTHONPATH := $(ROOT)/verif:$(ROOT)/tests:$(PYTHONPATH)
 # the environment to share the host with other runs.
 NUMBER_OF_CPU_CORES ?= $(shell nproc)
 
-# Use one simulation thread to avoid multithreaded VPI overhead. Parallelize
-# C++ compilation with BUILD_ARGS, which cocotb passes to the make that
-# compiles the Verilated model, and HDL conversion with EXTRA_ARGS -j.
-export VERILATOR_THREADS := 1
+# Leave CPU affinity to the OS scheduler or caller-provided taskset mask.
+export VERILATOR_NUMA_STRATEGY ?= none
+
+# Verilator simulation thread count for selective-visibility frost builds,
+# capped at the available CPU count so a job never runs more worker threads
+# than its cores. Full-visibility and unit builds stay single-threaded.
+FROST_VERILATOR_THREADS ?= 1
+ifeq ($(FROST_VERILATOR_THREADS),1)
+REQUESTED_VERILATOR_THREADS := 1
+else
+REQUESTED_VERILATOR_THREADS := $(shell python3 -c 'import os, sys; s = sys.argv[1]; c = sys.argv[2]; pcc = getattr(os, "process_cpu_count", None); avail = (pcc() if pcc else len(os.sched_getaffinity(0))) or 1; print(min(int(s), max(1, int(c)), avail)) if s.isdigit() and int(s) >= 1 and c.isdigit() else print("INVALID")' "$(FROST_VERILATOR_THREADS)" "$(NUMBER_OF_CPU_CORES)")
+ifeq ($(REQUESTED_VERILATOR_THREADS),INVALID)
+$(error FROST_VERILATOR_THREADS must be a positive integer)
+endif
+endif
+EFFECTIVE_VERILATOR_THREADS := 1
 BUILD_ARGS += -j$(NUMBER_OF_CPU_CORES)
 
 # Extra Verilator arguments: parallel verilation and optional waveforms.
@@ -786,6 +798,41 @@ ifneq ($(strip $(FROST_COVERAGE_FILE)),)
 	SIM_ARGS += +verilator+coverage+file+$(FROST_COVERAGE_FILE)
 endif
 endif
+
+# System-build visibility, retirement trace, and multithreading controls.
+# Selective visibility exposes top-level ports and the signals listed in
+# hw/sim/frost_cocotb_visibility.vlt; coverage, hang-probe, and
+# FROST_FULL_VISIBILITY=1 builds expose every signal. Waveform runs (WAVES=1)
+# keep selective VPI visibility and stay single-threaded.
+FROST_FULL_VISIBILITY ?= 0
+ifneq ($(filter-out 0 1,$(FROST_FULL_VISIBILITY)),)
+$(error FROST_FULL_VISIBILITY must be 0 or 1)
+endif
+FROST_RETIRE_TRACE ?= 0
+ifneq ($(filter-out 0 1,$(FROST_RETIRE_TRACE)),)
+$(error FROST_RETIRE_TRACE must be 0 or 1)
+endif
+
+FROST_SELECTIVE_VISIBILITY := 0
+ifeq ($(TOPLEVEL),frost)
+ifeq ($(FROST_RETIRE_TRACE),0)
+	COMPILE_ARGS += +define+FROST_NO_RETIRE_TRACE
+endif
+ifeq ($(FROST_COVERAGE):$(FROST_FULL_VISIBILITY):$(strip $(FROST_HANG_PROBE)),0:0:)
+	FROST_VISIBILITY_CONFIG := $(ROOT)/hw/sim/frost_cocotb_visibility.vlt
+	# -fico-change-detect requires Verilator 5.052 or newer (checked after Makefile.sim sets CMD).
+	COMPILE_ARGS := $(FROST_VISIBILITY_CONFIG) $(COMPILE_ARGS) -fico-change-detect
+	CUSTOM_COMPILE_DEPS += $(FROST_VISIBILITY_CONFIG)
+	FROST_SELECTIVE_VISIBILITY := 1
+ifneq ($(WAVES),1)
+	EFFECTIVE_VERILATOR_THREADS := $(REQUESTED_VERILATOR_THREADS)
+endif
+ifneq ($(EFFECTIVE_VERILATOR_THREADS),1)
+	COMPILE_ARGS += --threads $(EFFECTIVE_VERILATOR_THREADS) -Wno-UNOPTTHREADS
+endif
+endif
+endif
+export FROST_SELECTIVE_VISIBILITY
 
 # Parameters of the frost toplevel only (the -G overrides below).
 # Low BRAM keeps its 256 KiB hardware size (the frost.sv MEM_SIZE_BYTES default).
@@ -848,6 +895,18 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
 VERILATOR_CMD := $(CMD)
 ifneq ($(strip $(FROST_SIM_EXPORT)$(FROST_SIM_IMPORT)),)
 $(SIM_BUILD)/Vtop.mk: private CMD := python3 $(ROOT)/tests/ci_sim_models.py verilate $(CMD) '$(BUILD_ARGS)'
+endif
+
+# Makefile.verilator appends --public-flat-rw unconditionally; remove it when
+# frost_cocotb_visibility.vlt supplies the system bench visibility list, and
+# verify that Verilator supports -fico-change-detect (5.052 or newer).
+ifeq ($(FROST_SELECTIVE_VISIBILITY),1)
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
+ifeq ($(shell $(VERILATOR_CMD) -E -fico-change-detect /dev/null >/dev/null 2>&1 && echo ok),)
+$(error Selective-visibility frost builds require Verilator 5.052 or newer for -fico-change-detect, but $(VERILATOR_CMD) reports $(VLT_VERSION); run through ./scripts/frost.py or set FROST_FULL_VISIBILITY=1)
+endif
+endif
+COMPILE_ARGS := $(filter-out --public-flat-rw,$(COMPILE_ARGS))
 endif
 
 ifeq ($(FROST_COVERAGE),1)

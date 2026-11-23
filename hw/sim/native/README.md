@@ -54,15 +54,21 @@ and [`tests/test_run_cocotb.py`](../../../tests/test_run_cocotb.py) for the
 
 - `hw/sim/native/Makefile` builds a C++ executable (`--cc`, `--exe`, `--MMD`,
   `-o frost-native`, linking `main.cpp` alongside `hw/sim/sim_assertions.cpp`)
-  with selective signal visibility in [`frost_native.vlt`](frost_native.vlt),
-  whereas cocotb's `Makefile.verilator` builds `--vpi --public-flat-rw -o Vtop`
-  with `verilator.cpp`, `hw/sim/sim_assertions.cpp`, and
-  `-lcocotbvpi_verilator`.
+  with selective signal visibility in [`frost_native.vlt`](frost_native.vlt)
+  and retirement-trace support compiled in, whereas `tests/Makefile` builds
+  `--vpi -o Vtop` with `verilator.cpp`, `hw/sim/sim_assertions.cpp`,
+  `-lcocotbvpi_verilator`, `+define+FROST_NO_RETIRE_TRACE` (unless
+  `FROST_RETIRE_TRACE=1`), and
+  [`frost_cocotb_visibility.vlt`](../frost_cocotb_visibility.vlt) plus
+  `-fico-change-detect` (or `--public-flat-rw` when coverage, the
+  hang probe, or `FROST_FULL_VISIBILITY=1` are selected).
 - `hw/sim/native/Makefile` passes `-O3` to Verilator, whereas `tests/Makefile`
   leaves Verilator at its default HDL optimization level.
 - `hw/sim/native/Makefile` passes `--threads $(THREADS)` (and
-  `-Wno-UNOPTTHREADS` when `THREADS` is not `1`), whereas `tests/Makefile` runs
-  single-threaded without `--threads`.
+  `-Wno-UNOPTTHREADS` when `THREADS` is not `1`), whereas `tests/Makefile`
+  defaults to single-threaded execution and passes `--threads` with
+  `-Wno-UNOPTTHREADS` when `FROST_VERILATOR_THREADS` exceeds `1` in
+  selective-visibility `frost` builds.
 - `ASSERTIONS=1` (the default) matches `tests/Makefile` by passing
   `--assert +define+FROST_SIM_ASSERTIONS`; setting `ASSERTIONS=0` omits both
   flags and leaves runtime assertions disabled for the whole run, whereas
@@ -302,7 +308,7 @@ statically for baseline 64-bit x86 Linux hosts.
 | Mechanism | Behavior |
 | --- | --- |
 | Assertions (`ASSERTIONS=1`) | Default for `hw/sim/native/Makefile`, `./scripts/frost.py native`, `demo/Dockerfile`, and `tests/test_native_sim.py`. Verilator compiles immediate and concurrent SystemVerilog assertions (`--assert +define+FROST_SIM_ASSERTIONS`) and links [`hw/sim/sim_assertions.cpp`](../sim_assertions.cpp), matching `tests/Makefile` (`TOPLEVEL=frost`). `main.cpp` starts every run with `VerilatedContext::assertOn(false)` before model construction and time-zero evaluation so uninitialized state during cold reset cannot trip assertions, then calls `frost_sim_assertions_enable()` after the 18th rising edge of `i_clk` (rising edge `17`, matching `verif/cocotb_tests/test_real_program.py` and `verif/cocotb_tests/sim_assertions.py`), two `i_clk` cycles before `i_rst_n` releases on cycle 20. Pass `--no-assert` or `+verilator+noassert` to keep runtime assertions disabled in a checked build; in an `ASSERTIONS=0` build, assertions are neither compiled nor enabled. |
-| Retirement trace | Outside synthesis, `reorder_buffer.sv` opens `retire_trace.log` in an `initial` block and calls `$fwrite(retire_trace_fd, ...)` on each retired instruction. `main.cpp` constructs the model inside a private temporary staging directory, closes `retire_trace_fd` and sets it to `0` before cycle 0 (for descriptor `0`, Verilator discards `$fwrite` output without writing a file), and removes the temporary directory. No `retire_trace.log` is written unless `--retire-trace <path>` is passed; when combined with `--restore`, the trace file is opened after checkpoint deserialization. |
+| Retirement trace | Outside synthesis and when `FROST_NO_RETIRE_TRACE` is undefined, `reorder_buffer.sv` opens `retire_trace.log` in an `initial` block and calls `$fwrite(retire_trace_fd, ...)` on each retired instruction. `main.cpp` constructs the model inside a private temporary staging directory, closes `retire_trace_fd` and sets it to `0` before cycle 0 (for descriptor `0`, Verilator discards `$fwrite` output without writing a file), and removes the temporary directory. No `retire_trace.log` is written unless `--retire-trace <path>` is passed; when combined with `--restore`, the trace file is opened after checkpoint deserialization. |
 | Activity counters (`--stats <path>`) | Once per `i_clk` cycle after reset releases, `main.cpp` adds up `cpu_ooo`'s retired-instruction, retired-branch and misprediction counts (the inputs of HPM counters 10, 3 and 4) and the reorder buffer's occupancy (`count`). These are existing RTL signals; `frost_native.vlt` makes them readable and nothing in the RTL changes for them. Every `--stats-interval` cycles (default 10,000) and when the run ends it writes one line of cumulative counts: `cycle`, `instructions`, `branches`, `mispredicts`, `rob_occupancy_sum`, `retired0`, `retired1`, `retired2` (cycles that retired zero, one, or two or more instructions), `uart_bytes`, and `final=1` on the last line. The counts start at zero in every process, after `--restore` too. With `--regions <file>` the same counts are also kept over one region of the run and written as `region_cycles`, `region_instructions`, `region_branches`, `region_mispredicts`, `region_rob_occupancy_sum` and `region_retired0` to `region_retired2`, together with `rob_depth` (the reorder buffer's size). The file holds `start <pc>` (counting begins after the cycle in which that PC retires), `end <pc>` (the cycle in which that PC retires is the last one counted; a start and an end that retire in the same cycle bound an empty region), `skip <lo> <hi>` (cycles that end in the retirement of an instruction in the range are left out, the stall before an instruction being charged to it) and `rob_depth <N>`. `frost_native.vlt` also exposes the reorder buffer's head PCs for this (sampled one clock before the registered retirement count they are charged to, so the width, the branch events and the PCs that select the region all come from the same retirement; when the two instructions of a pair fall on different sides of a skipped range, two branch events count one and a single event goes with the first); the program and its timing are not touched. [`demo/make_regions.py`](../../../demo/make_regions.py) writes the file from a program's ELF symbols at image build. The demonstration image's `frost-show` reads these lines for its status line and closing table. |
 | Checkpoints (`SAVABLE=1`) | Building with `SAVABLE=1` enables `--save <path>`, `--save-at <cycle>`, and `--restore <path>`. A checkpoint stores the cycle count, simulation time, stop-marker state, accumulated UART bytes, and the serialized `Vtop` model (including BRAM and behavioral AXI memory contents). `--restore <path>` resumes simulation from that cycle without needing `.mem` files on disk. If `--save-at <cycle>` is not reached before simulation stops, `frost-native` exits nonzero. |
 

@@ -165,6 +165,7 @@ def _environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "FROST_VERILATOR_EXTRA_ARGS",
         "FROST_DDR_MODEL_SEED",
         "DDR_MODEL_LATENCY",
+        "FROST_SELECTIVE_VISIBILITY",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -195,6 +196,20 @@ def test_missing_signals_fail_the_capture(
             "FROST_CALIBRATION_TRACE_PATH needs signals this build does not expose: "
             f"{CORE}.rob_count, {CPU_TOP}.i_axi_bid$"
         ),
+    ):
+        calibration_trace.CalibrationTrace.from_environment(_dut(absent), **_RUN)
+
+
+def test_selective_visibility_raises_for_missing_signal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Under selective visibility, _signal raises AttributeError naming the path."""
+    monkeypatch.setenv("FROST_SELECTIVE_VISIBILITY", "1")
+    monkeypatch.setenv("FROST_CALIBRATION_TRACE_PATH", str(tmp_path / "t.jsonl"))
+    absent = frozenset({f"{CORE}.rob_count"})
+    with pytest.raises(
+        AttributeError,
+        match=rf"{CORE}\.rob_count.*frost_cocotb_visibility\.vlt",
     ):
         calibration_trace.CalibrationTrace.from_environment(_dut(absent), **_RUN)
 
