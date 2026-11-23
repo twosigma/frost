@@ -638,12 +638,28 @@ width, source-overlap, `v0`-source, alignment, reserved `frm` and `vill`
 traps.
 [Vector reduction operations](vector_reductions.S)
 
+The carry and borrow trace checks all fifteen base-V integer add-with-carry
+and subtract-with-borrow encodings (`vadc.{vvm,vxm,vim}`,
+`vmadc.{vvm,vxm,vim,vv,vx,vi}`, `vsbc.{vvm,vxm}` and
+`vmsbc.{vvm,vxm,vv,vx}`) across all four element widths (`e8`, `e16`, `e32`
+and `e64`). It covers carry-in and borrow-in propagation from `v0` versus
+carry-free `vm = 1` suppression with `v0` set, sign-extended five-bit
+immediates (`-1`, `-16` and `+15`), scalar truncation of upper register bits,
+unsigned overflow and double-underflow boundaries without setting `vxsat`,
+chained 128-bit two-limb addition and subtraction, multi-byte mask reads and
+writes with tail-bit preservation, `tu` and `ta` policies, `vl == 0`,
+`vl == VLMAX`, fractional through `m8` group multipliers, legal register
+overlaps including in-place `vd == v0` mask updates and `m2` lowest-register
+overlaps, and illegal reserved `vm = 1`, reserved `.vi`, `v0`-overlap,
+alignment and `vill` traps.
+[Vector carry and borrow operations](vector_carry_borrow.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at
 each of VLEN 128, 256 and 512. Each replays 12 generated traces of 20
 operation groups from seed 42, the source-width traces and the directed
 state, fractional LMUL, FP, cached DDR, integer comparison, widening and
 narrowing integer, fixed-point, single-width FP, whole-register memory,
-widening FP, permute and reduction traces. Both
+widening FP, permute, reduction and carry/borrow traces. Both
 implementations must return every planned trace and instruction. The
 VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer
@@ -651,9 +667,9 @@ source widths, fractional LMUL, base FP results, fused multiply-add, FP
 conversions, unit-stride memory, strided memory, indexed memory, segment
 memory, fault-only-first loads, integer comparisons, widening and
 narrowing integer operations, fixed-point operations, single-width FP
-operations, whole-register memory, widening FP, permute and reduction
-operations. It checks `vcpop.m` for state and scalar results and FP
-comparisons. TestRIG must report each destination value mismatch.
+operations, whole-register memory, widening FP, permute, reduction and
+carry/borrow operations. It checks `vcpop.m` for state and scalar results
+and FP comparisons. TestRIG must report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail

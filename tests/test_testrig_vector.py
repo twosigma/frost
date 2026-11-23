@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (36, instructions + 19121) if vector_directed else (15, instructions)
+    expected = (37, instructions + 20991) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -304,6 +304,7 @@ def test_vector_directed_replay(
         ("vector_fp_widen.S", 1519, 1149),
         ("vector_permutes.S", 1876, 714),
         ("vector_reductions.S", 1731, 796),
+        ("vector_carry_borrow.S", 1870, 759),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -3303,6 +3304,215 @@ def test_vector_reductions_trace_covers_forms() -> None:
         "fp_masked_vs1_v0",
         "misaligned_vs2_m2",
         "reserved_frm",
+        "vill",
+    }
+    assert ctrl_count == 1
+
+
+def test_vector_carry_borrow_trace_covers_forms() -> None:
+    """Check all 15 base-V carry/borrow encodings, widths, simm5, overlaps and traps."""
+    trace = VERIF_DIR / "testrig" / "vector_carry_borrow.S"
+    text = trace.read_text()
+    blocks = TRACE_WORD.split(text)[1:]
+    assert blocks
+
+    opivv, opivi, opivx = 0, 3, 4
+    expected_forms: set[tuple[int, int, int]] = {
+        (0x10, 0, opivv),
+        (0x10, 0, opivx),
+        (0x10, 0, opivi),
+        (0x11, 0, opivv),
+        (0x11, 0, opivx),
+        (0x11, 0, opivi),
+        (0x11, 1, opivv),
+        (0x11, 1, opivx),
+        (0x11, 1, opivi),
+        (0x12, 0, opivv),
+        (0x12, 0, opivx),
+        (0x13, 0, opivv),
+        (0x13, 0, opivx),
+        (0x13, 1, opivv),
+        (0x13, 1, opivx),
+    }
+
+    retired_forms: set[tuple[int, int, int]] = set()
+    sews_by_form: dict[tuple[int, int, int], set[int]] = {}
+    simm5_seen: set[tuple[int, int, int]] = set()
+    regimes_seen: set[str] = set()
+    policies_seen: set[int] = set()
+    lmuls_seen: set[int] = set()
+    legal_overlaps: set[str] = set()
+    vxsat_zero_checks = 0
+    traps_seen = 0
+    trap_kinds: set[str] = set()
+    ctrl_count = 0
+    multibyte_mask_vl = False
+
+    vtype = 0
+    vill = False
+    avl_mode = "imm"
+    vl_imm = 0
+
+    for block in blocks:
+        word_match = re.match(r"^\.4byte (0x[0-9a-f]{8})\b", block)
+        assert word_match is not None
+        word = int(word_match.group(1), 16)
+        opcode = word & 0x7F
+        f3 = (word >> 12) & 0x7
+
+        if word == 0x4330_2557:
+            ctrl_count += 1
+
+        if opcode == 0x73 and f3 in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            uimm = (word >> 15) & 0x1F
+            assert csr != 0x301  # No misa access
+            assert not (csr == 0x008 and (f3 in (1, 5) or uimm != 0))
+            if csr == 0x009 and f3 == 2:
+                m = re.search(r'(?m)^\.assert rd_wdata == (0x[0-9a-f]+) "', block)
+                if m is not None and int(m.group(1), 16) == 0:
+                    vxsat_zero_checks += 1
+            continue
+
+        if opcode != 0x57:
+            continue
+
+        if f3 == 7:
+            if (word >> 30) == 0b11:
+                vtype = (word >> 20) & 0x3FF
+                vl_imm = (word >> 15) & 0x1F
+                avl_mode = "imm"
+            else:
+                vtype = (word >> 20) & 0x7FF
+                rs1 = (word >> 15) & 0x1F
+                rd = (word >> 7) & 0x1F
+                avl_mode = "vlmax" if rs1 == 0 and rd != 0 else "reg"
+            sew_code = (vtype >> 3) & 7
+            lmul_code = vtype & 7
+            vill = (
+                sew_code > 3
+                or lmul_code == 4
+                or (lmul_code in (5, 6, 7) and (lmul_code - 8) < (sew_code - 3))
+            )
+            continue
+
+        f6 = (word >> 26) & 0x3F
+        if f3 not in (opivv, opivi, opivx) or f6 not in (0x10, 0x11, 0x12, 0x13):
+            continue
+
+        vm = (word >> 25) & 1
+        vs2 = (word >> 20) & 0x1F
+        vs1 = (word >> 15) & 0x1F
+        vd = (word >> 7) & 0x1F
+        sew = 8 << ((vtype >> 3) & 7)
+        lmul = vtype & 7
+        form = (f6, vm, f3)
+
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            traps_seen += 1
+            if vill:
+                trap_kinds.add("vill")
+            elif f6 in (0x10, 0x12) and vm == 1:
+                trap_kinds.add(f"reserved_vm1_{f6:x}_{f3}")
+            elif f6 in (0x12, 0x13) and f3 == opivi:
+                trap_kinds.add(f"reserved_vi_{f6:x}_{vm}")
+            elif f6 in (0x10, 0x12) and vm == 0 and vd == 0:
+                trap_kinds.add(f"vd_v0_{f6:x}")
+            elif vm == 0 and vs2 == 0:
+                trap_kinds.add(f"vs2_v0_{f6:x}")
+            elif vm == 0 and f3 == opivv and vs1 == 0:
+                trap_kinds.add(f"vs1_v0_{f6:x}")
+            elif lmul == 1 and f6 == 0x10 and (vd & 1):
+                trap_kinds.add("misaligned_vd_m2")
+            elif lmul == 1 and f6 == 0x11 and (vs2 & 1):
+                trap_kinds.add("misaligned_vs2_m2")
+            elif lmul == 1 and f6 == 0x12 and (vs1 & 1):
+                trap_kinds.add("misaligned_vs1_m2")
+            continue
+
+        assert re.search(r"(?m)^\.assert trap == 0\b", block)
+        assert not vill
+        assert form in expected_forms
+        retired_forms.add(form)
+        sews_by_form.setdefault(form, set()).add(sew)
+        policies_seen.add(vtype & 0xC0)
+        lmuls_seen.add(lmul)
+
+        if f3 == opivi:
+            simm5_seen.add((f6, vm, vs1))
+
+        if avl_mode == "vlmax":
+            regimes_seen.add("vlmax")
+        elif vl_imm == 0:
+            regimes_seen.add("zero")
+        elif all(vl_imm < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+            regimes_seen.add("below_vlmax")
+        if avl_mode == "imm" and vl_imm >= 20 and f6 in (0x11, 0x13):
+            multibyte_mask_vl = True
+
+        if f6 in (0x10, 0x12) and f3 == opivv:
+            if vd == vs2 == vs1:
+                legal_overlaps.add(f"self_{f6:x}")
+            elif vd == vs2:
+                legal_overlaps.add("vd_eq_vs2")
+            elif vd == vs1:
+                legal_overlaps.add("vd_eq_vs1")
+        if f6 in (0x11, 0x13) and vm == 0 and vd == 0:
+            legal_overlaps.add(f"mask_vd_v0_{f6:x}")
+        if f6 in (0x11, 0x13) and vm == 1 and (vs2 == 0 or (f3 == opivv and vs1 == 0)):
+            legal_overlaps.add(f"vm1_src_v0_{f6:x}")
+        if f6 in (0x11, 0x13) and lmul == 1 and vd == vs2:
+            legal_overlaps.add("m2_mask_low_vs2")
+        if f6 in (0x11, 0x13) and lmul == 1 and f3 == opivv and vd == vs1:
+            legal_overlaps.add("m2_mask_low_vs1")
+        if f6 in (0x11, 0x13) and lmul == 1 and (vd & 1):
+            legal_overlaps.add("m2_mask_odd_vd")
+
+    assert len(expected_forms) == 15
+    assert retired_forms == expected_forms
+    for form in expected_forms:
+        assert sews_by_form[form] == {8, 16, 32, 64}, (form, sews_by_form[form])
+    for f6, vm in ((0x10, 0), (0x11, 0), (0x11, 1)):
+        assert (f6, vm, 0x1F) in simm5_seen  # -1
+        assert (f6, vm, 0x10) in simm5_seen  # -16
+        assert (f6, vm, 0x0F) in simm5_seen  # +15
+    assert {"below_vlmax", "vlmax", "zero"} <= regimes_seen
+    assert {0x00, 0xC0} <= policies_seen
+    assert {0, 1, 2, 3, 5, 6, 7} <= lmuls_seen
+    assert multibyte_mask_vl
+    assert vxsat_zero_checks >= 2
+    assert {
+        "vd_eq_vs2",
+        "vd_eq_vs1",
+        "self_10",
+        "self_12",
+        "mask_vd_v0_11",
+        "mask_vd_v0_13",
+        "vm1_src_v0_11",
+        "vm1_src_v0_13",
+        "m2_mask_low_vs2",
+        "m2_mask_low_vs1",
+        "m2_mask_odd_vd",
+    } <= legal_overlaps
+    assert traps_seen == 18
+    assert trap_kinds == {
+        "reserved_vm1_10_0",
+        "reserved_vm1_10_4",
+        "reserved_vm1_10_3",
+        "reserved_vm1_12_0",
+        "reserved_vm1_12_4",
+        "reserved_vi_12_0",
+        "reserved_vi_13_1",
+        "reserved_vi_13_0",
+        "vd_v0_10",
+        "vd_v0_12",
+        "vs2_v0_10",
+        "vs1_v0_12",
+        "vs2_v0_11",
+        "vs1_v0_13",
+        "misaligned_vd_m2",
+        "misaligned_vs2_m2",
+        "misaligned_vs1_m2",
         "vill",
     }
     assert ctrl_count == 1
