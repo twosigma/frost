@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (38, instructions + 22412) if vector_directed else (15, instructions)
+    expected = (40, instructions + 27075) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -306,6 +306,8 @@ def test_vector_directed_replay(
         ("vector_reductions.S", 1731, 796),
         ("vector_carry_borrow.S", 1870, 759),
         ("vector_mask_ops.S", 1421, 601),
+        ("vector_int_mul_add.S", 1707, 554),
+        ("vector_int_vx_merge.S", 2956, 1303),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -3740,6 +3742,409 @@ def test_vector_mask_ops_trace_covers_forms() -> None:
         "elem_misaligned_m2_16",
         "elem_misaligned_m2_17",
         "vill",
+    }
+    assert ctrl_count == 1
+
+
+def test_vector_int_mul_add_trace_covers_forms() -> None:
+    """Check all 8 base-V int-mul-add encodings, SEWs, masking, policies, overlaps and traps."""
+    trace = VERIF_DIR / "testrig" / "vector_int_mul_add.S"
+    text = trace.read_text()
+    blocks = TRACE_WORD.split(text)[1:]
+    assert blocks
+
+    mul_add_f6 = {0x29, 0x2B, 0x2D, 0x2F}
+    mul_add_f3 = {2, 6}
+
+    retired_forms: set[tuple[int, int]] = set()
+    sews_by_form: dict[tuple[int, int], set[int]] = {}
+    masking_by_form: dict[tuple[int, int], set[bool]] = {}
+    regimes_seen: set[str] = set()
+    policies_seen: set[int] = set()
+    lmuls_seen: set[int] = set()
+    legal_overlaps: set[str] = set()
+    traps_seen = 0
+    trap_kinds: set[str] = set()
+    ctrl_count = 0
+
+    vtype = 0
+    vill = False
+    avl_mode = "imm"
+    vl_val = 0
+    reg_val: dict[int, int | None] = {0: 0}
+
+    for block in blocks:
+        word_match = re.match(r"^\.4byte (0x[0-9a-f]{8})\b", block)
+        assert word_match is not None
+        word = int(word_match.group(1), 16)
+        opcode = word & 0x7F
+        f3 = (word >> 12) & 0x7
+
+        if word == 0x4370_2557:
+            ctrl_count += 1
+
+        if opcode == 0x73 and f3 in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            uimm = (word >> 15) & 0x1F
+            assert csr != 0x301  # No misa access
+            assert not (csr == 0x008 and (f3 in (1, 5) or uimm != 0))
+            continue
+
+        if opcode != 0x57:
+            _update_int_reg_tracking(reg_val, word)
+            continue
+
+        if f3 == 7:
+            if (word >> 30) == 0b11:
+                vtype = (word >> 20) & 0x3FF
+                vl_val = (word >> 15) & 0x1F
+                avl_mode = "imm"
+            else:
+                vtype = (word >> 20) & 0x7FF
+                rs1 = (word >> 15) & 0x1F
+                rd = (word >> 7) & 0x1F
+                if rs1 == 0 and rd != 0:
+                    avl_mode = "vlmax"
+                    vl_val = 0
+                else:
+                    avl_mode = "reg"
+                    rv = reg_val.get(rs1)
+                    vl_val = rv if rv is not None else 0
+            sew_code = (vtype >> 3) & 7
+            lmul_code = vtype & 7
+            vill = (
+                sew_code > 3
+                or lmul_code == 4
+                or (lmul_code in (5, 6, 7) and (lmul_code - 8) < (sew_code - 3))
+            )
+            continue
+
+        f6 = (word >> 26) & 0x3F
+        if f3 not in mul_add_f3 or f6 not in mul_add_f6:
+            continue
+
+        vm = bool((word >> 25) & 1)
+        vs2 = (word >> 20) & 0x1F
+        vs1 = (word >> 15) & 0x1F
+        vd = (word >> 7) & 0x1F
+        sew = 8 << ((vtype >> 3) & 7)
+        lmul = vtype & 7
+        form_id = (f6, f3)
+
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            traps_seen += 1
+            if vill:
+                trap_kinds.add(f"vill_{f3}")
+            elif not vm and vd == 0 and lmul == 1:
+                trap_kinds.add("m2_masked_vd_v0")
+            elif not vm and vd == 0:
+                trap_kinds.add(f"masked_vd_v0_{f6:x}")
+            elif not vm and vs2 == 0:
+                trap_kinds.add(f"masked_vs2_v0_{f6:x}")
+            elif not vm and f3 == 2 and vs1 == 0:
+                trap_kinds.add(f"masked_vs1_v0_{f6:x}")
+            elif lmul == 1 and (vd & 1):
+                trap_kinds.add(f"m2_misaligned_vd_{f3}")
+            elif lmul == 1 and f3 == 2 and (vs1 & 1):
+                trap_kinds.add("m2_misaligned_vs1")
+            elif lmul == 1 and (vs2 & 1):
+                trap_kinds.add("m2_misaligned_vs2")
+            elif lmul == 2 and (vd & 3):
+                trap_kinds.add("m4_misaligned_vd")
+            continue
+
+        assert re.search(r"(?m)^\.assert trap == 0\b", block)
+        assert not vill
+        retired_forms.add(form_id)
+        sews_by_form.setdefault(form_id, set()).add(sew)
+        masking_by_form.setdefault(form_id, set()).add(vm)
+        policies_seen.add(vtype & 0xC0)
+        lmuls_seen.add(lmul)
+
+        if avl_mode == "vlmax":
+            regimes_seen.add("vlmax")
+        elif vl_val == 0:
+            regimes_seen.add("zero")
+        elif all(vl_val < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+            regimes_seen.add("below_vlmax")
+
+        if f3 == 2:
+            if vd == vs1 == vs2:
+                legal_overlaps.add("vd_vs1_vs2")
+            elif vd == vs1:
+                legal_overlaps.add(f"vd_vs1_{f6:x}")
+            elif vd == vs2:
+                legal_overlaps.add("vd_vs2")
+            elif vs1 == vs2 and vs1 != 0:
+                legal_overlaps.add("vs1_vs2")
+            if vm and vd == 0:
+                legal_overlaps.add("unmasked_vd_v0")
+            if vm and vs1 == 0 and vs2 == 0:
+                legal_overlaps.add("unmasked_vs1_vs2_v0")
+
+    expected_forms = {(f6, f3) for f6 in mul_add_f6 for f3 in mul_add_f3}
+    assert len(expected_forms) == 8
+    assert retired_forms == expected_forms
+    for form_id in expected_forms:
+        assert sews_by_form[form_id] == {8, 16, 32, 64}, form_id
+        assert masking_by_form[form_id] == {True, False}, form_id
+
+    assert {"below_vlmax", "vlmax", "zero"} <= regimes_seen
+    assert {0x00, 0xC0} <= policies_seen
+    assert {0, 1, 2, 3, 5, 6, 7} <= lmuls_seen
+    assert {
+        "vd_vs1_2d",
+        "vd_vs1_29",
+        "vd_vs2",
+        "vs1_vs2",
+        "vd_vs1_vs2",
+        "unmasked_vd_v0",
+        "unmasked_vs1_vs2_v0",
+    } <= legal_overlaps
+    assert traps_seen == 16
+    assert trap_kinds == {
+        "masked_vd_v0_2d",
+        "masked_vd_v0_2f",
+        "masked_vd_v0_29",
+        "masked_vd_v0_2b",
+        "masked_vs2_v0_2d",
+        "masked_vs2_v0_29",
+        "masked_vs1_v0_2f",
+        "masked_vs1_v0_2b",
+        "m2_masked_vd_v0",
+        "m2_misaligned_vd_2",
+        "m2_misaligned_vd_6",
+        "m2_misaligned_vs1",
+        "m2_misaligned_vs2",
+        "m4_misaligned_vd",
+        "vill_2",
+        "vill_6",
+    }
+    assert ctrl_count == 1
+
+
+def test_vector_int_vx_merge_trace_covers_forms() -> None:
+    """Check all 18 remaining non-segment integer encodings, div corners, overlaps and traps."""
+    trace = VERIF_DIR / "testrig" / "vector_int_vx_merge.S"
+    text = trace.read_text()
+    blocks = TRACE_WORD.split(text)[1:]
+    assert blocks
+
+    vx_forms = {
+        (0x03, 4),
+        (0x09, 4),
+        (0x25, 4),
+        (0x28, 4),
+        (0x29, 4),
+        (0x04, 4),
+        (0x05, 4),
+        (0x06, 4),
+        (0x07, 4),
+        (0x24, 6),
+        (0x27, 6),
+        (0x26, 6),
+        (0x20, 6),
+        (0x21, 6),
+        (0x22, 6),
+        (0x23, 6),
+    }
+    merge_forms = {(0x17, 0), (0x17, 4)}
+    div_f6 = {0x20, 0x21, 0x22, 0x23}
+
+    retired_forms: set[tuple[int, int]] = set()
+    sews_by_form: dict[tuple[int, int], set[int]] = {}
+    masking_by_form: dict[tuple[int, int], set[bool]] = {}
+    div_zero_sews: dict[int, set[int]] = {}
+    div_neg1_sews: dict[int, set[int]] = {}
+    regimes_seen: set[str] = set()
+    policies_seen: set[int] = set()
+    lmuls_seen: set[int] = set()
+    legal_overlaps: set[str] = set()
+    traps_seen = 0
+    trap_kinds: set[str] = set()
+    ctrl_count = 0
+
+    vtype = 0
+    vill = False
+    avl_mode = "imm"
+    vl_val = 0
+    reg_val: dict[int, int | None] = {0: 0}
+
+    for block in blocks:
+        word_match = re.match(r"^\.4byte (0x[0-9a-f]{8})\b", block)
+        assert word_match is not None
+        word = int(word_match.group(1), 16)
+        opcode = word & 0x7F
+        f3 = (word >> 12) & 0x7
+
+        if word == 0x4340_2557:
+            ctrl_count += 1
+
+        if opcode == 0x73 and f3 in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            uimm = (word >> 15) & 0x1F
+            assert csr != 0x301  # No misa access
+            assert not (csr == 0x008 and (f3 in (1, 5) or uimm != 0))
+            continue
+
+        if opcode != 0x57:
+            _update_int_reg_tracking(reg_val, word)
+            continue
+
+        if f3 == 7:
+            if (word >> 30) == 0b11:
+                vtype = (word >> 20) & 0x3FF
+                vl_val = (word >> 15) & 0x1F
+                avl_mode = "imm"
+            else:
+                vtype = (word >> 20) & 0x7FF
+                rs1 = (word >> 15) & 0x1F
+                rd = (word >> 7) & 0x1F
+                if rs1 == 0 and rd != 0:
+                    avl_mode = "vlmax"
+                    vl_val = 0
+                else:
+                    avl_mode = "reg"
+                    rv = reg_val.get(rs1)
+                    vl_val = rv if rv is not None else 0
+            sew_code = (vtype >> 3) & 7
+            lmul_code = vtype & 7
+            vill = (
+                sew_code > 3
+                or lmul_code == 4
+                or (lmul_code in (5, 6, 7) and (lmul_code - 8) < (sew_code - 3))
+            )
+            continue
+
+        f6 = (word >> 26) & 0x3F
+        vm = bool((word >> 25) & 1)
+        vs2 = (word >> 20) & 0x1F
+        vs1 = (word >> 15) & 0x1F
+        vd = (word >> 7) & 0x1F
+        form_id = (f6, f3)
+        is_vx = form_id in vx_forms
+        is_merge = form_id in merge_forms and not vm
+        if not (is_vx or is_merge):
+            continue
+
+        sew = 8 << ((vtype >> 3) & 7)
+        lmul = vtype & 7
+
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            traps_seen += 1
+            if vill:
+                trap_kinds.add(f"vill_{f6:x}_{f3}")
+            elif is_merge and vd == 0:
+                trap_kinds.add(f"merge_vd_v0_{f3}")
+            elif is_merge and vs2 == 0:
+                trap_kinds.add(f"merge_vs2_v0_{f3}")
+            elif is_merge and f3 == 0 and vs1 == 0:
+                trap_kinds.add("merge_vs1_v0")
+            elif is_vx and not vm and vd == 0:
+                trap_kinds.add(f"vx_masked_vd_v0_{f6:x}")
+            elif is_vx and not vm and vs2 == 0:
+                trap_kinds.add(f"vx_masked_vs2_v0_{f6:x}")
+            elif lmul == 1 and (vd & 1):
+                trap_kinds.add(f"m2_misaligned_vd_{f6:x}")
+            elif lmul == 1 and (vs2 & 1):
+                trap_kinds.add(f"m2_misaligned_vs2_{f6:x}")
+            elif lmul == 1 and is_merge and f3 == 0 and (vs1 & 1):
+                trap_kinds.add("m2_misaligned_merge_vs1")
+            elif lmul == 2 and (vd & 3):
+                trap_kinds.add("m4_misaligned_vd")
+            continue
+
+        assert re.search(r"(?m)^\.assert trap == 0\b", block)
+        assert not vill
+        retired_forms.add(form_id)
+        sews_by_form.setdefault(form_id, set()).add(sew)
+        masking_by_form.setdefault(form_id, set()).add(vm)
+        policies_seen.add(vtype & 0xC0)
+        lmuls_seen.add(lmul)
+
+        if f3 == 6 and f6 in div_f6 and vl_val > 0:
+            rv = reg_val.get(vs1)
+            if rv is not None:
+                sew_mask = (1 << sew) - 1
+                low = rv & sew_mask
+                if low == 0:
+                    div_zero_sews.setdefault(f6, set()).add(sew)
+                elif low == sew_mask:
+                    div_neg1_sews.setdefault(f6, set()).add(sew)
+
+        if avl_mode == "vlmax":
+            regimes_seen.add("vlmax")
+        elif vl_val == 0:
+            regimes_seen.add("zero")
+        elif all(vl_val < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+            regimes_seen.add("below_vlmax")
+
+        if is_vx:
+            if vd == vs2 and vd != 0:
+                legal_overlaps.add("vx_vd_vs2")
+            if vm and vd == 0 and vs2 == 0:
+                legal_overlaps.add("vx_unmasked_vd_vs2_v0")
+        elif is_merge:
+            if f3 == 0:
+                if vd == vs2 == vs1:
+                    legal_overlaps.add("merge_vv_all_eq")
+                elif vd == vs2:
+                    legal_overlaps.add("merge_vv_vd_vs2")
+                elif vd == vs1:
+                    legal_overlaps.add("merge_vv_vd_vs1")
+                elif vs1 == vs2:
+                    legal_overlaps.add("merge_vv_vs1_vs2")
+            elif vd == vs2:
+                legal_overlaps.add("merge_vx_vd_vs2")
+
+    expected_forms = vx_forms | merge_forms
+    assert len(expected_forms) == 18
+    assert retired_forms == expected_forms
+    for form_id in expected_forms:
+        assert sews_by_form[form_id] == {8, 16, 32, 64}, form_id
+    for form_id in vx_forms:
+        assert masking_by_form[form_id] == {True, False}, form_id
+    for form_id in merge_forms:
+        assert masking_by_form[form_id] == {False}, form_id
+
+    for f6 in div_f6:
+        assert div_zero_sews[f6] == {8, 16, 32, 64}, hex(f6)
+        assert div_neg1_sews[f6] == {8, 16, 32, 64}, hex(f6)
+
+    assert {"below_vlmax", "vlmax", "zero"} <= regimes_seen
+    assert {0x00, 0xC0} <= policies_seen
+    assert {0, 1, 2, 3, 5, 6, 7} <= lmuls_seen
+    assert {
+        "vx_vd_vs2",
+        "vx_unmasked_vd_vs2_v0",
+        "merge_vv_vd_vs2",
+        "merge_vv_vd_vs1",
+        "merge_vv_vs1_vs2",
+        "merge_vv_all_eq",
+        "merge_vx_vd_vs2",
+    } <= legal_overlaps
+    assert traps_seen == 20
+    assert trap_kinds == {
+        "vx_masked_vd_v0_3",
+        "vx_masked_vd_v0_25",
+        "vx_masked_vd_v0_27",
+        "vx_masked_vd_v0_21",
+        "vx_masked_vs2_v0_9",
+        "vx_masked_vs2_v0_5",
+        "vx_masked_vs2_v0_26",
+        "vx_masked_vs2_v0_23",
+        "merge_vd_v0_0",
+        "merge_vd_v0_4",
+        "merge_vs2_v0_0",
+        "merge_vs1_v0",
+        "merge_vs2_v0_4",
+        "m2_misaligned_vd_3",
+        "m2_misaligned_vs2_21",
+        "m2_misaligned_merge_vs1",
+        "m4_misaligned_vd",
+        "vill_3_4",
+        "vill_21_6",
+        "vill_17_0",
     }
     assert ctrl_count == 1
 
