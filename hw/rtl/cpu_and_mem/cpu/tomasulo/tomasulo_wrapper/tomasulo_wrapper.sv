@@ -5504,6 +5504,14 @@ module tomasulo_wrapper #(
   initial f_past_valid = 1'b0;
   always @(posedge i_clk) f_past_valid <= 1'b1;
 
+`ifdef TOMASULO_WRAPPER_DEPTH6_COVERS
+  reg [3:0] f_d6_cycle;
+  initial f_d6_cycle = 4'd0;
+  always @(posedge i_clk) begin
+    if (f_d6_cycle != 4'd15) f_d6_cycle <= f_d6_cycle + 4'd1;
+  end
+`endif
+
   always @(posedge i_clk) begin
     if (f_past_valid) assume (i_rst_n);
     if (f_past_valid && !$past(i_flush_all)) assume (i_mmu_pm_mode == $past(i_mmu_pm_mode));
@@ -5928,6 +5936,17 @@ module tomasulo_wrapper #(
     if (o_rs_full) assume (!i_rs_dispatch.valid);
   end
 
+`ifdef TOMASULO_WRAPPER_LQ_SQ_DISJOINT
+  // instr_operand_classifier sets at most one of needs_lq or needs_sq for any
+  // decoded instruction.
+  always_comb begin
+    if (i_rs_dispatch.valid) begin
+      a_dispatch_lq_sq_disjoint :
+      assume (!(i_rs_dispatch.mem_needs_lq && i_rs_dispatch.mem_needs_sq));
+    end
+  end
+`endif
+
   // No MEM_RS load dispatch when LQ is full
   always_comb begin
     if (o_lq_full && i_rs_dispatch.mem_needs_lq) assume (!mem_rs_dispatch_valid);
@@ -6117,6 +6136,58 @@ module tomasulo_wrapper #(
       p_reset_sq_empty : assert (o_sq_empty);
     end
   end
+
+`ifdef TOMASULO_WRAPPER_DEPTH6_COVERS
+  // Combinational non-vacuity covers for the depth-6 abstract-FU and wakeup
+  // environments (evaluation steps align directly with BMC frame indices).
+  always_comb begin
+    if (i_rst_n && sc_check_armed) begin
+      // Narrowed wakeup environment (i_fu_complete_0..7 = 0, LQ/SQ disjoint)
+      cover_d6_w_load_and_store_inflight : cover (!o_lq_empty && !o_sq_empty);
+      cover_d6_w_recovery_both_queues : cover (speculative_flush_en && !o_lq_empty && !o_sq_empty);
+      cover_d6_w_flush_both_queues : cover (i_flush_all && !o_lq_empty && !o_sq_empty);
+      cover_d6_w_mem_wakeup_f4 :
+      cover (f_d6_cycle == 4'd4 && mem_rs_early_wakeup_enable && mem_rs_wakeup_0.valid);
+      cover_d6_w_mem_wakeup_f5_staged :
+      cover (f_d6_cycle == 4'd5 && mem_rs_early_wakeup_enable && lq_fu_complete_staged);
+      cover_d6_w_mem_wakeup_f5_merge :
+      cover (f_d6_cycle == 4'd5 && mem_rs_early_wakeup_enable && lq_fu_complete_staged &&
+             cdb_bus_mem_qualified.valid);
+      cover_d6_w_alu_cdb :
+      cover ((cdb_bus_qualified.valid && cdb_bus_qualified.fu_type == riscv_pkg::FU_ALU) ||
+             (cdb_bus_2_qualified.valid && cdb_bus_2_qualified.fu_type == riscv_pkg::FU_ALU));
+      cover_d6_w_alu2_cdb :
+      cover ((cdb_bus_qualified.valid && cdb_bus_qualified.fu_type == riscv_pkg::FU_ALU2) ||
+             (cdb_bus_2_qualified.valid && cdb_bus_2_qualified.fu_type == riscv_pkg::FU_ALU2));
+
+      // Multi-cycle abstracted FU completions reaching the CDB (with FU test ports zero)
+      cover_d6_fu_clmul_cdb :
+      cover (mul_adapter_to_arbiter.valid &&
+             (u_muldiv_shim.mul_trk_rsel[riscv_pkg::MulPipeDepth-1] == u_muldiv_shim.MUL_SEL_CL) &&
+             ((cdb_bus_comb.valid && cdb_bus_comb.fu_type == riscv_pkg::FU_MUL) ||
+              (cdb_bus_2_comb.valid && cdb_bus_2_comb.fu_type == riscv_pkg::FU_MUL)));
+      cover_d6_fu_mulw_cdb :
+      cover (mul_adapter_to_arbiter.valid &&
+             (u_muldiv_shim.mul_trk_rsel[riscv_pkg::MulPipeDepth-1] ==
+              u_muldiv_shim.MUL_SEL_SEXT_W) &&
+             ((cdb_bus_comb.valid && cdb_bus_comb.fu_type == riscv_pkg::FU_MUL) ||
+              (cdb_bus_2_comb.valid && cdb_bus_2_comb.fu_type == riscv_pkg::FU_MUL)));
+      cover_d6_fu_fp_eng_cdb :
+      cover ((cdb_bus_comb.valid && cdb_bus_comb.fu_type == riscv_pkg::FU_FP_ADD) ||
+             (cdb_bus_2_comb.valid && cdb_bus_2_comb.fu_type == riscv_pkg::FU_FP_ADD));
+
+      // Depth-6 bmc_depth6 environment (free test-injection ports)
+      cover_d6_env_alu_via_alu2 : cover (alu_result_via_alu2 && alu_shim_out.valid);
+      cover_d6_env_head_done_result_held :
+      cover (!o_rob_empty && rob_entry_done[head_tag] && alu_result_held_q[head_tag]);
+      cover_d6_env_mem_wakeup_f4 :
+      cover (f_d6_cycle == 4'd4 && mem_rs_early_wakeup_enable && mem_rs_wakeup_0.valid);
+      cover_d6_env_mem_wakeup_f5_merge :
+      cover (f_d6_cycle == 4'd5 && mem_rs_early_wakeup_enable && lq_fu_complete_staged &&
+             cdb_bus_mem_qualified.valid);
+    end
+  end
+`endif
 
   // -------------------------------------------------------------------------
   // Cover properties

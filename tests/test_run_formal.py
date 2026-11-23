@@ -1025,8 +1025,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "if_fault_ras_veto.sby",
         "Fetch-faulted IF packets never carry a predicted-taken flag or operate "
-        "the return-address stack",
-        tasks=("bmc", "cover", "prove"),
+        "the return-address stack, and intact if_stage makes the slot-2 veto redundant",
+        tasks=("bmc", "cover", "prove", "prove_slot2_veto_redundant"),
     ),
     FormalTarget(
         "mispredict_capture.sby",
@@ -2048,7 +2048,18 @@ FORMAL_TARGETS = [
     FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo commit and flush integration, including FP dispatch done repair",
-        tasks=("bmc", "cover", "cover_alu_issue", "fp_repair_bmc"),
+        tasks=(
+            "bmc",
+            "cover",
+            "cover_alu_issue",
+            "fp_repair_bmc",
+            "bmc_depth6",
+            "bmc_wakeup_depth6",
+            "fp_repair_bmc_depth6",
+            "cover_depth6",
+            "cover_wakeup_depth6",
+            "cover_fu_depth6",
+        ),
     ),
     FormalTarget(
         "tomasulo_wrapper_commit_bus.sby",
@@ -3516,6 +3527,10 @@ SBY_TASKS = [
     ("cover_direct", "Direct-fetch responses coincident with clears and errors"),
     ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
+    (
+        "prove_slot2_veto_redundant",
+        "Unbounded induction that intact if_stage makes the slot-2 fetch-fault veto redundant",
+    ),
     ("prove_copy", "Staged address copies sample identical inputs on every edge"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
     ("prove_vector", "Unbounded proof with vector state enabled"),
@@ -3820,6 +3835,30 @@ SBY_TASKS = [
     (
         "fp_repair_bmc",
         "Bounded model checking with production FP dispatch done repair enabled",
+    ),
+    (
+        "bmc_depth6",
+        "Depth-6 bounded model checking of station and wrapper assertions with abstract leaf FUs",
+    ),
+    (
+        "bmc_wakeup_depth6",
+        "Depth-6 bounded model checking of early-load wakeup merger assertions with abstract leaf FUs",
+    ),
+    (
+        "fp_repair_bmc_depth6",
+        "Depth-6 bounded model checking with FP dispatch done repair enabled and abstract leaf FUs",
+    ),
+    (
+        "cover_depth6",
+        "Cover search for frames 4 and 5 in the abstract-FU depth-6 environment",
+    ),
+    (
+        "cover_wakeup_depth6",
+        "Cover search for queue overlap, recovery, ALU CDB, and wakeup merge in the narrowed depth-6 wakeup environment",
+    ),
+    (
+        "cover_fu_depth6",
+        "Cover search for multi-cycle abstracted MUL and FP engine completions reaching the CDB with FU test ports tied to zero",
     ),
     (
         "cover_alu_issue",

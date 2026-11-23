@@ -5656,8 +5656,13 @@ async def test_faulting_fetch_suppresses_trained_btb_redirect(dut: Any) -> None:
     assert _read_if_packet(dut)["ras_checkpoint_valid_count"] == 0
 
 
-# The explicit slot-2 veto stays as a defensive guard, and the directed
-# test pins the observable behavior of faulting slot-2 calls.
+# In intact if_stage, slot 2 has no pending-prediction path and
+# served_fault_any disables prediction_common on every served-window fault,
+# so the explicit o_from_if_to_pd_2.fetch_fault veto in packet assembly is
+# redundant (proved by if_fault_ras_veto:prove_slot2_veto_redundant) and
+# serves as a defensive guard pinned with branch_prediction_controller
+# abstracted by if_fault_ras_veto:prove. This directed test pins the
+# observable behavior of faulting slot-2 calls.
 @cocotb.test()
 async def test_slot2_fault_suppresses_trained_call_and_replay_ras(dut: Any) -> None:
     """A faulting slot-2 call suppresses redirect and RAS push live and on replay."""

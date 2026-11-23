@@ -469,7 +469,7 @@ and `p_pd_slot2_cond_branch_predecode_exact` enabled.
 | `pc_redirect_catchup_producer` | In the PC controller, the catch-up and default arms are both sequential, and catch-up never coincides with a pending-hold request; unbounded at XLEN 32, 64, and 66 |
 | `pc_redirect_catchup_consumer` | Given those producer properties, leaving the catch-up request out of the registered redirect detector does not change its output; unbounded |
 | `if_direction_payload` | Dropping the NOP term from the branch-direction payload select changes no non-NOP packet, including stall replay through the real `stall_capture_reg`. Assumes a flush on the first cycle |
-| `if_fault_ras_veto` | Fetch-faulted packets leaving `if_stage` in either slot never carry `btb_predicted_taken` or issue IF-originated return-address-stack operations (`ras_op_slot1`, `ras_op_slot2`, `ras_push`, `ras_pop`, and their registered `_q` copies when `pd_ras_operation` is inactive), across live, pending, and stall-replayed packets; covers reach both slots across live call and stall-replayed return faults. Leaves out PD-originated backing-BTB RAS operations (`pd_ras_operation`, driven by `pd_stage` for an older instruction already in PD) and cuts blackboxed submodule producers |
+| `if_fault_ras_veto` | Fetch-faulted packets leaving `if_stage` in either slot never carry `btb_predicted_taken` or issue IF-originated return-address-stack operations (`ras_op_slot1`, `ras_op_slot2`, `ras_push`, `ras_pop`, and their registered `_q` copies when `pd_ras_operation` is inactive), across live, pending, and stall-replayed packets; covers reach both slots across live call and stall-replayed return faults. Leaves out PD-originated backing-BTB RAS operations (`pd_ras_operation`, driven by `pd_stage` for an older instruction already in PD) and cuts blackboxed submodule producers. The `prove_slot2_veto_redundant` task keeps `branch_prediction_controller`, `pc_controller`, `c_ext_state`, `instruction_aligner`, `served_window_coverage`, `prediction_metadata_tracker`, `slot2_prediction_capture`, and `stall_capture_reg` intact (abstracting predictor tables and `immu`) and proves by unbounded induction from reset (`p_pc_reg_high_for_coverage_matches`, `p_live_disjoint`, `p_cap_disjoint`, `p_saved_disjoint`, `p_line3311_redundant`) that no live or stall-replayed non-NOP faulting slot-2 packet carries a taken prediction into the explicit `o_from_if_to_pd_2.fetch_fault` veto, establishing that the veto is redundant in intact `if_stage` |
 | `if_prediction_walk_past` | Bounded only (`bmc` depth 12, `continuity` depth 8, `cover` depth 10; no unbounded `prove` task) on the integrated `if_stage` with arbitrary instruction windows, lookup hits and pipeline controls after an initial reset: in `continuity` (bounded, depth 8, assuming no sequential `2^64` PC wraparound), without a redirect `pc_reg` moves only by the emitted bundle's size or to the target of an emitted predicted branch whose lookup PC matches that branch, and a real slot-1 packet's PC matches `pc_reg`; in `bmc` (bounded, depth 12), the fetch stage emits no real packet while the post-prediction holdoff holds `pc_reg` (excluding pending target-handoff cycles and self-targeting registered redirects), and emits bubbles in both slots whenever `pc_reg` has walked past a pending prediction; in `cover` (depth 10), covers reach odd, even, squashed, stalled, and post-stall-release squashed walk-past cycles, plus slot-2 redirects below `P` and at `P` behind a released native instruction at `P - 2`. A fault-free live slot 2 requires a non-control slot-1 parcel and matching control-flow and size sidebands. Covers exercise a live pair, a replayed pair, a native indirect jump with its younger slot suppressed, an indirect hit behind reserved `C.JR x0`, and a slot-2 indirect hit across the target-address region. |
 | `pc_holdoff_cofactor` | The three fetch-holdoff outputs equal their reference equations |
 | `pc_holdoff_tag` | A pending prediction's predecessor-PC tag equals its PC minus 2, and outside reset the prediction holdoffs equal their reference equations; unbounded at XLEN 32, 64, and 72, including wraparound. Assumes the pending bit starts clear |
@@ -614,20 +614,58 @@ assumes that dispatch comes with an allocation and uses that cycle's ROB tag,
 that a partial flush names a live ROB entry, and that address translation is
 off (the `tlb` and `ptw` targets and `vm_test` cover translation). INT_RS's
 issue-tag copies and the tags they copy have no reset: their initial values
-are assumed equal, and every later cycle asserts the equality (to depth 4;
-`rs_issue_tag_copies` proves it by induction from any initial state). At depth 4
-the proof does not reach ROB tag wraparound; simulation covers tag reuse.
-Nor does it reach an early load wakeup (a load takes at least four cycles
-from dispatch to its staged result), so `p_int_early_load_matches_mem`,
-`p_fp_early_load_matches_mem`, `p_early_load_accepted_or_recovering` and
-`p_early_load_really_broadcasts` are not exercised here. The wrapper is
-built with its default parameters, not the core's: `SPLIT_RS_DISPATCH`,
+are assumed equal, and every later cycle asserts the equality (to depth 4 in
+`bmc`, to depth 6 in `bmc_depth6`, and by induction from any initial state in
+`rs_issue_tag_copies`). Depth 4 (`bmc`, `fp_repair_bmc`) keeps the concrete
+ALU, integer multipliers, and FP engine/divider; depth 6 (`bmc_depth6`,
+`bmc_wakeup_depth6`, `fp_repair_bmc_depth6`) abstracts those leaf arithmetic
+units (`FP_SHIM_ABSTRACT_PROOF` plus freeing `alu`, `multiplier`,
+`dsp_tiled_multiplier_unsigned`, and `cl_multiplier` outputs with `anyseq`,
+since formal mode reads only their data results) and uses `abc bmc3 -c`. At
+depth 4 or 6 the proof does not reach ROB tag wraparound; simulation covers
+tag reuse. Depth 4 checks frames 0 through 3; depth 6 checks frames 4 and 5,
+reaching port-0 ALU2 redirect (`p_alu_held_result_presents_via_alu2`,
+`p_alu_redirect_port1_idle`, `p_alu_redirect_packet`), held-ALU-result commit
+stalls (`p_commit_waits_for_held_alu_result`,
+`p_commit_2_waits_for_held_alu_result`), and staged faulting loads in
+`mem_wakeup_merge`. `bmc_depth6` checks all 773 station and non-commit-bus
+wrapper assertions with the same 56 assumptions and free `i_fu_complete_*`
+ports. A non-faulting load reaches its staged result at frame 6, so
+`p_int_early_load_matches_mem`, `p_fp_early_load_matches_mem`,
+`p_early_load_accepted_or_recovering`, and `p_early_load_really_broadcasts`
+are not exercised at depth 4 or 6. The three commit-bus properties
+(`p_registered_native_fence_implies_flush`,
+`p_native_fence_copy_matches_non_translation_flush`, and
+`p_rename_wins_over_commit`) are proved to depth 10 in
+`tomasulo_wrapper_commit_bus`, a separate environment that supplies the ROB's
+one-class allocation and slot-2 rename contracts. `bmc_wakeup_depth6` checks
+all 44 `mem_wakeup_merge` assertions at depth 6 (including the four
+`duplicates_registered_lane` checks) with unused test-injection ports
+`i_fu_complete_0..7` tied to zero (matching `cpu_ooo`) and
+`TOMASULO_WRAPPER_LQ_SQ_DISJOINT` matching `instr_operand_classifier`'s
+mutually exclusive `needs_lq`/`needs_sq` outputs. Three registered cover tasks
+check non-vacuity of the abstract-FU and narrowed wakeup environments:
+`cover_depth6` (depth 6, matching `bmc_depth6`'s 56 assumptions) reaches
+port-0 ALU2 redirect, a done head waiting on a held ALU result, and wakeup
+merges at frames 4 and 5; `cover_wakeup_depth6` (depth 6, matching
+`bmc_wakeup_depth6`'s 57 assumptions and zeroed `i_fu_complete_0..7`) reaches
+simultaneous in-flight loads and stores, partial recovery and full flush with
+both queues occupied, memory wakeup merges at frames 4 and 5 (including a
+staged load alongside a registered CDB broadcast), and `FU_ALU` and `FU_ALU2`
+completions on the registered CDB; `cover_fu_depth6` (depth 8, same narrowed
+environment) reaches carry-less multiplier (`MUL_SEL_CL`), word multiplier
+(`MUL_SEL_SEXT_W`), and abstract `fp_shim` engine (`FU_FP_ADD`) completions on
+the CDB through their adapters (`fp_fma_pipe` and 64-bit `multiplier` require
+longer pipelines covered by `fp_forward_wake`, `fp_forward_route`, and
+`int_muldiv_shim`). The wrapper is built with
+its default parameters, not the core's: `SPLIT_RS_DISPATCH`,
 `ROB_SHARED_LINK_BANK`, `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS`,
 `CACHE_NORMAL_MEMORY`, `CMO_HOME` and `VECTOR` are 0 and `L0_CACHE_DEPTH` is
-128 (`fp_repair_bmc` sets `ENABLE_DISPATCH_DONE_REPAIR`).
-`fp_repair_bmc` enables the FP dispatch done repair, as the CPU does, and
-assumes the repair channels carry the pending FP instruction's source
-readiness and tags.
+128 (`fp_repair_bmc` and `fp_repair_bmc_depth6` set
+`ENABLE_DISPATCH_DONE_REPAIR`).
+`fp_repair_bmc` and `fp_repair_bmc_depth6` enable the FP dispatch done repair,
+as the CPU does, and assume the repair channels carry the pending FP
+instruction's source readiness and tags.
 `cover_alu_issue` holds the three ALU-issue covers (port 0's result passing
 through the ALU2 adapter, granted or held, and a done head waiting for the
 link the ALU adapter holds), and `cover` the others. With 12 checkpoints the
