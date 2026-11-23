@@ -17,10 +17,12 @@
 /*
  * Machine-timer interrupts swept one cycle at a time across a crypto
  * instruction: its service at the ROB head and its execution in the vector
- * engine after it retires. mtime counts core cycles, so arming mtimecmp at
- * now + K for every K from shortly before the instruction to past the end of
- * its execution, as an uninterrupted run measures them, makes the interrupt
- * arrive in each cycle of both.
+ * engine after it retires. mtime counts core cycles. For each case, an
+ * uninterrupted run measures the engine's execution span after setup loads
+ * drain, a bracket-and-binary search locates the timer offset where mepc
+ * crosses the crypto instruction, and a one-cycle sweep covers from shortly
+ * before that crossing to past the end of execution, with bounded narrow
+ * retries if memory jitter skips a window.
  *
  * The handler records mepc, vl, vtype and vstart, saves v8-v9 and v16-v17
  * with whole-register stores, changes vl and vtype, overwrites the registers,
@@ -224,6 +226,75 @@ static uint32_t element32(volatile uint64_t *regs, unsigned e)
     return (uint32_t) (regs[e / 2] >> (32 * (e & 1)));
 }
 
+enum {
+    WIN_BEFORE = -1,
+    WIN_AT = 0,
+    WIN_AFTER = 1,
+    K_SEARCH_START = 64,
+    K_SEARCH_MAX = 4096,
+    SWEEP_PAD_BEFORE = 12,
+    SWEEP_PAD_AFTER = 16,
+    MAX_WINDOW_RETRIES = 8,
+};
+
+struct window_counts {
+    unsigned before, at, after;
+};
+
+static int probe_irq(unsigned c,
+                     unsigned long avl,
+                     unsigned long vt,
+                     unsigned long vl,
+                     uint64_t k,
+                     struct marks *m,
+                     struct window_counts *counts)
+{
+    g_irq = 0;
+    g_mepc = 0;
+    g_vstart = ~0ul;
+    load_registers();
+    setvl(avl, vt);
+    /* Drain load_registers() before reading mtime so the timer window is not
+     * shifted by cached-memory latency from setup. */
+    (void) VT_CSR_READ(vl);
+    arm(rdmtime() + k);
+    operation(c, 8, 8192, m);
+    MTIMECMP_HI = ~0u;
+    store_registers(IMG_RESULT);
+    VT_EQ(g_irq, 1, "one interrupt per arming");
+    VT_EQ(g_mcause, 0x8000000000000007ull, "machine timer interrupt");
+    VT_EQ(VT_CSR_READ(vl), vl, "vl after the interrupt");
+    VT_EQ(VT_CSR_READ(vtype), vt, "vtype after the interrupt");
+    VT_EQ(VT_CSR_READ(vstart), 0, "vstart after the instruction");
+    VT_EQ(g_vl, vl, "vl seen by the handler");
+    VT_EQ(g_vtype, vt, "vtype seen by the handler");
+    int executed = g_mepc > m->crypto;
+    int restarting = m->csrw != 0 && g_mepc > m->csrw && g_mepc <= m->crypto;
+    VT_EQ(g_vstart, restarting ? 4 : 0, "vstart seen by the handler");
+    int pos = executed ? WIN_AFTER : (g_mepc == m->crypto ? WIN_AT : WIN_BEFORE);
+    counts->before += pos == WIN_BEFORE;
+    counts->at += pos == WIN_AT;
+    counts->after += pos == WIN_AFTER;
+    unsigned bad_snap = 0, bad_result = 0, bad_key = 0;
+    for (unsigned w = 0; w < g_words; w++) {
+        uint64_t old = IMG(IMG_STATE)[w], done = IMG(IMG_REFERENCE)[w];
+        bad_snap += IMG(IMG_SNAP)[w] != (executed ? done : old);
+        bad_result += IMG(IMG_RESULT)[w] != done;
+        bad_key += IMG(IMG_KEY_AFTER)[w] != IMG(IMG_KEY)[w];
+    }
+    VT_EQ(bad_snap, 0, "handler sees all of the instruction or none");
+    VT_EQ(bad_result, 0, "interrupted result");
+    VT_EQ(bad_key, 0, "interrupted key");
+    if (bad_snap || bad_result) {
+        vt_puts("  at k=");
+        vt_dec(k);
+        vt_puts(" mepc-crypto=");
+        vt_dec(g_mepc - m->crypto);
+        vt_puts("\r\n");
+    }
+    return pos;
+}
+
 /* Two element groups of e32/m2 (vl = 8) or four elements of e64/m2 at every
  * vector length, so the sweep has the same length at each. */
 static void run_case(unsigned c)
@@ -233,20 +304,24 @@ static void run_case(unsigned c)
     const unsigned start = c == 1 ? 4 : 0;
     struct marks m;
 
-    /* Uninterrupted reference run. lead is the time from reading mtime to
-     * the window; busy runs to the end of the engine's execution, which a
-     * vector CSR read waits for. */
+    /* Warm code and data lines before measuring the uninterrupted engine span. */
     load_registers();
     unsigned long vl = setvl(avl, vt);
     VT_EQ(vl, avl, "case vl");
-    uint64_t t0 = rdmtime();
-    arm(~0ull);
-    uint64_t t1 = rdmtime();
     operation(c, 0, 1, &m);
     (void) VT_CSR_READ(vl);
-    uint64_t t2 = rdmtime();
+
+    /* Uninterrupted reference run. Wait for load_registers() before timing so
+     * busy covers only the window and the vector engine's execution. */
+    load_registers();
+    setvl(avl, vt);
+    (void) VT_CSR_READ(vl);
+    uint64_t t0 = rdmtime();
+    operation(c, 0, 1, &m);
+    (void) VT_CSR_READ(vl);
+    uint64_t t1 = rdmtime();
     store_registers(IMG_REFERENCE);
-    const uint64_t lead = t1 - t0, busy = t2 - t1;
+    const uint64_t busy = t1 - t0;
     VT_EQ(VT_CSR_READ(vstart), 0, "reference run clears vstart");
     if (c < 2) {
         for (unsigned e = 0; e < g_words * 2; e++) {
@@ -257,54 +332,106 @@ static void run_case(unsigned c)
         }
     }
 
-    unsigned before = 0, at = 0, after = 0;
-    for (uint64_t k = lead > 16 ? lead - 16 : 0; k <= lead + busy + 16; k++) {
-        load_registers();
-        setvl(avl, vt);
-        g_irq = 0;
-        g_mepc = 0;
-        g_vstart = ~0ul;
-        arm(rdmtime() + k);
-        operation(c, 8, 4096, &m);
-        MTIMECMP_HI = ~0u;
-        store_registers(IMG_RESULT);
-        VT_EQ(g_irq, 1, "one interrupt per arming");
-        VT_EQ(g_mcause, 0x8000000000000007ull, "machine timer interrupt");
-        VT_EQ(VT_CSR_READ(vl), vl, "vl after the interrupt");
-        VT_EQ(VT_CSR_READ(vtype), vt, "vtype after the interrupt");
-        VT_EQ(VT_CSR_READ(vstart), 0, "vstart after the instruction");
-        VT_EQ(g_vl, vl, "vl seen by the handler");
-        VT_EQ(g_vtype, vt, "vtype seen by the handler");
-        int executed = g_mepc > m.crypto;
-        int restarting = m.csrw != 0 && g_mepc > m.csrw && g_mepc <= m.crypto;
-        VT_EQ(g_vstart, restarting ? 4 : 0, "vstart seen by the handler");
-        before += g_mepc < m.crypto;
-        at += g_mepc == m.crypto;
-        after += executed;
-        unsigned bad_snap = 0, bad_result = 0, bad_key = 0;
-        for (unsigned w = 0; w < g_words; w++) {
-            uint64_t old = IMG(IMG_STATE)[w], done = IMG(IMG_REFERENCE)[w];
-            bad_snap += IMG(IMG_SNAP)[w] != (executed ? done : old);
-            bad_result += IMG(IMG_RESULT)[w] != done;
-            bad_key += IMG(IMG_KEY_AFTER)[w] != IMG(IMG_KEY)[w];
+    /* Locate the offset where mepc crosses the crypto instruction: probe k = 0
+     * (before), bracket an offset after the instruction, then binary-search the
+     * crossing. Every probe checks full architectural state. */
+    struct window_counts counts = {0, 0, 0};
+    uint64_t lo = 0;
+    int p = probe_irq(c, avl, vt, vl, 0, &m, &counts);
+    uint64_t hi = K_SEARCH_START;
+    if (p != WIN_AFTER) {
+        while (hi < K_SEARCH_MAX) {
+            p = probe_irq(c, avl, vt, vl, hi, &m, &counts);
+            if (p == WIN_AFTER)
+                break;
+            if (p == WIN_BEFORE) {
+                lo = hi;
+                hi *= 2;
+            } else {
+                hi += 32;
+            }
         }
-        VT_EQ(bad_snap, 0, "handler sees all of the instruction or none");
-        VT_EQ(bad_result, 0, "interrupted result");
-        VT_EQ(bad_key, 0, "interrupted key");
-        if (bad_snap || bad_result) {
-            vt_puts("  at k=");
-            vt_dec(k);
-            vt_puts(" mepc-crypto=");
-            vt_dec(g_mepc - m.crypto);
-            vt_puts("\r\n");
+        if (p != WIN_AFTER) {
+            hi = K_SEARCH_MAX;
+            (void) probe_irq(c, avl, vt, vl, hi, &m, &counts);
+        }
+    } else {
+        hi = 0;
+    }
+
+    uint64_t last_before = lo;
+    uint64_t first_after = hi;
+    while (hi > lo + 4) {
+        uint64_t mid = lo + (hi - lo) / 2;
+        p = probe_irq(c, avl, vt, vl, mid, &m, &counts);
+        if (p == WIN_BEFORE) {
+            lo = mid;
+            if (mid > last_before)
+                last_before = mid;
+        } else {
+            hi = mid;
+            if (p == WIN_AFTER && mid < first_after)
+                first_after = mid;
         }
     }
-    VT_TRUE(before != 0, "interrupts before the instruction");
-    VT_TRUE(at != 0, "interrupts at the instruction");
-    VT_TRUE(after != 0, "interrupts after the instruction");
-    g_before += before;
-    g_at += at;
-    g_after += after;
+
+    /* Sweep one cycle at a time from shortly before the crossing through the
+     * instruction's ROB-head service and its full execution in the engine. */
+    const uint64_t sweep_lo = lo > SWEEP_PAD_BEFORE ? lo - SWEEP_PAD_BEFORE : 0;
+    const uint64_t sweep_hi = hi + busy + SWEEP_PAD_AFTER;
+    for (uint64_t k = sweep_lo; k <= sweep_hi; k++) {
+        p = probe_irq(c, avl, vt, vl, k, &m, &counts);
+        if (p == WIN_BEFORE && k > last_before)
+            last_before = k;
+        else if (p == WIN_AFTER && k < first_after)
+            first_after = k;
+    }
+
+    /* Bounded retries around the observed crossing if memory jitter shifts a
+     * narrow window out of the primary sweep. */
+    for (unsigned retry = 0;
+         retry < MAX_WINDOW_RETRIES && (counts.before == 0 || counts.at == 0 || counts.after == 0);
+         retry++) {
+        if (counts.before == 0) {
+            (void) probe_irq(c, avl, vt, vl, 0, &m, &counts);
+        }
+        if (counts.after == 0) {
+            uint64_t far_k = sweep_hi + (16ull << retry);
+            if (far_k > K_SEARCH_MAX)
+                far_k = K_SEARCH_MAX;
+            p = probe_irq(c, avl, vt, vl, far_k, &m, &counts);
+            if (p == WIN_AFTER && far_k < first_after)
+                first_after = far_k;
+        }
+        if (counts.at == 0) {
+            uint64_t a = last_before < first_after ? last_before : first_after;
+            uint64_t b = last_before < first_after ? first_after : last_before;
+            while (b > a + 8 && counts.at == 0) {
+                uint64_t mid = a + (b - a) / 2;
+                p = probe_irq(c, avl, vt, vl, mid, &m, &counts);
+                if (p == WIN_BEFORE)
+                    a = mid;
+                else
+                    b = mid;
+            }
+            uint64_t win_lo = a > 4 ? a - 4 : 0;
+            uint64_t win_hi = b + 4;
+            for (uint64_t k = win_lo; k <= win_hi && counts.at == 0; k++) {
+                p = probe_irq(c, avl, vt, vl, k, &m, &counts);
+                if (p == WIN_BEFORE)
+                    last_before = k;
+                else if (p == WIN_AFTER && k < first_after)
+                    first_after = k;
+            }
+        }
+    }
+
+    VT_TRUE(counts.before != 0, "interrupts before the instruction");
+    VT_TRUE(counts.at != 0, "interrupts at the instruction");
+    VT_TRUE(counts.after != 0, "interrupts after the instruction");
+    g_before += counts.before;
+    g_at += counts.at;
+    g_after += counts.after;
 }
 
 int main(void)
