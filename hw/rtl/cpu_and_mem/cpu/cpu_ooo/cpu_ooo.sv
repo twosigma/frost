@@ -4146,7 +4146,7 @@ module cpu_ooo #(
       .o_from_ex_comb(from_ex_branch_recovery)
   );
 
-  if (riscv_pkg::EarlyJalrRecovery) begin : gen_full_flush_ras
+  if (riscv_pkg::EarlyJalrRecovery || riscv_pkg::EarlyJalRecovery) begin : gen_full_flush_ras
     ras_flush_checkpoint u_ras_flush_checkpoint (
         .i_clk,
         .i_allocate({

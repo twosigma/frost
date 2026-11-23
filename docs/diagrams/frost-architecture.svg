@@ -21,8 +21,10 @@
     into the vector unit's eight-entry issue window (VIQ). CSR accesses execute
     at commit; traps support M/S/U delegation and vector CSRs. Conditional
     branch and JALR mispredictions redirect fetch and restore the RAT the cycle
-    after resolution, then flush younger backend work the following cycle. JAL
-    mispredictions and traps recover at commit. A hardware misaligned-access
+    after resolution, then flush younger backend work the following cycle;
+    mispredicted JALs launch the same recovery from allocation once older
+    branches and JALRs resolve. Traps and fallback mispredictions recover at
+    commit. A hardware misaligned-access
     engine assists plain misaligned cached DDR loads and stores at commit.
     The VLEN 256 vector unit contains vector control (vtype tracking, dispatch
     legality, per-ROB-tag state and ROB-head VTOX/VTOF completion on CDB slot
@@ -402,8 +404,8 @@
     <text x="1136" y="1249" class="port-text">V</text>
   </g>
 
-  <text x="80" y="1334" font-size="18.5" fill="#edc37d">Branch &amp; JALR misprediction: next-cycle redirect + RAT restore, then backend flush</text>
-  <text x="80" y="1359" class="small">Traps and JAL recover at commit. Queue &amp; VMT allocation occur at dispatch; MA engine assists misaligned DDR ops.</text>
+  <text x="80" y="1334" font-size="18.5" fill="#edc37d">Branch, JAL &amp; JALR misprediction: early redirect + RAT restore, then backend flush</text>
+  <text x="80" y="1359" class="small">Traps recover at commit. Queue &amp; VMT allocation occur at dispatch; MA engine assists misaligned DDR ops.</text>
 
   <!-- I/D/V badges connect the core ports above to the selected system paths. -->
   <rect x="28" y="1398" width="1144" height="626" rx="20" class="panel"/>

@@ -667,8 +667,14 @@ flush against the latest snapshot dispatched to the ROB head. Its covers
 exercise both allocation slots and a head tag that wrapped to zero.
 
 `ex_comb_synthesizer` checks the selected BTB update and return-stack
-operation for an early indirect jump, call, return, or coroutine swap. It
-checks both instruction lengths and the full link address for a push.
+operation for an early direct or indirect jump, call, return, or coroutine swap.
+It checks both instruction lengths and the full link address for a push.
+`early_misprediction_recovery` checks execute-time branch and JALR recovery as
+well as allocation-time JAL staging, launch conditions, and fallback to
+commit-time recovery. `cpu_top_early_jal_ras_flush` builds `cpu_top` with
+`EarlyJalrRecovery` cleared and `EarlyJalRecovery` set and checks that an older
+load fault restores the return stack after a younger direct call has launched
+early recovery.
 
 `debug_fetch_barrier` checks invalidation before GO, retained targets, request
 withdrawal, acknowledgement without replay, and reset in each request phase.

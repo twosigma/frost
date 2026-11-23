@@ -40,8 +40,8 @@ flip-flops because they need parallel lookup, per-entry commit clear, and a
 bulk overwrite on restore.
 
 If slot 2 is the branch or jump that takes the checkpoint, the snapshot
-includes slot 1's same-cycle rename. Early recovery of a JALR that writes
-an integer destination restores the JALR as that register's producer,
+includes slot 1's same-cycle rename. Early recovery of a JAL or JALR that writes
+an integer destination restores the jump as that register's producer,
 including when both slots write the same register. Rename writes decode
 dispatch's pre-fire destination signals and apply the bundle fire (`i_alloc_fire`) last (see the
 [dispatch guide](../dispatch/README.md)).

@@ -5509,6 +5509,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-DFROST_PMA_LEGACY_DEVICE_STORES=0",
         ),
     ),
+    "cpu_top_early_jal_ras_flush": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_cpu_top_early_jal_ras_flush",
+        hdl_toplevel_module="cpu_top",
+        description=(
+            "Full-flush return-stack restore with EarlyJalrRecovery cleared "
+            "and EarlyJalRecovery set"
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "+define+FROST_TEST_EARLY_JALR_OFF",
+            "-GSIM_FAST_MAINT=1",
+            "-GL1_CACHE_BYTES=2048",
+            "-GL1I_CACHE_BYTES=2048",
+            "-GL2_CACHE_BYTES=4096",
+            "-GL2_PREFETCH=0",
+        ),
+    ),
     "load_queue_writethrough": CocotbRunConfig(
         python_test_module=(
             "cocotb_tests.tomasulo.load_queue.test_load_queue_axi_errors,"
