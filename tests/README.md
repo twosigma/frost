@@ -2280,8 +2280,9 @@ after the other jobs finish, including jobs that fail. A missing artifact or
 one without a coverage payload fails the job. With all inputs present, the job
 merges them into the `coverage-report` artifact (the [report](#coverage) with
 annotated sources) and shows the summary on the job's page. The report job
-generates `tests/sim_build/vcu118_ddr_cone.sv` with the same Makefile target
-used by the unit bench.
+regenerates generated HDL sources into `tests/sim_build/` through
+`make -C tests coverage-sources` using the same Makefile rules used by the unit
+benches.
 
 The manual `toggle_coverage` input runs the shared image build, the two
 unit-bench jobs, the whole-SoC Verilator shards selected for toggle coverage,
