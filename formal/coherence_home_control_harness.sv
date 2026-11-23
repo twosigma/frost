@@ -26,6 +26,7 @@ module coherence_home_control_harness #(
     parameter int unsigned PREFETCH_RESERVE = FILLS / 4,
     parameter bit ULTRA = 1'b0,
     parameter int unsigned PREFETCH_SLOTS = 0,
+    parameter bit FAST_TAG_LAUNCH = 1'b0,
     localparam int unsigned AddressBits = $clog2(8 * LINE_BYTES * WAYS)
 ) (
     input logic i_clk,
@@ -164,7 +165,8 @@ module coherence_home_control_harness #(
       .LINE_BYTES(LINE_BYTES),
       .CACHE_BYTES(2 * LINE_BYTES * WAYS),
       .WAYS(WAYS),
-      .ULTRA(ULTRA)
+      .ULTRA(ULTRA),
+      .FAST_TAG_LAUNCH(FAST_TAG_LAUNCH)
   ) home (
       .i_clk,
       .i_rst,

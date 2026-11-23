@@ -2177,3 +2177,98 @@ async def hits_follow_each_other_through_the_reply(dut: Any) -> None:
             elif same and after["request_fire"]:
                 seen.add("same_set_waits_one_cycle")
     assert seen == {"accepted_in_reply", "same_set_waits_one_cycle"}
+
+
+@cocotb.test()
+async def fast_tag_launch_cuts_hit_round_trip_by_two_cycles(dut: Any) -> None:
+    """Measure D-accept to tag-fire and grant latency on a resident L2 hit."""
+    b = Home(dut)
+    await b.reset()
+    fast = bool(int(dut.FAST_TAG_LAUNCH.value))
+    ultra = bool(int(dut.ULTRA.value))
+    parallel = parallel_reads(dut)
+    base = 0x80000000
+    expected_data = await b.read(base)
+    await b.tick(8)
+    # coherence_home_array phase_t: Init=0, InitDrain=1, Idle=2.
+    assert int(dut.array.phase_q.value) == 2
+    assert int(dut.completions.work_selected_q.value) == 0
+
+    events: dict[str, int] = {}
+
+    def direct_d_select() -> int:
+        if not fast:
+            assert not hasattr(dut.completions, "gen_fast_state")
+            return 0
+        return int(dut.completions.gen_fast_state.direct_d_select.value)
+
+    def sample() -> None:
+        # Observers run right after rising edge b.cycle, viewing cycle b.cycle + 1.
+        cycle = b.cycle + 1
+        if "direct_d" not in events and direct_d_select():
+            events["direct_d"] = cycle
+        if "direct_tag" not in events and int(dut.direct_tag_valid.value):
+            events["direct_tag"] = cycle
+        if "request_fire" not in events and int(dut.array.request_fire.value):
+            events["request_fire"] = cycle
+        if "grant" not in events and b.get("o_g_valid"):
+            events["grant"] = cycle
+
+    b.observers.append(sample)
+    q, pkt = b.demand(0, base, slot=0)
+    await b.set(i_d_valid=1, i_d=pkt)
+    assert b.get("o_d_ready")
+    admit_cycle = b.cycle
+    if direct_d_select():
+        events["direct_d"] = admit_cycle
+    await b.tick()
+    await b.set(i_d_valid=0)
+    grant = await b.take_grant()
+    assert (
+        grant[1] == q
+        and grant[3] == base
+        and grant[4] == expected_data
+        and not grant[5]
+    )
+    await b.complete(grant)
+    b.observers.remove(sample)
+
+    d_to_tag = events["request_fire"] - admit_cycle
+    d_to_grant = events["grant"] - admit_cycle
+    dut._log.info(
+        f"home L2-hit latency fast={int(fast)} ultra={int(ultra)} "
+        f"parallel={int(parallel)} d_to_tag={d_to_tag} d_to_grant={d_to_grant}"
+    )
+    if fast:
+        assert "direct_d" in events and "direct_tag" in events
+        assert d_to_tag == 1
+    else:
+        assert "direct_d" not in events and "direct_tag" not in events
+        assert d_to_tag == 3
+    # Verify exact end-to-end home grant latency (2 cycles saved when fast=1).
+    if ultra and parallel:
+        assert d_to_grant == (11 if fast else 13)
+    elif ultra and not parallel:
+        assert d_to_grant == (16 if fast else 18)
+    else:
+        assert d_to_grant == (11 if fast else 13)
+
+    # Confirm a waiting PutM is not starved when continuous demands arrive.
+    other = base + b.line
+    await b.read(other)
+    await b.tick(4)
+    dirty_val = int.from_bytes(bytes((i * 13 + 5) & 255 for i in range(32)), "little")
+    put = pack((1, 0), (1, 0), (1, 0), (b.p, other), (256, dirty_val), (1, 0))
+    b.frozen[0] = (other, dirty_val)
+    await b.set(i_w_valid=1, i_w=put)
+    await b.submit(0, base, slot=1)
+    g2 = await b.take_grant()
+    assert g2[3] == base and g2[4] == expected_data and not g2[5]
+    await b.complete(g2)
+    for _ in range(100):
+        if not b.frozen:
+            break
+        await b.tick()
+    assert not b.frozen
+    await b.set(i_w_valid=0)
+    assert await b.read(other) == dirty_val

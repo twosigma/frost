@@ -1133,11 +1133,12 @@ or absorbed. A prefetch fill of another line can take the line as its
 victim; replacement then holds the victim through its recall, which absorbs
 the pending PutM before the row is reused.
 
-The unit benches `coherence_home_completions`, `coherence_home`, `coherence_home_rowread`, `coherence_home_equal`, `coherence_cluster`
+The unit benches `coherence_home_completions`, `coherence_home_completions_fast_tag`, `coherence_home`, `coherence_home_fast_tag`, `coherence_home_rowread`, `coherence_home_equal`, `coherence_cluster`, `coherence_cluster_fast_tag`
 and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
 probe service and the DMA sector handoff, parallel way reads beside set writes
 and back-to-back lookups, UltraRAM row reads after the decision
-(`PARALLEL_READ=0`), and a primary granted from its
+(`PARALLEL_READ=0`), direct D selection and direct tag launch into an idle array
+(`FAST_TAG_LAUNCH=1`, default `0`, exposed through `HOME_FAST_TAG_LAUNCH`), and a primary granted from its
 fill's line before the install completes. Their prefetch cases cover the slot
 partition, the no-fill flag, prefetch fills that install, take a demand seat
 or fail, the fill reserve, the last available way and the last write-back

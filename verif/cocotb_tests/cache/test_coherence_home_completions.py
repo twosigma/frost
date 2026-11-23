@@ -486,25 +486,46 @@ async def selection_crossing_park_allocates_no_image(dut: Any) -> None:
     """Cancel a selected waiter when the same edge transfers it to a fill."""
     b = Completions(dut)
     await b.reset()
-    await b.admit(0, 0x80000000)
-    assert b.get("o_waiting") == 1
-    await b.set(i_park=1, i_work_ready=1)
+    if int(dut.FAST_TAG_LAUNCH.value):
+        # With direct D selection enabled, hold one selected request while
+        # admitting the waiter so the waiter enters work selection from o_waiting.
+        await b.admit(2, 0x80000040)
+        await b.admit(0, 0x80000000)
+        holder = await b.dispatch()
+        assert holder == (2, 0, 0x80000040)
+        waiter_slot = 1
+        base_live = b.get("buffer_live_q")
+        base_owned = b.get("buffer_owned_q")
+    else:
+        await b.admit(0, 0x80000000)
+        holder = None
+        waiter_slot = 0
+        base_live = 0
+        base_owned = 0
+    waiter_mask = 1 << waiter_slot
+    assert b.get("o_waiting") == waiter_mask
+    await b.set(i_park=waiter_mask, i_work_ready=1)
     await b.tick()
     await b.set(i_park=0)
     for _ in range(8):
         assert not b.get("o_work_valid")
-        assert b.get("buffer_live_q") == 0
-        assert b.get("buffer_owned_q") == 0
+        assert b.get("buffer_live_q") == base_live
+        assert b.get("buffer_owned_q") == base_owned
         await b.tick()
-    await b.set(i_work_ready=0, i_wake=1)
+    await b.set(i_work_ready=0, i_wake=waiter_mask)
     await b.tick()
     await b.set(i_wake=0)
     item = await b.dispatch()
-    assert item == (0, 0, 0x80000000)
+    assert item == (0, waiter_slot, 0x80000000)
     await b.result(item, 0xBADCAFE)
     await b.grant(item, 0xBADCAFE)
     await b.complete(item)
     await b.release(item)
+    if holder is not None:
+        await b.result(holder, 0x1234)
+        await b.grant(holder, 0x1234)
+        await b.complete(holder)
+        await b.release(holder)
 
 
 async def dispatch_with_flag(b: Completions) -> tuple[tuple[int, int, int], int]:
@@ -670,3 +691,102 @@ async def forwarded_primary_takes_the_forward_buffer_beside_engine_results(
     await b.complete(other)
     await b.release(other)
     assert b.get("o_exclude") == 0 and b.get("buffer_live_q") == 0
+
+
+@cocotb.test()
+async def direct_d_select_shortcuts_unblocked_demand(dut: Any) -> None:
+    """Measure D-admission to work-valid latency with FAST_TAG_LAUNCH off and on."""
+    b = Completions(dut)
+    await b.reset()
+    fast = bool(int(dut.FAST_TAG_LAUNCH.value))
+
+    # Idle unblocked demand: FAST_TAG_LAUNCH=1 presents o_work_valid on the
+    # cycle after D acceptance; FAST_TAG_LAUNCH=0 takes one extra selection edge.
+    def direct_select() -> int:
+        if not fast:
+            assert not hasattr(dut, "gen_fast_state")
+            return 0
+        return int(dut.gen_fast_state.direct_d_select.value)
+
+    await b.set(i_d_valid=1, i_d=b.request(0, 0x80000000, op=0))
+    assert b.get("o_d_ready")
+    assert direct_select() == int(fast)
+    await b.tick()
+    await b.set(i_d_valid=0)
+    if fast:
+        assert b.get("o_work_valid") == 1
+        assert b.get("o_work_addr") == 0x80000000
+        assert b.get("o_work_prefetch") == 0
+        assert b.get("o_work_cmo") == 0
+        assert b.get("o_work_error") == 0
+    else:
+        assert b.get("o_work_valid") == 0
+        await b.tick()
+        assert b.get("o_work_valid") == 1
+        assert b.get("o_work_addr") == 0
+        assert b.get("o_work_prefetch") == 0
+        assert b.get("o_work_cmo") == 0
+    first = await b.dispatch()
+    assert first[0] == 0
+
+    # Same-sector demand while first is live and unhanded must NOT take
+    # direct_d_select; it waits until first releases.
+    await b.set(i_d_valid=1, i_d=b.request(2, 0x80000000, op=0))
+    assert b.get("o_d_ready")
+    assert direct_select() == 0
+    await b.tick()
+    await b.set(i_d_valid=0)
+    assert b.get("o_work_valid") == 0
+
+    # A Prefetch never takes direct_d_select, even when idle and unblocked.
+    await b.set(i_d_valid=1, i_d=b.request(480, 0x80000100, op=9))
+    assert b.get("o_d_ready")
+    assert direct_select() == 0
+    await b.tick()
+    await b.set(i_d_valid=0)
+    assert b.get("o_work_valid") == 0
+    pf = await b.dispatch()
+    assert pf[0] == 480
+
+    # Complete and release first, then confirm the blocked demand dispatches.
+    await b.result(first, 0x1111)
+    await b.grant(first, 0x1111)
+    await b.complete(first)
+    await b.release(first)
+    second = await b.dispatch()
+    assert second[0] == 2
+    await b.result(second, 0x2222)
+    await b.grant(second, 0x2222)
+    await b.complete(second)
+    await b.release(second)
+
+    # Complete and release the prefetch (source 3 G is taken when presented).
+    await b.set(i_g_ready=1)
+    await b.result(pf, 0)
+    for _ in range(10):
+        if not b.get("result_valid_q"):
+            break
+        await b.tick()
+    await b.set(i_g_ready=0)
+    await b.complete(pf)
+    await b.release(pf)
+
+    # An unblocked CMO selects directly when FAST_TAG_LAUNCH=1 and sets o_work_cmo.
+    cmo_q = pack((2, 0), (2, 3), (4, 8), (1, 0))
+    await b.set(i_d_valid=1, i_d=b.request(cmo_q, 0x80000200, op=11))
+    assert b.get("o_d_ready")
+    assert direct_select() == int(fast)
+    await b.tick()
+    await b.set(i_d_valid=0)
+    if fast:
+        assert b.get("o_work_valid") == 1
+        assert b.get("o_work_cmo") == 1
+        assert b.get("o_work_prefetch") == 0
+        assert b.get("o_work_addr") == 0x80000200
+    cmo = await b.dispatch()
+    assert cmo[0] == cmo_q
+    await b.result(cmo, 0)
+    await b.grant(cmo, 0)
+    await b.complete(cmo)
+    await b.release(cmo)
+    assert b.get("buffer_live_q") == 0
