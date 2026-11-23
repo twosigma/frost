@@ -4692,6 +4692,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         extra_env=(("FROST_TEST_ARRAY_FAST", "1"), ("FROST_TEST_ARRAY_ULTRA", "1")),
     ),
+    "coherence_array_nru_hit_port": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_nru_port",
+        hdl_toplevel_module="coherence_array",
+        description="Per-way NRU hit-port touches beside controller no-op writes",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GBIMODAL_INSERT=1",
+            "-GHIT_PORT=1",
+            "-GULTRA=0",
+            "-GSIM_FAST_MAINT=1",
+        ),
+    ),
     "coherence_home_array_reset_bram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_home_array",
