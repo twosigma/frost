@@ -4434,7 +4434,10 @@ def test_vector_ext_replay_and_coverage(tmp_path: Path) -> None:
     plan = test_testrig.prepare_inputs(args, tmp_path, config)
     ext_dir = tmp_path / "vector_ext"
     assert plan.command == ["-d", str(ext_dir)]
-    assert (plan.traces, plan.instructions) == (4, 738 + 1260 + 1370 + 1129)
+    assert (plan.traces, plan.instructions) == (
+        6,
+        738 + 1260 + 1370 + 1129 + 2138 + 688,
+    )
 
     zvfhmin_trace = ext_dir / "vector_zvfhmin.S"
     assert (
@@ -4784,6 +4787,108 @@ def test_vector_ext_replay_and_coverage(tmp_path: Path) -> None:
     }
     assert s_traps >= 60
     assert s_ctrl_orders == [56]
+
+    # Zvfh single-width arith/FMA (29 modes) and cmp/misc/red (33 modes) = 62 modes at SEW=16
+    def _scan_zvfh(
+        trace_path: Path, ctrl_word: int
+    ) -> tuple[
+        set[tuple[int, int, int, int]],
+        dict[tuple[int, int, int, int], set[int]],
+        set[int],
+        int,
+        list[int],
+    ]:
+        blocks = TRACE_WORD.split(trace_path.read_text())[1:]
+        modes: set[tuple[int, int, int, int]] = set()
+        frm_by_mode: dict[tuple[int, int, int, int], set[int]] = {}
+        frm_rb: set[int] = set()
+        traps = 0
+        ctrls: list[int] = []
+        sew = 8
+        frm = 0
+        frm_verified = False
+        for idx, block in enumerate(blocks):
+            word = int(block.split()[1], 0)
+            opcode = word & 0x7F
+            f3 = (word >> 12) & 7
+            f6 = (word >> 26) & 0x3F
+            vm = (word >> 25) & 1
+            vs1 = (word >> 15) & 0x1F
+            if word == ctrl_word:
+                ctrls.append(idx)
+            if opcode == 0x73 and f3 in (1, 2, 3, 5, 6, 7):
+                csr = (word >> 20) & 0xFFF
+                assert csr != 0x301 and csr != 0x008
+                if csr == 0x003 and f3 == 5:
+                    frm = ((word >> 15) & 0x1F) >> 5
+                    frm_verified = True
+                elif csr == 0x002 and f3 == 5:
+                    frm = (word >> 15) & 7
+                    frm_verified = False
+                elif csr == 0x002 and f3 == 2:
+                    m_rd = re.search(r"rd_wdata == 0x([0-9a-f]+)", block)
+                    if m_rd:
+                        got_frm = int(m_rd.group(1), 16)
+                        assert got_frm == frm
+                        frm_rb.add(got_frm)
+                        frm_verified = True
+            if opcode == 0x57 and f3 == 7:
+                is_ivli = (word >> 30) == 0b11
+                vtype = ((word >> 20) & 0x3FF) if is_ivli else ((word >> 20) & 0x7FF)
+                sew_code = (vtype >> 3) & 7
+                sew = 8 << min(sew_code, 3) if sew_code <= 3 else 128
+                continue
+            if opcode == 0x57 and f3 in (1, 5):
+                if re.search(r"(?m)^\.assert trap == 1\b", block):
+                    traps += 1
+                    continue
+                sub = vs1 if f6 in (0x12, 0x13) else (vm if f6 == 0x17 else -1)
+                mode = (sew, f6, f3, sub)
+                modes.add(mode)
+                if frm_verified:
+                    frm_by_mode.setdefault(mode, set()).add(frm)
+        return modes, frm_by_mode, frm_rb, traps, ctrls
+
+    arith_trace = ext_dir / "vector_zvfh_arith_fma.S"
+    assert (
+        sum(line.startswith(".4byte ") for line in arith_trace.read_text().splitlines())
+        == 2138
+    )
+    assert (
+        sum(
+            line.startswith(".assert ") for line in arith_trace.read_text().splitlines()
+        )
+        == 1783
+    )
+    a_modes, a_frm_by_mode, a_frm, a_traps, a_ctrls = _scan_zvfh(
+        arith_trace, 0x4250_2557
+    )
+    assert len(a_modes) == 29 and all(s == 16 for s, _, _, _ in a_modes)
+    for mode in a_modes:
+        assert a_frm_by_mode[mode] == {0, 1, 2, 3, 4}, (mode, a_frm_by_mode.get(mode))
+    assert a_frm == {0, 1, 2, 3, 4}
+    assert a_traps >= 8
+    assert a_ctrls == [25]
+
+    misc_trace = ext_dir / "vector_zvfh_cmp_misc_red.S"
+    assert (
+        sum(line.startswith(".4byte ") for line in misc_trace.read_text().splitlines())
+        == 688
+    )
+    assert (
+        sum(line.startswith(".assert ") for line in misc_trace.read_text().splitlines())
+        == 353
+    )
+    m_modes, m_frm_by_mode, m_frm, m_traps, m_ctrls = _scan_zvfh(
+        misc_trace, 0x4260_2557
+    )
+    assert len(m_modes) == 33 and all(s == 16 for s, _, _, _ in m_modes)
+    for f6 in (0x01, 0x03, 0x31, 0x33):
+        assert m_frm_by_mode[(16, f6, 1, -1)] == {0, 1, 2, 3, 4}, hex(f6)
+    assert m_frm == {0, 1, 2, 3, 4}
+    assert m_traps >= 6
+    assert m_ctrls == [39]
+    assert a_modes.isdisjoint(m_modes) and len(a_modes | m_modes) == 62
 
 
 @pytest.mark.parametrize("vlen", vector.VECTOR_LENGTHS)

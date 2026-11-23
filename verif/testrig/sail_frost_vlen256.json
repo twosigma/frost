@@ -8,6 +8,7 @@
   "extensions": {
     "V": {"support_level": "Full", "mutable_misa": false, "vlen_exp": 8},
     "Zvfhmin": {"supported": true},
+    "Zvfh": {"supported": true},
     "Zvbb": {"supported": true},
     "Zvbc": {"supported": true},
     "Zvkg": {"supported": true},

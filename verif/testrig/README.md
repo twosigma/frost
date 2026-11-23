@@ -798,6 +798,34 @@ restarts, `tu` tails, `vl == 0`, portable `VLMAX`, and illegal `e8`/`e16`,
 overlap, alignment and `vill` traps.
 [Zvknhb SHA-2](vector_zvknhb.S)
 
+The Zvfh single-width arithmetic and FMA trace checks twenty-nine `SEW = 16`
+modes: thirteen arithmetic, division, square-root and reciprocal-estimate
+encodings (`vfadd.{vv,vf}`, `vfsub.{vv,vf}`, `vfrsub.vf`, `vfmul.{vv,vf}`,
+`vfdiv.{vv,vf}`, `vfrdiv.vf`, `vfsqrt.v`, `vfrec7.v` and `vfrsqrt7.v`) and
+all sixteen single-width fused multiply-add encodings (`vfmacc`, `vfnmacc`,
+`vfmsac`, `vfnmsac`, `vfmadd`, `vfnmadd`, `vfmsub` and `vfnmsub` in `.vv`
+and `.vf` forms). It covers all five rounding modes with `frm` readbacks,
+FP16 subnormals, single-rounding FMA residuals, canonical `0x7e00` NaN and
+improperly NaN-boxed `.vf` scalars, all five `fflags`, masked `tu`/`mu` and
+`ta`/`ma` with disabled `sNaN` flag suppression, `vl == 0`, portable `VLMAX`,
+legal overlaps and illegal traps.
+[Zvfh single-width arithmetic and FMA](vector_zvfh_arith_fma.S)
+
+The Zvfh compare, miscellaneous and reduction trace checks thirty-three
+`SEW = 16` modes: seventeen min/max, sign-injection, classification, merge,
+move and slide-by-one encodings (`vfmin.{vv,vf}`, `vfmax.{vv,vf}`,
+`vfsgnj.{vv,vf}`, `vfsgnjn.{vv,vf}`, `vfsgnjx.{vv,vf}`, `vfclass.v`,
+`vfmerge.vfm`, `vfmv.v.f`, `vfmv.f.s`, `vfmv.s.f`, `vfslide1up.vf` and
+`vfslide1down.vf`), all ten FP16 comparisons (`vmfeq.{vv,vf}`, `vmfne.{vv,vf}`,
+`vmflt.{vv,vf}`, `vmfle.{vv,vf}`, `vmfgt.vf` and `vmfge.vf`), and all six
+FP16 reductions (`vfredusum.vs`, `vfredosum.vs`, `vfredmin.vs`, `vfredmax.vs`,
+`vfwredusum.vs` and `vfwredosum.vs`). It covers all ten `vfclass.v` classes,
+`vfmv.f.s` 64-bit NaN-boxing readback, unboxed `.vf` scalars, all five
+rounding modes with `frm` readbacks across sum reductions, strict ordered
+summation, subnormal widening, masked-off identity and verbatim `sNaN` seed
+copy, `vl == 0`, `tu` preservation, portable `VLMAX` and illegal traps.
+[Zvfh compares, misc and reductions](vector_zvfh_cmp_misc_red.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs three vector
 TestRIG shards (`core`, `segment` and `ext`) at each of VLEN 128, 256 and 512,
 sharing one prebuilt simulator per vector length. The `core` shard replays
@@ -826,8 +854,9 @@ restores the `core` shard's replay and control timeouts to 55 and 50
 minutes. Together, `core` and `segment` retire all 627
 base-V machine encodings. The `ext` shard runs `--vector-ext` (`16m` replay /
 `11m` controls), replaying `vector_zvfhmin.S`, `vector_zvbb.S`,
-`vector_zvbc_zvkned_zvkg.S` and `vector_zvknhb.S` (with `Zvfhmin`, `Zvbb`,
-`Zvbc`, `Zvkg`, `Zvkned`, `Zvknha`, `Zvknhb` and `Zvkt` enabled in
+`vector_zvbc_zvkned_zvkg.S`, `vector_zvknhb.S`, `vector_zvfh_arith_fma.S`
+and `vector_zvfh_cmp_misc_red.S` (with `Zvfhmin`, `Zvfh`, `Zvbb`, `Zvbc`,
+`Zvkg`, `Zvkned`, `Zvknha`, `Zvknhb` and `Zvkt` enabled in
 `sail_frost_vlen*.json`). Both
 implementations must return every planned trace and instruction. The
 VLEN 128 `core`, `segment` and `ext` shards each reuse their simulator to flip one
@@ -844,8 +873,9 @@ comparisons. The `segment` shard checks `vmv.x.s` for both the directed
 segment trace (`segment`) and field 1 of the generated unit-stride segment
 control load (`segment-matrix`). The `ext` shard checks `vmv.x.s` for
 `vector_zvfhmin.S` (`zvfhmin`), `vector_zvbb.S` (`zvbb`),
-`vector_zvbc_zvkned_zvkg.S` (`zvbc-zvkned-zvkg`) and `vector_zvknhb.S`
-(`zvknhb`). TestRIG must report
+`vector_zvbc_zvkned_zvkg.S` (`zvbc-zvkned-zvkg`), `vector_zvknhb.S`
+(`zvknhb`), `vector_zvfh_arith_fma.S` (`zvfh-arith`) and
+`vector_zvfh_cmp_misc_red.S` (`zvfh-misc-red`). TestRIG must report
 each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs

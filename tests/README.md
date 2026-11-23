@@ -1634,8 +1634,10 @@ and stores across `nf = 2..8` and 8/16/32/64-bit widths independent of
 (`verif/testrig/vector_zvfhmin.S` for Zvfhmin FP16 conversions and base-V
 `SEW = 16` integer/FP32 conversions, `verif/testrig/vector_zvbb.S` for
 all sixteen Zvbb bit-manipulation instructions,
-`verif/testrig/vector_zvbc_zvkned_zvkg.S` for Zvbc, Zvkned and Zvkg, and
-`verif/testrig/vector_zvknhb.S` for Zvknhb SHA-256 and SHA-512).
+`verif/testrig/vector_zvbc_zvkned_zvkg.S` for Zvbc, Zvkned and Zvkg,
+`verif/testrig/vector_zvknhb.S` for Zvknhb SHA-256 and SHA-512, and
+`verif/testrig/vector_zvfh_arith_fma.S` and
+`verif/testrig/vector_zvfh_cmp_misc_red.S` for Zvfh single-width FP16).
 Every vector store trace compares all written bytes through immediate
 scalar loads. CI compares the `core`, `segment` and `ext` shards at each length.
 The VLEN 128 shards inject one incorrect value in each control replay and

@@ -168,6 +168,18 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
             "order=56 insn=0x42402557 rd=x10",
             "0xffffffff84c9dd79 != 0xffffffff84c9dd78",
         ],
+        [
+            "zvfh-arith",
+            "vector_zvfh_arith_fma",
+            "order=25 insn=0x42502557 rd=x10",
+            "0x4100 != 0x4101",
+        ],
+        [
+            "zvfh-misc-red",
+            "vector_zvfh_cmp_misc_red",
+            "order=39 insn=0x42602557 rd=x10",
+            "0x3e00 != 0x3e01",
+        ],
     ]
     assert job["steps"].index(ext_replay) < job["steps"].index(ext_control)
     control_command = shlex.split(control["run"].replace("\\\n", ""))
