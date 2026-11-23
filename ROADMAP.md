@@ -97,7 +97,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Sstvecd | Implemented | `smode_test`, `csr_test`, `csr_file.sby`, `trap_unit.sby` |
 | Sstvala | Implemented | `sstvala_test`, `sstvala_fault_test`, `ad_fault_test`, `misaligned_test`, TestRIG (`sstvala_illegal.S`, `access_fault_tval.S`), `trap_unit.sby` |
 | Sscounterenw | Implemented | `zihpm_test`, `sscofpmf_test`, `csr_test`, TestRIG (`scounteren`), `csr_file.sby` |
-| Svpbmt | Implemented (NC/IO DDR mappings require an uncached alias; the VCU118's 2 GiB map has none and raises access faults, with device mappings unaffected) | `svpbmt_test`, `svpbmt_test_2g`, `svpbmt_bus_error`, TestRIG (`svpbmt_pbmte.S`), `ptw.sby`, `dmmu_mmio.sby`, `tlb.sby`, `l2tlb.sby` |
+| Svpbmt | Implemented (NC/IO DDR mappings require an uncached alias; the VCU118's 2 GiB map has none, raises access faults on NC/IO DDR mappings and omits `svpbmt` from its device tree, with device mappings unaffected) | `svpbmt_test`, `svpbmt_test_2g`, `svpbmt_bus_error`, TestRIG (`svpbmt_pbmte.S`), `ptw.sby`, `dmmu_mmio.sby`, `tlb.sby`, `l2tlb.sby` |
 | Svinval | Implemented | `svinval_test`, TestRIG, `instr_operand_classifier.sby` |
 | Svnapot | Implemented (64 KiB ranges use ordinary 4 KiB TLB entries) | `svnapot_test`, TestRIG (`svnapot_leaf.S`), `ptw.sby`, `tlb.sby`, `l2tlb.sby` |
 | Sstc | Implemented | `sstc_test`, `irq_take_latency`, TestRIG (`stimecmp`), `csr_file.sby` |
@@ -118,7 +118,7 @@ Supervisor and user modes decode no non-standard instructions or CSRs
 
 Svpbmt: a platform with devices that have read side effects outside the physical device quadrant would need the page type to control request parking, committed-store draining and interrupt shielding.
 
-Svpbmt: NC and IO mappings over DDR reach it through an alias region, which the VCU118's 2 GiB map lacks. An internal uncached attribute that keeps the real address would remove the alias and that limitation; it is deferred.
+Svpbmt: NC and IO mappings over DDR reach it through an alias region, which the VCU118's 2 GiB map lacks; the VCU118 device tree omits `svpbmt`. An internal uncached attribute that keeps the real address would remove the alias and that limitation; it is deferred.
 
 ## SMP
 

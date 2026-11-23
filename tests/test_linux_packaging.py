@@ -496,35 +496,55 @@ def test_reset_tree_resolves_the_production_syscon(tmp_path: Path) -> None:
 
 
 def test_vcu118_device_tree_isa_matches_the_boot_packer() -> None:
-    """The VCU118 tree lists the packer's extensions and the RTL's cbo.zero block.
+    """The VCU118 tree lists the packer's VCU118 extensions and the RTL's cbo.zero block.
 
     On the VCU118, OpenSBI reads the flash DTB compiled from this source and
     sets menvcfg.CBZE when it lists zicboz; Linux patches clear_page to cbo.zero
-    when the DTB it boots lists zicboz with riscv,cboz-block-size. Both trees
-    describe one CPU, so they list the same extensions and block size.
+    when the DTB it boots lists zicboz with riscv,cboz-block-size. Both VCU118
+    trees omit svpbmt because the 2 GiB DDR map has no uncached alias.
     """
     packer = _load_module(SBI_PACKER)
-    dts = (REPO_ROOT / "boards" / "vcu118" / "dts" / "frost_vcu118.dts").read_text()
-    base = re.search(r'riscv,isa-base = "([^"]+)";', dts)
-    isa = re.search(r'riscv,isa = "([^"]+)";', dts)
-    extensions = re.search(r"riscv,isa-extensions = (.*?);", dts, re.S)
-    block = re.search(r"riscv,cboz-block-size = <(\d+)>;", dts)
-    prefetch_block = re.search(r"riscv,cbop-block-size = <(\d+)>;", dts)
-    management_block = re.search(r"riscv,cbom-block-size = <(\d+)>;", dts)
-    assert base is not None and isa is not None
-    assert extensions is not None and block is not None
-    assert prefetch_block is not None and management_block is not None
-    assert (
-        int(management_block[1]) == packer.CBOM_BLOCK_BYTES == packer.CBOZ_BLOCK_BYTES
-    )
-    assert int(prefetch_block[1]) == packer.CBOP_BLOCK_BYTES == packer.CBOZ_BLOCK_BYTES
-    assert base[1] == packer.ISA_BASE
-    assert isa[1] == packer.ISA_STRING
-    assert tuple(re.findall(r'"([^"]+)"', extensions[1])) == packer.ISA_EXTENSIONS
-    rtl = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv").read_text()
-    rtl_block = re.search(r"localparam int unsigned CboZeroBlockBytes = (\d+);", rtl)
-    assert rtl_block is not None
-    assert int(block[1]) == packer.CBOZ_BLOCK_BYTES == int(rtl_block[1])
+    assert "svpbmt" not in packer.VCU118_ISA_EXTENSIONS
+    assert "svpbmt" not in packer.VCU118_ISA_STRING
+    for dts in (
+        (REPO_ROOT / "boards" / "vcu118" / "dts" / "frost_vcu118.dts").read_text(),
+        packer.gen_dts(
+            clk_hz=200_000_000,
+            initrd_range=None,
+            bootargs="",
+            model="m",
+            board="vcu118",
+        ),
+    ):
+        base = re.search(r'riscv,isa-base = "([^"]+)";', dts)
+        isa = re.search(r'riscv,isa = "([^"]+)";', dts)
+        extensions = re.search(r"riscv,isa-extensions = (.*?);", dts, re.S)
+        block = re.search(r"riscv,cboz-block-size = <(\d+)>;", dts)
+        prefetch_block = re.search(r"riscv,cbop-block-size = <(\d+)>;", dts)
+        management_block = re.search(r"riscv,cbom-block-size = <(\d+)>;", dts)
+        assert base is not None and isa is not None
+        assert extensions is not None and block is not None
+        assert prefetch_block is not None and management_block is not None
+        assert (
+            int(management_block[1])
+            == packer.CBOM_BLOCK_BYTES
+            == packer.CBOZ_BLOCK_BYTES
+        )
+        assert (
+            int(prefetch_block[1]) == packer.CBOP_BLOCK_BYTES == packer.CBOZ_BLOCK_BYTES
+        )
+        assert base[1] == packer.ISA_BASE
+        assert isa[1] == packer.VCU118_ISA_STRING
+        assert (
+            tuple(re.findall(r'"([^"]+)"', extensions[1]))
+            == packer.VCU118_ISA_EXTENSIONS
+        )
+        rtl = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv").read_text()
+        rtl_block = re.search(
+            r"localparam int unsigned CboZeroBlockBytes = (\d+);", rtl
+        )
+        assert rtl_block is not None
+        assert int(block[1]) == packer.CBOZ_BLOCK_BYTES == int(rtl_block[1])
 
 
 @pytest.mark.parametrize("board", ["x3", "vcu118"])
@@ -563,6 +583,8 @@ def test_vector_device_tree_matches_board(board: str, tmp_path: Path) -> None:
         "zvl256b",
     }
     assert vector == (expected if board == "x3" else set())
+    assert ("svpbmt" in extensions) == (board == "x3")
+    assert ("_svpbmt" in properties["riscv,isa"]) == (board == "x3")
     first_supervisor = next(
         i for i, ext in enumerate(extensions) if ext.startswith("s")
     )
@@ -594,17 +616,34 @@ def test_advertised_isa_lists_agree() -> None:
     packer = _load_module(SBI_PACKER)
     assert packer.ISA_BASE == "rv64i"
     assert len(packer.ISA_EXTENSIONS) == len(set(packer.ISA_EXTENSIONS))
+    assert len(packer.VCU118_ISA_EXTENSIONS) == len(set(packer.VCU118_ISA_EXTENSIONS))
+    assert "svpbmt" in packer.ISA_EXTENSIONS and "svpbmt" in packer.X3_ISA_EXTENSIONS
+    assert "svpbmt" not in packer.VCU118_ISA_EXTENSIONS
 
-    head, *multi_tokens = packer.ISA_STRING.split("_")
-    assert head.startswith("rv64")
-    parsed_isa_string = (*tuple(head[4:]), *multi_tokens)
-    assert parsed_isa_string == packer.ISA_EXTENSIONS
+    for isa_str, isa_exts in (
+        (packer.ISA_STRING, packer.ISA_EXTENSIONS),
+        (packer.VCU118_ISA_STRING, packer.VCU118_ISA_EXTENSIONS),
+    ):
+        head, *multi_tokens = isa_str.split("_")
+        assert head.startswith("rv64")
+        parsed_isa_string = (*tuple(head[4:]), *multi_tokens)
+        assert parsed_isa_string == isa_exts
 
     for dts_label, dts in (
         (
             "x3",
             packer.gen_dts(
                 clk_hz=300_000_000, initrd_range=None, bootargs="", model="t"
+            ),
+        ),
+        (
+            "vcu118-gen",
+            packer.gen_dts(
+                clk_hz=200_000_000,
+                initrd_range=None,
+                bootargs="",
+                model="t",
+                board="vcu118",
             ),
         ),
         (
@@ -616,9 +655,13 @@ def test_advertised_isa_lists_agree() -> None:
         isa = re.search(r'riscv,isa = "([^"]+)";', dts)
         ext_prop = re.search(r"riscv,isa-extensions = (.*?);", dts, re.S)
         mmu_prop = re.search(r'mmu-type = "([^"]+)";', dts)
-        expected_isa = packer.X3_ISA_STRING if dts_label == "x3" else packer.ISA_STRING
+        expected_isa = (
+            packer.X3_ISA_STRING if dts_label == "x3" else packer.VCU118_ISA_STRING
+        )
         expected_extensions = (
-            packer.X3_ISA_EXTENSIONS if dts_label == "x3" else packer.ISA_EXTENSIONS
+            packer.X3_ISA_EXTENSIONS
+            if dts_label == "x3"
+            else packer.VCU118_ISA_EXTENSIONS
         )
         assert base is not None and base[1] == packer.ISA_BASE, dts_label
         assert isa is not None and isa[1] == expected_isa, dts_label
