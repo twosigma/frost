@@ -1087,7 +1087,7 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run make -C tests clean
           ./scripts/frost.py --image frost-dev:latest run \
-            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 55m \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 60m \
             python3 tests/test_testrig.py --vector 12 --vector-length 20 \
               --vector-source-widths --vector-directed --seed 42 --vlen "${{ matrix.vlen }}" \
               --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
@@ -1095,7 +1095,7 @@ jobs:
 
       - name: Check detection of an incorrect vector result
         if: matrix.vlen == 128
-        timeout-minutes: 50
+        timeout-minutes: 55
         run: |
           check_vector_result() {
             local selector=$1 trace=$2 record=$3 mismatch=$4
@@ -1161,6 +1161,8 @@ jobs:
             'order=27 insn=0x43502557 rd=x10' '0xf884 != 0xf885'
           check_vector_result int-mul-add vector_int_mul_add \
             'order=52 insn=0x43702557 rd=x10' '0x10010010 != 0x10010011'
+          check_vector_result int-vx-merge vector_int_vx_merge \
+            'order=18 insn=0x43402557 rd=x10' '0x20020020 != 0x20020021'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
