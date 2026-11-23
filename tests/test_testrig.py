@@ -31,6 +31,8 @@ repository root:
     ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
     ./scripts/frost.py run python3 tests/test_testrig.py --mmu 100
     ./scripts/frost.py run python3 tests/test_testrig.py --cmo 100
+    ./scripts/frost.py run python3 tests/test_testrig.py --fp-ext 60 --test-length 250
+    ./scripts/frost.py run python3 tests/test_testrig.py --zcb 50
     ./scripts/frost.py run python3 tests/test_testrig.py --wfi
     ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf
 
@@ -427,7 +429,8 @@ def prepare_inputs(
             trace_dir, arguments.zcb, seed, arguments.test_length
         )
         print(
-            f"Wrote {arguments.zcb} Zcb/Zcmop/Zimop/Zihintntl tests from seed {seed}",
+            f"Wrote {arguments.zcb} Zcb/Zcmop/Zimop/Zihintntl tests from seed {seed} "
+            f"(--seed {seed} regenerates them)",
             flush=True,
         )
         command += ["-d", str(trace_dir)]
@@ -492,7 +495,8 @@ def prepare_inputs(
         shutil.rmtree(trace_dir, ignore_errors=True)
         fp_ext.write_tests(trace_dir, arguments.fp_ext, seed, arguments.test_length)
         print(
-            f"Wrote {arguments.fp_ext} Zfhmin/Zfa tests from seed {seed}",
+            f"Wrote {arguments.fp_ext} scalar FP (F/D/Zfhmin/Zfa) tests from seed {seed} "
+            f"(--seed {seed} regenerates them)",
             flush=True,
         )
         command += ["-d", str(trace_dir)]
@@ -1000,7 +1004,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--fp-ext",
         type=positive_count,
-        help="replay this many Zfhmin/Zfa tests from verif/testrig/fp_ext.py",
+        help="replay this many scalar FP (F, D, Zfhmin and Zfa) tests from verif/testrig/fp_ext.py",
     )
     parser.add_argument(
         "--svinval",
