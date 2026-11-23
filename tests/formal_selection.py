@@ -24,7 +24,9 @@ import yaml  # type: ignore[import-untyped]
 
 import ci_reuse
 import sby_config
+from test_fp_forward_wake_mutations import MUTATIONS as FP_FORWARD_WAKE_MUTATIONS
 from test_pa_bridge_mutation import PROOF as PA_BRIDGE_PROOF
+from test_predictor_mutations import MUTATIONS
 from test_probe_launch_mutations import BOUNDARY_PROOF as PROBE_BOUNDARY_PROOF
 from test_probe_launch_mutations import LQ_PROOF as PROBE_LQ_PROOF
 
@@ -45,6 +47,18 @@ FIXTURE_PROOFS = {
     "tests/test_probe_launch_mutations.py::test_c2b_sector_hold_push_prev_removed_rejected": (
         PROBE_BOUNDARY_PROOF
     ),
+    **{
+        f"tests/test_predictor_mutations.py::test_predictor_rejects_difference[{case}]": (
+            ROOT / "formal" / f"{mutation.proof}.sby"
+        )
+        for case, mutation in MUTATIONS.items()
+    },
+    **{
+        f"tests/test_fp_forward_wake_mutations.py::test_fp_forward_wake_rejects_fault[{case}]": (
+            ROOT / "formal" / f"{mutation.proof}.sby"
+        )
+        for case, mutation in FP_FORWARD_WAKE_MUTATIONS.items()
+    },
 }
 TOOL_CHECK = "tests/test_run_formal.py::TestFormalVerification::test_sby_installed"
 
@@ -83,10 +97,13 @@ def affected_nodes(nodes: list[str], sources: set[Path]) -> list[str]:
             task = registry.tasks[match[1]]
             proof = ROOT / registry.formal_dir / task.sby_file
         else:
-            fixture = node.partition("[")[0]
+            fixture = node if node in FIXTURE_PROOFS else node.partition("[")[0]
             if fixture not in FIXTURE_PROOFS:
                 raise ValueError(f"No proof mapping for collected fixture {fixture}")
             proof = FIXTURE_PROOFS[fixture]
+            if ROOT / node.partition("::")[0] in sources:
+                selected.append(node)
+                continue
         if proof not in affected:
             affected[proof] = bool(
                 sources.intersection(

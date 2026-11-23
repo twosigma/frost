@@ -81,6 +81,12 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "strided": 0x43B0_2557,  # vmv.x.s a0, v27 in the strided memory trace
     "indexed": 0x43C0_2557,  # vmv.x.s a0, v28 in the indexed memory trace
     "segment": 0x43E0_2557,  # vmv.x.s a0, v30 in the segment memory trace
+    "fof": 0x43F0_2557,  # vmv.x.s a0, v31 in the fault-only-first load trace
+    "int-widen-narrow": 0x42E0_2557,  # vmv.x.s a0, v14 in the widening/narrowing integer trace
+    "fixed-point": 0x42F0_2557,  # vmv.x.s a0, v15 in the fixed-point trace
+    "fp-single": 0x42D0_2557,  # vmv.x.s a0, v13 in the single-width FP trace
+    "whole-reg": 0x42C0_2557,  # vmv.x.s a0, v12 in the whole-register memory trace
+    "fp-widen": 0x42A0_2557,  # vmv.x.s a0, v10 in the widening FP trace
 }
 
 # frost_rvfi_dii's error_flags bits.

@@ -693,7 +693,7 @@ endif
 # The runtime switch is parsed before the first HDL evaluation.
 ifeq ($(TOPLEVEL),frost)
 VERILOG_SOURCES += $(ROOT)/hw/sim/sim_assertions.cpp
-COMPILE_ARGS += --assert +define+FROST_SIM_ASSERTIONS
+COMPILE_ARGS += --assert +define+FROST_SIM_ASSERTIONS +define+FROST_RUNTIME_DDR
 COCOTB_PLUSARGS += +verilator+noassert
 endif
 
@@ -809,10 +809,16 @@ endif
 # Optional per-test Verilator args supplied by test_run_cocotb.py. They are
 # appended after the defaults above because Verilator takes the last -G given
 # for a parameter, so registry-specific diagnostic sizing overrides win.
+# The runner supplies decimal timing overrides in parameter order. Other
+# Verilator parameter expressions keep their compile-time interpretation.
+ifeq ($(TOPLEVEL),frost)
+DDR_RUNTIME_PATTERNS := $(foreach arg,$(FROST_DDR_TIMING_ARGS),$(firstword $(subst =, ,$(arg)))=%)
+COCOTB_PLUSARGS += $(patsubst -G%,+%,$(FROST_DDR_TIMING_ARGS))
+endif
 FROST_VERILATOR_EXTRA_ARGS ?=
 
 ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
-	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
+	EXTRA_ARGS += $(filter-out $(DDR_RUNTIME_PATTERNS),$(FROST_VERILATOR_EXTRA_ARGS))
 endif
 
 # The ROB bench drives i_cdb_write without allocation-to-completion latency.
@@ -821,11 +827,23 @@ ifeq ($(TOPLEVEL),reorder_buffer)
 	EXTRA_ARGS += -GDrainWindowCheck=0
 endif
 
+CUSTOM_COMPILE_DEPS += $(ROOT)/tests/Makefile
+ifneq ($(strip $(FROST_SIM_IMPORT)),)
+CUSTOM_COMPILE_DEPS += $(addprefix $(FROST_SIM_IMPORT)/,manifest.json Vtop Vtop__verFiles.dat)
+endif
+
 include $(shell cocotb-config --makefiles)/Makefile.sim
+
+# Intercept only verilation. The cocotb makefiles run the program and check
+# its results through the same recipes for a local or downloaded executable.
+VERILATOR_CMD := $(CMD)
+ifneq ($(strip $(FROST_SIM_EXPORT)$(FROST_SIM_IMPORT)),)
+$(SIM_BUILD)/Vtop.mk: private CMD := python3 $(ROOT)/tests/ci_sim_models.py verilate $(CMD) '$(BUILD_ARGS)'
+endif
 
 ifeq ($(FROST_COVERAGE),1)
 # Verilator 5.054 and later expose branch coverage as a separate option.
-	EXTRA_ARGS += $(shell $(CMD) --coverage-branch --version >/dev/null 2>&1 && echo --coverage-branch)
+	EXTRA_ARGS += $(shell $(VERILATOR_CMD) --coverage-branch --version >/dev/null 2>&1 && echo --coverage-branch)
 endif
 
 ifneq ($(TOGGLE_CONFIG),)

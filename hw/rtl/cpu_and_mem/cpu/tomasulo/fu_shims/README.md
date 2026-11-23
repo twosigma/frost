@@ -249,7 +249,9 @@ and same-cycle flush contract with the arbiter.
 The `fp_shim` target replaces the engine with a model of arbitrary latency
 and result. `fp_shim_pipe` proves that the pipeline tracker matches a ghost
 issue history, a wake precedes its tail entry, and tracker and FIFO occupancy
-stay within the credit limit. The wrapper checks the shim's fresh-tag and
+stay within the credit limit. `fp_engine_op_class` proves that `fp_shim`'s
+pipelined opcode classification and FP_RS's engine-gate classification agree
+for every opcode. The wrapper checks the shim's fresh-tag and
 credit requirements at issue. After a squash the tag cannot complete or wake
 until reuse, and each live issue completes at most once.
 `fp_launch_squash` checks both launch modes of the engine-only shim against a

@@ -1,0 +1,20 @@
+name: Fetch simulation models
+description: Download this shard's simulator executables from the current run
+inputs:
+  selection:
+    description: Models selected for this shard
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SELECTION: ${{ inputs.selection }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        export FROST_SIM_SCOPE="$GITHUB_RUN_ID:$(docker image inspect frost-dev:latest --format '{{.Id}}')"
+        python3 tests/ci_sim_models.py receive "$SELECTION"
+        echo "FROST_SIM_SCOPE=$FROST_SIM_SCOPE" >> "$GITHUB_ENV"
+        if [ "$GITHUB_JOB" != test-rvv ]; then
+          echo "FROST_SIM_MODELS=1" >> "$GITHUB_ENV"
+        fi

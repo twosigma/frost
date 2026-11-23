@@ -134,3 +134,4 @@
 - Extended the backing branch target buffer, added tagged indirect target
 - Added front-end redirect checks and a seeded control-flow test suite.
 - Added early recovery of mispredicted indirect jumps and a misprediction cost probe.
+- Isolated each IP synthesis run in its own Tcl Store user area and bounded the VCU118 NIC pause-event mailbox payload.

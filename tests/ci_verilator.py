@@ -213,22 +213,42 @@ VERILATOR_MATRIX: dict[str, Any] = {
             "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
             "pytest_filter": "[pause_test] or [ras_slot_bench] or [ras_repair_bench]",
         },
-        # The VLEN 256 programs share one build.
-        # Every registry name starting with vec_ selects this shard.
+        # The VLEN 256 programs share one build, split into two shards to keep
+        # regular BRAM runs well inside the four-hour default timeout. Every
+        # other registry name starting with vec_ selects the second shard.
         {
-            "name": "Real Programs (Vector programs)",
-            "timeout_minutes": 300,
-            "coverage": ["bram"],
-            "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
-            "pytest_filter": "[vec_",
-        },
-        {
-            "name": "Real Programs (Memory and NIC stress)",
-            "timeout_minutes": 300,
+            "name": "Real Programs (Vector programs, memory and strides)",
             "coverage": ["bram"],
             "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
             "pytest_filter": (
-                "[nic_bench] or [nic_sg_loopback] or [nic_rate] or "
+                "[vec_state_test] or [vec_order_test_v256] or [vec_mem_test_v256] or "
+                "[vec_index_test_v256] or [vec_ff_test_v256] or "
+                "[vec_segment_test_v256] or [vec_stride_test_v256] or "
+                "[vec_debug_partial]"
+            ),
+        },
+        {
+            "name": "Real Programs (Vector programs)",
+            "coverage": ["bram"],
+            "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
+            "pytest_filter": (
+                "[vec_ and not ([vec_state_test] or [vec_order_test_v256] or "
+                "[vec_mem_test_v256] or [vec_index_test_v256] or [vec_ff_test_v256] "
+                "or [vec_segment_test_v256] or [vec_stride_test_v256] or "
+                "[vec_debug_partial])"
+            ),
+        },
+        {
+            "name": "Real Programs (NIC stress)",
+            "coverage": ["bram"],
+            "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
+            "pytest_filter": "[nic_bench] or [nic_sg_loopback] or [nic_rate]",
+        },
+        {
+            "name": "Real Programs (Memory stress)",
+            "coverage": ["bram"],
+            "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
+            "pytest_filter": (
                 "[l2_capacity_chase_capacity] or [l2_capacity_chase_smoke] or "
                 "[misaligned_test] or [sstvala_fault_test] or [ddr_reset_distribution] "
                 "or [ddr_reset_distribution_async] or [ddr_hpm_refill_test]"
@@ -254,13 +274,34 @@ VERILATOR_MATRIX: dict[str, Any] = {
                 "[fencei_bench]"
             ),
         },
+        {
+            "name": "Real Programs (Fetch and branch prediction)",
+            "coverage": ["bram"],
+            "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
+            "pytest_filter": (
+                "[fefuzz_1] or [fefuzz_4] or [fefuzz_7] or [fefuzz_11] or "
+                "[fefuzz_13] or [fefuzz_19] or [fefuzz_22] or [fefuzz_23] or "
+                "[pd_itt_slot2] or [bpred_trap_pair_test] or [bpred_probe] or "
+                "[mispen_probe] or [btb_mode_alias_test] or "
+                "[fast_btb_contract_test] or [odd_halfword_pred_test]"
+            ),
+        },
+        {
+            "name": "Real Programs (ISA, NAPOT and pointer masking)",
+            "coverage": ["bram"],
+            "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
+            "pytest_filter": (
+                "[fs_off_test] or [zicbop_test] or [zawrs_test] or [zihpm_test] or "
+                "[svnapot_test] or [svnapot_test_assert] or [sstvala_test] or "
+                "[svpbmt_cmo_test] or [pm_test] or [pm_test_assert]"
+            ),
+        },
         # The complement runs unlisted non-CoreMark-PRO programs.
         # OpenSBI and registry budgets above 10 million cycles need named
         # shards. Give each OpenSBI boot its own BRAM-only include entry.
         # Keep the exclusions in sync with every named shard.
         {
             "name": "Real Programs (Runtime and other)",
-            "timeout_minutes": 300,
             "coverage": ["bram"],
             "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
             "pytest_filter": (
@@ -333,7 +374,14 @@ VERILATOR_MATRIX: dict[str, Any] = {
                 "or [ddr_reset_distribution_async] or [ddr_hpm_refill_test] or "
                 "[pause_test] or [ras_slot_bench] or [ras_repair_bench] or "
                 "[smc_stale_test] or [smc_torture] or [smc_predict_test] or "
-                "[fencei_bench] or [vec_)"
+                "[fencei_bench] or [fefuzz_1] or [fefuzz_4] or [fefuzz_7] or "
+                "[fefuzz_11] or [fefuzz_13] or [fefuzz_19] or [fefuzz_22] or "
+                "[fefuzz_23] or [pd_itt_slot2] or [bpred_trap_pair_test] or "
+                "[bpred_probe] or [mispen_probe] or [btb_mode_alias_test] or "
+                "[fast_btb_contract_test] or [odd_halfword_pred_test] or "
+                "[fs_off_test] or [zicbop_test] or [zawrs_test] or [zihpm_test] or "
+                "[svnapot_test] or [svnapot_test_assert] or [sstvala_test] or "
+                "[svpbmt_cmo_test] or [pm_test] or [pm_test_assert] or [vec_)"
             ),
         },
         {

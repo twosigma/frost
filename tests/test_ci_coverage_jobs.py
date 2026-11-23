@@ -36,7 +36,7 @@ from ci_verilator import job_matrix
 from coverage_report import HEADER, ci_coverage_files, main
 from test_rvv_ci import job_condition
 
-EXPECTED_COVERAGE_JOBS = 29
+EXPECTED_COVERAGE_JOBS = 33
 EXPECTED_TOGGLE_JOBS = 32
 
 
@@ -225,7 +225,7 @@ def test_cocotb_matrix_output(tmp_path: Path, toggle: bool) -> None:
     assert key == "matrix"
     matrix = job_matrix(coverage_only=toggle)
     assert json.loads(data) == matrix
-    assert len(matrix["include"]) == (EXPECTED_TOGGLE_JOBS if toggle else 70)
+    assert len(matrix["include"]) == (EXPECTED_TOGGLE_JOBS if toggle else 78)
 
 
 @pytest.mark.parametrize(

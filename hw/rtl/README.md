@@ -1,7 +1,7 @@
 # FROST RTL
 
 This directory holds FROST's synthesizable SystemVerilog: a single-hart
-RV64GCB out-of-order CPU, its memory system, and its peripherals. The CPU
+RV64GCBV out-of-order CPU, its memory system, and its peripherals. The CPU
 schedules with Tomasulo's algorithm, decodes, renames, and commits up to two
 instructions per cycle, and runs M, S, and U modes with Sv39 virtual memory.
 Around it sit 256 KiB of on-chip BRAM, a three-cache hierarchy over a
@@ -103,7 +103,9 @@ entry.
 | APLIC | `0x4400_0000` | 4 MiB | AIA direct and MSI delivery, M and S domains of 32 KiB each |
 | IMSIC | `0x4800_0000` | 2 MiB | 4 KiB M and S pages at `0x4800_0000` and `0x4810_0000`, with `0x1000` hart stride |
 | DDR | `0x8000_0000` | Configured 1–128 GiB (1 GiB default aperture) | Cached region: `.ddr_text` code, large data, and the heap; software must use the populated size |
-| DDR uncached alias | DDR address with bit 30 set (`0xC000_0000`, DDR up to 1 GiB) or bit c set (a 2^c-byte DDR window, c >= 32: `[2^c + 2^31, 2^(c+1))`) | The aliased DDR | Not in the PMA map. Svpbmt: the walker gives NC and IO leaves over DDR this alias; the MMUs make such an access MMIO (at the ROB head, no AMOs, no fetch) and the SoC turns it into a single-beat coherent DMA transfer of the real DDR address. An untranslated access, or a PMA leaf, there is an access fault |
+| DDR uncached alias | DDR address with bit 30 set (`0xC000_0000`, 1 GiB of DDR) or bit c set (a 2^c-byte DDR window, c >= 32: `[2^c + 2^31, 2^(c+1))`) | The aliased DDR | Not in the PMA map. Svpbmt: the walker gives NC and IO leaves over DDR this alias; the MMUs make such an access MMIO (at the ROB head, no AMOs, no fetch) and the SoC turns it into a single-beat coherent DMA transfer of the real DDR address. An untranslated access, or a PMA leaf, there is an access fault |
+
+With less than 1 GiB of DDR, the uncached alias is disabled and NC or IO leaves based in DDR raise an access fault.
 
 Addresses outside the defined regions, including the rest of the device
 quadrant `[0x4000_0000, 0x8000_0000)` and addresses at or beyond the
@@ -500,7 +502,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `L1D_NUM_MSHR` | `8` | L1D request endpoints, 1 to 8: one for stores, LR and atomics, the rest for load misses in flight |
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
 | `frost.sv` | `VECTOR` / `VLEN` | `0` / `256` | 1 builds the vector state: `mstatus.VS` and the vector CSRs; `VLEN` is the vector register width, 128, 256 or 512 bits ([CPU README](cpu_and_mem/cpu/README.md#vector-state)) |
-| `frost.sv` | `VECTOR_ADVERTISE` | `0` | 1 would set `misa.V`; elaboration rejects it while the vector instructions are not implemented, and software enables the vector state through `mstatus.VS` |
+| `frost.sv` | `VECTOR_ADVERTISE` | `0` | 1 requires `VECTOR=1` and sets `misa.V`; the X3 enables both with `VLEN=256`. Software enables the vector state through `mstatus.VS` |
 | `frost.sv` | `MISALIGNED_HW` | `0` | Enables hardware completion of plain misaligned loads and stores to cached DDR. Requires `ENABLE_CACHED_TIER`. The X3, VCU118 and simulation defaults enable it ([CPU README](cpu_and_mem/cpu/README.md#misaligned-accesses)) |
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
 | `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |

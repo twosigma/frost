@@ -21,34 +21,19 @@ module pd_history_twin (
   pd_history_twin_pkg::outputs_t ref_out, new_out;
   pd_history_twin_pkg::state_t ref_state, new_state;
   logic started = 1'b0;
-  pd_history_twin_pkg::inputs_t fetch;
 
-  // The core starts in reset. The input contract begins on the following
-  // cycle. Both compared stages receive the arbitrary real input on every edge.
-  always_comb begin
-    fetch = i;
-    if (!started) begin
-      fetch = '0;
-      fetch.pipeline_ctrl.reset = i.pipeline_ctrl.reset;
-      fetch.from_if_to_pd.sel_nop = 1'b1;
-      fetch.from_if_to_pd.sel_compressed = 1'b1;
-      fetch.from_if_to_pd_2.sel_nop = 1'b1;
-      fetch.from_if_to_pd_2.program_counter = riscv_pkg::PcIncrementCompressed;
-    end
-  end
-  pd_fetch_contract fetch_inputs (
+  predictor_fetch_contract fetch_inputs (
       .i_clk,
-      .i_pipeline_ctrl(fetch.pipeline_ctrl),
-      .i_from_if_to_pd(fetch.from_if_to_pd),
-      .i_from_if_to_pd_2(fetch.from_if_to_pd_2),
-      .i_backing_hit(fetch.backing_hit),
-      .i_backing_compressed(fetch.backing_compressed),
-      .i_backing_return(fetch.backing_return),
-      .i_backing_target(fetch.backing_target),
-      .i_backing_slot2_return_by_size(fetch.backing_slot2_return_by_size),
-      .i_backing_slot2_target_by_size(fetch.backing_slot2_target_by_size),
-      .i_itt_hit(fetch.itt_hit),
-      .i_itt_target(fetch.itt_target)
+      .i_reset(i.pipeline_ctrl.reset),
+      .i_pd_redirect(ref_out.pd_redirect),
+      .i_restore_arm(i.hist_restore_arm),
+      .s1(i.from_if_to_pd),
+      .s2(i.from_if_to_pd_2),
+      .i_backing_hit(i.backing_hit),
+      .i_backing_return(i.backing_return),
+      .i_by_size_return(i.backing_slot2_return_by_size),
+      .i_backing_target(i.backing_target),
+      .i_by_size_target(i.backing_slot2_target_by_size)
   );
   pd_history_reference reference (
       .i_clk,
@@ -65,10 +50,6 @@ module pd_history_twin (
 
   always @(posedge i_clk) begin
     started <= 1'b1;
-    // The PC controller registers the selected redirect arm and clears it on reset.
-    if (started)
-      a_pd_restore_follows_redirect :
-      assume (!i.hist_restore_arm[4] || $past(!i.pipeline_ctrl.reset && ref_out.pd_redirect));
     if (!started) begin
       // Corresponding unreset storage starts with the same arbitrary contents.
       assume (ref_state == new_state);
@@ -174,21 +155,5 @@ endmodule
     input pd_history_twin_pkg::inputs_t i,
     output pd_history_twin_pkg::outputs_t o,
     output pd_history_twin_pkg::state_t state
-);
-endmodule
-
-(* blackbox *) module pd_fetch_contract (
-    input logic i_clk,
-    input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
-    input riscv_pkg::from_if_to_pd_t i_from_if_to_pd,
-    input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
-    input logic [1:0] i_backing_hit,
-    input logic [1:0] i_backing_compressed,
-    input logic [1:0] i_backing_return,
-    input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_target,
-    input logic [1:0] i_backing_slot2_return_by_size,
-    input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_backing_slot2_target_by_size,
-    input logic [1:0] i_itt_hit,
-    input logic [1:0][riscv_pkg::PhysAddrBits-2:0] i_itt_target
 );
 endmodule

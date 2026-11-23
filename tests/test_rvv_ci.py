@@ -42,6 +42,9 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     """Run the seeded and directed suites with each job's vector length."""
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     job = workflow["jobs"]["test-testrig-vector"]
+    assert job["timeout-minutes"] == 65, (
+        "Vector TestRIG job needs the registered budget"
+    )
     assert job["strategy"]["matrix"]["vlen"] == [128, 256, 512]
     replay = next(
         step
@@ -49,9 +52,14 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         if step.get("name") == "Compare seeded and directed vector traces"
     )
     command = shlex.split(replay["run"].replace("\\\n", ""))
+    assert command[command.index("--kill-after=10s") + 1] == "45m", (
+        "Vector TestRIG replay needs the registered budget"
+    )
     arguments = command[command.index("tests/test_testrig.py") + 1 :]
     assert arguments.count("--vlen") == 1
     assert arguments[arguments.index("--vlen") + 1] == "${{ matrix.vlen }}"
+    assert arguments[arguments.index("--startup-timeout") + 1] == "1200"
+    assert arguments[arguments.index("--response-timeout") + 1] == "600"
     assert "--vector-source-widths" in arguments
     assert "--vector-directed" in arguments
     control = next(
@@ -60,26 +68,135 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         if step.get("name") == "Check detection of an incorrect vector result"
     )
     assert control["if"] == "matrix.vlen == 128"
-    assert control["timeout-minutes"] == 9
+    assert control["timeout-minutes"] == 40, (
+        "Vector controls need the registered budget"
+    )
+    control_command = shlex.split(control["run"].replace("\\\n", ""))
+    assert "timeout --kill-after=10s 600s" in control["run"], (
+        "Vector result controls require the 600-second outer guard"
+    )
+    control_arguments = control_command[
+        control_command.index("tests/test_testrig.py") + 1 :
+    ]
+    assert control_arguments[control_arguments.index("--startup-timeout") + 1] == "360"
+    assert (
+        control_arguments[control_arguments.index("--response-timeout") + 1] == "180"
+    ), "Vector result controls need the 180-second response timeout"
     assert job["steps"].index(replay) < job["steps"].index(control)
     calls = [
-        shlex.split(line)[1:3]
+        shlex.split(line)[1:]
         for line in control["run"].replace("\\\n", "").splitlines()
         if line.startswith("check_vector_result ")
     ]
     assert calls == [
-        ["1", "vector_source_widths_integer"],
-        ["state", "vector_state_results"],
-        ["fractional-lmul", "vector_fractional_lmul"],
-        ["base-fp", "vector_fp_results_flags"],
-        ["fma", "vector_fma"],
-        ["fp-compare", "vector_fp_compare"],
-        ["fp-convert", "vector_fp_convert"],
-        ["unit-stride", "vector_unit_stride"],
-        ["int-compare", "vector_int_compare"],
-        ["strided", "vector_strided"],
-        ["indexed", "vector_indexed"],
-        ["segment", "vector_segment"],
+        [
+            "1",
+            "vector_source_widths_integer",
+            "order=17 insn=0x43002557 rd=x10",
+            "0x8 != 0x9",
+        ],
+        [
+            "state",
+            "vector_state_results",
+            "order=52 insn=0x42182557 rd=x10",
+            "0x3 != 0x2",
+        ],
+        [
+            "fractional-lmul",
+            "vector_fractional_lmul",
+            "order=14 insn=0x42902557 rd=x10",
+            "0x9 != 0x8",
+        ],
+        [
+            "base-fp",
+            "vector_fp_results_flags",
+            "order=10 insn=0x43102557 rd=x10",
+            "0x40400000 != 0x40400001",
+        ],
+        [
+            "fma",
+            "vector_fma",
+            "order=14 insn=0x43602557 rd=x10",
+            "0xffffffffa8800000 != 0xffffffffa8800001",
+        ],
+        [
+            "fp-compare",
+            "vector_fp_compare",
+            "order=15 insn=0x43882557 rd=x10",
+            "0x1 != 0x0",
+        ],
+        [
+            "fp-convert",
+            "vector_fp_convert",
+            "order=9 insn=0x43802557 rd=x10",
+            "0x3 != 0x2",
+        ],
+        [
+            "unit-stride",
+            "vector_unit_stride",
+            "order=109 insn=0x43a02557 rd=x10",
+            "0x12345678 != 0x12345679",
+        ],
+        [
+            "int-compare",
+            "vector_int_compare",
+            "order=21 insn=0x43902557 rd=x10",
+            "0x0 != 0x1",
+        ],
+        [
+            "strided",
+            "vector_strided",
+            "order=158 insn=0x43b02557 rd=x10",
+            "0x24681356 != 0x24681357",
+        ],
+        [
+            "indexed",
+            "vector_indexed",
+            "order=217 insn=0x43c02557 rd=x10",
+            "0x31415926 != 0x31415927",
+        ],
+        [
+            "segment",
+            "vector_segment",
+            "order=45 insn=0x43e02557 rd=x10",
+            "0x19475b81 != 0x19475b80",
+        ],
+        [
+            "fof",
+            "vector_fof",
+            "order=29 insn=0x43f02557 rd=x10",
+            "0x13572468 != 0x13572469",
+        ],
+        [
+            "int-widen-narrow",
+            "vector_int_widen_narrow",
+            "order=72 insn=0x42e02557 rd=x10",
+            "0x1fe != 0x1ff",
+        ],
+        [
+            "fixed-point",
+            "vector_fixed_point",
+            "order=49 insn=0x42f02557 rd=x10",
+            "0x7f != 0x7e",
+        ],
+        [
+            "fp-single",
+            "vector_fp_single",
+            "order=30 insn=0x42d02557 rd=x10",
+            "0x40100000 != 0x40100001",
+        ],
+        [
+            "whole-reg",
+            "vector_whole_reg",
+            "order=45 insn=0x42c02557 rd=x10",
+            "0x135724689acebdf1 != 0x135724689acebdf0",
+        ],
+        [
+            "fp-widen",
+            "vector_fp_widen",
+            "order=22 insn=0x42a02557 rd=x10",
+            "0x400e000000000000 != 0x400e000000000001",
+        ],
     ]
 
 
@@ -93,7 +210,7 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert inputs["slice"]["type"] == "string"
     jobs = workflow["jobs"]
     job = jobs["test-rvv"]
-    assert job["needs"] == "build-docker"
+    assert set(job["needs"]) == {"build-docker", "build-sim-models"}
     assert job["if"] == (
         "${{ !cancelled() && needs.build-docker.result == 'success' && !inputs.toggle_coverage }}"
     )
@@ -111,17 +228,17 @@ def test_vector_workflow(tmp_path: Path) -> None:
     assert int(default) == ci.SLICES == 20
     run = next(s for s in job["steps"] if s.get("name") == "Run vector programs")
     setup = [s["timeout-minutes"] for s in job["steps"][: job["steps"].index(run)]]
-    assert setup == [5, 5, 15, 5]
+    assert setup == [5, 5, 15, 5, 5]
     setup_minutes = sum(setup)
     assert ci.FORM_PLANS == {
-        128: ci.ShardPlan(4, 92, 130),
-        256: ci.ShardPlan(7, 92, 130),
-        512: ci.ShardPlan(13, 96, 134),
+        128: ci.ShardPlan(4, 92, 135),
+        256: ci.ShardPlan(7, 92, 135),
+        512: ci.ShardPlan(13, 96, 139),
     }
     assert ci.COMPLETE_PLANS == {
-        128: ci.ShardPlan(7, 297, 335),
-        256: ci.ShardPlan(11, 296, 334),
-        512: ci.ShardPlan(25, 316, 354),
+        128: ci.ShardPlan(7, 297, 340),
+        256: ci.ShardPlan(11, 296, 339),
+        512: ci.ShardPlan(25, 316, 359),
     }
     for event, campaign, part, count, per_run, mode, parts in [
         ("push", "rotation", "", "0", default, "forms", []),
@@ -273,9 +390,15 @@ def test_campaign_report_image_lifetime() -> None:
 
 
 VECTOR_JOBS = {"build-docker", "test-rvv"}
-CAMPAIGN_JOBS = VECTOR_JOBS | {"rvv-campaign-report"}
-TOGGLE_JOBS = {"build-docker", "test-verilator", "coverage-report"}
+CAMPAIGN_JOBS = VECTOR_JOBS | {"build-sim-models", "rvv-campaign-report"}
+TOGGLE_JOBS = {
+    "build-docker",
+    "build-sim-models",
+    "test-verilator",
+    "coverage-report",
+}
 REGULAR_CI = VECTOR_JOBS | {
+    "build-sim-models",
     "gate",
     "lint",
     "test-python",
@@ -386,6 +509,7 @@ def test_ci_job_scope(
         ).lower(),
         "needs.gate.outputs.full": "",
         "needs.build-docker.outputs.verilator_matrix": "",
+        "needs.build-docker.outputs.sim_matrix": "",
     }
     for key, spec in workflow[True]["workflow_dispatch"]["inputs"].items():
         value = (
@@ -441,6 +565,13 @@ def test_ci_job_scope(
             )
             if has_verilator:
                 context["needs.build-docker.outputs.verilator_matrix"] = "planned"
+            context["needs.build-docker.outputs.sim_matrix"] = (
+                "models"
+                if context["needs.gate.outputs.full"] == "true"
+                or context["inputs.toggle_coverage"] == "true"
+                or inputs.get("campaign") == "complete"
+                else "{}"
+            )
     assert enabled == expected
 
 
@@ -644,7 +775,7 @@ def test_complete_shards_fit_measured_time(
     mean_if_fewer_ms = setup_ms + program_ms / (plan.shards - 1)
     assert (
         mean_if_fewer_ms >= target_ms
-        or ceil(1.8 * mean_if_fewer_ms / 60_000) + 38 > 360
+        or ceil(1.8 * mean_if_fewer_ms / 60_000) + 43 > 360
     )
 
 

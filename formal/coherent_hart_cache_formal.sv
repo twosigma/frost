@@ -565,12 +565,11 @@ module coherent_hart_cache_formal #(
       grant_slot   = next_grant;
       release_slot = next_release;
     end
-`ifdef COH_MAINT_FOUR
-    assign decision_spec = 1'b1;
-    assign result_take   = 1'b1;
-`else
     assign decision_spec = cover_cycle_q[1];
-    assign result_take   = cover_cycle_q[0];
+`ifdef COH_MAINT_FOUR
+    assign result_take = 1'b1;
+`else
+    assign result_take = cover_cycle_q[0];
 `endif
   end else begin : gen_arbitrary_schedule
     (* anyseq *) logic [5:0] choices;

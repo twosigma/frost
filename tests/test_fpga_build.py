@@ -22,9 +22,11 @@ from decimal import Decimal
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
-import time
 import sys
+import tempfile
+import time
 import zipfile
 from types import SimpleNamespace
 from typing import Any
@@ -1190,9 +1192,9 @@ def test_board_gty_generation_is_capability_gated() -> None:
         assert operation in guarded_body
     generate = tcl.index("generate_target all [get_ips]")
     # The IP cores, GTY included, synthesize in their own project-mode runs after
-    # generation: create_ip_run per core, then one launch_runs for the set.
+    # generation: create_ip_run per core, then one launch per run, each with its own Tcl Store area.
     create_run = tcl.index("create_ip_run $ip_core_xci", generate)
-    launch = tcl.index("launch_runs $ip_synth_runs", create_run)
+    launch = tcl.index("frost_launch_ip_runs_isolated $ip_synth_runs", create_run)
     assert guard.end() < generate < create_run < launch
 
     gty = (REPO_ROOT / "fpga/build/x3_gty_ip.tcl").read_text()
@@ -1242,26 +1244,41 @@ def test_board_gty_generation_is_capability_gated() -> None:
     )
 
 
+def _extract_ip_launch_proc(tcl: str) -> str:
+    """Extract frost_launch_ip_runs_isolated from build_step.tcl."""
+    proc_start = tcl.index("proc frost_launch_ip_runs_isolated")
+    proc_end = tcl.index("\n}\n", proc_start) + 3
+    return tcl[proc_start:proc_end]
+
+
 def test_synth_step_clears_project_dir_and_requires_ip_runs(tmp_path: Path) -> None:
-    """Clear leftover vivado_proj state and fail if an IP synthesis run is missing."""
+    """Clear leftover synth state, clean IP Tcl Store areas, and check IP runs."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
     delete_proj = tcl.index("file delete -force $work_directory/vivado_proj")
+    delete_tclstore = tcl.index("file delete -force $work_directory/tclstore_ip")
     create_proj = tcl.index(
         "create_project -part $fpga_part_number -force tmp_proj $work_directory/vivado_proj"
     )
-    assert delete_proj < create_proj
+    assert delete_proj < delete_tclstore < create_proj
     assert "this flow never creates OOC IP runs" not in tcl
 
     start = tcl.index("    set ip_synth_runs [list]")
     end = tcl.index("\n    if {$board_has_ddr}", start)
     snippet = tcl[start:end]
+    launch_proc = _extract_ip_launch_proc(tcl)
+    parent_area = tmp_path / "parent_tclstore"
+    parent_area.mkdir()
+    (parent_area / "manifest.tcl").write_text("parent\n")
 
     for mode, expected_code, expected_text in (
-        ("normal", 0, "LAUNCHED jtag_axi_0_synth_1 axi_bram_ctrl_0_synth_1"),
+        ("normal", 0, "LAUNCHED axi_bram_ctrl_0_synth_1"),
         ("missing", 1, "IP synthesis run axi_bram_ctrl_0_synth_1 was not created"),
         ("failed", 1, "jtag_axi_0_synth_1 did not complete: synth_design ERROR"),
+        ("launch_error", 1, "simulated launch failure"),
     ):
-        harness = tmp_path / f"ip_runs_{mode}.tcl"
+        mode_dir = tmp_path / mode
+        mode_dir.mkdir()
+        harness = mode_dir / f"ip_runs_{mode}.tcl"
         harness.write_text(
             f"""set mode {mode}
 set number_of_parallel_jobs 4
@@ -1296,18 +1313,256 @@ proc create_ip_run {{xci}} {{
     }}
     lappend created_runs ${{base}}_synth_1
 }}
-proc launch_runs {{runs args}} {{puts "LAUNCHED $runs"}}
-proc wait_on_run {{run}} {{}}
+proc launch_runs {{runs args}} {{
+    global mode
+    set area ""
+    if {{[info exists ::env(XILINX_TCLSTORE_USERAREA)]}} {{
+        set area $::env(XILINX_TCLSTORE_USERAREA)
+    }}
+    puts "LAUNCHED $runs AREA=$area EXISTS=[file isdirectory $area]"
+    if {{$mode eq "launch_error" && $runs eq "axi_bram_ctrl_0_synth_1"}} {{
+        error "simulated launch failure"
+    }}
+}}
+proc wait_on_run {{run}} {{puts "WAITED $run"}}
 """
-            + snippet
+            + launch_proc
             + "\n"
+            + snippet
+            + """
+if {[info exists ::env(XILINX_TCLSTORE_USERAREA)]} {
+    puts "AFTER_AREA=$::env(XILINX_TCLSTORE_USERAREA)"
+} else {
+    puts "AFTER_AREA=<unset>"
+}
+"""
         )
+        env = dict(os.environ)
+        env["XILINX_TCLSTORE_USERAREA"] = str(parent_area)
         result = subprocess.run(
-            ["tclsh", str(harness)], capture_output=True, text=True, timeout=10
+            ["tclsh", str(harness)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=mode_dir,
+            env=env,
         )
         assert result.returncode == expected_code, (mode, result.stdout, result.stderr)
         combined = result.stdout + result.stderr
         assert expected_text in combined
+        if mode == "normal":
+            for run in ("jtag_axi_0_synth_1", "axi_bram_ctrl_0_synth_1"):
+                expected_area = str((mode_dir / "tclstore_ip" / run).resolve())
+                assert f"LAUNCHED {run} AREA={expected_area} EXISTS=1" in combined
+            assert f"AFTER_AREA={parent_area}" in combined
+            assert not (mode_dir / "tclstore_ip").exists()
+        elif mode == "failed":
+            assert "WAITED jtag_axi_0_synth_1" in combined
+            assert "WAITED axi_bram_ctrl_0_synth_1" in combined
+            assert not (mode_dir / "tclstore_ip").exists()
+        elif mode == "launch_error":
+            assert not (mode_dir / "tclstore_ip").exists()
+
+
+@pytest.mark.parametrize("initial_env_set", (False, True))
+@pytest.mark.parametrize("launch_fails", (False, True))
+def test_isolated_ip_run_tclstore_env_assignment_and_restoration(
+    tmp_path: Path, initial_env_set: bool, launch_fails: bool
+) -> None:
+    """Assign each IP run its own XILINX_TCLSTORE_USERAREA and restore it afterwards."""
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    launch_proc = _extract_ip_launch_proc(tcl)
+
+    parent_area = tmp_path / "parent_tclstore"
+    (parent_area / "catalog" / "2025.2").mkdir(parents=True)
+    (parent_area / "catalog" / "2025.2" / "manifest.xml").write_text("v1\n")
+    (parent_area / "manifest.tcl").write_text("root\n")
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    harness = work_dir / "env_check.tcl"
+    fail_flag = 1 if launch_fails else 0
+    harness.write_text(
+        f"""set launch_fails {fail_flag}
+proc launch_runs {{run args}} {{
+    global launch_fails
+    set area $::env(XILINX_TCLSTORE_USERAREA)
+    set has_nested [file isfile [file join $area catalog 2025.2 manifest.xml]]
+    set count [llength [glob -nocomplain -directory $area *]]
+    puts "LAUNCH $run AREA=$area NESTED=$has_nested COUNT=$count"
+    if {{$launch_fails && $run eq "axi_bram_ctrl_0_synth_1"}} {{
+        error "launch boom"
+    }}
+}}
+"""
+        + launch_proc
+        + """
+set rc [catch {frost_launch_ip_runs_isolated {jtag_axi_0_synth_1 axi_bram_ctrl_0_synth_1} 4} msg]
+puts "RC=$rc MSG=$msg"
+if {[info exists ::env(XILINX_TCLSTORE_USERAREA)]} {
+    puts "AFTER_EXISTS=1"
+    puts "AFTER_VALUE=$::env(XILINX_TCLSTORE_USERAREA)"
+} else {
+    puts "AFTER_EXISTS=0"
+}
+"""
+    )
+
+    env = dict(os.environ)
+    if initial_env_set:
+        env["XILINX_TCLSTORE_USERAREA"] = str(parent_area)
+    else:
+        env.pop("XILINX_TCLSTORE_USERAREA", None)
+
+    result = subprocess.run(
+        ["tclsh", str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=work_dir,
+        env=env,
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    out = result.stdout
+    expected_nested = 1 if initial_env_set else 0
+    expected_count = 2 if initial_env_set else 0
+    for run in ("jtag_axi_0_synth_1", "axi_bram_ctrl_0_synth_1"):
+        expected_area = str((work_dir / "tclstore_ip" / run).resolve())
+        assert (
+            f"LAUNCH {run} AREA={expected_area} NESTED={expected_nested} COUNT={expected_count}"
+            in out
+        )
+    if launch_fails:
+        assert "RC=1 MSG=launch boom" in out
+    else:
+        assert "RC=0 MSG=" in out
+    if initial_env_set:
+        assert "AFTER_EXISTS=1" in out
+        assert f"AFTER_VALUE={parent_area}" in out
+    else:
+        assert "AFTER_EXISTS=0" in out
+
+
+def test_isolated_ip_run_tclstore_clears_stale_area_on_reuse(tmp_path: Path) -> None:
+    """Clear stale or corrupt tclstore_ip/<run> state before reusing a work directory."""
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    launch_proc = _extract_ip_launch_proc(tcl)
+
+    parent_area = tmp_path / "parent_tclstore"
+    manifest = parent_area / "catalog" / "2025.2" / "manifest.xml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("fresh_v1\n")
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    harness = work_dir / "reuse.tcl"
+    harness.write_text(
+        "proc launch_runs {run args} {}\n"
+        + launch_proc
+        + "\nfrost_launch_ip_runs_isolated {jtag_axi_0_synth_1 axi_bram_ctrl_0_synth_1} 4\n"
+    )
+
+    runs = ("jtag_axi_0_synth_1", "axi_bram_ctrl_0_synth_1")
+
+    env_with_parent = dict(os.environ)
+    env_with_parent["XILINX_TCLSTORE_USERAREA"] = str(parent_area)
+    first = subprocess.run(
+        ["tclsh", str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=work_dir,
+        env=env_with_parent,
+    )
+    assert first.returncode == 0, (first.stdout, first.stderr)
+    for run in runs:
+        copied = work_dir / "tclstore_ip" / run / "catalog" / "2025.2" / "manifest.xml"
+        assert copied.read_text() == "fresh_v1\n"
+
+    # Simulate corrupt/stale leftovers from an interrupted synthesis run.
+    r1_dir = work_dir / "tclstore_ip" / runs[0]
+    (r1_dir / "catalog" / "2025.2" / "manifest.xml").write_text("CORRUPT_TRUNCATED\n")
+    (r1_dir / "catalog" / "stale.lock").write_text("lock\n")
+    (r1_dir / "leftover.txt").write_text("stale\n")
+    r2_dir = work_dir / "tclstore_ip" / runs[1]
+    shutil.rmtree(r2_dir)
+    r2_dir.write_text("stale file\n")
+    manifest.write_text("fresh_v2\n")
+
+    # Reuse with parent area set: stale files vanish and updated subdirectories copy cleanly.
+    second = subprocess.run(
+        ["tclsh", str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=work_dir,
+        env=env_with_parent,
+    )
+    assert second.returncode == 0, (second.stdout, second.stderr)
+    for run in runs:
+        copied = work_dir / "tclstore_ip" / run / "catalog" / "2025.2" / "manifest.xml"
+        assert copied.read_text() == "fresh_v2\n"
+    assert not (r1_dir / "catalog" / "stale.lock").exists()
+    assert not (r1_dir / "leftover.txt").exists()
+
+    # Reuse with parent area unset: stale content from the prior run is cleared.
+    env_unset = dict(os.environ)
+    env_unset.pop("XILINX_TCLSTORE_USERAREA", None)
+    third = subprocess.run(
+        ["tclsh", str(harness)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=work_dir,
+        env=env_unset,
+    )
+    assert third.returncode == 0, (third.stdout, third.stderr)
+    for run in runs:
+        run_dir = work_dir / "tclstore_ip" / run
+        assert run_dir.is_dir()
+        assert list(run_dir.iterdir()) == []
+
+
+def test_isolated_ip_run_tclstore_propagates_copy_error(tmp_path: Path) -> None:
+    """Propagate a failing file copy from the parent Tcl Store area and keep env intact."""
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    launch_proc = _extract_ip_launch_proc(tcl)
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    harness = work_dir / "copy_err.tcl"
+    harness.write_text(
+        'proc launch_runs {run args} {puts "LAUNCHED $run"}\n'
+        + launch_proc
+        + """
+set rc [catch {frost_launch_ip_runs_isolated {jtag_axi_0_synth_1 axi_bram_ctrl_0_synth_1} 4} msg]
+puts "RC=$rc MSG=$msg"
+puts "AFTER_VALUE=$::env(XILINX_TCLSTORE_USERAREA)"
+"""
+    )
+
+    with tempfile.TemporaryDirectory(prefix="ts_") as short_parent:
+        sock_path = os.path.join(short_parent, "bad.sock")
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.bind(sock_path)
+        finally:
+            sock.close()
+
+        env = dict(os.environ)
+        env["XILINX_TCLSTORE_USERAREA"] = short_parent
+        result = subprocess.run(
+            ["tclsh", str(harness)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=work_dir,
+            env=env,
+        )
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert "RC=1 MSG=error copying" in result.stdout
+        assert "LAUNCHED" not in result.stdout
+        assert f"AFTER_VALUE={short_parent}" in result.stdout
 
 
 @pytest.mark.parametrize("message", ("8-11241", "8-6901"))

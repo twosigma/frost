@@ -490,13 +490,16 @@
       "DMA, NIC and coherence": 156,
       "Debug and UART": 130,
       "Fence.i JIT benchmark": 128,
+      "Fetch and branch prediction": 219,
       "Full-line stores": 122,
+      "ISA, NAPOT and pointer masking": 219,
       "Interrupts": 133,
       "Load queue slots": 139,
-      "Memory and NIC stress": 156,
       "Memory link stage, DDR programs": 175,
       "Memory link stage, full-line stores": 157,
       "Memory link stage, other programs": 141,
+      "Memory stress": 156,
+      "NIC stress": 156,
       "OpenSBI cold reset": 129,
       "OpenSBI smoke": 135,
       "OpenSBI smoke, no misaligned hardware": 143,
@@ -508,6 +511,7 @@
       "Self-modifying code and fence.i": 299,
       "Store-stream benchmark": 144,
       "Vector programs": 142,
+      "Vector programs, memory and strides": 142,
       "Zicboz": 221,
       "Zicboz clearing benchmark": 110,
       "Zicboz eviction": 136,
@@ -528,19 +532,23 @@
       "CoreMark-PRO / nnet": 126,
       "DMA, NIC and coherence": 163,
       "Debug and UART": 145,
+      "Fetch and branch prediction": 130,
       "Full-line stores": 123,
+      "ISA, NAPOT and pointer masking": 130,
       "Interrupts": 178,
       "Load queue slots": 130,
-      "Memory and NIC stress": 134,
       "Memory link stage, DDR programs": 146,
       "Memory link stage, full-line stores": 137,
       "Memory link stage, other programs": 113,
+      "Memory stress": 134,
+      "NIC stress": 134,
       "Privilege and MMU": 157,
       "Runtime and other": 130,
       "Runtime benchmarks": 121,
       "Self-modifying code and fence.i": 161,
       "Store-stream benchmark": 137,
       "Vector programs": 150,
+      "Vector programs, memory and strides": 150,
       "Zicboz": 152,
       "Zicboz eviction": 136,
       "Zicboz pages": 154
@@ -548,10 +556,8 @@
   },
   "capped_plan_seconds": {
     "bram": {
-      "Runtime and other": 16529,
       "OpenSBI smoke": 10107,
-      "OpenSBI smoke, no misaligned hardware": 10058,
-      "Vector programs": 11479
+      "OpenSBI smoke, no misaligned hardware": 10058
     }
   }
 }

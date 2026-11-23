@@ -5654,3 +5654,326 @@ async def test_faulting_fetch_suppresses_trained_btb_redirect(dut: Any) -> None:
     dut.i_instr_fault1_page.value = 0
     await _settle()
     assert _read_if_packet(dut)["ras_checkpoint_valid_count"] == 0
+
+
+# The explicit slot-2 veto stays as a defensive guard, and the directed
+# test pins the observable behavior of faulting slot-2 calls.
+@cocotb.test()
+async def test_slot2_fault_suppresses_trained_call_and_replay_ras(dut: Any) -> None:
+    """A faulting slot-2 call suppresses redirect and RAS push live and on replay."""
+    await _setup_test(dut)
+    model = _predecode_model()
+    target = BASE_PC + 0x200
+    pc_slot1 = BASE_PC + 0x20
+    pc_slot2 = pc_slot1 + 4
+    pc_span_s1 = BASE_PC + 0x40
+    pc_span_s2 = pc_span_s1 + 2
+
+    dut.i_disable_branch_prediction.value = 1
+    for train_pc in (pc_slot2, pc_span_s2):
+        await _train_btb(dut, pc=train_pc, target=target, compressed=False, call=True)
+        await _train_btb(dut, pc=train_pc, target=target, compressed=False, call=True)
+
+    # 1. Live second-word fault on a non-spanning 32-bit slot-2 call.
+    await _redirect_to(dut, pc_slot1)
+    assert int(dut.o_pc.value) == pc_slot2
+    dut.i_disable_branch_prediction.value = 0
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=CALL_RA_INSTR,
+        current_sb=model.make_sideband(ADD_INSTR_A),
+        next_sb=model.make_sideband(CALL_RA_INSTR),
+        bank_sel=(pc_slot1 >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, pc_slot1 >> 2)
+    dut.i_instr_fault1.value = 1
+    dut.i_instr_fault1_page.value = 1
+    await _settle()
+    pkt1 = _read_if_packet(dut)
+    pkt2 = _read_if_packet(dut, slot2=True)
+    assert not pkt1["sel_nop"]
+    assert pkt1["fetch_fault"] is False
+    assert not pkt2["sel_nop"]
+    assert pkt2["program_counter"] == pc_slot2
+    assert pkt2["fetch_fault"] is True
+    assert pkt2["fetch_fault_page"] is True
+    assert pkt2["fetch_fault_hi"] is False
+    assert pkt2["btb_predicted_taken"] is False
+    assert pkt2["ras_checkpoint_valid_count"] == 0
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) != target
+    dut.i_instr_fault1.value = 0
+    dut.i_instr_fault1_page.value = 0
+    await _settle()
+    assert _read_if_packet(dut)["ras_checkpoint_valid_count"] == 0
+
+    # 2. Live second-word fault on a spanning 32-bit slot-2 call (fetch_fault_hi).
+    dut.i_disable_branch_prediction.value = 1
+    await _redirect_to(dut, pc_span_s1)
+    assert int(dut.o_pc.value) == pc_span_s1 + 4
+    w_span0 = _word(lo=COMPRESSED_NOP, hi=CALL_RA_INSTR & 0xFFFF)
+    w_span1 = _word(lo=(CALL_RA_INSTR >> 16) & 0xFFFF, hi=COMPRESSED_NOP)
+    dut.i_disable_branch_prediction.value = 0
+    _drive_fetch(
+        dut,
+        current_word=w_span0,
+        next_word=w_span1,
+        current_sb=model.make_sideband(w_span0),
+        next_sb=model.make_sideband(w_span1),
+        bank_sel=(pc_span_s1 >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, pc_span_s1 >> 2)
+    dut.i_instr_fault1.value = 1
+    dut.i_instr_fault1_page.value = 1
+    await _settle()
+    pkt1 = _read_if_packet(dut)
+    pkt2 = _read_if_packet(dut, slot2=True)
+    assert not pkt1["sel_nop"]
+    assert pkt1["fetch_fault"] is False
+    assert not pkt2["sel_nop"]
+    assert pkt2["program_counter"] == pc_span_s2
+    assert pkt2["fetch_fault"] is True
+    assert pkt2["fetch_fault_page"] is True
+    assert pkt2["fetch_fault_hi"] is True
+    assert pkt2["btb_predicted_taken"] is False
+    assert pkt2["ras_checkpoint_valid_count"] == 0
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) != target
+    dut.i_instr_fault1.value = 0
+    dut.i_instr_fault1_page.value = 0
+    await _settle()
+    assert _read_if_packet(dut)["ras_checkpoint_valid_count"] == 0
+
+    # 3. Stall-replayed second-word fault on a trained slot-2 call.
+    dut.i_disable_branch_prediction.value = 1
+    await _redirect_to(dut, pc_slot1)
+    assert int(dut.o_pc.value) == pc_slot2
+    dut.i_disable_branch_prediction.value = 0
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=CALL_RA_INSTR,
+        current_sb=model.make_sideband(ADD_INSTR_A),
+        next_sb=model.make_sideband(CALL_RA_INSTR),
+        bank_sel=(pc_slot1 >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, pc_slot1 >> 2)
+    dut.i_instr_fault1.value = 1
+    dut.i_instr_fault1_page.value = 1
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+    dut.i_instr_fault1.value = 0
+    dut.i_instr_fault1_page.value = 0
+    _drive_fetch(
+        dut,
+        current_word=NOP_INSTR,
+        next_word=NOP_INSTR,
+        current_sb=model.make_sideband(NOP_INSTR),
+        next_sb=model.make_sideband(NOP_INSTR),
+        bank_sel=(pc_slot1 >> 2) & 1,
+    )
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {"stall": False, "stall_registered": True})
+    await _settle()
+    pkt2 = _read_if_packet(dut, slot2=True)
+    assert not pkt2["sel_nop"]
+    assert pkt2["program_counter"] == pc_slot2
+    assert pkt2["fetch_fault"] is True
+    assert pkt2["fetch_fault_page"] is True
+    assert pkt2["btb_predicted_taken"] is False
+    assert pkt2["ras_checkpoint_valid_count"] == 0
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {})
+    assert int(dut.o_pc.value) != target
+    await _settle()
+    assert _read_if_packet(dut)["ras_checkpoint_valid_count"] == 0
+
+    # 4. Positive control: without the fault, the same trained slot-2 call
+    #    predicts taken, redirects fetch to target, and pushes the RAS.
+    dut.i_disable_branch_prediction.value = 1
+    await _redirect_to(dut, pc_slot1)
+    assert int(dut.o_pc.value) == pc_slot2
+    dut.i_disable_branch_prediction.value = 0
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=CALL_RA_INSTR,
+        current_sb=model.make_sideband(ADD_INSTR_A),
+        next_sb=model.make_sideband(CALL_RA_INSTR),
+        bank_sel=(pc_slot1 >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, pc_slot1 >> 2)
+    await _settle()
+    pkt2 = _read_if_packet(dut, slot2=True)
+    assert not pkt2["sel_nop"]
+    assert pkt2["program_counter"] == pc_slot2
+    assert pkt2["fetch_fault"] is False
+    assert pkt2["btb_predicted_taken"] is True
+    assert pkt2["btb_predicted_target"] == target
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == target
+    assert _read_if_packet(dut)["ras_checkpoint_valid_count"] == 1
+
+
+@cocotb.test()
+async def test_backing_btb_image1_serves_stepped_over_word_and_blocks_s_plus_2(
+    dut: Any,
+) -> None:
+    """After a +8 step-over, backing BTB image 1 serves S+1 slot 1 and same-word slot 2."""
+    await _setup_test(dut)
+    dut.i_disable_branch_prediction.value = 0
+    backing = dut.u_backing_btb
+    for _ in range(2048):
+        if not int(backing.sweep_active.value):
+            break
+        await _advance_cycle(dut)
+    assert not int(backing.sweep_active.value)
+
+    base = 0x8000_5000
+    s1 = base + 8
+    target_a = 0x8000_5200
+    target_b = 0x8000_5300
+    target_bits = len(dut.o_backing_target) // 2
+    target_mask = (1 << (target_bits + 1)) - 1
+
+    def _backing_targets() -> list[int]:
+        raw = int(dut.o_backing_target.value)
+        return [
+            ((raw >> (slot * target_bits)) & ((1 << target_bits) - 1)) << 1
+            for slot in range(2)
+        ]
+
+    def _backing_slot2_by_size() -> list[tuple[bool, int]]:
+        returns = int(dut.o_backing_slot2_return_by_size.value)
+        targets = int(dut.o_backing_slot2_target_by_size.value)
+        return [
+            (
+                bool((returns >> size) & 1),
+                ((targets >> (size * target_bits)) & ((1 << target_bits) - 1)) << 1,
+            )
+            for size in range(2)
+        ]
+
+    async def _train_jump(
+        pc: int, target: int, *, compressed: bool, ret: bool = False
+    ) -> None:
+        _drive_from_ex(
+            dut,
+            {
+                "btb_update": True,
+                "btb_update_pc": pc,
+                "btb_update_target": target,
+                "btb_update_taken": True,
+                "btb_update_jump": True,
+                "btb_update_compressed": compressed,
+                "btb_update_return": ret,
+            },
+        )
+        await _advance_cycle(dut)
+        _drive_from_ex(dut, {})
+        for _ in range(4):
+            await _advance_cycle(dut)
+
+    # 1. Train a 32-bit jump at s1 (lower halfword of S+1) and a compressed
+    # return at s1 + 2 (upper halfword of S+1). Redirect to base (+0), emit a
+    # {32b, 32b} pair while o_pc == base + 4 (S), then land at pc_reg == s1
+    # (S+1) with a native slot 1 so slot 2 lies in S+2: slot 1 hits image 1 and
+    # slot 2 misses.
+    await _train_jump(s1, target_a, compressed=False)
+    await _train_jump(s1 + 2, target_b, compressed=True, ret=True)
+    # Evict fast BTB entries (+0x400 aliases 8-bit fast-BTB index, distinct 9-bit backing set).
+    await _train_jump(s1 + 0x400, target_a + 0x40, compressed=False)
+    await _train_jump(s1 + 0x402, target_b + 0x40, compressed=True)
+
+    _drive_fetch(
+        dut,
+        current_word=NOP_INSTR,
+        next_word=NOP_INSTR,
+        current_sb=_sideband(native_pairable_lo=True),
+        next_sb=_sideband(native_pairable_lo=True),
+        bank_sel=0,
+    )
+    await _redirect_to(dut, base)
+    assert _read_if_packet(dut)["program_counter"] == base
+    assert _read_if_packet(dut, slot2=True)["program_counter"] == base + 4
+    assert int(dut.o_pc.value) == base + 4
+
+    # Advance the {32b, 32b} pair at base..base+7 while backing_btb reads
+    # base+4 (S), landing pc_reg at s1 (base+8, S+1) and o_pc at base+12 (S+2).
+    await _advance_cycle(dut)
+    jal_instr = 0x0200_006F
+    _drive_fetch(
+        dut,
+        current_word=jal_instr,
+        next_word=NOP_INSTR,
+        current_sb=_sideband(native_pairable_lo=False),
+        next_sb=_sideband(native_pairable_lo=True),
+        bank_sel=0,
+    )
+    await _settle()
+    assert _read_if_packet(dut)["program_counter"] == s1
+    assert int(dut.o_backing_hit.value) == 0b01
+    assert int(dut.o_backing_compressed.value) == 0b00
+    assert _backing_targets()[0] == (target_a & target_mask)
+    assert int(backing.shift_answer.value) == 1
+
+    # 2. Compressed non-branch at s1 + compressed jump at s1 + 2 (same word S+1):
+    # evict s1's way with two same-set aliases (+0x800, +0x1000) while keeping
+    # s1 + 2 resident so only slot 2 hits image 1, then check stall replay.
+    await _train_jump(s1 + 0x800, target_a + 0x80, compressed=False)
+    await _train_jump(s1 + 0x1000, target_a + 0x100, compressed=False)
+    await _train_jump(s1 + 2, target_b, compressed=True, ret=True)
+    await _train_jump(s1 + 0x402, target_b + 0x40, compressed=True)
+
+    _drive_fetch(
+        dut,
+        current_word=NOP_INSTR,
+        next_word=NOP_INSTR,
+        current_sb=_sideband(native_pairable_lo=True),
+        next_sb=_sideband(native_pairable_lo=True),
+        bank_sel=0,
+    )
+    await _redirect_to(dut, base)
+    await _advance_cycle(dut)
+    c_j_instr = 0xA009  # c.j +2
+    s1_pair_word = _word(lo=COMPRESSED_NOP, hi=c_j_instr)
+    _drive_fetch(
+        dut,
+        current_word=s1_pair_word,
+        next_word=NOP_INSTR,
+        current_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=True,
+            compressed_control_hi=True,
+        ),
+        next_sb=_sideband(),
+        bank_sel=0,
+    )
+    await _settle()
+    assert _read_if_packet(dut)["program_counter"] == s1
+    assert _read_if_packet(dut, slot2=True)["program_counter"] == s1 + 2
+    assert int(dut.o_backing_hit.value) == 0b10
+    assert int(dut.o_backing_compressed.value) == 0b10
+    assert int(dut.o_backing_return.value) == 0b10
+    assert _backing_targets()[1] == (target_b & target_mask)
+    assert _backing_slot2_by_size() == [(False, 0), (True, target_b & target_mask)]
+    assert int(backing.shift_answer.value) == 1
+
+    # Hold across a stall and check replay preserves o_backing_hit[1] and its payload.
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+    _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {"stall": False, "stall_registered": True})
+    await _settle()
+    assert int(dut.replay_saved_if_outputs.value) == 1
+    assert int(dut.o_backing_hit.value) == 0b10
+    assert int(dut.o_backing_return.value) == 0b10
+    assert _backing_targets()[1] == (target_b & target_mask)
+    assert _backing_slot2_by_size() == [
+        (True, target_b & target_mask),
+        (True, target_b & target_mask),
+    ]

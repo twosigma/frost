@@ -47,6 +47,7 @@ module coherence_array_reference #(
     input logic i_req_visit,
     input logic [WayBits-1:0] i_req_way,
     input logic i_req_skip_data_on_hit,
+    input logic i_req_no_bank,
     input logic i_req_data_if_modified,
     // These lookups need data only on a hit, or only on a miss whose selected
     // victim is Modified. Otherwise they reply in the first data-read cycle,
@@ -108,7 +109,7 @@ module coherence_array_reference #(
   logic [TagBits-1:0] tag_q;
   logic visit_q, skip_data_q, modified_data_q, no_touch_q, hit_data_q, victim_data_q;
   // The early reply depends only on registered request flags and tag results.
-  logic data_valid_q, early_reply;
+  logic data_valid_q, early_reply, no_bank_q;
   logic [WayBits-1:0] visit_way_q;
   logic [WAYS-1:0] exclude_q;
   logic [PlruBits-1:0] plru_read, plru_q, plru_write;
@@ -307,6 +308,7 @@ module coherence_array_reference #(
       tag_q <= '0;
       visit_q <= 1'b0;
       skip_data_q <= 1'b0;
+      no_bank_q <= 1'b0;
       modified_data_q <= 1'b0;
       no_touch_q <= 1'b0;
       hit_data_q <= 1'b0;
@@ -351,6 +353,8 @@ module coherence_array_reference #(
             tag_q <= i_req_addr[ADDR_WIDTH-1:OffsetBits+SetBits];
             visit_q <= i_req_visit;
             skip_data_q <= i_req_skip_data_on_hit;
+            no_bank_q <= i_req_no_bank && !(i_req_visit || i_req_data_if_hit ||
+                i_req_data_if_modified || i_req_data_if_victim_modified);
             modified_data_q <= i_req_data_if_modified;
             no_touch_q <= i_req_no_touch;
             hit_data_q <= i_req_data_if_hit && !i_req_visit;
@@ -369,7 +373,7 @@ module coherence_array_reference #(
             o_resp_way <= selected;
             o_resp_addr <= {tag_rdata[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
             o_resp_state <= tag_rdata[selected][TagBits+:2];
-            data_valid_q <= select_data;
+            data_valid_q <= select_data && !no_bank_q;
             if (!select_data) begin
               phase_q <= Reply;
             end else begin

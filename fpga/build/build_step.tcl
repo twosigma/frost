@@ -432,6 +432,44 @@ set top_level_module_name ${board_name}_frost
 
 set number_of_parallel_jobs 32
 
+# frost_launch_ip_runs_isolated RUNS JOBS: launch each IP out-of-context run with its own launch_runs call and its own
+# Tcl Store user area. One launch_runs call over all the runs starts the child Vivado sessions in the same second, and
+# sessions that share a user area (XILINX_TCLSTORE_USERAREA, or the default per-user one) race on its manifest:
+# [Common 17-354] Could not open ... for writing, [Common 17-1257] Failed to create directory. A child inherits
+# XILINX_TCLSTORE_USERAREA from this process at launch, so each run gets a fresh private copy of the parent's area (or
+# an empty one) under the build directory. The parent's value is restored afterwards, also on failure.
+proc frost_launch_ip_runs_isolated {runs jobs} {
+    set had_area [info exists ::env(XILINX_TCLSTORE_USERAREA)]
+    set parent_area ""
+    if {$had_area} {
+        set parent_area $::env(XILINX_TCLSTORE_USERAREA)
+    }
+    set run_areas [dict create]
+    foreach run $runs {
+        set area [file normalize [file join [pwd] tclstore_ip $run]]
+        file delete -force $area
+        file mkdir $area
+        if {$parent_area ne "" && [file isdirectory $parent_area]} {
+            foreach entry [glob -nocomplain -directory $parent_area *] {
+                file copy -force $entry $area
+            }
+        }
+        dict set run_areas $run $area
+    }
+    try {
+        foreach run $runs {
+            set ::env(XILINX_TCLSTORE_USERAREA) [dict get $run_areas $run]
+            launch_runs $run -jobs $jobs
+        }
+    } finally {
+        if {$had_area} {
+            set ::env(XILINX_TCLSTORE_USERAREA) $parent_area
+        } else {
+            unset -nocomplain ::env(XILINX_TCLSTORE_USERAREA)
+        }
+    }
+}
+
 # Directories
 
 # build.py sets the working directory.
@@ -464,9 +502,10 @@ puts "=========================================="
 if {$step eq "synth"} {
     # Synthesis
     set_param general.maxThreads $number_of_parallel_jobs
-    # Remove any project directory left by an interrupted or preserved synthesis
-    # step so create_ip_run starts from a clean project without cached IP outputs.
+    # Remove any project directory and temporary IP Tcl Store areas left by an
+    # interrupted or preserved synthesis step so create_ip_run starts clean.
     file delete -force $work_directory/vivado_proj
+    file delete -force $work_directory/tclstore_ip
     create_project -part $fpga_part_number -force tmp_proj $work_directory/vivado_proj
     set_property IP_OUTPUT_REPO $work_directory/vivado_proj/ip_cache [current_project]
 
@@ -513,13 +552,22 @@ if {$step eq "synth"} {
         lappend ip_synth_runs $ip_synth_run
     }
     if {[llength $ip_synth_runs]} {
-        launch_runs $ip_synth_runs -jobs $number_of_parallel_jobs
-        foreach ip_synth_run $ip_synth_runs {
-            wait_on_run $ip_synth_run
-            if {[get_property PROGRESS [get_runs $ip_synth_run]] ne "100%" ||
-                [get_property STATUS [get_runs $ip_synth_run]] ne "synth_design Complete!"} {
-                error "IP synthesis run $ip_synth_run did not complete: [get_property STATUS [get_runs $ip_synth_run]]"
+        set ip_synth_error ""
+        try {
+            frost_launch_ip_runs_isolated $ip_synth_runs $number_of_parallel_jobs
+            foreach ip_synth_run $ip_synth_runs {
+                wait_on_run $ip_synth_run
+                if {$ip_synth_error eq "" &&
+                    ([get_property PROGRESS [get_runs $ip_synth_run]] ne "100%" ||
+                     [get_property STATUS [get_runs $ip_synth_run]] ne "synth_design Complete!")} {
+                    set ip_synth_error "IP synthesis run $ip_synth_run did not complete: [get_property STATUS [get_runs $ip_synth_run]]"
+                }
             }
+        } finally {
+            file delete -force [file join [pwd] tclstore_ip]
+        }
+        if {$ip_synth_error ne ""} {
+            error $ip_synth_error
         }
     }
 

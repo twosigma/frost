@@ -46,6 +46,7 @@ module coherence_array_equiv #(
     input logic i_req_visit,
     input logic [WayBits-1:0] i_req_way,
     input logic i_req_skip_data_on_hit,
+    input logic i_req_no_bank,
     input logic i_req_data_if_modified,
     input logic i_req_data_if_hit,
     input logic i_req_data_if_victim_modified,
@@ -65,6 +66,7 @@ module coherence_array_equiv #(
   logic f_past_valid = 1'b0;
   logic init_done[2], req_ready[2], update_ready[2], resp_valid[2], resp_hit[2];
   logic resp_available[2], resp_data_valid[2];
+  logic impl_no_bank;
   logic [WayBits-1:0] resp_way[2];
   logic [ADDR_WIDTH-1:0] resp_addr[2];
   logic [1:0] resp_state[2];
@@ -89,10 +91,12 @@ module coherence_array_equiv #(
       .i_req_visit,
       .i_req_way,
       .i_req_skip_data_on_hit,
+      .i_req_no_bank,
       .i_req_data_if_modified,
       .i_req_data_if_hit,
       .i_req_data_if_victim_modified,
       .i_req_no_touch,
+      .o_resp_no_bank(impl_no_bank),
       .o_resp_valid(resp_valid[0]),
       .i_resp_ready,
       .o_resp_hit(resp_hit[0]),
@@ -136,6 +140,7 @@ module coherence_array_equiv #(
       .i_req_visit,
       .i_req_way,
       .i_req_skip_data_on_hit,
+      .i_req_no_bank,
       .i_req_data_if_modified,
       .i_req_data_if_hit,
       .i_req_data_if_victim_modified,
@@ -195,6 +200,14 @@ Rows
     if (i_update_valid && i_update_insert) assume (i_update_way == lookup_way_q);
   end
 
+  logic store_lookup_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) store_lookup_q <= 1'b0;
+    else if (i_req_valid && req_ready[1])
+      store_lookup_q <= i_req_no_bank && i_req_skip_data_on_hit && !(i_req_visit ||
+          i_req_data_if_hit || i_req_data_if_modified || i_req_data_if_victim_modified);
+  end
+
   wire data_mismatch = DATA_BYTE >= 0 && written_q[response_row] &&
       resp_data[0][8*Lane+:8] != resp_data[1][8*Lane+:8];
   always_ff @(posedge i_clk) begin
@@ -203,13 +216,19 @@ Rows
       assert (init_done[0] == init_done[1] && req_ready[0] == req_ready[1] &&
           update_ready[0] == update_ready[1]);
       p_equiv_response :
-      assert (resp_valid[0] == resp_valid[1] &&
+      assert (resp_valid[0] == resp_valid[1] && (!store_lookup_q || impl_no_bank) &&
           resp_hit[0] == resp_hit[1] && resp_available[0] == resp_available[1] &&
           resp_way[0] == resp_way[1] && resp_addr[0] == resp_addr[1] &&
           resp_state[0] == resp_state[1] && resp_data_valid[0] == resp_data_valid[1]);
       if (resp_valid[1] && resp_data_valid[1]) p_equiv_data : assert (!data_mismatch);
       c_equiv_data_hit :
       cover (resp_valid[1] && resp_data_valid[1] && resp_hit[1] && written_q[response_row]);
+      c_equiv_store_hit :
+      cover (store_lookup_q && impl_no_bank && resp_valid[0] && resp_valid[1] &&
+          resp_hit[1] && !resp_data_valid[0] && !resp_data_valid[1]);
+      c_equiv_store_miss :
+      cover (store_lookup_q && impl_no_bank && resp_valid[0] && resp_valid[1] &&
+          !resp_hit[1] && !resp_data_valid[0] && !resp_data_valid[1]);
       c_equiv_insert : cover (i_update_valid && update_ready[1] && i_update_insert);
     end
   end

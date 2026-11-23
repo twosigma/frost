@@ -84,7 +84,12 @@ from hw_defaults import (  # noqa: E402
 from load_software import (  # noqa: E402
     BOARD_CONFIG,
     CPU_CLK_ENV,
+    SUPPORTED_VEC_STATE_VLENS,
+    VEC_ADVERTISE_APPS,
+    VEC_VLEN_APPS,
+    VECTOR_UNIT_APPS,
     board_clock_freq,
+    board_vector_config,
     valid_apps_for_board,
 )
 from software_registry import COREMARK_PRO_APP_NAMES  # noqa: E402
@@ -3583,6 +3588,33 @@ VCU118_MEASUREMENT_APPS = frozenset(
 )
 
 
+def _loader_extra_has_option(
+    loader_extra: Sequence[str], option_names: tuple[str, ...]
+) -> bool:
+    """Return True if any loader-extra token passes one of ``option_names``."""
+    return any(
+        token in option_names
+        or any(token.startswith(f"{name}=") for name in option_names)
+        for token in loader_extra
+    )
+
+
+def stage_loader_extra(
+    stage_name: str,
+    loader_extra: Sequence[str],
+    *,
+    vlen: int | None = None,
+    vec_advertise: bool | None = None,
+) -> list[str]:
+    """Return load_software.py extra arguments for one regression stage."""
+    extra = list(loader_extra)
+    if vlen is not None and stage_name in VEC_VLEN_APPS:
+        extra.extend(["--vlen", str(vlen)])
+    if vec_advertise is not None and stage_name in VEC_ADVERTISE_APPS:
+        extra.append("--vec-advertise" if vec_advertise else "--no-vec-advertise")
+    return extra
+
+
 def regression_stages(board: str) -> list[str]:
     """Return the selected board's stages in order.
 
@@ -3741,6 +3773,27 @@ def _main() -> int:
         ),
     )
     parser.add_argument(
+        "--vlen",
+        type=int,
+        choices=SUPPORTED_VEC_STATE_VLENS,
+        default=None,
+        metavar="BITS",
+        help=(
+            "Vector length in bits (128, 256, or 512; or 0 for scalar "
+            "vec_state_test) forwarded to vector-width application stages "
+            "(default: match the selected board's RTL)"
+        ),
+    )
+    parser.add_argument(
+        "--vec-advertise",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Override whether vec_state_test expects misa.V to be set "
+            "(default: match the selected board's RTL, or off when --vlen 0)"
+        ),
+    )
+    parser.add_argument(
         "stages",
         nargs="*",
         help=(
@@ -3760,6 +3813,20 @@ def _main() -> int:
         net_poke_s = nettest_poke()
     except ValueError as error:
         parser.error(str(error))
+
+    if args.vlen == 0 and args.vec_advertise:
+        parser.error("--vec-advertise requires a nonzero --vlen")
+    if args.vlen is not None and _loader_extra_has_option(
+        args.loader_extra, ("--vlen",)
+    ):
+        parser.error("--vlen cannot also be passed through --loader-extra")
+    if args.vec_advertise is not None and _loader_extra_has_option(
+        args.loader_extra, ("--vec-advertise", "--no-vec-advertise")
+    ):
+        parser.error(
+            "--vec-advertise/--no-vec-advertise cannot also be passed through "
+            "--loader-extra"
+        )
 
     all_stages = regression_stages(board)
 
@@ -3782,6 +3849,20 @@ def _main() -> int:
         selected = [stage for stage in all_stages if stage in requested]
     else:
         selected = all_stages
+
+    if args.vlen == 0:
+        vector_only = [stage for stage in selected if stage in VECTOR_UNIT_APPS]
+        if vector_only:
+            parser.error(
+                f"--vlen 0 cannot run vector-unit stages: {', '.join(vector_only)}"
+            )
+    if args.vec_advertise and args.vlen is None and "vec_state_test" in selected:
+        try:
+            board_vlen, _ = board_vector_config(board, project_root=args.repo)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+        if board_vlen == 0:
+            parser.error("--vec-advertise requires a nonzero --vlen")
 
     # The debug and ECC stages use JTAG only; the UART check matters to the rest.
     uses_uart = any(stage not in (DEBUG_STAGE, ECC_STAGE) for stage in selected)
@@ -3882,7 +3963,12 @@ def _main() -> int:
                     board,
                     stage,
                     stage_timeout,
-                    args.loader_extra,
+                    stage_loader_extra(
+                        stage_name,
+                        args.loader_extra,
+                        vlen=args.vlen,
+                        vec_advertise=args.vec_advertise,
+                    ),
                     target,
                     loader_env,
                 )

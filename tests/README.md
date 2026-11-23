@@ -324,8 +324,10 @@ prefetch enabled or disabled.
 `coherence_home_completions`, `coherence_home`, `coherence_home_rowread`, `coherence_home_equal`,
 `coherence_cluster` and `coherent_cut` check the one-hart S/M controller, inclusion, pending writes, atomic bridges
 and CPU observation cuts; `coherence_home_rowread` runs the UltraRAM home with `PARALLEL_READ=0` so row reads after the decision and probe replies ahead of row data are exercised, and `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
-requests execute, preserve waiter order across an older writer, and check
-current data on waiter reentry. Two DMA reads with an intervening clean,
+requests execute, preserve waiter order across an older writer, check
+current data on waiter reentry, sweep fills, puts and dirty probe updates
+across parallel way reads of a set, and run back-to-back hit lookups across
+and within a set. Two DMA reads with an intervening clean,
 flush or invalidate check that the later reader leaves the fill's way
 available to the management request. Streaming cases check way-0 miss placement,
 CPU line residency, dirty hits in other ways and progress after a pinned
@@ -813,9 +815,10 @@ therefore requires evidence from the driven reset, not an initial scheduling edg
 
 The Cocotb, physical-address and scalar TestRIG CI jobs set
 `FROST_STARTUP_SWEEP=1`. After a successful simulation, the runner reuses
-each compiled system model for short startup checks. Programs sharing a
-binary share its completed check. The selected builds divide a 180-second
-estimated job budget; the seed count is fixed before the checks run.
+each compiled system model for short startup checks. Programs sharing an
+executable, DDR timing and startup base share its completed check. The
+selected builds divide a 180-second estimated job budget; the seed count is
+fixed before the checks run.
 SRAM and large-cache models use their own per-seed cost estimates.
 The allocation reserves three starts per cached-tier model: two assertion
 controls that must fail after reset with their original diagnostics, and
@@ -908,7 +911,7 @@ registered real programs in both memory tiers. See the
 `nic_bench` also runs in both tiers with `NIC_BENCH_QUICK`: eight-entry rings,
 repeated producer wraparound, short and jumbo frames, and raw MAC loopback.
 This mode checks descriptor replenishment and error reporting; its printed rates
-are not performance measurements. CI selects it in the runtime-and-other shard.
+are not performance measurements. CI selects it in the NIC stress shard.
 `test_frost_net10g_driver.py` checks packaging and the descriptor ABI, and compiles selected
 driver helpers against C fixtures for DMA teardown, reconfiguration, GSO fallback,
 RX fragment sizes, copybreak boundaries and sync ordering. It does not replace executing
@@ -1077,7 +1080,7 @@ It distinguishes each pairing of vector loads/stores with DMA reads/writes.
 DMA writes racing vector loads must return a complete old or new sector image;
 the observer requires concurrent requests to a shared sector for this case.
 The reverse race checks the DMA's sector images while a vector store runs.
-The VLEN 256 memory and ordering programs run in the Vector programs CI shard.
+The VLEN 256 memory and ordering programs run in the Vector programs, memory and strides CI shard.
 `FROST_VEC_ORDER_CHECK_WAITS=0` disables only the observer's wait assertions
 for negative tests; the program still checks all three architectural results.
 The `vec_vmu_v*` and `vec_head_mmu_v*` unit benches check sector byte masks,
@@ -1086,8 +1089,8 @@ partial-fault descriptors, including an enabled suffix whose first element
 straddles the faulting page, and strided, indexed and segment element runs
 (one descriptor per element, or per field of a segment, in order, index reads,
 precise faults with the faulting element's `vstart` and address, pointer
-masking and the VS-dirty report). `vec_debug_partial` runs in the Vector programs
-CI shard in both BRAM and DDR tiers. It checks that partial unit-stride and
+masking and the VS-dirty report). `vec_debug_partial` runs in the Vector programs,
+memory and strides CI shard in both BRAM and DDR tiers. It checks that partial unit-stride and
 strided vector loads in Debug Mode write the completed elements before a page
 fault re-parks the hart and leave `mstatus.VS` Dirty.
 
@@ -1272,9 +1275,9 @@ line naming the program on standard error.
 
 | Main VLEN | Jobs | Inner deadline (min) | Step limit (min) | Job limit (min) |
 | ---: | ---: | ---: | ---: | ---: |
-| 128 | 4 | 92 | 95 | 130 |
-| 256 | 7 | 92 | 95 | 130 |
-| 512 | 13 | 96 | 99 | 134 |
+| 128 | 4 | 92 | 95 | 135 |
+| 256 | 7 | 92 | 95 | 135 |
+| 512 | 13 | 96 | 99 | 139 |
 
 To refresh the main profile, download the vector artifacts from the
 calibration runs and verify their published SHA-256, revision, native
@@ -1300,8 +1303,8 @@ whose modeled inner time stays below 54 minutes at each width. Each width's
 inner deadline is 1.8 times its longest modeled inner time, rounded up to
 a whole minute.
 The vector step gets three additional minutes for container startup and
-saving partial results. The job limit is the vector step limit plus 30
-minutes for the four setup steps (5, 5, 15 and 5 minutes) and five
+saving partial results. The job limit is the vector step limit plus 35
+minutes for the five setup steps (5, 5, 15, 5 and 5 minutes) and five
 minutes for the summary and artifact upload. Actual times depend on the
 runner and DDR seed.
 
@@ -1310,9 +1313,9 @@ at least three waves on 20 runners.
 
 | Complete VLEN | Jobs | Inner deadline (min) | Step limit (min) | Job limit (min) |
 | ---: | ---: | ---: | ---: | ---: |
-| 128 | 7 | 297 | 300 | 335 |
-| 256 | 11 | 296 | 299 | 334 |
-| 512 | 25 | 316 | 319 | 354 |
+| 128 | 7 | 297 | 300 | 340 |
+| 256 | 11 | 296 | 299 | 339 |
+| 512 | 25 | 316 | 319 | 359 |
 
 The complete profile weights each measured program by its process wall time.
 Each width uses its largest measured model build. Guest preparation uses
@@ -1353,19 +1356,21 @@ formal and synthesis checks.
 
 To replay one slice, keep `rotation` and set `slice` to 0 through 19.
 Only the image build and three vector shards run. To run all 9,051
-programs, choose `complete` and leave `slice` empty. Only the image
-build, the complete vector shards and the campaign report run. Both
-manual vector runs get their own concurrency group and skip regular CI jobs,
-including lint, fast Python tests, formal and synthesis, even with
-`reprove` selected. Each dispatch draws a DDR seed from its run ID.
-Rerunning failed jobs repeats that seed. A complete dispatch keeps the
-shared image and shard artifacts for 14 days so the report can use the
-same image after the last shard finishes. Other runs keep the shared
-image for one day. After it expires, check out the tested commit and
-run the command in the shard summary.
+programs, choose `complete` and leave `slice` empty. The image build,
+one simulator build per width, the complete vector shards and the
+campaign report run. Both manual vector runs get their own concurrency
+group and skip regular CI jobs, including lint, fast Python tests,
+formal and synthesis, even with `reprove` selected. Each dispatch draws
+a DDR seed from its run ID. Rerunning failed jobs repeats that seed. A
+complete dispatch keeps the shared image, shared vector simulators and
+shard artifacts for 14 days so the report and reruns can use the same
+image after the last shard finishes. Other runs keep the shared image
+for one day. After it expires, check out the tested commit and run the
+command in the shard summary.
 
-Each shard builds a four-thread simulator, checks its executable and
-source manifest, and runs one program at a time. Before sharding, the
+Each shard uses a four-thread simulator. Shards at the same width share
+one build. A lone shard builds locally. Each checks the executable and
+source manifest and runs one program at a time. Before sharding, the
 selection must contain 665 programs per width for one per form or
 3,017 for the complete suite. An empty shard, missing results or a
 pass without armed assertions fails the job. Each program has a
@@ -1587,16 +1592,19 @@ provides Sail and the engine.
 ```
 
 `--vector N` replays generated vector traces from `verif/testrig/vector.py`
-with both implementations configured for `--vlen` (128, 256 or 512).
+with both implementations configured for `--vlen` (128, 256 or 512) and
+advertising `misa.V=1`.
 `--vector-source-widths` includes the directed integer, FP and memory
-source-width traces. `--vector-directed` includes the vector CSR,
+source-width traces. `--vector-directed` includes the `misa.V`, vector CSR,
 scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison,
 FP conversion, cached DDR probe, unit-stride memory, strided memory,
-indexed memory, segment memory and integer comparison traces. Every vector
-store trace compares all written bytes through immediate scalar loads. CI
-compares the seeded and directed traces at each length. The VLEN 128 job
-injects one incorrect value in each control replay and requires TestRIG to
-report each mismatch.
+indexed memory, segment memory, fault-only-first load, integer comparison,
+widening and narrowing integer, fixed-point, single-width FP, whole-register
+memory and widening FP traces.
+Every vector store trace compares all written bytes through immediate
+scalar loads. CI compares the seeded and directed traces at each length.
+The VLEN 128 job injects one incorrect value in each control replay and
+requires TestRIG to report each mismatch.
 
 `--atomics` replays random A-extension tests from `verif/testrig/atomics.py`
 in place of the engine's templates, from a seed the runner prints. A mismatch
@@ -1760,7 +1768,8 @@ The `pd_history_twin` target compares PD and history together across the registe
 boundary, including both decode packets and all training outputs.
 The `backing_btb_twin` target covers held and shifted reads and all five RAM interfaces.
 The `predictor_fetch_contract` target checks the real fetch stage’s packet and
-registered PC outputs against the conditions used by the PD comparison.
+registered PC outputs. The PD comparison reads those same packet and restore
+assertions from `predictor_fetch_contract.sv` and uses them as input assumptions.
 
 ```bash
 ./scripts/frost.py formal                          # every task of every target
@@ -1774,6 +1783,24 @@ Each target and task is a separate pytest case. Fast checks compare every SBY
 task list with the runner registration; selecting no matching task is an error.
 The Primitive forms job runs `rs_payload_twin:cover_cmo_request` to require a
 simultaneous CMO request from both copies at the second commit comparison’s depth.
+
+In the Frontend and predictor shard, `test_predictor_mutations.py` changes one input or
+register assignment in a private copy of the RTL for John Goodacre's backing BTB
+and TAGE/ITTAGE predictor design. It checks the direction table read address,
+indirect table write data, backing BTB held read, direction history fold, and PD
+indirect redirect. The fetch case inverts the branch flag on a live second slot
+and requires the packet checker to identify that flag. Each case requires a
+counterexample at a named assertion and a saved solver trace.
+
+In the Floating-point and vector memory shard, `test_fp_forward_wake_mutations.py` injects isolated
+RTL faults into private staged copies of the proofs for John Goodacre's
+pipelined scalar FP execution and forward-wake design (`fp_engine_op_class`,
+`fp_forward_wake`, and `rs_divide_gate`). The cases cover opcode-class
+agreement, FIFO credit and payload tracking, CDB route retention and grant
+delivery, FP station engine gating, wrapper forward-word delivery on both
+lanes, wakeup-lane and source-select exclusion, consumer flush coverage, fresh
+tag issue, ROB tag reallocation, and busy-input transitions. Each case requires
+a counterexample at its target assertion and a saved solver trace.
 
 `test_pa_bridge_mutation.py` runs the 64 GiB proof on a private fixture for
 each AXI address channel and requires a counterexample at that channel's
@@ -1852,7 +1879,7 @@ has a 20-minute timeout in both SBY and the runner.
 | `COCOTB_RANDOM_SEED` | Random seed (set by `--random-seed`) |
 | `FROST_COCOTB_MEM_CONFIG` | Application memory tier (`bram` default, or `ddr`) |
 | `FROST_RANDOM_START_SEED` | Seed string enabling random register and memory power-up state; each run prints the string and Verilator seed |
-| `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 160 cycles), latency jitter, and out-of-order completion for whole-SoC builds from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
+| `FROST_DDR_MODEL_SEED` | Draws the DDR model's latency (1 to 160 cycles), latency jitter, and out-of-order completion for whole-SoC simulations from this string, and prints the draw. A setting the target pins, in its registry entry, in `FROST_VERILATOR_EXTRA_ARGS`, or with `DDR_MODEL_LATENCY`, keeps its value |
 | `WAVES=1` | Write FST waveforms to `tests/dump.fst` |
 | `FROST_COVERAGE=1` | Build with line and branch coverage and the cover points (see [Coverage](#coverage)) |
 | `FROST_COVERAGE_TOGGLE` | With `FROST_COVERAGE=1`: `0` disables toggle coverage, `1` collects the default set, and `control` selects control signals |
@@ -2083,6 +2110,8 @@ all of them.
 | `pd_stage` | `cover_pd_slot2_not_taken_veto` | A slot-2 tagged conditional-branch match vetoes a taken BTB prediction to the fall-through |
 | `pd_stage` | `cover_pd_slot2_redirect_held_through_stall` | A slot-2 tagged conditional-branch redirect is asserted during a front-end stall |
 | `pd_stage` | `cover_pd_slot2_candidate_lost_to_flush` | A registered slot-2 tagged conditional-branch candidate is cleared by a pipeline flush |
+| `backing_btb` | `cover_backing_btb_s1_slot1_hit` | A shifted lookup serves slot 1 from image 1 |
+| `backing_btb` | `cover_backing_btb_s1_slot2_hit` | A shifted lookup serves a same-word slot 2 from image 1 |
 
 Only the load queue's unit bench reaches two of them, because the whole SoC
 never builds the state they check. For `cover_dma_write_hits_lr_in_flight`,
@@ -2133,21 +2162,42 @@ and Fast Python Tests jobs locally.
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
-| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares seeded integer traces and directed source-width, vector state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride memory, strided memory, indexed memory, segment memory and integer comparison traces against Sail |
+| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares seeded integer traces and directed source-width, vector state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride memory, strided memory, indexed memory, segment memory, fault-only-first load, integer comparison, widening and narrowing integer, fixed-point, single-width FP, whole-register memory and widening FP traces against Sail |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
-| Formal verification | The 53 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), block proofs, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
+| Formal verification | The 56 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), frontend and predictor, block proofs, floating-point and vector memory, ROB retirement successor, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) synthesis and floorplanning on Nangate45, with OpenRAM's SRAM macros, in a separate workflow, which a newer push to `main` does not cancel; the rest of the flow, to GDS, runs with `./asic/orfs.py run` outside CI |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
-| Coverage | One job merges coverage from 29 jobs into a report |
+| Coverage | One job merges coverage from 33 jobs into a report |
 
 The software aperture tests also have registry entries for 2, 4, 8, 16,
 and 32 GiB, available through `./scripts/frost.py cocotb <test_name>`.
 The AXI bridge unit tests cover all eight power-of-two capacities in CI.
 The standalone `test_ddr_width_config.sv` and `test_ptw_high_addr.sv`
 harnesses are not registered with the test runners or invoked by CI.
+
+The Build simulator jobs compile the Verilator configurations used more than
+once in the run. The workflow derives them from the selected shards, registry
+arguments, coverage and toggle modes, random-start mode, clock selection and
+memory geometry. Jobs that use the same set of small benches download those
+executables together. A configuration used once builds in its test job.
+
+Cocotb consumers verify the run, checkout, Docker image, compiler arguments,
+source contents and checksums of the executable and its Verilator build
+record. Adjacent decimal overrides of distinct named parameters can appear in
+either order. Repeated overrides of one parameter keep their original order.
+Each job runs its own programs, startup checks and coverage collection.
+The program image and memory tier are selected at runtime. Decimal DDR latency,
+jitter and reordering overrides reach the behavioral memory as plusargs. The
+registry and environment use the same parameter precedence for local and CI
+runs. A missing or incompatible artifact fails the job.
+
+Generated vector shards that share a vector length download the four-thread
+native executable for that width. A single shard for a width compiles it
+locally. The native runner checks its source, configuration and executable
+digest before running the selected programs.
 
 The generated vector shards share a DDR seed and use a cold reset.
 The whole-SoC cocotb shards draw DDR model timing and power-up
@@ -2168,12 +2218,14 @@ differs from the model's by more than the tolerance in
 `perf-modeling/calibration/ci_baseline.json`, and it prints the figures and
 deltas either way.
 
-The report covers 29 of the simulating jobs, chosen so that it keeps 99.9% of
+The report covers 33 of the simulating jobs, chosen so that it keeps 99.9% of
 the line, branch and cover points that every job together would reach, with no
 cover point lost. They are Arch Tests (I B C / bram); the Real Programs jobs
 Debug and UART, both OpenSBI smoke configurations, cold and warm OpenSBI reset,
-Memory and NIC stress, Cache management and memory errors, Self-modifying code and
-fence.i, Runtime benchmarks, Vector programs, Runtime and other, and
+NIC stress, Memory stress, Cache management and memory errors, Self-modifying code and
+fence.i, Runtime benchmarks, Vector programs (memory and strides, and the remaining
+vector programs), Fetch and branch prediction, ISA, NAPOT and pointer masking,
+Runtime and other, and
 SRAM macros in BRAM and C library and RTOS, DMA NIC and coherence, Interrupts,
 Memory link stage (other programs) and Privilege and MMU in DDR; four Physical address aperture jobs
 (1 GiB / Bare access, 1 GiB / Unit boundaries, 128 GiB / DMA, 128 GiB / NIC);
@@ -2219,21 +2271,25 @@ programs and coverage upload.
 The [Verilator matrix](ci_verilator.py) has the exact job filters for regular
 CI. The named real-program shards select
 applications by name, and the "Runtime and other" shard runs every
-application they don't list. Memory and NIC stress groups the NIC benchmarks,
-L2 capacity checks, misaligned accesses and DDR reset checks. Cache management
-and memory errors holds the cache management and memory fault checks, and
-Self-modifying code and fence.i holds the self-modifying code programs and
-the fence.i benchmark; both were split off to keep their parents inside their
+application they don't list. NIC stress holds the NIC benchmarks, and Memory
+stress holds the L2 capacity checks, misaligned accesses and DDR reset checks.
+Cache management and memory errors holds the cache management and memory fault
+checks, Self-modifying code and fence.i holds the self-modifying code programs
+and the fence.i benchmark, Fetch and branch prediction holds the front-end
+fuzzer seeds and branch-prediction checks, and ISA, NAPOT and pointer masking
+holds the ISA extension, Svnapot, Sstvala, Svpbmt CMO and pointer-masking
+checks; all were split off to keep their parents inside their
 time limits. Runtime benchmarks groups the PAUSE and RAS benchmarks by
-their shared builds. Vector programs selects every registry name that starts
+their shared builds. Vector programs, memory and strides holds the vector
+memory ordering, strided, indexed, segment, fault-only-first and debug checks,
+and Vector programs selects every remaining registry name that starts
 with `vec_`, so a vector program added later joins it without a workflow
 change; "Runtime and other" excludes the same prefix. In regular CI, each
 real-program job has a four-hour timeout, including setup and coverage uploads,
 unless its shard sets `timeout_minutes`. Size the timeout at 1.8 times the planned wall
 time, rounded up to whole minutes. The real-program ceiling is 300 minutes.
-Vector programs, Memory and NIC stress, Runtime and other, CoreMark-PRO nnet,
-and both OpenSBI smoke variants use that ceiling. CoreMark-PRO loops has a
-340-minute exception for its single workload.
+CoreMark-PRO nnet and both OpenSBI smoke variants use that ceiling.
+CoreMark-PRO loops has a 340-minute exception for its single workload.
 
 The fast budget check adds the job overhead and the cost of every selected
 program in that memory tier. The wall-time inputs come from hosted job elapsed

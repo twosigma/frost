@@ -35,6 +35,10 @@
 
 #include "vec_test.h"
 
+#ifndef VEC_ADVERTISE
+#define VEC_ADVERTISE 1
+#endif
+
 #define STR_(x) #x
 #define STR(x) STR_(x)
 
@@ -307,7 +311,7 @@ static void test_mstatus_vs(void)
 static void test_misa(void)
 {
     unsigned long misa = VT_CSR_READ(misa);
-    VT_EQ((misa >> 21) & 1, 1, "misa.V set");
+    VT_EQ((misa >> 21) & 1, VEC_ADVERTISE, "misa.V matches build");
 }
 
 int main(void)

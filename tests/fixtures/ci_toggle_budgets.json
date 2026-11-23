@@ -52,12 +52,11 @@
         }
       ]
     },
-    "Real Programs (Vector programs)": {
-      "observed_seconds": 18015,
-      "old_timeout_minutes": 300,
+    "Real Programs (Vector programs, memory and strides)": {
+      "observed_seconds": 11944,
+      "old_timeout_minutes": 240,
       "parts": [
         {
-          "name": "memory ordering and strides",
           "overhead_seconds": 1208,
           "case_seconds": {
             "vec_state_test": 680,
@@ -69,7 +68,13 @@
             "vec_stride_test_v256": 2300,
             "vec_debug_partial": 1169
           }
-        },
+        }
+      ]
+    },
+    "Real Programs (Vector programs)": {
+      "observed_seconds": 18015,
+      "old_timeout_minutes": 240,
+      "parts": [
         {
           "name": "arithmetic and crypto",
           "overhead_seconds": 1346,
@@ -97,19 +102,24 @@
         }
       ]
     },
-    "Real Programs (Memory and NIC stress)": {
-      "observed_seconds": 18015,
-      "old_timeout_minutes": 300,
+    "Real Programs (NIC stress)": {
+      "observed_seconds": 9990,
+      "old_timeout_minutes": 240,
       "parts": [
         {
-          "name": "NIC benchmarks",
           "overhead_seconds": 1306,
           "case_seconds": {
             "nic_bench": 2640,
             "nic_sg_loopback": 4883,
             "nic_rate": 1161
           }
-        },
+        }
+      ]
+    },
+    "Real Programs (Memory stress)": {
+      "observed_seconds": 18015,
+      "old_timeout_minutes": 240,
+      "parts": [
         {
           "name": "memory faults and counters",
           "overhead_seconds": 2150,
@@ -187,12 +197,11 @@
         }
       ]
     },
-    "Real Programs (Runtime and other)": {
-      "observed_seconds": 18017,
-      "old_timeout_minutes": 300,
+    "Real Programs (Fetch and branch prediction)": {
+      "observed_seconds": 11780,
+      "old_timeout_minutes": 240,
       "parts": [
         {
-          "name": "fetch and branch prediction",
           "overhead_seconds": 1386,
           "case_seconds": {
             "fefuzz_1": 704,
@@ -211,7 +220,13 @@
             "fast_btb_contract_test": 540,
             "odd_halfword_pred_test": 550
           }
-        },
+        }
+      ]
+    },
+    "Real Programs (ISA, NAPOT and pointer masking)": {
+      "observed_seconds": 18017,
+      "old_timeout_minutes": 240,
+      "parts": [
         {
           "name": "ISA and NAPOT",
           "overhead_seconds": 2150,
@@ -233,7 +248,13 @@
             "pm_test": 3921,
             "pm_test_assert": 3933
           }
-        },
+        }
+      ]
+    },
+    "Real Programs (Runtime and other)": {
+      "observed_seconds": 18017,
+      "old_timeout_minutes": 240,
+      "parts": [
         {
           "name": "runtime probes",
           "overhead_seconds": 2800,

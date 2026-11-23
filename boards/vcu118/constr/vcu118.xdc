@@ -367,6 +367,17 @@ set nic_1g_event20_d [get_pins -hierarchical -filter {NAME =~ "*nic_1g_mac/u_cdc
 set nic_1g_event20_s [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_1g_event20_d]]]
 set_bus_skew 3.0 -from $nic_1g_event20_s -to [get_cells -of_objects $nic_1g_event20_d]
 
+# The pause-event mailbox carries a 16-bit interval from the RX recovered
+# clock (RXUSRCLK2) to the TX user clock (TXUSRCLK2). Both clocks are in the
+# QSFP1 group above, so Vivado times the payload as related paths with no
+# exception (TIMING-7). The payload is held until the destination
+# acknowledges and the request synchronizer alone gates the capture, so bound
+# it by the TX user clock period (6.206 ns, the smallest destination period).
+# Plain XDC as in x3.xdc: an XDC file skips Tcl if/foreach (Designutils 20-1307).
+set nic_pause_payload [get_cells -hierarchical -filter {NAME =~ "*nic_mac/u_cdc/u_pause_ev_mbx/payload_q_reg*" && IS_SEQUENTIAL}]
+set nic_pause_capture [get_cells -hierarchical -filter {NAME =~ "*nic_mac/u_cdc/u_pause_ev_mbx/o_dst_data_reg*" && IS_SEQUENTIAL}]
+set_max_delay -datapath_only 6.206 -from $nic_pause_payload -to $nic_pause_capture
+
 # The PHY sample payload uses related CPU/4 and CPU clocks from the same MMCM.
 # Keep normal setup/hold analysis on that path; only the MDIO pad is asynchronous.
 set_false_path -to [get_pins -quiet -hierarchical -filter {NAME =~ "*/u_mdio/mdio_i_s1_q_reg/D"}]

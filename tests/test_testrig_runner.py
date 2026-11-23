@@ -26,6 +26,43 @@ testrig = importlib.import_module("test_testrig")
 GENERATORS = ("atomics", "crypto", "zcb", "fp-ext", "mmu", "cmo", "vector", "svinval")
 
 
+@pytest.mark.parametrize("vlen", (None, 128, 256, 512))
+def test_frost_misa_matches_sail_configuration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, vlen: int | None
+) -> None:
+    """The launched FROST model advertises V exactly when its Sail overlay does."""
+    observed = []
+
+    def from_config(config: Any) -> SimpleNamespace:
+        observed.append(config)
+        return SimpleNamespace(
+            setup_environment=lambda: {},
+            _get_sim_build_dir=lambda environment: tmp_path / "sim",
+            _verilator_needs_rebuild=lambda directory: False,
+            _update_verilator_toplevel_marker=lambda directory: None,
+        )
+
+    def popen(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        kwargs["stdout"].close()
+        return SimpleNamespace()
+
+    monkeypatch.setattr(testrig.CocotbRunner, "from_config", from_config)
+    monkeypatch.setattr(testrig.subprocess, "Popen", popen)
+    monkeypatch.delenv("FROST_VERILATOR_EXTRA_ARGS", raising=False)
+    testrig.start_frost(0, tmp_path / "ready", tmp_path / "frost.log", 30, vlen)
+    config = observed[0]
+    runner = testrig.CocotbRunner(
+        config.python_test_module,
+        config.hdl_toplevel_module,
+        config.app_name,
+        config.verilator_extra_args,
+    )
+    sail = testrig.load_sail_json(testrig.write_sail_config(30, tmp_path, vlen=vlen))
+    assert runner._expected_misa_v() == int(
+        sail["extensions"]["V"]["support_level"] == "Full"
+    )
+
+
 @pytest.fixture
 def session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SimpleNamespace:
     """Replace child processes and wire counters with controlled results."""

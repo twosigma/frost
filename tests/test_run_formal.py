@@ -59,6 +59,7 @@ SBY_TASK_TIMEOUT_S = 2400
 SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("imem_predecode_twin", "imem_predecode_live"): 60,
     ("l0_store_boundary_twin", "boundary_twin"): 60,
+    ("coherence_store_bank", "coh_store_bank_class_bmc"): 3600,
     ("coherence_dma_ingress", "coh_dma_ingress_soc_prove"): 3120,
     ("pd_target_candidate_twin", "pdt_twin"): 60,
     ("decoded_bundle_queue_twin", "dbq_twin"): 60,
@@ -68,6 +69,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home", "coh_home_control_prove"): 1800,
     ("coherence_home", "coh_home_control64_prove"): 1800,
     ("coherence_home", "coh_home_control_partition_prove"): 1800,
+    ("coherence_home", "coh_home_control_ultra_prove"): 900,
     ("coherence_home", "coh_home_fill_cover"): 1800,
     ("coherence_home", "coh_home_control4_bmc"): 1200,
     ("coherence_home", "coh_home_control4_ultra_bmc"): 1200,
@@ -597,6 +599,7 @@ FORMAL_TARGETS = [
             "coh_home_control_prove",
             "coh_home_control64_prove",
             "coh_home_control_partition_prove",
+            "coh_home_control_ultra_prove",
             "coh_home_control4_bmc",
             "coh_home_control4_ultra_bmc",
             "coh_home_fill_cover",
@@ -635,12 +638,15 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_home_array.sby",
-        "Independent L2 ports and one-way parallel reads preserve byte values, tokens "
-        "and physical-row exclusions. An open read at the output follows a stalled reply.",
+        "Independent L2 ports and one- and four-way parallel UltraRAM reads preserve "
+        "byte values, tokens and physical-row exclusions. An open read at the output "
+        "follows a stalled reply.",
         tasks=(
             "coh_home_array_prove",
             *(f"coh_home_array_uram_byte{lane}_prove" for lane in range(64)),
+            *(f"coh_home_array_uram4_byte{lane}_prove" for lane in (0, 31, 32, 63)),
             "coh_home_array_cover",
+            "coh_home_array_uram_cover",
         ),
     ),
     FormalTarget(
@@ -674,6 +680,25 @@ FORMAL_TARGETS = [
             "coh_array_cover",
             "coh_array_uram_cover",
             "coh_array4_port_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_array_progress.sby",
+        "Controller progress with independent load streams and a common victim history.",
+        tasks=(
+            "coh_progress_prove",
+            "coh_progress4_prove",
+            "coh_progress4_56_prove",
+            "coh_progress4_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_store_bank.sby",
+        "Store lookup classification and isolation of invalid bank data from consumers.",
+        tasks=(
+            "coh_store_bank_taint_prove",
+            "coh_store_bank_class_bmc",
+            "coh_store_bank_cover",
         ),
     ),
     FormalTarget(
@@ -1264,7 +1289,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ptw_pbmt_alias.sby",
-        "Svpbmt alias bit predicates equal the full-address range check for every address",
+        "Svpbmt alias decode on enabled maps and NC/IO leaf faults on the small map",
         tasks=(
             "bmc_small",
             "bmc_1g",
@@ -1533,6 +1558,11 @@ FORMAL_TARGETS = [
         "rs_primary_payload.sby",
         "Primary RS payload storage and selection match the reference",
         tasks=("bmc16", "bmc8", "bmc4", "prove"),
+    ),
+    FormalTarget(
+        "fp_engine_op_class.sby",
+        "FP_RS engine-gate and fp_shim pipelined opcode classifications agree for every opcode",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "fp_forward_wake.sby",
@@ -2932,17 +2962,23 @@ SBY_TASKS = [
     ("mirror_hold_prove", "Debug mirror address equality at sixteen bits."),
     ("mirror_hold15_prove", "Debug mirror address equality at fifteen bits."),
     ("mirror_hold32_prove", "Debug mirror address equality at thirty-two bits."),
-    ("coh_read_capture_prove", "Read data capture with arbitrary controller state."),
+    (
+        "coh_read_capture_prove",
+        "Read data capture for both endpoint-zero install classes.",
+    ),
     ("coh_read_capture_stream_prove", "Read data capture with stream endpoints."),
     ("coh_idle_select_prove", "Idle phase and operation selection with one endpoint."),
     (
         "coh_idle_select_stream_prove",
         "Idle phase and operation selection with stream endpoints.",
     ),
-    ("coh_idle_phase_prove", "Phase register after Idle cycles with one endpoint."),
+    (
+        "coh_idle_phase_prove",
+        "Idle phase and endpoint-zero install class with one endpoint.",
+    ),
     (
         "coh_idle_phase_stream_prove",
-        "Phase register after Idle cycles with stream endpoints.",
+        "Idle phase and endpoint-zero install class with stream endpoints.",
     ),
     ("coh_read_kind_prove", "Per-slot read kinds equal buffered allocation payloads."),
     ("coh_array_reply_prove", "Registered response indication with block RAM."),
@@ -3183,6 +3219,10 @@ SBY_TASKS = [
         "Composed home ownership with a completion slot kept for prefetches.",
     ),
     (
+        "coh_home_control_ultra_prove",
+        "Composed home ownership and parallel-read delivery bounds with UltraRAM.",
+    ),
+    (
         "coh_home_control4_bmc",
         "Bounded home checks with four ways, three fills and a fill reserve.",
     ),
@@ -3211,7 +3251,21 @@ SBY_TASKS = [
         )
         for lane in range(64)
     ],
-    ("coh_home_array_cover", "Tag, read and update ports operate concurrently."),
+    (
+        "coh_home_array_cover",
+        "Tag, read and update ports operate concurrently in block RAM.",
+    ),
+    *[
+        (
+            f"coh_home_array_uram4_byte{lane}_prove",
+            f"Four-way banked UltraRAM L2 ports preserve byte {lane} across parallel reads.",
+        )
+        for lane in (0, 31, 32, 63)
+    ],
+    (
+        "coh_home_array_uram_cover",
+        "Four-way UltraRAM ports operate concurrently and reach a kept parallel read.",
+    ),
     ("coh_array_bmc", "Coherent array byte values and held responses."),
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     ("coh_array4_bmc", "Coherent array byte values and held responses with four ways."),
@@ -3255,7 +3309,35 @@ SBY_TASKS = [
         "coh_array_equiv_port_data0_bmc",
         "Byte lane 0 data equivalence with hit-port reads beside the lookups.",
     ),
-    ("coh_array_equiv_cover", "Compared data responses and insertions are reachable."),
+    (
+        "coh_array_equiv_cover",
+        "Data hits, insertions and no-bank store hits and misses.",
+    ),
+    (
+        "coh_progress_prove",
+        "One-way array progress under two independent load streams.",
+    ),
+    ("coh_progress4_prove", "Four-way array progress with common replacement touches."),
+    (
+        "coh_progress4_56_prove",
+        "Four-way controller progress with 56-bit physical addresses.",
+    ),
+    (
+        "coh_progress4_cover",
+        "Independent load takes and touches, consecutive offers and held replies.",
+    ),
+    (
+        "coh_store_bank_class_bmc",
+        "Store lookup class, sealed head, response and seven scratch-byte consumers.",
+    ),
+    (
+        "coh_store_bank_taint_prove",
+        "A scratch row cannot enter an active byte consumer.",
+    ),
+    (
+        "coh_store_bank_cover",
+        "Store miss scratch, its capture, overlapping offers and fast probes.",
+    ),
     (
         "coh_arbiter24_prove",
         "Twenty-four-way held arbitration and circular selection equality.",
@@ -3452,7 +3534,7 @@ SBY_TASKS = [
     ("bmc16", "Bounded local equivalence at depth 16"),
     ("bmc32", "Bounded local equivalence at depth 32"),
     ("bmc_1g", "Bounded physical-address check at a 1 GiB DDR capacity"),
-    ("bmc_small", "Svpbmt alias range equivalence at a 256 MiB DDR capacity"),
+    ("bmc_small", "Disabled alias decode and NC/IO leaf faults on the 256 MiB DDR map"),
     ("bmc_2g", "Svpbmt translation and alias refusal at a 2 GiB DDR capacity"),
     ("cover_2g", "Svpbmt no-alias faults and device-page translations at 2 GiB"),
     ("bmc_4g", "Svpbmt alias range equivalence at a 4 GiB DDR capacity"),
@@ -4292,6 +4374,23 @@ def test_predictor_twins_use_the_core_connections() -> None:
         assert expr(twin, name).replace("i.", "") == expected
 
 
+def test_fetch_contract_selects_its_mutation_cases() -> None:
+    """Editing the shared monitor selects the IF case and both PD cases."""
+    from formal_selection import FIXTURE_PROOFS, ROOT, affected_nodes
+
+    prefix = "tests/test_predictor_mutations.py::test_predictor_rejects_difference"
+    nodes = [node for node in FIXTURE_PROOFS if node.startswith(prefix)]
+    selected = affected_nodes(nodes, {ROOT / "formal/predictor_fetch_contract.sv"})
+    assert set(selected) == {
+        f"{prefix}[fetch_slot2_branch]",
+        f"{prefix}[direction_history]",
+        f"{prefix}[pd_indirect_class]",
+    }
+    unknown = f"{prefix}[unmapped]"
+    with pytest.raises(ValueError, match="No proof mapping"):
+        affected_nodes([unknown], {ROOT / "tests/test_predictor_mutations.py"})
+
+
 def test_predictor_reference_sources_are_frozen() -> None:
     """The reference side is the exact source tree before the predictor register changes."""
     formal = Path(__file__).resolve().parents[1] / FORMAL_DIR / "predictor_reference"
@@ -4396,6 +4495,43 @@ def test_store_completion_cofactor_production_inputs(tmp_path: Path) -> None:
         assert {path.name for path in staged.iterdir()} == expected.keys(), task
         for name, path in expected.items():
             assert (staged / name).read_bytes() == path.read_bytes(), (task, name)
+
+
+def test_fp_engine_op_formal_matches_wrapper_params() -> None:
+    """The engine-op harness uses the wrapper's FP_RS and fp_shim settings and selects mutations."""
+    from formal_selection import FIXTURE_PROOFS, ROOT, affected_nodes
+
+    wrapper = (
+        ROOT / "hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv"
+    ).read_text(encoding="utf-8")
+    harness = (ROOT / "formal/fp_engine_op_formal.sv").read_text(encoding="utf-8")
+
+    def params_of(text: str, module: str, inst: str) -> dict[str, str]:
+        match = re.search(rf"\b{module}\s*#\s*\((.*?)\)\s*{inst}\b", text, re.S)
+        assert match, (module, inst)
+        body = re.sub(r"//.*", "", match[1])
+        return dict(re.findall(r"\.(\w+)\s*\(\s*([^)]+?)\s*\)", body))
+
+    wrap_rs = params_of(wrapper, "reservation_station", "u_fp_rs")
+    harm_rs = params_of(harness, "reservation_station", "u_fp_rs")
+    for key in ("DIVIDE_ISSUE_GATE", "FP_ENGINE_GATE", "FWD_WAKE", "HAS_SRC3"):
+        assert wrap_rs[key] == harm_rs[key] == "1'b1", (key, wrap_rs, harm_rs)
+    wrap_shim = params_of(wrapper, "fp_shim", "u_fp_shim")
+    harm_shim = params_of(harness, "fp_shim", "u_fp_shim")
+    for key in ("LAUNCH_SQUASH", "PIPELINE"):
+        assert wrap_shim[key] == harm_shim[key] == "1'b1", (key, wrap_shim, harm_shim)
+
+    prefix = (
+        "tests/test_fp_forward_wake_mutations.py::test_fp_forward_wake_rejects_fault"
+    )
+    nodes = [node for node in FIXTURE_PROOFS if node.startswith(prefix)]
+    assert set(affected_nodes(nodes, {ROOT / "formal/fp_engine_op_formal.sv"})) == {
+        f"{prefix}[engine_op_rs_mismatch]",
+        f"{prefix}[engine_op_shim_mismatch]",
+    }
+    assert set(
+        affected_nodes(nodes, {ROOT / "tests/test_fp_forward_wake_mutations.py"})
+    ) == set(nodes)
 
 
 def test_formal_target_tasks_are_registered() -> None:
@@ -4638,6 +4774,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     # and may not hold any multi-hour (> 120 minute) task.
     allowance_shards = (set(dedicated_shards.values()) - {"Store boundary"}) | {
         "Load queue",
+        "Coherence store lookup banks",
         "Coherence links pressure",
         "Coherence L1D data single-endpoint",
         "Coherence L1D data multi-endpoint",
@@ -4662,6 +4799,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "pytest",
             "tests/test_run_formal.py",
             "tests/test_pa_bridge_mutation.py",
+            "tests/test_predictor_mutations.py",
+            "tests/test_fp_forward_wake_mutations.py",
             "tests/test_probe_launch_mutations.py",
             "--collect-only",
             "-q",
@@ -4719,6 +4858,10 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         ]
         assert len(matches) == 1, (node, matches)
         shard_name = matches[0]
+        if node.startswith("tests/test_predictor_mutations.py::"):
+            assert shard_name == "Frontend and predictor", node
+        if node.startswith("tests/test_fp_forward_wake_mutations.py::"):
+            assert shard_name == "Floating-point and vector memory", node
         selected_by_shard[shard_name].append(node)
         if node.startswith("tests/test_run_formal.py::") and "[" in node:
             test_id = node.split("[", 1)[1].rstrip("]")
@@ -4742,6 +4885,34 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             node.endswith(f"[nic_tx_hold_{task}]")
             for node in selected_by_shard["Other tasks"]
         )
+    split_shard_limits_minutes = {
+        "Frontend and predictor": 150,
+        "Block proofs": 150,
+        "Floating-point and vector memory": 140,
+        "Other tasks": 124,
+    }
+    for shard_name, minutes in split_shard_limits_minutes.items():
+        assert shard_timeouts_s[shard_name] == minutes * 60, (
+            shard_name,
+            shard_timeouts_s.get(shard_name),
+        )
+    for test_id, expected_shard in (
+        ("backing_btb_bmc_four_way", "Frontend and predictor"),
+        ("prediction_handoff_bmc", "Frontend and predictor"),
+        ("predictor_fetch_contract_cover_backing", "Frontend and predictor"),
+        ("cache_flash_valid_bmc_fast", "Block proofs"),
+        ("rs_payload_twin_bmc_operands", "Block proofs"),
+        ("fp_forward_wake_bmc", "Floating-point and vector memory"),
+        ("vec_head_mmu_stride_bmc", "Floating-point and vector memory"),
+        ("vec_hold_rows_vhold_sq_bmc", "Floating-point and vector memory"),
+        ("store_queue_bmc", "Other tasks"),
+    ):
+        assert any(
+            node.endswith(f"[{test_id}]") for node in selected_by_shard[expected_shard]
+        ), (test_id, expected_shard)
+    assert all(selected_by_shard.values()), {
+        name for name, items in selected_by_shard.items() if not items
+    }
     check_formal_shard_budgets(shard_timeouts_s, selected_limits_s, allowance_shards)
 
 
@@ -5924,8 +6095,8 @@ PREDICTOR_ASSERTION_TASKS = {
         ),
         (
             "pd_history_twin",
-            ("pd_history_twin.sv", "pd_fetch_contract.sv"),
-            "b89bfac2b4cebd615305ac506deee2726beeadf5a48c4318f2f42b3db009a5ca",
+            ("pd_history_twin.sv", "predictor_fetch_contract.sv"),
+            "829871a49e6eff8f602c4c23d19e9bdbb0f881366ece942162ee506a5feee49d",
             (12, 3, 7),
         ),
         (
@@ -10747,7 +10918,7 @@ def test_local_sector_lemma_models_match() -> None:
         + " ".join(owned_names)
         + " %u" * (len(owned_names) - 1)
         + " %d",
-        "select -assert-count 28 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 29 t:$check r:FLAVOR=assert %i",
     ]
     # Only these reads differ from the owner task's model: both expose the
     # request endpoint's phase, and neither changes its design logic.
@@ -10866,11 +11037,11 @@ def test_stream_owned_lemma_model_matches() -> None:
     # The lemma task proves its lemmas from the design alone.
     assert [line for line in owned["[script]"] if assertion_command(line)] == [
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %d",
-        "select -assert-count 17 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 18 t:$check r:FLAVOR=assert %i",
     ]
     proof_commands = [line for line in proof["[script]"] if assertion_command(line)]
     assert (
-        f"select -assert-count 17 t:$check r:FLAVOR=assert %i {lemmas} %u %u %i"
+        f"select -assert-count 18 t:$check r:FLAVOR=assert %i {lemmas} %u %u %i"
         in proof_commands
     )
     assert f"chformal -assert2assume {lemmas}" in proof_commands
@@ -12446,9 +12617,9 @@ def test_registered_proofs_require_empty_predicate_list(
         ),
         (
             "pd_history_twin",
-            "pd_fetch_contract.sv",
-            "assume (!i_backing_hit[1]",
-            "assume (i_backing_hit[1]",
+            "predictor_fetch_contract.sv",
+            "assert (!i_backing_hit[1]",
+            "assert (i_backing_hit[1]",
         ),
         (
             "ittage_predictor_twin",
