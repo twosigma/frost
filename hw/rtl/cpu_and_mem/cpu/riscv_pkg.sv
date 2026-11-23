@@ -1130,7 +1130,7 @@ package riscv_pkg;
     FCVT_H_S,                   // Convert single to half
     FCVT_D_H,                   // Convert half to double
     FCVT_H_D,                   // Convert double to half
-    // Zfa with F and D. FLI.H needs Zfh or Zvfh; D high-half moves need RV32.
+    // Zfa with F and D (and FLI.H when VECTOR && VectorZvfh); D high-half moves need RV32.
     FLI_S,                      // Load one of 32 single-precision constants
     FLI_D,                      // Load one of 32 double-precision constants
     FMINM_S,                    // Minimum, NaN if either operand is NaN
@@ -1152,7 +1152,8 @@ package riscv_pkg;
     VARITH_F,                   // V: vector FP arithmetic with an f-register scalar operand,
                                 // read at the ROB head; the engine executes it after commit
     VTOF,                       // V: vfmv.f.s, executed at the ROB head; no reservation station
-    VARITH_C                    // Cryptographic element groups
+    VARITH_C,                   // Cryptographic element groups
+    FLI_H                       // Zfa with Zvfh: load one of 32 half-precision constants
   } instr_op_e;
 
   // Barrel-shifter controls decoded from operation bits:
@@ -3796,7 +3797,7 @@ package riscv_pkg;
       FCVT_S_D, FCVT_D_S,
       FCVT_S_H, FCVT_H_S, FCVT_D_H, FCVT_H_D,
       FMV_X_W, FMV_W_X, FMV_X_D, FMV_D_X, FMV_X_H, FMV_H_X,
-      FLI_S, FLI_D, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D,
+      FLI_S, FLI_D, FLI_H, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D,
       FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D,
       FCVTMOD_W_D, FLEQ_S, FLTQ_S, FLEQ_D, FLTQ_D,
       FCLASS_S, FCLASS_D,
@@ -3882,7 +3883,8 @@ package riscv_pkg;
       // INT to FP bit move -> FP fd
       FMV_W_X, FMV_D_X, FMV_H_X,
       // Zfa
-      FLI_S, FLI_D, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D, FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D:
+      FLI_S, FLI_D, FLI_H, FMINM_S, FMAXM_S, FMINM_D, FMAXM_D,
+      FROUND_S, FROUNDNX_S, FROUND_D, FROUNDNX_D:
       has_fp_dest = 1'b1;
 
       default: has_fp_dest = 1'b0;
@@ -3962,7 +3964,7 @@ package riscv_pkg;
       case (op)
         LUI, AUIPC, JAL, ECALL, EBREAK, FENCE, FENCE_I, WFI, MRET, SRET, DRET, PAUSE, CSR_IMM, MOP,
         // Zfa FLI: rs1 is the constant index, not a register
-        FLI_S, FLI_D, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI,
+        FLI_S, FLI_D, FLI_H, ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT, VSETIVLI,
         VARITH, VARITH_F, VARITH_C, VTOX, VTOF, VLOAD, VSTORE:
         uses_int_rs1 = 1'b0;
         default: uses_int_rs1 = 1'b1;

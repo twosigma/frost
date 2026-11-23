@@ -85,7 +85,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zimop | Implemented | `riscv-arch-test` (`Zimop`), `mops`, `test_id_stage.py`, TestRIG (`--zcb`), `instr_operand_classifier.sby` |
 | Zcmop | Implemented | `mops`, `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
 | Zcb | Implemented | `riscv-arch-test` (`C`), `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
-| Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
+| Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, `vec_fp_test`, TestRIG (`--fp-ext`, `vector_fli_h.S`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
 | Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
 | Supm | Scalar hardware support through Ssnpm; the supplied Linux image does not expose the tagged-address ABI | `pm_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `pm_mode_select.sby`, `coherent_store_pma_twin.sby` |
 | Zifencei | Implemented | `riscv-arch-test` (`Zifencei`), `smc_fencei_test`, `ddr_smc_test`, TestRIG, `coherent_hart_cache.sby` |

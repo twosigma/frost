@@ -94,6 +94,7 @@ VECTOR_DIRECTED_TRACES = tuple(
         "state_results",
         "fractional_lmul",
         "fp_results_flags",
+        "fli_h",
         "fma",
         "fp_compare",
         "fp_convert",

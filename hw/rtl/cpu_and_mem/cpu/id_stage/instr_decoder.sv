@@ -19,8 +19,9 @@
   Zicsr, Zicboz, Zicbom, Zimop, and M/S/U-mode privileged instructions. Compressed instructions arrive
   already expanded. o_instr_op selects the operation; o_illegal flags any
   encoding not decoded here, including reserved FP rounding modes. VECTOR adds
-  the vector floating-point forms and the strided, indexed, segment and
-  fault-only-first loads and stores; without it they are illegal here.
+  the vector floating-point forms, Zfa FLI.H (with VectorZvfh), and the strided,
+  indexed, segment and fault-only-first loads and stores; without it they are
+  illegal here.
  */
 module instr_decoder #(
     parameter bit VECTOR = 1'b0
@@ -715,9 +716,13 @@ module instr_decoder #(
           o_instr_op = riscv_pkg::FLI_D;
         else o_illegal = 1'b1;
         // Zfhmin: move integer bits to half register (fd = NaN-boxed rs1[15:0])
+        // Zfa with Zvfh: FLI.H (rs2 00001) loads one of 32 half-precision constants
         7'b1111010:
         if (i_instr.source_reg_2 == 5'b00000 && i_instr.funct3 == 3'b000)
           o_instr_op = riscv_pkg::FMV_H_X;
+        else if (VECTOR && riscv_pkg::VectorZvfh && i_instr.source_reg_2 == 5'b00001 &&
+                 i_instr.funct3 == 3'b000)
+          o_instr_op = riscv_pkg::FLI_H;
         else o_illegal = 1'b1;
 
         // Comparison (rd = compare(fs1, fs2), result is 0 or 1 in integer register)
