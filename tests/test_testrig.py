@@ -119,7 +119,8 @@ VECTOR_DIRECTED_TRACES = tuple(
 )
 VECTOR_SEGMENT_TRACE = VERIF_DIR / "testrig" / "vector_segment.S"
 VECTOR_EXT_TRACES = tuple(
-    VERIF_DIR / "testrig" / f"vector_{family}.S" for family in ("zvfhmin", "zvbb")
+    VERIF_DIR / "testrig" / f"vector_{family}.S"
+    for family in ("zvfhmin", "zvbb", "zvbc_zvkned_zvkg", "zvknhb")
 )
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"

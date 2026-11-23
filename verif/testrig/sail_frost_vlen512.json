@@ -9,6 +9,11 @@
     "V": {"support_level": "Full", "mutable_misa": false, "vlen_exp": 9},
     "Zvfhmin": {"supported": true},
     "Zvbb": {"supported": true},
+    "Zvbc": {"supported": true},
+    "Zvkg": {"supported": true},
+    "Zvkned": {"supported": true},
+    "Zvknha": {"supported": true},
+    "Zvknhb": {"supported": true},
     "Zvkt": {"supported": true}
   }
 }

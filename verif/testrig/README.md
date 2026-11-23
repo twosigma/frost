@@ -726,6 +726,23 @@ Additional vector-extension behaviors are not compared against Sail 0.16:
   `vec_crypto_exec_v{128,256,512}`
   (`verif/cocotb_tests/vector/test_vec_crypto_exec.py:crypto_families`), and
   the `vec_int_lane` and `vec_mul_lane` unit benches.
+- `Zvknha`/`Zvknhb` (`vsha2ms.vv`, `vsha2cl.vv`, `vsha2ch.vv`) with `vl == 0`
+  and `LMUL * VLEN < EGW` (at `VLEN = 128`: `e32, mf2` or `e64, m1`): Sail
+  0.16 retires these without trapping, whereas RVV Crypto 1.0, FROST and
+  Spike raise an illegal-instruction trap. This case is covered outside
+  TestRIG by the whole-SoC test `vec_crypto_exec_test_v128`
+  (`sw/apps/vec_crypto_exec_test/main.c`) and the Spike legality comparator
+  `tests/test_vector_legality_reference.py --forms crypto`.
+- `Zvbc` (`vclmul`/`vclmulh`) with nonzero `vstart > 0` and `OP-VE` crypto
+  instructions with `vstart >= vl` (for example `vstart == vl == 4`): Sail
+  0.16 traps these as permitted by RVV 1.0, while FROST supports element
+  restart on `Zvbc` and empty group restarts on `OP-VE`. Legal `OP-VE`
+  restarts with `vstart < vl` (`vstart == 4, vl == 8`) are compared in
+  TestRIG; the excluded `vstart` cases are covered outside TestRIG by
+  `vec_crypto_exec_test_v{128,256,512}` (`sw/apps/vec_crypto_exec_test/main.c`),
+  `vec_crypto_exec_v{128,256,512}`
+  (`verif/cocotb_tests/vector/test_vec_crypto_exec.py`), and
+  `tests/test_vector_legality_reference.py --forms crypto`.
 
 The Zvfhmin trace checks both RVA23U64 mandatory Zvfhmin half-precision
 floating-point conversion encodings (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at
@@ -756,6 +773,31 @@ zero-extension in `vwsll`, masked and unmasked execution (`tu`/`mu` and
 illegal `vwsll` `e64`/`m8`/overlap, masked `v0`, alignment and `vill` traps.
 [Zvbb bit manipulation](vector_zvbb.S)
 
+The Zvbc, Zvkned and Zvkg trace checks all four carry-less multiply encodings
+(`vclmul.{vv,vx}` and `vclmulh.{vv,vx}` at `SEW = 64`), all eleven AES
+encodings (`vaesdm.{vv,vs}`, `vaesdf.{vv,vs}`, `vaesem.{vv,vs}`,
+`vaesef.{vv,vs}`, `vaesz.vs`, `vaeskf1.vi` and `vaeskf2.vi` at `SEW = 32`),
+and both GHASH encodings (`vgmul.vv` and `vghsh.vv` at `SEW = 32`). It covers
+masked and unmasked Zvbc execution (`tu`/`mu` and `ta`/`ma`), `vl == 0`,
+portable `VLMAX`, traps at `e8`/`e16`/`e32` and masked `v0`, full FIPS-197
+AES-128 encryption and decryption across all ten round constants, AES-256
+even/odd and out-of-range round numbers (`rnd ^ 8` and `uimm[4] = 1`),
+multi-group `.vv` versus `.vs` broadcast, NIST GCM GHASH vectors, legal
+`vstart = 4 < vl = 8` group restarts, `tu` tails, and illegal `OP-VE` SEW,
+`vm = 0`, `vl % 4 != 0`, `vstart % 4 != 0`, `EGW > VLEN * LMUL` (at
+`VLEN = 128` `e32, mf2`), `.vs` overlap, alignment and `vill` traps.
+[Zvbc, Zvkned and Zvkg crypto](vector_zvbc_zvkned_zvkg.S)
+
+The Zvknhb trace checks all three SHA-2 encodings (`vsha2ms.vv`, `vsha2cl.vv`
+and `vsha2ch.vv`) at both `SEW = 32` (SHA-256, `EGW = 128`) and `SEW = 64`
+(SHA-512, `EGW = 256` at `m2` and `m4`). It covers FIPS-180-4 SHA-256 and
+SHA-512 vectors, multi-group execution, legal `vstart = 4 < vl = 8` group
+restarts, `tu` tails, `vl == 0`, portable `VLMAX`, and illegal `e8`/`e16`,
+`vm = 0`, `vl % 4 != 0`, `vstart % 4 != 0`, `EGW > VLEN * LMUL` (at
+`VLEN = 128` `e32, mf2` and `e64, m1` with `vl != 0`), `vd == vs2`/`vs1`
+overlap, alignment and `vill` traps.
+[Zvknhb SHA-2](vector_zvknhb.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs three vector
 TestRIG shards (`core`, `segment` and `ext`) at each of VLEN 128, 256 and 512,
 sharing one prebuilt simulator per vector length. The `core` shard replays
@@ -783,8 +825,10 @@ reporting and resumption, and `nf * EMUL <= 8`, register-wrap, indexed
 restores the `core` shard's replay and control timeouts to 55 and 50
 minutes. Together, `core` and `segment` retire all 627
 base-V machine encodings. The `ext` shard runs `--vector-ext` (`16m` replay /
-`11m` controls), replaying `vector_zvfhmin.S` and `vector_zvbb.S` (with
-`Zvfhmin`, `Zvbb` and `Zvkt` enabled in `sail_frost_vlen*.json`). Both
+`11m` controls), replaying `vector_zvfhmin.S`, `vector_zvbb.S`,
+`vector_zvbc_zvkned_zvkg.S` and `vector_zvknhb.S` (with `Zvfhmin`, `Zvbb`,
+`Zvbc`, `Zvkg`, `Zvkned`, `Zvknha`, `Zvknhb` and `Zvkt` enabled in
+`sail_frost_vlen*.json`). Both
 implementations must return every planned trace and instruction. The
 VLEN 128 `core`, `segment` and `ext` shards each reuse their simulator to flip one
 bit in a FROST integer destination in each control replay. The `core` shard
@@ -799,7 +843,9 @@ operations, and checks `vcpop.m` for state and scalar results and FP
 comparisons. The `segment` shard checks `vmv.x.s` for both the directed
 segment trace (`segment`) and field 1 of the generated unit-stride segment
 control load (`segment-matrix`). The `ext` shard checks `vmv.x.s` for
-`vector_zvfhmin.S` (`zvfhmin`) and `vector_zvbb.S` (`zvbb`). TestRIG must report
+`vector_zvfhmin.S` (`zvfhmin`), `vector_zvbb.S` (`zvbb`),
+`vector_zvbc_zvkned_zvkg.S` (`zvbc-zvkned-zvkg`) and `vector_zvknhb.S`
+(`zvknhb`). TestRIG must report
 each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs

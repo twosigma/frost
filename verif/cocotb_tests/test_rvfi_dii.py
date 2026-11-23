@@ -96,6 +96,8 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "segment-matrix": 0x43D0_2557,  # vmv.x.s a0, v29 in the generated segment matrix trace
     "zvfhmin": 0x4210_2557,  # vmv.x.s a0, v1 in the Zvfhmin FP16 conversion trace
     "zvbb": 0x4220_2557,  # vmv.x.s a0, v2 in the Zvbb bit-manipulation trace
+    "zvbc-zvkned-zvkg": 0x4230_2557,  # vmv.x.s a0, v3 in the Zvbc/Zvkned/Zvkg trace
+    "zvknhb": 0x4240_2557,  # vmv.x.s a0, v4 in the Zvknhb SHA-2 trace
 }
 
 # frost_rvfi_dii's error_flags bits.

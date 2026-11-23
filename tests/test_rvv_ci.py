@@ -156,6 +156,18 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
             "order=24 insn=0x42202557 rd=x10",
             "0xfffffffff00a1030 != 0xfffffffff00a1031",
         ],
+        [
+            "zvbc-zvkned-zvkg",
+            "vector_zvbc_zvkned_zvkg",
+            "order=36 insn=0x42302557 rd=x10",
+            "0x40a0789828c810f0 != 0x40a0789828c810f1",
+        ],
+        [
+            "zvknhb",
+            "vector_zvknhb",
+            "order=56 insn=0x42402557 rd=x10",
+            "0xffffffff84c9dd79 != 0xffffffff84c9dd78",
+        ],
     ]
     assert job["steps"].index(ext_replay) < job["steps"].index(ext_control)
     control_command = shlex.split(control["run"].replace("\\\n", ""))

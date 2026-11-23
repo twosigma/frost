@@ -4434,7 +4434,7 @@ def test_vector_ext_replay_and_coverage(tmp_path: Path) -> None:
     plan = test_testrig.prepare_inputs(args, tmp_path, config)
     ext_dir = tmp_path / "vector_ext"
     assert plan.command == ["-d", str(ext_dir)]
-    assert (plan.traces, plan.instructions) == (2, 738 + 1260)
+    assert (plan.traces, plan.instructions) == (4, 738 + 1260 + 1370 + 1129)
 
     zvfhmin_trace = ext_dir / "vector_zvfhmin.S"
     assert (
@@ -4668,6 +4668,122 @@ def test_vector_ext_replay_and_coverage(tmp_path: Path) -> None:
     assert zvbb_vlmax_lmuls == {5, 6, 7, 0, 1, 2, 3}  # mf8..m8
     assert zvbb_traps == 20
     assert zvbb_ctrl_orders == [24]
+
+    # Zvbc + Zvkned + Zvkg trace
+    crypto_trace = ext_dir / "vector_zvbc_zvkned_zvkg.S"
+    assert (
+        crypto_trace.read_bytes()
+        == (VERIF_DIR / "testrig" / "vector_zvbc_zvkned_zvkg.S").read_bytes()
+    )
+    c_lines = crypto_trace.read_text().splitlines()
+    assert sum(line.startswith(".4byte ") for line in c_lines) == 1370
+    assert sum(line.startswith(".assert ") for line in c_lines) == 553
+    c_blocks = TRACE_WORD.split(crypto_trace.read_text())[1:]
+    zvbc_retired: set[tuple[int, int, int]] = set()
+    opve_retired: set[tuple[int, int, int]] = set()
+    zvbc_masked = 0
+    c_traps = 0
+    c_ctrl_orders: list[int] = []
+    sew = 8
+    for idx, block in enumerate(c_blocks):
+        word = int(block.split()[1], 0)
+        opcode = word & 0x7F
+        f3 = (word >> 12) & 7
+        f6 = (word >> 26) & 0x3F
+        vm = (word >> 25) & 1
+        vs1 = (word >> 15) & 0x1F
+        if word == 0x4230_2557:
+            c_ctrl_orders.append(idx)
+        if opcode == 0x73 and f3 in (1, 2, 3, 5, 6, 7):
+            assert ((word >> 20) & 0xFFF) != 0x301
+        if opcode == 0x57 and f3 == 7:
+            is_ivli = (word >> 30) == 0b11
+            vtype = ((word >> 20) & 0x3FF) if is_ivli else ((word >> 20) & 0x7FF)
+            sew_code = (vtype >> 3) & 7
+            sew = 8 << min(sew_code, 3) if sew_code <= 3 else 128
+            continue
+        if opcode == 0x57 and f6 in (0x0C, 0x0D) and f3 in (2, 6):
+            if re.search(r"(?m)^\.assert trap == 1\b", block):
+                c_traps += 1
+            elif re.search(r"(?m)^\.assert trap == 0\b", block):
+                zvbc_retired.add((sew, f6, f3))
+                if vm == 0:
+                    zvbc_masked += 1
+        elif opcode == 0x77 and f3 == 2:
+            if re.search(r"(?m)^\.assert trap == 1\b", block):
+                c_traps += 1
+            elif re.search(r"(?m)^\.assert trap == 0\b", block):
+                sub = vs1 if f6 in (0x28, 0x29) else -1
+                opve_retired.add((sew, f6, sub))
+    assert zvbc_retired == {
+        (64, 0x0C, 2),
+        (64, 0x0C, 6),
+        (64, 0x0D, 2),
+        (64, 0x0D, 6),
+    }
+    assert zvbc_masked >= 2
+    assert opve_retired == {
+        (32, 0x28, 0),
+        (32, 0x28, 1),
+        (32, 0x28, 2),
+        (32, 0x28, 3),
+        (32, 0x29, 0),
+        (32, 0x29, 1),
+        (32, 0x29, 2),
+        (32, 0x29, 3),
+        (32, 0x29, 7),
+        (32, 0x22, -1),
+        (32, 0x2A, -1),
+        (32, 0x28, 17),
+        (32, 0x2C, -1),
+    }
+    assert c_traps >= 70
+    assert c_ctrl_orders == [36]
+
+    # Zvknhb SHA-2 trace
+    sha_trace = ext_dir / "vector_zvknhb.S"
+    assert (
+        sha_trace.read_bytes()
+        == (VERIF_DIR / "testrig" / "vector_zvknhb.S").read_bytes()
+    )
+    s_lines = sha_trace.read_text().splitlines()
+    assert sum(line.startswith(".4byte ") for line in s_lines) == 1129
+    assert sum(line.startswith(".assert ") for line in s_lines) == 260
+    s_blocks = TRACE_WORD.split(sha_trace.read_text())[1:]
+    sha_retired: set[tuple[int, int]] = set()
+    s_traps = 0
+    s_ctrl_orders: list[int] = []
+    sew = 8
+    for idx, block in enumerate(s_blocks):
+        word = int(block.split()[1], 0)
+        opcode = word & 0x7F
+        f3 = (word >> 12) & 7
+        f6 = (word >> 26) & 0x3F
+        if word == 0x4240_2557:
+            s_ctrl_orders.append(idx)
+        if opcode == 0x73 and f3 in (1, 2, 3, 5, 6, 7):
+            assert ((word >> 20) & 0xFFF) != 0x301
+        if opcode == 0x57 and f3 == 7:
+            is_ivli = (word >> 30) == 0b11
+            vtype = ((word >> 20) & 0x3FF) if is_ivli else ((word >> 20) & 0x7FF)
+            sew_code = (vtype >> 3) & 7
+            sew = 8 << min(sew_code, 3) if sew_code <= 3 else 128
+            continue
+        if opcode == 0x77 and f3 == 2 and f6 in (0x2D, 0x2E, 0x2F):
+            if re.search(r"(?m)^\.assert trap == 1\b", block):
+                s_traps += 1
+            elif re.search(r"(?m)^\.assert trap == 0\b", block):
+                sha_retired.add((sew, f6))
+    assert sha_retired == {
+        (32, 0x2D),
+        (32, 0x2E),
+        (32, 0x2F),
+        (64, 0x2D),
+        (64, 0x2E),
+        (64, 0x2F),
+    }
+    assert s_traps >= 60
+    assert s_ctrl_orders == [56]
 
 
 @pytest.mark.parametrize("vlen", vector.VECTOR_LENGTHS)

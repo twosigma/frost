@@ -1240,6 +1240,10 @@ jobs:
             'order=30 insn=0x42102557 rd=x10' '0x3e00 != 0x3e01'
           check_ext_result zvbb vector_zvbb \
             'order=24 insn=0x42202557 rd=x10' '0xfffffffff00a1030 != 0xfffffffff00a1031'
+          check_ext_result zvbc-zvkned-zvkg vector_zvbc_zvkned_zvkg \
+            'order=36 insn=0x42302557 rd=x10' '0x40a0789828c810f0 != 0x40a0789828c810f1'
+          check_ext_result zvknhb vector_zvknhb \
+            'order=56 insn=0x42402557 rd=x10' '0xffffffff84c9dd79 != 0xffffffff84c9dd78'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()

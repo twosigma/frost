@@ -760,7 +760,7 @@ def _workflow_runtime_cases(
         shard_controls = {
             "core": ("state",),
             "segment": ("segment", "segment-matrix"),
-            "ext": ("zvfhmin", "zvbb"),
+            "ext": ("zvfhmin", "zvbb", "zvbc-zvkned-zvkg", "zvknhb"),
         }
         for row in expand_matrix(jobs["test-testrig-vector"]["strategy"]["matrix"]):
             shard = row["shard"]
