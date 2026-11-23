@@ -1,43 +1,81 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1440" viewBox="0 0 1120 1440" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1660" viewBox="0 0 1200 1660" role="img" aria-labelledby="title desc">
   <title id="title">FROST Tomasulo back-end: allocation, execution, completion and commit</title>
   <desc id="desc">
-    Two-wide dispatch renames registers and allocates ROB and reservation-station
-    entries; memory issue allocates load and store queue entries. Four stations issue independently; INT has two ALUs. Arithmetic
-    completions and translated memory results feed two CDB lanes. Successful
-    ordinary stores complete the ROB directly. Up to two instructions retire
-    in order, updating registers and releasing stores. A and S badges mark
-    allocation and store-commit paths. Arrows do not imply pipeline latency.
+    RV64GCBV Tomasulo out-of-order back-end. IF, PD and ID feed a four-bundle
+    decoded queue into two-wide dispatch and INT/FP register renaming with
+    twelve branch checkpoints and a speculative vtype tracker. Dispatch
+    allocates entries in the 32-entry reorder buffer, four reservation stations
+    (INT 16, MUL 4, FP 6, MEM 8), the eight-entry load and store queues and the
+    four-entry vector memory table (VMT) in parallel. The four stations issue
+    independently: INT issues up to two operations per cycle to two ALUs (with
+    branches and JALR on pipe 0 and pipe 1 scanning the low eight entries); MUL
+    feeds integer and carry-less multiply, a radix-4 divider and vector
+    configuration (vset* on CDB slot 5); FP feeds a seven-stage FMA pipeline
+    (add, subtract, multiply and FMA with a 16-entry result FIFO and one-cycle
+    early forward wakeup to FP RS), a radix-16 divider and an FP engine for
+    square root, conversions and misc operations; MEM feeds address generation
+    and the Sv39 DMMU (16-entry DTLB, last-page and Bare bypass, backed by the
+    shared 512-entry four-way L2 TLB with a 32-entry superpage side array and
+    pointer-walk-cache PTW). The load queue holds a 512-entry, eight-byte L0
+    cache, checks store-queue forwarding and VMT range holds, and issues early
+    load wakeups to INT and MEM stations before CDB broadcast. The store queue
+    handles buffered cached and Normal stores, cbo.zero, Zicbom CMOs and
+    head-ordered precise uncached stores. Ordinary buffered stores complete the
+    ROB directly; store faults, SC results and LQ completions share the MEM CDB
+    slot (slot 3). Seven arithmetic/config slots and MEM form eight fixed-priority
+    CDB slots (MUL, MEM, ALU, ALU2, DIV, FP_DIV, FP_MUL, FP_ADD) broadcasting on
+    two lanes; slot 6 carries the FP pipeline FIFO and yields to vector ROB-head
+    VTOX, VTOF and VMEM completions. Up to two instructions retire in order,
+    updating INT/FP register files, releasing committed stores and enqueuing
+    committed vector arithmetic into the eight-entry post-commit VIQ. Serializing
+    instructions and precise uncached stores hold the ROB head; a hardware
+    misaligned-access engine assists misaligned cached DDR ops at commit;
+    conditional branch, JAL and JALR mispredictions recover early. Matching A
+    and S badges mark allocation and store-release paths. Arrows do not imply
+    pipeline latency.
   </desc>
   <!--
     Self-contained editable SVG. Source map, relative to repository root:
       hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv:
-        ROB/RS/LQ/SQ depths, checkpoint count and eight FU slots.
+        ROB/RS/LQ/SQ/VMT/decoded-queue depths, 12 checkpoints, FpPipeDepth=7,
+        EarlyLoadWakeup, EarlyJalrRecovery, EarlyJalRecovery and 8 FU slots.
+      hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/decoded_bundle_queue.sv:
+        4-bundle decoded queue ahead of dispatch.
       hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv:
-        two-wide rename, ROB/RS/queue allocation and branch checkpoints.
+        two-wide rename, parallel ROB/RS/LQ/SQ allocation and checkpoints.
       hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv:
-        four RS instances, two INT ALUs, independent FU adapters, CDB wakeup,
-        direct successful-store completion, DMMU and LQ/SQ update routing.
-      hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv:
-        direct-mapped 512-entry, eight-byte-granule L0 cache in FROST.
-      hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv:
-        older-store checks and head ordering for LR/AMO/device loads.
-      hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv:
-        head-ordered SC completion and reservation check.
+        four RS instances (INT 16, MUL 4, FP 6, MEM 8), dual ALUs, MUL/DIV/vset*
+        and pipelined FP shims, 8-slot two-lane CDB arbiter, early load and FP
+        forward wakeups, direct buffered-store ROB completion, DMMU and LQ/SQ
+        with VMT range holds.
+      hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/{int_muldiv_shim,fp_shim}.sv:
+        MUL/CLMUL/DIV/vec_cfg_unit (slot 5) and 7-stage fp_fma_pipe (slot 6) /
+        radix-16 fp_div_unit / fp_engine (slot 4) with forward wake.
+      hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv:
+        8-slot two-lane fixed-priority arbiter.
+      hw/rtl/cpu_and_mem/cpu/mmu/{dmmu,l2tlb,ptw}.sv:
+        16-entry DTLB, 512-entry 4-way L2 TLB + 32 superpage, PTW + walk cache.
+      hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/{load_queue,lq_l0_cache}.sv:
+        8-entry LQ, 512x8 B L0 cache, SQ forwarding, VMT holds and DMA cuts.
+      hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv:
+        8-entry SQ, forwarding, cbo.zero, Zicbom CMO and precise uncached stores.
       hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/{reorder_buffer,rob_serializer}.sv:
-        CDB completion, two-wide eligible retirement and serializing effects.
-      hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv:
-        shared PTW, architectural register files, commit and branch recovery.
-      hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv:
-        SQ write, AMO write and LQ read arbitration into the external data port.
+        CDB completion, two-wide retirement and serializing controls.
+      hw/rtl/cpu_and_mem/cpu/vector/{vec_unit,vec_vmt,vec_vtype_tracker,vec_dispatch_legality}.sv:
+        vtype tracking, VIQ (8), VMT (4), ROB-head VTOX/F/VMEM on CDB slot 6.
+      hw/rtl/cpu_and_mem/cpu/misaligned/ma_engine.sv:
+        commit-time misaligned cached DDR load/store engine.
+      hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv + memory_if/data_mem_request_router.sv:
+        decoded queue, L2 TLB, PTW, vector unit, MA engine, early recovery and
+        data-memory router.
     A and S are named connections, not hardware blocks or extra state.
-    The dispatch and architectural-state blocks are outside tomasulo_wrapper.
   -->
   <defs>
     <linearGradient id="background" x2="1" y2="1">
       <stop stop-color="#101e34"/>
       <stop offset="1" stop-color="#080f1d"/>
     </linearGradient>
-    <linearGradient id="accent">
+    <linearGradient id="header-accent">
       <stop stop-color="#62d8ef"/>
       <stop offset="1" stop-color="#7f9cff"/>
     </linearGradient>
@@ -55,13 +93,18 @@
     </marker>
     <style>
       text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #edf3fc; }
-      .heading { font-size: 24px; font-weight: 650; }
-      .label { font-size: 21px; font-weight: 600; }
-      .body { font-size: 19px; fill: #bdcbde; }
-      .small { font-size: 18px; fill: #bdcbde; }
-      .section { font-size: 17px; font-weight: 650; letter-spacing: 1.3px; fill: #adbed5; }
+      .heading { font-size: 22px; font-weight: 650; }
+      .label { font-size: 19px; font-weight: 600; }
+      .sublabel { font-size: 16.5px; font-weight: 600; }
+      .body { font-size: 18px; fill: #bdcbde; }
+      .small { font-size: 16.5px; fill: #bdcbde; }
+      .xs { font-size: 15px; fill: #bdcbde; }
+      .section { font-size: 17px; font-weight: 650; letter-spacing: 1.5px; fill: #adbed5; }
+      .subsec { font-size: 14px; font-weight: 650; letter-spacing: 1.3px; fill: #9fb3cc; }
       .center { text-anchor: middle; }
       .panel { fill: #101d30; stroke: #2b3c55; stroke-width: 1.5; }
+      .subpanel { fill: #122136; stroke: #354c69; stroke-width: 1.5; }
+      .front { fill: #153149; stroke: #42748f; stroke-width: 1.5; }
       .station { fill: #173148; stroke: #42748f; stroke-width: 1.5; }
       .execution { fill: #16283d; stroke: #3b5573; stroke-width: 1.5; }
       .result { fill: #2b2547; stroke: #8270b7; stroke-width: 1.5; }
@@ -72,166 +115,270 @@
       .broadcast { stroke: #b5a1f8; }
       .commit { stroke: #edc37d; }
       .memlink { stroke: #7ed8bc; }
+      .halo { fill: none; stroke: #101d30; stroke-width: 6; stroke-linejoin: round; stroke-linecap: round; }
       .allocation { fill: #6dcee9; stroke: #101d30; stroke-width: 2; }
       .release { fill: #edc37d; stroke: #101d30; stroke-width: 2; }
-      .badge-text { font-size: 16px; font-weight: 750; fill: #101d30; text-anchor: middle; }
+      .badge-text { font-size: 15.5px; font-weight: 750; fill: #0a221c; text-anchor: middle; }
+      .accent-violet { fill: #c6b6fa; }
+      .accent-mint { fill: #9cdbc6; }
     </style>
   </defs>
 
-  <rect width="1120" height="1440" rx="24" fill="url(#background)"/>
-  <rect x="42" y="36" width="5" height="61" rx="2.5" fill="url(#accent)"/>
-  <text x="65" y="66" font-size="34" font-weight="750">Tomasulo back-end</text>
-  <text x="65" y="96" class="body">Allocate in order · execute independently · retire precisely</text>
+  <rect width="1200" height="1660" rx="24" fill="url(#background)"/>
+  <rect x="44" y="37" width="5" height="57" rx="2.5" fill="url(#header-accent)"/>
+  <text x="66" y="68" font-size="38" font-weight="750" letter-spacing="1">FROST</text>
+  <text x="226" y="67" font-size="29" fill="#cbd8eb">Tomasulo back-end</text>
+  <text x="67" y="94" class="body">RV64GCBV · allocate in order · execute independently · retire precisely</text>
   <g class="small">
-    <circle cx="743" cy="50" r="4" fill="#6dcee9"/><text x="756" y="56">Dispatch / issue</text>
-    <circle cx="743" cy="81" r="4" fill="#b5a1f8"/><text x="756" y="87">Completion</text>
-    <circle cx="937" cy="50" r="4" fill="#7ed8bc"/><text x="950" y="56">Memory</text>
-    <circle cx="937" cy="81" r="4" fill="#edc37d"/><text x="950" y="87">Retirement</text>
+    <circle cx="776" cy="56" r="4" fill="#6dcee9"/>
+    <text x="789" y="62">Dispatch / issue</text>
+    <circle cx="972" cy="56" r="4" fill="#7ed8bc"/>
+    <text x="985" y="62">Memory / VMT</text>
+    <circle cx="776" cy="86" r="4" fill="#b5a1f8"/>
+    <text x="789" y="92">Completion / wake</text>
+    <circle cx="972" cy="86" r="4" fill="#edc37d"/>
+    <text x="985" y="92">Retirement / control</text>
   </g>
 
-  <text x="70" y="141" class="section">01 / RENAME AND ALLOCATE</text>
-  <rect x="70" y="162" width="246" height="102" rx="13" class="station"/>
-  <text x="193" y="200" class="heading center">IF · PD · ID</text>
-  <text x="193" y="232" class="body center">Up to two instructions</text>
-  <path d="M 316 213 H 356" class="flow" marker-end="url(#flow-arrow)"/>
-  <rect x="356" y="162" width="694" height="102" rx="13" class="station"/>
-  <text x="380" y="196" class="heading">Dispatch + INT / FP register alias tables</text>
-  <text x="380" y="227" class="body">2-wide rename · 12 branch checkpoints</text>
-  <text x="380" y="252" class="small">Allocates ROB / RS entries; checks LQ / SQ space</text>
-  <circle cx="1024" cy="188" r="15" class="allocation"/><text x="1024" y="194" class="badge-text">A</text>
+  <!-- Section 01: Rename and allocate -->
+  <text x="56" y="140" class="section">01 / RENAME AND ALLOCATE</text>
+  <rect x="56" y="156" width="292" height="104" rx="13" class="front"/>
+  <text x="202" y="188" class="label center">IF · PD · ID → 4-bundle Q</text>
+  <text x="202" y="216" class="xs center">Up to 2 insns · decoded_bundle_queue</text>
+  <text x="202" y="240" class="xs center">CSR + vector decode</text>
+  <path d="M 348 208 H 386" class="flow" marker-end="url(#flow-arrow)"/>
 
-  <!-- Dispatch allocates the four stations independently of ROB completion. -->
-  <path d="M 703 264 V 294 H 216 M 703 294 H 880" class="flow"/>
+  <rect x="386" y="156" width="758" height="104" rx="13" class="front"/>
+  <text x="410" y="190" class="heading">Dispatch + INT / FP register alias tables</text>
+  <text x="410" y="219" class="body">2-wide rename · 12 branch checkpoints · vtype tracker</text>
+  <text x="410" y="244" class="small">Allocates ROB, RS, LQ, SQ &amp; VMT (4) entries in parallel</text>
+  <circle cx="1116" cy="184" r="14" class="allocation"/>
+  <text x="1116" y="190" class="badge-text">A</text>
+
+  <!-- Dispatch fan-out into INT, FP and MEM panels. -->
+  <path d="M 765 260 V 292 H 214 M 765 292 H 944" class="flow"/>
   <g class="flow" marker-end="url(#flow-arrow)">
-    <path d="M 216 294 V 325"/><path d="M 536 294 V 325"/><path d="M 880 294 V 325"/>
+    <path d="M 214 292 V 324"/>
+    <path d="M 556 292 V 324"/>
+    <path d="M 944 292 V 324"/>
   </g>
-  <rect x="70" y="325" width="294" height="322" rx="17" class="panel"/>
-  <rect x="388" y="325" width="298" height="322" rx="17" class="panel"/>
-  <rect x="710" y="325" width="340" height="636" rx="17" class="panel"/>
-  <text x="90" y="357" class="section">02 / INTEGER</text>
-  <text x="408" y="357" class="section">FLOATING POINT</text>
-  <text x="730" y="357" class="section">MEMORY</text>
 
-  <g class="center">
-    <rect x="90" y="382" width="120" height="75" rx="10" class="station"/>
-    <text x="150" y="412" class="label">INT RS</text><text x="150" y="439" class="body">16 entries</text>
-    <rect x="224" y="382" width="120" height="75" rx="10" class="station"/>
-    <text x="284" y="412" class="label">MUL RS</text><text x="284" y="439" class="body">4 entries</text>
-    <rect x="408" y="382" width="258" height="75" rx="10" class="station"/>
-    <text x="537" y="412" class="label">FP RS</text><text x="537" y="439" class="body">2 entries</text>
-    <rect x="730" y="382" width="300" height="75" rx="10" class="station"/>
-    <text x="880" y="412" class="label">MEM RS · 8 entries</text>
-    <text x="880" y="439" class="body">Loads · stores · atomics</text>
+  <!-- Section 02: Issue and execution -->
+  <rect x="56" y="324" width="316" height="340" rx="16" class="panel"/>
+  <rect x="388" y="324" width="340" height="340" rx="16" class="panel"/>
+  <rect x="744" y="324" width="400" height="702" rx="16" class="panel"/>
+  <text x="76" y="354" class="section">02 / INTEGER</text>
+  <text x="408" y="354" class="section">FLOATING POINT</text>
+  <text x="764" y="354" class="section">MEMORY</text>
+
+  <!-- Reservation stations -->
+  <g id="stations" class="center">
+    <rect x="74" y="378" width="134" height="76" rx="10" class="station"/>
+    <text x="141" y="405" class="label">INT RS</text>
+    <text x="141" y="427" class="xs">16 entries</text>
+    <text x="141" y="445" class="xs">2 issue ports</text>
+
+    <rect x="222" y="378" width="134" height="76" rx="10" class="station"/>
+    <text x="289" y="405" class="label">MUL RS</text>
+    <text x="289" y="427" class="xs">4 entries</text>
+    <text x="289" y="445" class="xs">1 issue port</text>
+
+    <rect x="404" y="378" width="276" height="76" rx="10" class="station"/>
+    <text x="542" y="406" class="label">FP RS</text>
+    <text x="542" y="432" class="small">6 entries · 3-src · 1-issue</text>
+
+    <rect x="764" y="378" width="360" height="76" rx="10" class="station"/>
+    <text x="944" y="406" class="label">MEM RS · 8 entries</text>
+    <text x="944" y="432" class="small">Loads · stores · atomics · CMOs</text>
   </g>
   <g class="flow" marker-end="url(#flow-arrow)">
-    <path d="M 150 457 V 497"/><path d="M 284 457 V 497"/>
-    <path d="M 537 457 V 497"/>
-    <path d="M 880 457 V 497"/>
-  </g>
-  <g class="center">
-    <rect x="90" y="497" width="120" height="128" rx="10" class="execution"/>
-    <text x="150" y="530" class="label">ALU ×2</text><text x="150" y="559" class="small">Branch/JALR</text>
-    <text x="150" y="584" class="small">on pipe 0</text><text x="150" y="611" class="small">2 issue ports</text>
-    <rect x="224" y="497" width="120" height="128" rx="10" class="execution"/>
-    <text x="284" y="530" class="label">MUL / DIV</text><text x="284" y="559" class="small">Multiply</text>
-    <text x="284" y="584" class="small">Divide / rem.</text><text x="284" y="611" class="small">1 issue port</text>
-    <rect x="408" y="497" width="258" height="128" rx="10" class="execution"/>
-    <text x="537" y="528" class="label">FP engine</text>
-    <text x="537" y="557" class="small">Every F / D compute op</text>
-    <text x="537" y="583" class="small">Iterative + fast paths</text>
-    <text x="537" y="609" class="small">1 issue port</text>
-    <rect x="730" y="497" width="300" height="128" rx="10" class="memory"/>
-    <text x="880" y="529" class="label">Address generation + DMMU</text>
-    <text x="880" y="559" class="body">Sv39 DTLB · 16 entries</text>
-    <text x="880" y="586" class="small">Last-page or Bare bypass</text>
-    <text x="880" y="612" class="small">Misses use shared PTW</text>
+    <path d="M 141 454 V 490"/>
+    <path d="M 289 454 V 490"/>
+    <path d="M 542 454 V 490"/>
+    <path d="M 944 454 V 490"/>
   </g>
 
-  <!-- Arithmetic results reach the CDB without traversing the memory queues. -->
+  <!-- Execution units -->
+  <g id="exec-units" class="center">
+    <rect x="74" y="490" width="134" height="154" rx="10" class="execution"/>
+    <text x="141" y="520" class="label">ALU ×2</text>
+    <text x="141" y="547" class="xs">Branch / JALR</text>
+    <text x="141" y="569" class="xs">on pipe 0</text>
+    <text x="141" y="595" class="xs">Pipe 1: low 8</text>
+    <text x="141" y="622" class="xs accent-violet">Slots 0, 7</text>
+
+    <rect x="222" y="490" width="134" height="154" rx="10" class="execution"/>
+    <text x="289" y="520" class="label">MUL / DIV</text>
+    <text x="289" y="547" class="xs">MUL / CLMUL</text>
+    <text x="289" y="569" class="xs">Radix-4 div</text>
+    <text x="289" y="595" class="xs">vset* (vec cfg)</text>
+    <text x="289" y="622" class="xs accent-violet">Slots 1, 2, 5</text>
+
+    <rect x="404" y="490" width="276" height="154" rx="10" class="execution"/>
+    <text x="542" y="518" class="label">FP units (3) · fp_shim</text>
+    <text x="542" y="544" class="xs">7-stage FMA · add / sub / mul</text>
+    <text x="542" y="566" class="xs">16-entry pipe FIFO · fwd wake</text>
+    <text x="542" y="592" class="xs">Radix-16 div · FP engine (sqrt/cvt)</text>
+    <text x="542" y="622" class="xs accent-violet">Slot 4 (eng/div) · Slot 6 (pipe)</text>
+
+    <rect x="764" y="490" width="360" height="134" rx="10" class="memory"/>
+    <text x="944" y="519" class="label">Address generation + DMMU</text>
+    <text x="944" y="546" class="body">Sv39 DTLB · 16 entries</text>
+    <text x="944" y="572" class="xs">Last-page or Bare bypass</text>
+    <text x="944" y="596" class="xs accent-mint">Misses → L2 TLB (512 + 32 SP) → PTW + PWC</text>
+  </g>
+  <!-- FP pipeline 1-cycle-early forward wakeup back to FP RS -->
+  <path d="M 680 560 H 702 V 416 H 680" class="broadcast" stroke-dasharray="4 3" marker-end="url(#result-arrow)"/>
+  <text x="716" y="488" class="xs accent-violet center" transform="rotate(-90 716 488)">fwd wake</text>
+
+  <!-- Arithmetic & config completion adapters -->
   <g class="broadcast" marker-end="url(#result-arrow)">
-    <path d="M 150 625 V 690"/><path d="M 284 625 V 690"/><path d="M 537 625 V 690"/>
+    <path d="M 141 644 V 692"/>
+    <path d="M 289 644 V 692"/>
+    <path d="M 542 644 V 692"/>
   </g>
-  <rect x="90" y="690" width="576" height="95" rx="13" class="result"/>
-  <text x="378" y="724" class="heading center">Arithmetic completion adapters</text>
-  <text x="378" y="753" class="body center">Five FU slots · ungranted results wait</text>
-  <text x="378" y="777" class="small center">Pipelined shims also buffer results in FIFOs</text>
-  <path d="M 378 785 V 809 H 78 V 1020" class="broadcast" marker-end="url(#result-arrow)"/>
-  <rect x="110" y="831" width="556" height="130" rx="13" class="panel"/>
-  <text x="132" y="862" class="label">Four independent reservation stations</text>
-  <text x="132" y="892" class="body">Ready operands + available FU allow issue.</text>
-  <text x="132" y="919" class="body">INT issues twice; each other RS issues once.</text>
-  <text x="132" y="946" class="body">Both CDB lanes wake waiting operands.</text>
+  <rect x="56" y="692" width="668" height="96" rx="13" class="result"/>
+  <text x="390" y="724" class="heading center">Arithmetic &amp; config completion adapters</text>
+  <text x="390" y="751" class="small center">7 non-MEM FU slots (0, 1, 2, 4, 5, 6, 7) · ungranted results wait</text>
+  <text x="390" y="775" class="xs center">FP pipe buffers 16 results in FIFO; slot 6 yields to vector ROB-head completions</text>
 
-  <!-- Translation produces addresses for the preallocated LQ/SQ entries. -->
-  <path d="M 880 625 V 637 H 803 M 880 637 H 964" class="memlink"/>
+  <!-- Adapters output rail down to CDB -->
+  <path d="M 96 788 V 1124" class="broadcast" marker-end="url(#result-arrow)"/>
+
+  <!-- Vector unit integration panel (VLEN 256) -->
+  <rect x="132" y="824" width="592" height="202" rx="14" class="subpanel"/>
+  <text x="150" y="848" class="subsec">VECTOR UNIT INTEGRATION · VLEN 256</text>
+  <g id="vec-integration" class="center">
+    <rect x="150" y="862" width="276" height="148" rx="10" class="front"/>
+    <text x="288" y="889" class="sublabel">Vector control &amp; VIQ (8)</text>
+    <text x="288" y="914" class="xs">vtype tracker · dispatch legality</text>
+    <text x="288" y="936" class="xs">Post-commit VIQ (8) → vec_engine</text>
+    <text x="288" y="958" class="xs">ROB-head VTOX / VTOF / VMEM</text>
+    <text x="288" y="986" class="xs accent-violet">Completes via CDB slot 6</text>
+
+    <rect x="442" y="862" width="264" height="148" rx="10" class="memory"/>
+    <text x="574" y="889" class="sublabel">VMT · 4 entries</text>
+    <text x="574" y="914" class="xs">LQ / SQ address-range holds</text>
+    <text x="574" y="936" class="xs">vec_head_mmu · SQ drain wait</text>
+    <text x="574" y="958" class="xs">VMU (6 slots) → hart line client</text>
+    <text x="574" y="986" class="xs accent-mint">Retires in order at ROB head</text>
+    <circle cx="692" cy="862" r="13" class="allocation"/>
+    <text x="692" y="867" class="badge-text">A</text>
+  </g>
+  <!-- Vector ROB-head CDB slot 6 return down to CDB -->
+  <path d="M 288 1010 V 1124" class="broadcast" marker-end="url(#result-arrow)"/>
+  <text x="300" y="1076" class="xs accent-violet">CDB slot 6 (vec ROB-head)</text>
+
+  <!-- Memory queues: LQ & SQ -->
+  <path d="M 944 624 V 638 H 850 M 944 638 H 1038" class="memlink"/>
   <g class="memlink" marker-end="url(#memory-arrow)">
-    <path d="M 803 637 V 690"/><path d="M 964 637 V 690"/>
+    <path d="M 850 638 V 676"/>
+    <path d="M 1038 638 V 676"/>
   </g>
-  <g class="center">
-    <rect x="730" y="690" width="146" height="146" rx="11" class="memory"/>
-    <text x="803" y="725" class="label">LQ · 8</text>
-    <text x="803" y="755" class="body">+ L0 cache</text>
-    <text x="803" y="782" class="body">512 × 8 B</text>
-    <text x="803" y="811" class="small">Load / AMO / LR</text>
-    <rect x="898" y="690" width="132" height="146" rx="11" class="memory"/>
-    <text x="964" y="725" class="label">SQ · 8</text>
-    <text x="964" y="755" class="body">Store data</text>
-    <text x="964" y="782" class="body">+ addresses</text>
-    <text x="960" y="811" class="small">Commit gate</text>
-    <circle cx="857" cy="690" r="14" class="allocation"/><text x="857" y="696" class="badge-text">A</text>
-    <circle cx="1011" cy="690" r="14" class="allocation"/><text x="1011" y="696" class="badge-text">A</text>
-    <circle cx="1030" cy="819" r="14" class="release"/><text x="1030" y="825" class="badge-text">S</text>
+  <g id="mem-queues" class="center">
+    <rect x="764" y="676" width="172" height="174" rx="11" class="memory"/>
+    <text x="850" y="707" class="label">LQ · 8</text>
+    <text x="850" y="734" class="small">+ L0 512 × 8 B</text>
+    <text x="850" y="760" class="xs">Load / AMO / LR</text>
+    <text x="850" y="786" class="xs accent-violet">Early load wake</text>
+    <text x="850" y="812" class="xs">DMA / home cuts</text>
+    <circle cx="920" cy="676" r="13" class="allocation"/>
+    <text x="920" y="681" class="badge-text">A</text>
+
+    <rect x="952" y="676" width="172" height="174" rx="11" class="memory"/>
+    <text x="1038" y="707" class="label">SQ · 8</text>
+    <text x="1038" y="734" class="small">Stores · cbo.zero</text>
+    <text x="1038" y="760" class="xs">Zicbom CMO</text>
+    <text x="1038" y="786" class="xs">Precise uncached</text>
+    <text x="1038" y="812" class="xs">Commit gate</text>
+    <circle cx="1108" cy="676" r="13" class="allocation"/>
+    <text x="1108" y="681" class="badge-text">A</text>
+    <circle cx="1124" cy="834" r="13" class="release"/>
+    <text x="1124" y="839" class="badge-text">S</text>
   </g>
-  <path d="M 940 690 V 673 H 823 V 690" class="memlink" marker-end="url(#memory-arrow)"/>
-  <text x="881" y="665" class="small center">SQ forwarding</text>
+  <!-- SQ-to-LQ forwarding loop -->
+  <path d="M 1012 676 V 656 H 876 V 676" class="memlink" marker-end="url(#memory-arrow)"/>
+  <text x="944" y="650" class="xs center accent-mint">SQ forwarding</text>
+
+  <!-- LQ / SQ down into Data-memory router -->
   <g class="memlink" marker-end="url(#memory-arrow)">
-    <path d="M 803 836 V 884"/><path d="M 964 836 V 884"/>
+    <path d="M 818 850 V 932"/>
+    <path d="M 1068 850 V 932"/>
   </g>
-  <rect x="730" y="884" width="300" height="56" rx="10" class="memory"/>
-  <text x="880" y="907" class="label center">Data-memory router</text>
-  <text x="880" y="931" class="small center">Caches · BRAM · MMIO</text>
 
-  <!-- Memory completion is a distinct FU slot; ordinary stores bypass CDB. -->
-  <path d="M 730 800 H 698 V 987 H 730" class="broadcast" marker-end="url(#result-arrow)"/>
-  <rect x="730" y="964" width="300" height="46" rx="9" class="result"/>
-  <text x="880" y="984" class="label center">MEM completion mux</text>
-  <text x="880" y="1005" class="small center">LQ + SC result + store faults</text>
-  <path d="M 880 1010 V 1020" class="broadcast" marker-end="url(#result-arrow)"/>
-  <path d="M 1030 549 H 1073 V 1165 H 494 V 1190" class="broadcast" marker-end="url(#result-arrow)"/>
-  <text x="1054" y="1154" class="small" text-anchor="end">Ordinary successful stores: direct ROB completion</text>
+  <!-- LQ completion path to MEM completion mux -->
+  <path d="M 764 794 H 734 V 1072 H 764" class="broadcast" marker-end="url(#result-arrow)"/>
 
-  <rect x="70" y="1020" width="980" height="90" rx="14" class="result"/>
-  <text x="560" y="1057" class="heading center">Common data bus · up to 2 results per cycle</text>
-  <text x="560" y="1088" class="body center">Six FU sources · fixed-priority top-two arbiter · tags + values + exception / FP status</text>
-  <!-- The feedback bus reaches all four stations, independently of issue. -->
-  <path d="M 70 1065 H 43 V 374 H 1020" class="broadcast" stroke-dasharray="6 5"/>
+  <!-- Bidirectional VMT range-hold link between VMT (4) and LQ / SQ (with halo over crossings) -->
+  <path d="M 706 890 H 998 V 850" class="halo"/>
+  <path d="M 706 890 H 998 V 850" class="memlink" marker-start="url(#memory-arrow)" marker-end="url(#memory-arrow)"/>
+  <path d="M 890 890 V 850" class="memlink" marker-end="url(#memory-arrow)"/>
+  <text x="944" y="914" class="xs center accent-mint">VMT range holds</text>
+
+  <!-- Data-memory router -->
+  <rect x="764" y="932" width="360" height="74" rx="10" class="memory"/>
+  <text x="944" y="962" class="label center">Data-memory router</text>
+  <text x="944" y="989" class="xs center">L1D / L2 · Low BRAM · MMIO · Zicbom CMO</text>
+
+  <!-- MEM completion mux -->
+  <rect x="764" y="1044" width="360" height="56" rx="10" class="result"/>
+  <text x="944" y="1069" class="sublabel center">MEM completion mux · CDB slot 3</text>
+  <text x="944" y="1091" class="xs center">Store faults &gt; SC result &gt; LQ loads / AMOs / LRs</text>
+  <path d="M 944 1100 V 1124" class="broadcast" marker-end="url(#result-arrow)"/>
+
+  <!-- Direct ROB completion for ordinary buffered stores -->
+  <path d="M 1124 556 H 1166 V 1266 H 506 V 1306" class="broadcast" marker-end="url(#result-arrow)"/>
+  <text x="1150" y="1254" class="small" text-anchor="end">Buffered stores: direct ROB completion</text>
+
+  <!-- Common data bus -->
+  <rect x="56" y="1124" width="1088" height="96" rx="14" class="result"/>
+  <text x="600" y="1156" class="heading center">Common data bus · up to 2 results per cycle</text>
+  <text x="600" y="1184" class="small center">8 FU slots · fixed priority: MUL &gt; MEM &gt; ALU &gt; ALU2 &gt; DIV &gt; FP_DIV &gt; FP_MUL &gt; FP_ADD</text>
+  <text x="600" y="1208" class="xs center">Both CDB lanes wake all 4 RS &amp; complete ROB · early load wake (INT / MEM RS) · FP pipe fwd wake (FP RS)</text>
+
+  <!-- CDB wakeup bus looping back to all 4 reservation stations -->
+  <path d="M 56 1172 H 32 V 368 H 1080" class="broadcast" stroke-dasharray="6 5"/>
   <g class="broadcast" marker-end="url(#result-arrow)">
-    <path d="M 105 374 V 382"/><path d="M 239 374 V 382"/>
-    <path d="M 423 374 V 382"/><path d="M 745 374 V 382"/>
+    <path d="M 98 368 V 378"/>
+    <path d="M 246 368 V 378"/>
+    <path d="M 442 368 V 378"/>
+    <path d="M 792 368 V 378"/>
   </g>
-  <path d="M 450 1110 V 1190" class="broadcast" marker-end="url(#result-arrow)"/>
-  <text x="340" y="1139" class="small">Mark done</text>
+  <path d="M 452 1220 V 1306" class="broadcast" marker-end="url(#result-arrow)"/>
+  <text x="438" y="1266" class="small" text-anchor="end">Mark done</text>
 
-  <text x="70" y="1180" class="section">03 / PRECISE RETIREMENT</text>
-  <rect x="70" y="1190" width="450" height="107" rx="14" class="result"/>
-  <text x="94" y="1225" class="heading">Reorder buffer · 32 entries</text>
-  <text x="94" y="1254" class="body">Tracks program order, results and faults</text>
-  <text x="94" y="1281" class="body">Head and head+1 retire when eligible</text>
-  <circle cx="495" cy="1215" r="15" class="allocation"/><text x="495" y="1221" class="badge-text">A</text>
-  <path d="M 520 1243 H 566" class="commit" marker-end="url(#commit-arrow)"/>
-  <rect x="566" y="1190" width="484" height="107" rx="14" class="retire"/>
-  <text x="590" y="1225" class="heading">Commit · up to 2 in order</text>
-  <text x="590" y="1254" class="body">INT / FP register writes · RAT clear</text>
-  <text x="590" y="1281" class="body">Release committed stores to drain</text>
-  <circle cx="1030" cy="1280" r="15" class="release"/><text x="1030" y="1286" class="badge-text">S</text>
-  <path d="M 808 1297 V 1323" class="commit" marker-end="url(#commit-arrow)"/>
-  <rect x="566" y="1323" width="484" height="66" rx="11" class="retire"/>
-  <text x="808" y="1350" class="label center">CSR / fence / trap / xRET coordination</text>
-  <text x="808" y="1377" class="small center">Serializing effects hold the ROB head</text>
+  <!-- Section 03: Precise retirement -->
+  <text x="56" y="1288" class="section">03 / PRECISE RETIREMENT</text>
+  <rect x="56" y="1306" width="492" height="114" rx="14" class="result"/>
+  <text x="80" y="1342" class="heading">Reorder buffer · 32 entries</text>
+  <text x="80" y="1371" class="body">Tracks program order, results and faults</text>
+  <text x="80" y="1399" class="body">Head and head+1 retire when eligible</text>
+  <circle cx="522" cy="1332" r="14" class="allocation"/>
+  <text x="522" y="1338" class="badge-text">A</text>
 
-  <circle cx="83" cy="1339" r="14" class="allocation"/><text x="83" y="1345" class="badge-text">A</text>
-  <text x="107" y="1345" class="small">Entry allocation</text>
-  <circle cx="83" cy="1373" r="14" class="release"/><text x="83" y="1379" class="badge-text">S</text>
-  <text x="107" y="1379" class="small">Store retirement permits SQ drain</text>
-  <text x="70" y="1420" class="small">Selected logical paths; arrows do not imply pipeline latency. Shared PTW and data router live in cpu_ooo.</text>
+  <path d="M 548 1363 H 596" class="commit" marker-end="url(#commit-arrow)"/>
+
+  <rect x="596" y="1306" width="548" height="114" rx="14" class="retire"/>
+  <text x="620" y="1342" class="heading">Commit · up to 2 in order</text>
+  <text x="620" y="1371" class="body">INT / FP regfiles (2W each) · RAT clear</text>
+  <text x="620" y="1399" class="body">Release stores (S) · enqueue vec VIQ (8) &amp; VMT</text>
+  <circle cx="1118" cy="1394" r="14" class="release"/>
+  <text x="1118" y="1400" class="badge-text">S</text>
+
+  <path d="M 870 1420 V 1450" class="commit" marker-end="url(#commit-arrow)"/>
+  <rect x="596" y="1450" width="548" height="116" rx="12" class="retire"/>
+  <text x="870" y="1482" class="label center">CSR / fence / trap / xRET / MA coordination</text>
+  <text x="870" y="1510" class="small center">Serializing ops &amp; precise uncached stores hold ROB head</text>
+  <text x="870" y="1538" class="xs center">MA engine assists misaligned DDR ops · early branch / JAL / JALR recovery</text>
+
+  <!-- Badge legend -->
+  <circle cx="72" cy="1474" r="13" class="allocation"/>
+  <text x="72" y="1479" class="badge-text">A</text>
+  <text x="96" y="1480" class="small">Allocation at dispatch (ROB, RS, LQ, SQ, VMT)</text>
+  <circle cx="72" cy="1512" r="13" class="release"/>
+  <text x="72" y="1517" class="badge-text">S</text>
+  <text x="96" y="1518" class="small">Store retirement permits SQ drain</text>
+  <text x="56" y="1556" class="xs">Commit also enqueues post-commit vector arithmetic into VIQ (8).</text>
+
+  <text x="56" y="1626" font-size="16" fill="#a9bad0">Selected logical paths; arrows do not imply pipeline latency. Decoded queue, L2 TLB, PTW, vector unit, MA engine and data router live in cpu_ooo.</text>
 </svg>

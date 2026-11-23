@@ -1,143 +1,360 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="942" viewBox="0 0 1200 942" role="img" aria-labelledby="title desc">
-  <title id="title">FROST line-cache component hierarchy and tagged arbitration</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1770" viewBox="0 0 1200 1770" role="img" aria-labelledby="title desc">
+  <title id="title">FROST cache hierarchy: coherent CPU path and line-cache component benches</title>
   <desc id="desc">
-    The line-cache component hierarchy uses separate L1I and L1D caches, a shared Sv39 walker, and coherent
-    DMA from the NIC/test engine. Tagged arbiters prioritize L1D, walker, L1I,
-    then DMA with bounded starvation, and a stream prefetcher that watches L1D
-    misses shares the DMA port after DMA. A line-size adapter places each 32-byte
-    request in its half of a 64-byte line of the shared 2 MiB L2, which feeds
-    an AXI4 bridge and memory model. All caches are 4-way set-associative; the
-    L1s use 32-byte lines and the L2 64-byte lines. Request paths are shown;
-    responses route by transaction ID.
+    Two views of the FROST cache library. Section 01 shows the coherent CPU
+    cache hierarchy composed by frost_hart and frost_cluster_memory for the
+    RV64GCBV X3 configuration: a 128 KiB four-way MSI L1D (coherence_l1d) with
+    a read-hit pipeline, eight CPU read slots, four ordered combining store
+    records, eight request endpoints (two supporting stream prefetch), cbo.zero
+    and Zicbom CMO support, a two-active and six-victim fetch_provider feeding
+    the 16 KiB four-way read-only L1I with two miss slots and one-cycle flash
+    invalidation, a shared 512-entry four-way L2 TLB with a 32-entry superpage
+    side array and Sv39 pointer-walk-cache PTW over two ReadOncePTW bridge
+    slots, and an eight-ID coherent hart line client shared by the vector
+    memory unit (six IDs) and the misaligned-access engine (two IDs). Coherent
+    channels (D, C, G, U, P, R, W, WA) join the hart to frost_cluster_memory,
+    where 4:1 D and C arbiters combine hart cache requests, eight-slot coherent
+    DMA ingress (NIC, DMA test engine and Svpbmt uncached DDR alias), a
+    coherent prefetch agent tracking four data and two instruction streams
+    (three data and one instruction request in flight, paused during DMA), and
+    the hart line client into the 2 MiB four-way UltraRAM L2 coherence home
+    (64-byte lines, eight fills with two reserved for demand, two writeback
+    slots). The home orders sectors, probes L1D, merges dirty replies, recalls
+    victims and issues load-queue cuts, then feeds cpu_memory_fabric (which
+    combines L2 lines with narrow uncached traffic on a 512-bit AXI4 master)
+    and DDR4 at 0x80000000. Section 02 shows the line-cache component hierarchy
+    (frost_hart_cache and frost_cluster_cache, composed by
+    frost_cache_hierarchy) used by cache component benches: 128 KiB L1D with
+    shared probe injection, a shared Sv39 walker coherence sequencer, a 16 KiB
+    read-only L1I with two miss slots and flash invalidation, a three-lock DMA
+    coherence sequencer, an optional four-stream L2 prefetcher, 2:1 and 3:1
+    starvation-bounded tagged arbiters, a 32-to-64-byte line-size adapter,
+    shared 2 MiB UltraRAM L2, 512-bit line_port_axi_bridge and behavioral DDR
+    model. Arrows follow requests and probes; most response and maintenance
+    control paths are omitted.
   </desc>
   <!--
     Self-contained SVG; edit the text, boxes and paths directly.
     Source map (paths relative to the repository root):
-      hw/rtl/lib/cache/frost_hart_cache.sv: the L1s, their tag/data memory
-        selection, and the probe injection shared by the two sequencers.
-      hw/rtl/lib/cache/frost_cluster_cache.sv: port order, ID prefixes, the
-        adapter and the L2, and its tag/data memory selection.
-      hw/rtl/lib/cache/frost_cache_hierarchy.sv: the two above as one module.
-      hw/rtl/lib/cache/line_size_adapter.sv: 32-byte requests as halves of
-        64-byte L2 lines.
-      hw/rtl/lib/cache/l2_stream_prefetcher.sv: reads ahead of L1D miss
-        streams into the L2.
-      hw/rtl/lib/cache/line_port_arbiter.sv: fixed priority, starvation bound
-        and response routing.
-      hw/rtl/lib/cache/dma_coherence_sequencer.sv: the DMA port's entry (probes,
-        load-queue invalidation, ordering at L2).
-      hw/rtl/lib/cache/walker_coherence_sequencer.sv: the walker's entry
-        (probe-clean, acknowledgement, then the shared-level read).
-      hw/rtl/lib/cache/frost_cache_test_harness.sv: component bench integration.
+      hw/rtl/cpu_top/{cpu_top,frost_hart,frost_cluster_memory}.sv:
+        production coherent CPU cache integration, fetch_provider, hart line
+        client, DMA ingress, coherent prefetch agent, D/C arbiters, L2 home and
+        cpu_memory_fabric.
+      hw/rtl/lib/cache/coherent_hart_cache.sv:
+        private L1D, read-only L1I (2 miss slots, flash invalidate), IF/PTW
+        bridges and Zicbom CMO requester.
+      hw/rtl/lib/cache/coherence_l1d.sv:
+        MSI L1D with read-hit pipeline, 8 read slots, 4 ordered store records,
+        8 request endpoints (2 stream prefetch), cbo.zero and 1-bit NRU array.
+      hw/rtl/lib/cache/coherence_cmo_agent.sv:
+        Zicbom CleanBlock / FlushBlock / InvalBlock requester.
+      hw/rtl/lib/cache/coherence_home.sv + coherence_home_engine.sv:
+        2 MiB four-way UltraRAM L2 home, 8 fills, 2 WBs, L1D probes and merges.
+      hw/rtl/lib/cache/coherence_dma_ingress.sv:
+        8-slot DMA ingress (source 2) and 8-ID hart line client (source 0).
+      hw/rtl/lib/cache/coherence_prefetch_agent.sv + coherence_prefetch_pause.sv:
+        4 data / 2 IF stream L2 prefetch agent (3 data + 1 IF in flight).
+      hw/rtl/cpu_and_mem/cpu/mmu/{l2tlb,ptw}.sv:
+        512-entry 4-way L2 TLB + 32-entry superpage side array and walk cache.
+      hw/rtl/lib/cache/frost_hart_cache.sv:
+        component-bench private L1D, L1I (2 miss slots, flash invalidate),
+        walker coherence sequencer and L1D probe injection register.
+      hw/rtl/lib/cache/frost_cluster_cache.sv + frost_cache_hierarchy.sv:
+        component-bench DMA sequencer, optional l2_stream_prefetcher, 2:1 and
+        3:1 tagged arbiters, line_size_adapter and shared L2.
+      hw/rtl/lib/cache/{line_size_adapter,line_port_arbiter,l2_stream_prefetcher}.sv,
+      hw/rtl/lib/cache/{dma_coherence_sequencer,walker_coherence_sequencer}.sv,
+      hw/rtl/lib/cache/{line_port_axi_bridge,frost_cache_test_harness}.sv:
+        component-bench building blocks and test harness.
   -->
   <defs>
     <linearGradient id="background" x2="1" y2="1">
       <stop stop-color="#101e34"/>
       <stop offset="1" stop-color="#080f1d"/>
     </linearGradient>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <linearGradient id="header-accent">
+      <stop stop-color="#62d8ef"/>
+      <stop offset="1" stop-color="#7f9cff"/>
+    </linearGradient>
+    <marker id="mem-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 1 1 L 9 5 L 1 9 Z" fill="#7ed8bc"/>
+    </marker>
+    <marker id="probe-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="#edc37d"/>
+    </marker>
+    <marker id="pf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="#b5a1f8"/>
     </marker>
     <style>
       text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #edf3fc; }
-      .heading { font-size: 24px; font-weight: 650; }
-      .label { font-size: 20px; font-weight: 600; }
+      .heading { font-size: 22px; font-weight: 650; }
+      .label { font-size: 19px; font-weight: 600; }
+      .sublabel { font-size: 16px; font-weight: 600; }
       .body { font-size: 18px; fill: #bdcbde; }
-      .small { font-size: 17px; fill: #bdcbde; }
-      .section { font-size: 17px; font-weight: 650; letter-spacing: 1.5px; fill: #adbed5; }
+      .small { font-size: 16.5px; fill: #bdcbde; }
+      .xs { font-size: 15px; fill: #bdcbde; }
+      .section { font-size: 17px; font-weight: 650; letter-spacing: 1.6px; fill: #adbed5; }
+      .subsec { font-size: 14px; font-weight: 650; letter-spacing: 1.3px; fill: #9fb3cc; }
       .center { text-anchor: middle; }
       .panel { fill: #101d30; stroke: #2b3c55; stroke-width: 1.5; }
       .memory { fill: #16342f; stroke: #4b8674; stroke-width: 1.5; }
       .arbiter { fill: #173148; stroke: #42748f; stroke-width: 1.5; }
-      .system { fill: #19273b; stroke: #4b607a; stroke-width: 1.5; }
-      .link { fill: none; stroke: #7ed8bc; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; marker-end: url(#arrow); }
-      .port { font-size: 17px; fill: #edc37d; }
+      .prefetch { fill: #2b2547; stroke: #8270b7; stroke-width: 1.5; }
+      .link { fill: none; stroke: #7ed8bc; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+      .probe { fill: none; stroke: #edc37d; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+      .train { fill: none; stroke: #b5a1f8; stroke-width: 2; stroke-dasharray: 5 4; stroke-linejoin: round; stroke-linecap: round; }
+      .halo { fill: none; stroke: #101d30; stroke-width: 6; stroke-linejoin: round; stroke-linecap: round; }
+      .port { font-size: 15.5px; fill: #edc37d; }
+      .accent-mint { fill: #9cdbc6; }
+      .accent-gold { fill: #edc37d; }
+      .accent-violet { fill: #c6b6fa; }
     </style>
   </defs>
-  <rect width="1200" height="942" rx="24" fill="url(#background)"/>
-  <rect x="44" y="36" width="5" height="57" rx="2.5" fill="#7ed8bc"/>
-  <text x="66" y="67" font-size="36" font-weight="750">Line-cache component hierarchy</text>
-  <text x="67" y="94" class="body">FROST component benches · example capacities · 32-byte L1 lines, 64-byte L2 lines</text>
 
-  <rect x="28" y="122" width="1144" height="792" rx="20" class="panel"/>
-  <text x="64" y="160" class="section">DATA ADAPTER</text>
-  <text x="448" y="160" class="section">ITLB + DTLB MISSES</text>
-  <text x="832" y="160" class="section">FETCH PROVIDER</text>
-  <g class="center">
-    <rect x="64" y="185" width="304" height="110" rx="12" class="memory"/>
-    <text x="216" y="220" class="heading">L1D · 128 KiB</text>
-    <text x="216" y="250" class="body">BRAM · non-blocking</text>
-    <text x="216" y="277" class="small">Write-back + write-allocate</text>
-    <rect x="448" y="185" width="304" height="110" rx="12" class="memory"/>
-    <text x="600" y="220" class="heading">Shared Sv39 walker</text>
-    <text x="600" y="250" class="body">Coherence sequencer</text>
-    <text x="600" y="277" class="small">Read-only · probes L1D · one walk</text>
-    <rect x="832" y="185" width="304" height="110" rx="12" class="memory"/>
-    <text x="984" y="220" class="heading">L1I · 16 KiB</text>
-    <text x="984" y="250" class="body">Read-only · BRAM</text>
-    <text x="984" y="277" class="small">2 active + 6 victim fetch lines</text>
+  <rect width="1200" height="1770" rx="24" fill="url(#background)"/>
+  <rect x="44" y="37" width="5" height="57" rx="2.5" fill="url(#header-accent)"/>
+  <text x="66" y="68" font-size="38" font-weight="750" letter-spacing="1">FROST</text>
+  <text x="226" y="67" font-size="29" fill="#cbd8eb">Cache hierarchy</text>
+  <text x="67" y="94" class="body">Coherent CPU path and component-bench line caches · 32 B sectors, 64 B L2 lines</text>
+  <g class="small">
+    <circle cx="806" cy="56" r="4" fill="#7ed8bc"/>
+    <text x="819" y="62">Requests / data</text>
+    <circle cx="998" cy="56" r="4" fill="#6dcee9"/>
+    <text x="1011" y="62">Arbiters / fabric</text>
+    <circle cx="806" cy="86" r="4" fill="#edc37d"/>
+    <text x="819" y="92">Probes / PutM</text>
+    <circle cx="998" cy="86" r="4" fill="#b5a1f8"/>
+    <text x="1011" y="92">Prefetch / train</text>
   </g>
 
-  <path d="M 720 295 V 352" class="link"/>
-  <path d="M 984 295 V 352" class="link"/>
-  <text x="736" y="337" class="port">Port 0</text>
-  <text x="1000" y="337" class="port">Port 1</text>
-  <rect x="704" y="352" width="432" height="96" rx="12" class="arbiter"/>
-  <text x="920" y="388" class="heading center">Walker / instruction arbiter</text>
-  <text x="920" y="419" class="body center">2:1 fixed priority · walker before L1I</text>
+  <!-- Section 01: Production coherent CPU cache hierarchy (frost_hart + frost_cluster_memory). -->
+  <rect x="28" y="122" width="1144" height="808" rx="20" class="panel"/>
+  <text x="52" y="156" class="section">01 / COHERENT CPU HIERARCHY</text>
+  <text x="1148" y="156" class="body" text-anchor="end">coherent_hart_cache + coherence_home · X3 capacities</text>
 
-  <g class="center">
-    <rect x="248" y="352" width="192" height="96" rx="12" class="memory"/>
-    <text x="344" y="384" class="heading">DMA port</text>
-    <text x="344" y="412" class="body">Coherence sequencer</text>
-    <text x="344" y="437" class="small">NIC + test engine</text>
-    <rect x="456" y="352" width="232" height="96" rx="12" class="memory"/>
-    <text x="572" y="384" class="label">Stream prefetcher</text>
-    <text x="572" y="412" class="body">Watches L1D misses</text>
-    <text x="572" y="437" class="small">Up to 8 lines ahead</text>
+  <!-- frost_hart private caches & hart line client -->
+  <rect x="48" y="176" width="1104" height="202" rx="14" fill="none" stroke="#54617c" stroke-dasharray="4 5"/>
+  <text x="64" y="198" class="subsec">FROST_HART · PRIVATE CACHES, BRIDGES &amp; LINE CLIENT</text>
+  <g id="coherent-hart" class="center">
+    <rect x="60" y="210" width="258" height="154" rx="12" class="memory"/>
+    <text x="189" y="238" class="heading">L1D · 128 KiB</text>
+    <text x="189" y="263" class="xs">4-way MSI BRAM · 1-bit NRU</text>
+    <text x="189" y="284" class="xs">Read-hit pipe · 8 read slots</text>
+    <text x="189" y="305" class="xs">4 stores · 8 endpoints (2 pf)</text>
+    <text x="189" y="326" class="xs">cbo.zero · Zicbom CMO agent</text>
+    <text x="189" y="348" class="xs accent-mint">32 B sectors · LQ cuts</text>
+
+    <rect x="334" y="210" width="258" height="154" rx="12" class="memory"/>
+    <text x="463" y="238" class="heading">Fetch buf. → L1I</text>
+    <text x="463" y="263" class="xs">fetch_provider: 2 + 6 lines</text>
+    <text x="463" y="284" class="xs">L1I: 16 KiB · 4-way BRAM</text>
+    <text x="463" y="305" class="xs">Read-only · 2 miss slots</text>
+    <text x="463" y="326" class="xs">1-cycle flash invalidate</text>
+    <text x="463" y="348" class="xs accent-mint">2 bridge slots · ReadOnceIF</text>
+
+    <rect x="608" y="210" width="258" height="154" rx="12" class="memory"/>
+    <text x="737" y="238" class="heading">L2 TLB → PTW</text>
+    <text x="737" y="263" class="xs">L2 TLB: 512 (4-way) + 32 SP</text>
+    <text x="737" y="284" class="xs">Sv39 walker · walk cache</text>
+    <text x="737" y="305" class="xs">PWC: 16 L1 + 4 root ptrs</text>
+    <text x="737" y="326" class="xs">Read-only (Svade)</text>
+    <text x="737" y="348" class="xs accent-mint">2 bridge slots · ReadOncePTW</text>
+
+    <rect x="882" y="210" width="258" height="154" rx="12" class="memory"/>
+    <text x="1011" y="238" class="heading">Hart line client</text>
+    <text x="1011" y="263" class="xs">coherence_dma_ingress · 8 IDs</text>
+    <text x="1011" y="284" class="xs">VMU (6 slots, IDs 2..7)</text>
+    <text x="1011" y="305" class="xs">Misaligned engine (IDs 0..1)</text>
+    <text x="1011" y="326" class="xs">DMARead · masked DMAWrite</text>
+    <text x="1011" y="348" class="xs accent-mint">Src 0 class 3 · 32 B sectors</text>
   </g>
 
-  <path d="M 344 448 V 494" class="link"/>
-  <path d="M 572 448 V 494" class="link"/>
-  <text x="360" y="479" class="port">Port 0</text>
-  <text x="588" y="479" class="port">Port 1</text>
-  <rect x="248" y="494" width="440" height="70" rx="12" class="arbiter"/>
-  <text x="468" y="522" class="label center">DMA / prefetch arbiter</text>
-  <text x="468" y="550" class="small center">2:1 fixed priority · DMA first</text>
+  <!-- frost_cluster_memory shared home, ingress, prefetcher and AXI fabric -->
+  <rect x="48" y="424" width="1104" height="486" rx="14" fill="none" stroke="#54617c" stroke-dasharray="4 5"/>
+  <text x="276" y="446" class="subsec">FROST_CLUSTER_MEMORY · INGRESS, PREFETCH, HOME &amp; FABRIC</text>
 
-  <path d="M 216 295 V 610" class="link"/>
-  <path d="M 468 564 V 610" class="link"/>
-  <path d="M 920 448 V 610" class="link"/>
-  <text x="232" y="595" class="port">Port 0</text>
-  <text x="484" y="595" class="port">Port 2</text>
-  <text x="936" y="595" class="port">Port 1</text>
-  <rect x="64" y="610" width="1072" height="84" rx="12" class="arbiter"/>
-  <text x="600" y="645" class="heading center">Data / shared-port arbiter</text>
-  <text x="600" y="674" class="body center">3:1 priority · L1D &gt; walker &gt; L1I &gt; DMA &gt; prefetch (starvation-bounded)</text>
+  <!-- Gold bidirectional probe & PutM trunk between L2 home and L1D (leftmost lane, zero crossings). -->
+  <path d="M 118 676 V 366" class="probe" marker-start="url(#probe-arrow)" marker-end="url(#probe-arrow)"/>
+  <text x="98" y="522" class="xs accent-gold center" transform="rotate(-90 98 522)">P / R / W / WA · L1D probes &amp; PutM</text>
 
-  <path d="M 180 694 V 740" class="link"/>
-  <text x="202" y="724" class="small">Tagged transactions · several may be in flight</text>
-  <g class="center">
-    <rect x="64" y="740" width="232" height="104" rx="12" class="arbiter"/>
-    <text x="180" y="773" class="heading">Line-size adapter</text>
-    <text x="180" y="802" class="body">32 B line → half of 64 B</text>
-    <text x="180" y="829" class="small">Half recorded per id</text>
-    <path d="M 296 792 H 344" class="link"/>
-    <rect x="344" y="740" width="232" height="104" rx="12" class="memory"/>
-    <text x="460" y="773" class="heading">Shared L2 · 2 MiB</text>
-    <text x="460" y="802" class="body">64 B lines · UltraRAM</text>
-    <text x="460" y="829" class="small">Write-back, write-allocate</text>
-    <path d="M 576 792 H 624" class="link"/>
-    <rect x="624" y="740" width="232" height="104" rx="12" class="memory"/>
-    <text x="740" y="773" class="heading">AXI4 master</text>
-    <text x="740" y="802" class="body">512-bit single beats</text>
-    <text x="740" y="829" class="small">Many in flight</text>
-    <path d="M 856 792 H 904" class="link"/>
-    <rect x="904" y="740" width="232" height="104" rx="12" class="memory"/>
-    <text x="1020" y="773" class="heading">DDR backing</text>
-    <text x="1020" y="802" class="body">1 GiB cached region</text>
-    <text x="1020" y="829" class="small">Base: 0x8000_0000</text>
+  <!-- Hart-cache D/C trunk joining L1D, L1I bridge and PTW bridge down into 4:1 D & C arbiters. -->
+  <path d="M 240 364 V 572" class="link" marker-end="url(#mem-arrow)"/>
+  <path d="M 463 364 V 396 H 240" class="link"/>
+  <path d="M 737 364 V 396 H 463" class="link"/>
+  <text x="252" y="414" class="xs accent-mint">D / C (hart cache)</text>
+
+  <!-- Hart line client D/C path straight down into 4:1 D & C arbiters. -->
+  <path d="M 1011 364 V 572" class="link" marker-end="url(#mem-arrow)"/>
+  <text x="1024" y="414" class="xs accent-mint">D / C (line client)</text>
+
+  <!-- Coherent DMA ingress and Coherent prefetch agent inside frost_cluster_memory. -->
+  <g id="cluster-agents" class="center">
+    <rect x="292" y="460" width="320" height="88" rx="12" class="memory"/>
+    <text x="452" y="486" class="label">Coherent DMA ingress</text>
+    <text x="452" y="510" class="xs">Src 2 · 8 slots · 256-bit AXI4 DMA mux</text>
+    <text x="452" y="532" class="xs">NIC · DMA test engine · Svpbmt NC / IO alias</text>
+
+    <rect x="632" y="460" width="320" height="88" rx="12" class="prefetch"/>
+    <text x="792" y="486" class="label">Coherent prefetch agent</text>
+    <text x="792" y="510" class="xs">Src 3 · 4 data / 2 IF streams · 3 + 1 in flight</text>
+    <text x="792" y="532" class="xs">Trained on accepted D · pauses during DMA</text>
   </g>
-  <text x="600" y="879" class="small center">L1I / L1D: 4-way, 32 B lines. L2: 4-way, 64 B lines. Responses route back by transaction ID.</text>
-  <text x="600" y="903" class="small center">Arrows follow requests; response and maintenance-control paths are omitted.</text>
+  <path d="M 452 548 V 572" class="link" marker-end="url(#mem-arrow)"/>
+  <path d="M 792 548 V 572" class="link" marker-end="url(#mem-arrow)"/>
+
+  <!-- 4:1 D & C arbiters (coherence_d_arbiter). -->
+  <rect x="196" y="572" width="872" height="66" rx="12" class="arbiter"/>
+  <text x="632" y="600" class="label center">4:1 D &amp; C arbiters · coherence_d_arbiter</text>
+  <text x="632" y="624" class="xs center">Hart cache (L1D / L1I / PTW / CMO) · DMA (8) · Prefetch (4) · Hart line client (8)  |  G / U route by q</text>
+
+  <!-- Purple training feedback from L2 home (o_accepted + o_prefetch_room) to prefetch agent. -->
+  <path d="M 444 676 V 656 H 1094 V 448 H 892 V 460" class="halo"/>
+  <path d="M 444 676 V 656 H 1094 V 448 H 892 V 460" class="train" marker-end="url(#pf-arrow)"/>
+  <text x="1120" y="556" class="xs accent-violet center" transform="rotate(-90 1120 556)">D accept + room</text>
+
+  <!-- Arbiter down into L2 coherence home. -->
+  <path d="M 276 638 V 676" class="link" marker-end="url(#mem-arrow)"/>
+  <text x="290" y="662" class="xs accent-mint">D / C</text>
+
+  <!-- Bottom row of Section 01: L2 home -> cpu_memory_fabric -> SoC decode / DDR4. -->
+  <g id="coherent-bottom" class="center">
+    <rect x="60" y="676" width="424" height="134" rx="12" class="memory"/>
+    <text x="272" y="706" class="heading">L2 coherence home · 2 MiB</text>
+    <text x="272" y="732" class="xs">4-way · 64 B lines · UltraRAM · parallel read</text>
+    <text x="272" y="754" class="xs">8 fills (2 reserved for demand) · 2 WBs</text>
+    <text x="272" y="776" class="xs">Sector ordering · L1D probes · dirty merge</text>
+    <text x="272" y="798" class="xs accent-mint">Victim recall · LQ cuts · Zicbom completion</text>
+
+    <path d="M 484 743 H 524" class="link" marker-end="url(#mem-arrow)"/>
+
+    <rect x="524" y="676" width="300" height="134" rx="12" class="arbiter"/>
+    <text x="674" y="706" class="heading">cpu_memory_fabric</text>
+    <text x="674" y="732" class="xs">L2 64 B lines + narrow uncached</text>
+    <text x="674" y="754" class="xs">Uncached data &amp; instruction fetch</text>
+    <text x="674" y="776" class="xs">512-bit AXI4 master · 6-bit IDs</text>
+    <text x="674" y="798" class="xs">Optional MEMORY_LINK_STAGES</text>
+
+    <path d="M 824 743 H 864" class="link" marker-end="url(#mem-arrow)"/>
+
+    <rect x="864" y="676" width="276" height="134" rx="12" class="memory"/>
+    <text x="1002" y="706" class="heading">SoC decode → DDR4</text>
+    <text x="1002" y="732" class="xs">1 GiB cached @ 0x8000_0000</text>
+    <text x="1002" y="754" class="xs">512-bit single beats · 5-bit IDs</text>
+    <text x="1002" y="776" class="xs">Low BRAM &amp; MMIO (uncached)</text>
+    <text x="1002" y="798" class="xs accent-mint">DDR4 controller + ECC</text>
+  </g>
+  <text x="600" y="852" class="small center">Coherent channels: D / C (demand / done), G / U (grant / release), P / R (probe / reply), W / WA (PutM / ack).</text>
+  <text x="600" y="878" class="small center">All three DDR caches are 4-way. Private L1D / L1I sectors are 32 B; shared L2 home lines are 64 B.</text>
+
+  <!-- Section 02: Line-cache component hierarchy (frost_hart_cache + frost_cluster_cache). -->
+  <rect x="28" y="952" width="1144" height="764" rx="20" class="panel"/>
+  <text x="52" y="986" class="section">02 / LINE-CACHE COMPONENT HIERARCHY</text>
+  <text x="1148" y="986" class="body" text-anchor="end">frost_hart_cache + frost_cluster_cache · component benches</text>
+
+  <!-- frost_hart_cache private caches -->
+  <rect x="48" y="1004" width="1104" height="144" rx="14" fill="none" stroke="#54617c" stroke-dasharray="4 5"/>
+  <text x="64" y="1024" class="subsec">FROST_HART_CACHE · PRIVATE CACHES, WALKER SEQUENCER &amp; PROBE INJECTION</text>
+  <g id="bench-hart" class="center">
+    <rect x="60" y="1036" width="316" height="100" rx="12" class="memory"/>
+    <text x="218" y="1066" class="heading">L1D · 128 KiB</text>
+    <text x="218" y="1093" class="body">4-way BRAM · non-blocking</text>
+    <text x="218" y="1119" class="small">Write-back + probe injection</text>
+
+    <rect x="444" y="1036" width="316" height="100" rx="12" class="memory"/>
+    <text x="602" y="1066" class="heading">Shared Sv39 walker</text>
+    <text x="602" y="1093" class="body">walker_coherence_sequencer</text>
+    <text x="602" y="1119" class="small">Read-only · probes L1D · 1 walk</text>
+
+    <rect x="824" y="1036" width="316" height="100" rx="12" class="memory"/>
+    <text x="982" y="1066" class="heading">L1I · 16 KiB</text>
+    <text x="982" y="1093" class="body">Read-only · 4-way BRAM</text>
+    <text x="982" y="1119" class="small">2 miss slots · flash inval</text>
+  </g>
+  <!-- Walker probe into L1D probe injection -->
+  <path d="M 444 1086 H 376" class="probe" marker-end="url(#probe-arrow)"/>
+  <text x="410" y="1074" class="xs accent-gold center">probe</text>
+
+  <!-- frost_cluster_cache shared level -->
+  <rect x="48" y="1162" width="1104" height="504" rx="14" fill="none" stroke="#54617c" stroke-dasharray="4 5"/>
+  <text x="240" y="1182" class="subsec">FROST_CLUSTER_CACHE · ARBITERS, ADAPTER &amp; L2</text>
+
+  <!-- Walker / L1I links into 2:1 arbiter -->
+  <path d="M 752 1136 V 1198" class="link" marker-end="url(#mem-arrow)"/>
+  <path d="M 982 1136 V 1198" class="link" marker-end="url(#mem-arrow)"/>
+  <text x="766" y="1178" class="port">Port 0</text>
+  <text x="996" y="1178" class="port">Port 1</text>
+
+  <g id="bench-mid" class="center">
+    <rect x="240" y="1198" width="232" height="88" rx="12" class="memory"/>
+    <text x="356" y="1226" class="label">DMA port</text>
+    <text x="356" y="1250" class="xs">dma_coherence_sequencer</text>
+    <text x="356" y="1272" class="xs">Probes L1D · LQ cuts · 3 locks</text>
+
+    <rect x="488" y="1198" width="232" height="88" rx="12" class="prefetch"/>
+    <text x="604" y="1226" class="label">Stream prefetcher</text>
+    <text x="604" y="1250" class="xs">l2_stream_prefetcher (opt.)</text>
+    <text x="604" y="1272" class="xs">4 streams · 8 ahead · 4 max</text>
+
+    <rect x="736" y="1198" width="404" height="88" rx="12" class="arbiter"/>
+    <text x="938" y="1232" class="heading">Walker / L1I arbiter</text>
+    <text x="938" y="1262" class="body">2:1 fixed priority · walker before L1I</text>
+  </g>
+  <!-- DMA probe into L1D probe injection (clean left lane at x=136) -->
+  <path d="M 240 1242 H 136 V 1136" class="probe" marker-end="url(#probe-arrow)"/>
+  <text x="124" y="1236" class="xs accent-gold" text-anchor="end">DMA</text>
+  <text x="124" y="1254" class="xs accent-gold" text-anchor="end">probe</text>
+
+  <!-- DMA / prefetch 2:1 arbiter -->
+  <path d="M 356 1286 V 1326" class="link" marker-end="url(#mem-arrow)"/>
+  <path d="M 604 1286 V 1326" class="link" marker-end="url(#mem-arrow)"/>
+  <text x="370" y="1313" class="port">Port 0</text>
+  <text x="618" y="1313" class="port">Port 1</text>
+  <rect x="240" y="1326" width="480" height="64" rx="12" class="arbiter"/>
+  <text x="480" y="1353" class="label center">DMA / prefetch arbiter</text>
+  <text x="480" y="1377" class="small center">2:1 fixed priority · DMA first</text>
+
+  <!-- Top 3:1 data / shared-port arbiter -->
+  <path d="M 208 1136 V 1432" class="link" marker-end="url(#mem-arrow)"/>
+  <path d="M 480 1390 V 1432" class="link" marker-end="url(#mem-arrow)"/>
+  <path d="M 938 1286 V 1432" class="link" marker-end="url(#mem-arrow)"/>
+  <text x="222" y="1418" class="port">Port 0</text>
+  <text x="494" y="1418" class="port">Port 2</text>
+  <text x="952" y="1418" class="port">Port 1</text>
+  <rect x="60" y="1432" width="1080" height="72" rx="12" class="arbiter"/>
+  <text x="600" y="1463" class="heading center">Data / shared-port arbiter</text>
+  <text x="600" y="1491" class="body center">3:1 priority · L1D &gt; walker &gt; L1I &gt; DMA &gt; prefetch (16-grant starvation bound)</text>
+
+  <!-- Line-size adapter -> Shared L2 -> AXI4 bridge -> DDR model -->
+  <path d="M 180 1504 V 1544" class="link" marker-end="url(#mem-arrow)"/>
+  <text x="200" y="1531" class="small">Tagged transactions · prefix-free IDs</text>
+  <g id="bench-bottom" class="center">
+    <rect x="60" y="1544" width="240" height="104" rx="12" class="arbiter"/>
+    <text x="180" y="1576" class="heading">Line-size adapter</text>
+    <text x="180" y="1604" class="small">32 B line → half of 64 B</text>
+    <text x="180" y="1630" class="xs">Half recorded per ID</text>
+
+    <path d="M 300 1596 H 340" class="link" marker-end="url(#mem-arrow)"/>
+
+    <rect x="340" y="1544" width="240" height="104" rx="12" class="memory"/>
+    <text x="460" y="1576" class="heading">Shared L2 · 2 MiB</text>
+    <text x="460" y="1604" class="small">4-way · 64 B · UltraRAM</text>
+    <text x="460" y="1630" class="xs">Write-back, write-allocate</text>
+
+    <path d="M 580 1596 H 620" class="link" marker-end="url(#mem-arrow)"/>
+
+    <rect x="620" y="1544" width="240" height="104" rx="12" class="memory"/>
+    <text x="740" y="1576" class="heading">AXI4 bridge</text>
+    <text x="740" y="1604" class="small">line_port_axi_bridge</text>
+    <text x="740" y="1630" class="xs">512-bit single beats</text>
+
+    <path d="M 860 1596 H 900" class="link" marker-end="url(#mem-arrow)"/>
+
+    <rect x="900" y="1544" width="240" height="104" rx="12" class="memory"/>
+    <text x="1020" y="1576" class="heading">DDR model</text>
+    <text x="1020" y="1604" class="small">Behavioral memory</text>
+    <text x="1020" y="1630" class="xs">Base: 0x8000_0000</text>
+  </g>
+  <text x="600" y="1696" class="small center">L1I / L1D: 4-way, 32 B lines. L2: 4-way, 64 B lines. Responses route back by transaction ID prefix.</text>
+
+  <text x="52" y="1748" font-size="16" fill="#a9bad0">Section 01: CPU coherent hierarchy · Section 02: component-bench line hierarchy · arrows follow requests and probes</text>
 </svg>
