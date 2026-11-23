@@ -117,6 +117,8 @@ intervening: chparam -set MODE 4 coherence_store_boundary_formal
 amo: chparam -set MODE 1 coherence_store_boundary_formal
 sc: chparam -set MODE 2 coherence_store_boundary_formal
 old: chparam -set MODE 3 coherence_store_boundary_formal
+hierarchy -top coherence_store_boundary_formal
+script free_undefined.ys
 prep -flatten -top coherence_store_boundary_formal
 check -assert
 chformal -assert -cover -remove c:*sq_forwarding_unit_inst*
@@ -190,3 +192,4 @@ coherence_store_boundary_formal.sv
 ../hw/rtl/lib/cache/coherence_array.sv
 ../hw/rtl/lib/cache/coherence_l1d.sv
 ../hw/rtl/lib/cache/coherence_types.svh
+free_undefined.ys

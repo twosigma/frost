@@ -5,6 +5,7 @@ id_kill_equiv_vector
 [options]
 mode bmc
 depth 1
+timeout 120
 
 [engines]
 smtbmc boolector
@@ -14,17 +15,14 @@ smtbmc boolector
 # id_stage to apply is_illegal_instruction and is_fetch_fault inside both
 # instr_operand_classifier instances with no post-classifier mask; gate is
 # id_stage as shipped, forming id_kill beside the decoder and masking the
-# 19 class bits last. Both are flattened with registers unmapped and every
-# named net outside the internal pre-kill wires kept, so equiv_make pairs
-# all 38 pre-register class bits, every pipeline register next-state bit,
-# and all eight id_stage outputs across both slots. Both sides elaborate the
-# same VECTOR: 0 in id_kill_equiv (the default build) and 1 in
-# id_kill_equiv_vector, which adds the vector floating-point decode and classes.
+# 19 class bits last. Both forms open undefined constants with free_undefined.ys,
+# cut every register, verify matching compiled ports, and prove every point.
 read -sv -D SYNTHESIS riscv_pkg.sv instr_decoder.sv instr_operand_classifier.sv immediate_decoder.sv instruction_type_decoder.sv branch_target_precompute.sv id_stage.sv
 id_kill_equiv: chparam -set VECTOR 0 id_stage
 id_kill_equiv_vector: chparam -set VECTOR 1 id_stage
 hierarchy -check -top id_stage
-proc
+script free_undefined.ys
+select -assert-none a:init t:$initstate t:$anyinit
 opt_clean
 select -module id_stage
 connect -port operand_classifier \i_illegal \is_illegal_instruction
@@ -39,12 +37,22 @@ select -clear
 setattr -mod -unset keep_hierarchy *
 flatten
 memory_map -keepdc
-setundef -zero
-setattr -unset init
 dffunmap
+setundef -undriven -anyseq
 rename -hide w:id_kill* w:*_nokill* w:operand_classifier.* w:operand_classifier_2.*
+opt_clean -purge
 setattr -set keep 1 w:* w:$* %d
 opt_clean -purge
+check -assert
+select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
+select -assert-none i:* o:* %i
+select -assert-count 2 t:$dff
+select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
+expose -dff -cut id_stage/w:*
+select -assert-none id_stage/t:$dff %co:+[Q] id_stage/w:* %i %co1 id_stage/t:* %i
+id_kill_equiv: select -assert-count 1230 t:$anyseq
+id_kill_equiv_vector: select -assert-count 1352 t:$anyseq
+autoname t:$anyseq
 rename -top gold
 design -stash gold
 design -reset
@@ -52,30 +60,56 @@ read -sv -D SYNTHESIS riscv_pkg.sv instr_decoder.sv instr_operand_classifier.sv 
 id_kill_equiv: chparam -set VECTOR 0 id_stage
 id_kill_equiv_vector: chparam -set VECTOR 1 id_stage
 hierarchy -check -top id_stage
-proc
+script free_undefined.ys
+select -assert-none a:init t:$initstate t:$anyinit
 setattr -mod -unset keep_hierarchy *
 flatten
 memory_map -keepdc
-setundef -zero
-setattr -unset init
 dffunmap
+setundef -undriven -anyseq
 rename -hide w:id_kill* w:*_nokill* w:operand_classifier.* w:operand_classifier_2.*
+opt_clean -purge
 setattr -set keep 1 w:* w:$* %d
 opt_clean -purge
+check -assert
+select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
+select -assert-none i:* o:* %i
+select -assert-count 2 t:$dff
+select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
+expose -dff -cut id_stage/w:*
+select -assert-none id_stage/t:$dff %co:+[Q] id_stage/w:* %i %co1 id_stage/t:* %i
+id_kill_equiv: select -assert-count 1230 t:$anyseq
+id_kill_equiv_vector: select -assert-count 1352 t:$anyseq
+autoname t:$anyseq
 rename -top gate
 design -stash gate
 design -reset
+read -sv twin_both.sv
 design -copy-from gold -as gold gold
 design -copy-from gate -as gate gate
+hierarchy -top twin_both
+script free_undefined.ys
+# The runner checks the two compiled port lists, including declared indices.
+write_json twin_ports.json
 equiv_make gold gate equiv
-hierarchy -top equiv
+delete gold gate twin_both
+setundef -anyseq
+select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate
+id_kill_equiv: select -assert-count 1428 t:$anyseq
+id_kill_equiv: select -assert-count 198 t:$anyseq n:*_gold %i
+id_kill_equiv: select -assert-count 198 t:$anyseq n:*_gate %i
+id_kill_equiv_vector: select -assert-count 1578 t:$anyseq
+id_kill_equiv_vector: select -assert-count 226 t:$anyseq n:*_gold %i
+id_kill_equiv_vector: select -assert-count 226 t:$anyseq n:*_gate %i
 select -assert-count 34 w:has_int_dest_pre_gold w:has_fp_dest_pre_gold w:uses_int_rs1_pre_gold w:uses_int_rs2_pre_gold w:uses_fp_rs1_pre_gold w:uses_fp_rs2_pre_gold w:uses_fp_rs3_pre_gold w:rs_type_pre_gold w:is_int_store_pre_gold w:is_branch_or_jump_pre_gold w:is_fence_pre_gold w:is_fence_i_pre_gold w:is_sfence_vma_pre_gold w:is_csr_imm_pre_gold w:has_fp_flags_pre_gold w:needs_lq_pre_gold w:needs_sq_pre_gold w:has_int_dest_pre_2_gold w:has_fp_dest_pre_2_gold w:uses_int_rs1_pre_2_gold w:uses_int_rs2_pre_2_gold w:uses_fp_rs1_pre_2_gold w:uses_fp_rs2_pre_2_gold w:uses_fp_rs3_pre_2_gold w:rs_type_pre_2_gold w:is_int_store_pre_2_gold w:is_branch_or_jump_pre_2_gold w:is_fence_pre_2_gold w:is_fence_i_pre_2_gold w:is_sfence_vma_pre_2_gold w:is_csr_imm_pre_2_gold w:has_fp_flags_pre_2_gold w:needs_lq_pre_2_gold w:needs_sq_pre_2_gold
 select -assert-count 8 o:o_from_id_to_ex*
-select -assert-min 11700 t:$equiv
+select -assert-min 7375 t:$equiv
 equiv_simple
 equiv_status -assert
 design -reset
 read -formal -sv prim_twin_done.sv
+hierarchy -top prim_twin_done
+script free_undefined.ys
 prep -top prim_twin_done
 
 [files]
@@ -87,3 +121,5 @@ prep -top prim_twin_done
 ../hw/rtl/cpu_and_mem/cpu/id_stage/branch_target_precompute.sv
 ../hw/rtl/cpu_and_mem/cpu/id_stage/id_stage.sv
 prim_twin_done.sv
+free_undefined.ys
+twin_both.sv

@@ -373,51 +373,56 @@ Cells from the primitive models carry a `from_prim` attribute. The selection
 fixes a floor on that count so that a primitive whose output folds to a
 constant cannot silently reduce the coverage below the floor.
 
-`pd_target_candidate_twin`, `decoded_bundle_queue_twin`, `imem_predecode_twin`
-and `l0_store_boundary_twin` open each form with `free_undefined.ys`. After
-memory mapping they give undriven bits free values, keep named nets and
-remove unused cells. Both forms have no register initializers. The bundle
-queue, IMEM predecode and the store boundary cut their register outputs
-into input/output pairs. Each reader sees an arbitrary current value and each register drives
-a next-state comparison. All their registers use the rising edge of `i_clk`.
-The ports must match in position, name, direction, width, declared indices
-and signedness. The runner checks those declarations in `twin_ports.json`
-and checks each register's clock connection and edge.
+Every in-script comparison (the 19 in-script `*_twin` targets plus
+`id_stage_kill_equiv` and `rs_issue_tag_banks`, 35 tasks in all) opens each form
+with `free_undefined.ys`. After memory mapping they give undriven bits free
+values, keep named nets and remove unused cells. Sequential targets cut their
+register outputs into input/output pairs: each reader sees an arbitrary current
+value and each register drives a next-state comparison, with all registers on
+the rising edge of their declared clock input. The ports must match in position,
+name, direction, width, declared indices and signedness. The runner checks those
+declarations in `twin_ports.json` and checks each register's clock connection
+and edge.
 
 The comparison opens the two stashed forms under `twin_both` before
-`equiv_make`. The bundle queue uses `autoname t:$anyseq` in each form so that
-corresponding free cells of equal width share one arbitrary value per cycle.
-Each pairing is one-to-one. The store boundary keeps six independent free
-cells in each form and compares all 739 points, including the six driven
-by the store launch and completion primitives. IMEM predecode compares
-1,317 points with 22 independent free cells in the reference and 25 in the
-candidate. The scripts pin the census and a floor on the total points, then run
-`equiv_simple` and `equiv_status -assert` on every point. From any equal
-paired state the forms agree on outputs and next state, including the first
-cycle. Each task has a 60-second limit.
+`equiv_make`. Tasks that pair free values across forms use `autoname t:$anyseq`
+in each form so that corresponding free cells of equal width share one arbitrary
+value per cycle, one-to-one; the remaining tasks keep independent free cells in
+each form. The scripts pin the free-cell census and a floor on the total points
+(and on `@blk` for primitive twins), then run unrestricted `equiv_simple` and
+`equiv_status -assert` on every point. From any equal paired state the forms
+agree on outputs and next state, including the first cycle. The in-script
+comparisons hand `prim_twin_done.sv` (also opened with `free_undefined.ys`) to
+SymbiYosys after `equiv_status -assert`.
 
-Every opened in-script comparison declares its two forms, register and free-cell
-counts, primitive-cone floor and total point floor in `TWIN_COMPARISONS`.
-The fast registry test and the formal runner check the complete command sequence
-of each form through its stash, including commands in included scripts.
-Immediately after the undefined-value opening each form checks for initial
-values. Before the register cut it checks again for initial values, rejects
-unsupported state cells and checks its declared register count. Commands
-that remove or overwrite initialization are forbidden. These proofs start from
-arbitrary paired state and reject explicit register initializers in either form.
+Every in-script comparison declares its two forms, register and free-cell
+counts, initial-value counts, primitive-cone floor and total point floor in
+`TWIN_COMPARISONS`. The fast registry test and the formal runner check the
+complete command sequence of each form through its stash, including commands in
+included scripts. Immediately after the undefined-value opening each form checks
+its declared pre-flattening count of initialized nets (zero for modules without
+initialized RAMs). Before the register cut it checks its declared post-mapping
+count of initialized nets, rejects unsupported state cells and checks its
+declared register count. Commands that remove or overwrite initialization are
+forbidden. Most targets reject explicit register initializers in either form;
+the six RAM-containing targets (`branch_predictor_twin`, `coherence_home_twin`,
+`coherence_l1d_twin`, `reservation_station_twin`, `rs_issue_tag_banks`, and
+`store_queue_twin`) preserve their compiled `a:init` attributes and the runner
+checks in `twin_ports.json` that both forms have the declared count and
+bit-for-bit identical initial values.
 
 A combinational task declares zero registers and no clock. A task with
 registers names one scalar clock input. Both forms check that this input
 drives every `$dff.CLK` before the cut. The runner independently checks the
-compiled register count, absence of init attributes and the rising edge and
+compiled register count, compiled init attributes and the rising edge and
 clock source of each register. It resolves the named input in each module's
 own bit numbering.
 
 Both stashes feed the same `twin_ports.json` dump and `equiv_make`.
-A successful comparison requires matching compiled port declarations, both
-point floors and unrestricted `equiv_simple` and `equiv_status -assert`.
-Only the named unopened tasks in `UNDEFINED_OPENING_TWINS` may use the
-older comparison.
+A successful comparison requires matching compiled port declarations (and
+matching compiled initial values where present), all point floors and
+unrestricted `equiv_simple` and `equiv_status -assert`.
+`UNDEFINED_OPENING_TWINS` is empty.
 
 The `bmc`, `prove` and `cover` tasks of `backing_btb_twin`, `pd_history_twin`,
 `tage_predictor_twin` and `ittage_predictor_twin` compare two instances
@@ -428,12 +433,6 @@ unnamed checks, their guards and the PD fetch assumptions. The registered
 task mode determines which checks the harness keeps. The runner verifies
 the staged harness source after the proof. Other twin scripts require the
 declared full comparison described above.
-
-The primitive twins on `UNDEFINED_OPENING_TWINS` set undefined constants to
-zero, drop initial values and prove the points in `@blk` for any input and
-any state in which paired registers agree. A register without a name match
-keeps independent state in each form. The in-script comparisons hand
-`prim_twin_done.sv` to SymbiYosys after `equiv_status -assert`.
 
 `tests/test_prim_twins.py` lists every `FROST_XILINX_PRIMS` block in `hw/rtl`,
 fails on one that no registered check covers, and requires each covering file
@@ -522,9 +521,9 @@ and `p_pd_slot2_cond_branch_predecode_exact` enabled.
 | `ras_checkpoint` | The return-address stack's outputs, next pointer, and count equal the reference equations, and so does every entry write: a push or swap writes its link address, a restore writes the saved top entry back, and nothing else changes |
 | `ras_flush_checkpoint` | A live ROB head on a full flush restores the latest pointer, depth and full return address dispatched to its tag, with no push or pop. All other recovery fields pass through. An unbounded proof tracks one arbitrary tag through both dispatch slots and both RAM banks. Five covers reach both slots and banks, tag wrap and priority over a simultaneous call replay. |
 | `rvc_predecode` | The fill-time RV64C/Zcb/Zcmop expansion, illegal flag and source metadata equal the reference decompressor for all 65,536 parcels; `c.ebreak` (`0x9002`) is the sole compressed parcel whose expansion sets bits 6 and 4, and SYSTEM funct3=100 permits pairing |
-| `branch_predictor_twin` | The branch predictor's slot-2 payload and relation selects (LUT6 per bit) equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
-| `pc_controller_twin` | The fetch-PC mux, architectural next-PC mux, pending-relation selects, the sequential-PC calculator's selects and relations, and the control-flow tracker's halfword step equal their portable forms, with and without the slot-2 pending-handoff exclusion. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
-| `control_flow_tracker_twin` | The tracker's halfword-next LUT6 equals its portable form |
+| `branch_predictor_twin` | The branch predictor's slot-2 payload and relation selects (LUT6 per bit) equal their portable form. Both forms open undefined values, preserve matching compiled RAM initializers, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 900-second limit (see Primitive twins) |
+| `pc_controller_twin` | The fetch-PC mux, architectural next-PC mux, pending-relation selects, the sequential-PC calculator's selects and relations, and the control-flow tracker's halfword step equal their portable forms, with and without the slot-2 pending-handoff exclusion. Both forms open undefined values, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 120-second limit (see Primitive twins) |
+| `control_flow_tracker_twin` | The tracker's halfword-next LUT6 equals its portable form. Both forms open undefined values, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 60-second limit (see Primitive twins) |
 | `pd_target_candidate_twin` | Every comparison point of the predecode target adder and its saved-XOR select agrees for all inputs. The primitive cone includes the CARRY8 and LUT2, LUT3, LUT5 and LUT6 helpers |
 
 `prediction_release` runs the real `pc_controller`, `c_ext_state`, and
@@ -584,7 +583,7 @@ bits, so a type taken from a different source than its target would show.
 | `rat_checkpoint_restore` | Register alias table coupled to a 32-entry circular ROB, per-allocation epoch toggle, 1-cycle pipelined commit bus, and 2-phase early and commit-time branch recovery, unbounded (`prove_int_active`, `prove_int_ckpt_lo`, `prove_int_ckpt_mid`, `prove_int_ckpt_hi`, `prove_fp_active`, `prove_fp_ckpt_lo`, `prove_fp_ckpt_mid`, `prove_fp_ckpt_hi`) against an epoch-free instruction-sequence oracle for symbolic-constant watched registers across all 31 non-zero INT registers, all 32 FP registers, and all 12 checkpoint slots (IDs 0-3, 4-7 and 8-11 per partition; the 4-bit ID is assumed below 12). All eight tasks are required: each checks its owning partition while assuming only the preceding cycle's assertion results, so a first failure remains admissible in its owning partition. Dynamic `x0` probe lookups report unrenamed zero; lowest-free checkpoint allocation and availability match pool occupancy (`cover`, depth 15, reaches `o_checkpoint_available == 0`, slot `11` allocation, slot-2 overlay save and early restore, restoration of a live integer link after a younger rename to the same register, commit-time recovery clearing active rename state, and slot-2 FP commit clearing); slot-2 branch saves overlay a same-cycle slot-1 rename; early restores retain the jump’s own integer link and recover older unretired producers from the snapshot, and restore `o_ras_tos`, `o_ras_valid_count`, and the full `o_ras_top`; and dual-lane commits clear only matching tags. Assumes an initial reset and non-`x0` destination encoding. Unexplored inputs: watched lookups run only on `src1` ports; INT `src2` is checked only at `x0`; FP `src2` and `src3` are tied to `0`; register-file value passthrough is unchecked; a restore never coincides with `i_flush_all`; early restore selects live control-flow instructions with an integer destination or no destination; non-watched commits never name the watched register; recovery and free timing follow the harness's model of `cpu_ooo`; and `i_checkpoint_reclaim_all` is free here whereas the core ties it to `0` (`misprediction_flush_controller`) |
 | `l0_store_boundary_twin` | The SQ write stage, invalidate port and L0 byte strobes equal the original address-decoded boundary for every selected beat and launch decision |
 | `decoded_bundle_queue_twin` | Every comparison point of the queue agrees for arbitrary inputs, common register state and paired free values, including the producer stall and shadow-next selects (LUT3 and LUT5) with split shadow stall and four late copies |
-| `id_stage_kill_equiv` | `id_stage`, without the vector unit (`id_kill_equiv`) and with it (`id_kill_equiv_vector`), with early CSR-gated legality and post-classifier masking equals `id_stage` with `is_illegal_instruction` and `is_fetch_fault` applied inside `instr_operand_classifier`, across all 38 operand-class bits, register next states, and all eight stage outputs for both slots, for every instruction word, CSR legality input, and `inject_nop` state |
+| `id_stage_kill_equiv` | `id_stage`, without the vector unit (`id_kill_equiv`) and with it (`id_kill_equiv_vector`), with early CSR-gated legality and post-classifier masking equals `id_stage` with `is_illegal_instruction` and `is_fetch_fault` applied inside `instr_operand_classifier`, across all 38 operand-class bits, register next states, and all eight stage outputs for both slots, for every instruction word, CSR legality input, and `inject_nop` state. Both forms open undefined values, cut every register, verify matching compiled ports and prove every comparison point, within a 120-second limit (see Primitive twins) |
 
 `decoded_bundle_queue` uses an 8-bit symbolic payload, so the check does not
 depend on decode fields. It also covers the registered head copy and a 3-bit
@@ -620,11 +619,11 @@ cycle; simulation asserts the last three. The split shadow select that
 | `rs_pretag_cofactor` | The pre-issue ROB tag, computed for each combination of the two CDB valid bits, equals the reference priority select in two station configurations; the export tasks also check the candidate ready vectors |
 | `rs_raw_pretag` | With the real early-wakeup merger, the MEM station's look-ahead candidates and ready vectors agree with its issue winner |
 | `rs_lq_prematch` | MEM_RS and the LQ connected through the real merger and translation select: every candidate match and the registered selected match equal a direct tag CAM; bounded and unbounded |
-| `rs_issue_tag_banks` | INT_RS with four issue-tag copies (`ISSUE_CDB_TAG_BANKS=4`), each bank input driven by its lane's tag, equals INT_RS with the single tags: every output and every next state are the same for any register state and input. `int_equiv` compares the portable builds and `int_equiv_prims` the Xilinx-primitive builds. Both are flattened as in the primitive twins, and every flop is then cut: its readers take a free input in its place (the state) and its output is compared (the next state). `equiv_make` pairs ports and nets by name, `equiv_struct` adds a point for each pair of matching cells, and `equiv_simple` must prove every point. A sat check in each build confirms that one entry of each quarter compares against its lane's tag. Each copy equals its tag after one clock edge, which `rs_issue_tag_copies` proves, and a station whose state equals the single-tag station's, with bank inputs equal to the tags, has the same outputs and next state; INT_RS's behavior is therefore unchanged from reset, or from any corresponding initial state. Each task has a 600-second limit in Primitive forms |
+| `rs_issue_tag_banks` | INT_RS with four issue-tag copies (`ISSUE_CDB_TAG_BANKS=4`), each bank input driven by its lane's tag, equals INT_RS with the single tags: every output and every next state are the same for any register state and input. `int_equiv` compares the portable builds and `int_equiv_prims` the Xilinx-primitive builds. Both forms open undefined values with `free_undefined.ys`, preserve matching compiled RAM initializers, flatten as in the primitive twins, verify matching compiled ports and initial values in `twin_ports.json`, and cut every flop so its readers take a free input in its place (the state) and its output is compared (the next state). `equiv_make` pairs ports and nets by name, `equiv_struct -icells` adds a point for each pair of matching cells, and unrestricted `equiv_simple` and `equiv_status -assert` must prove every point. A sat check in each build confirms that one entry of each quarter compares against its lane's tag. Each copy equals its tag after one clock edge, which `rs_issue_tag_copies` proves, and a station whose state equals the single-tag station's, with bank inputs equal to the tags, has the same outputs and next state; INT_RS's behavior is therefore unchanged from reset, or from any corresponding initial state. Each task has a 600-second limit in Primitive forms |
 | `rs_issue_tag_copies` | Each of `tomasulo_wrapper`'s INT_RS issue-tag copies equals its tag after one clock edge, from any initial state: the wrapper is read as `tomasulo_wrapper` reads it, the eight copy assertions (the wrapper's only checks gated by `$initstate`) are kept, every other assertion, every assumption and every cover is removed, the outputs are deleted and the two next-tag nets are cut to free values; induction of depth 2. The task has a 600-second limit in Primitive forms |
 | `tomasulo_wrapper` | The back end together (ROB, RAT, four stations, CDB arbiter, and memory queues): a full flush or reset empties every structure, each station's copy of the CDB matches the bus, and the stations' ROB-tag rule holds with the real ROB allocator. See below |
 | `tomasulo_wrapper_commit_bus` | The wrapper's ROB, commit pipeline, RAT and fence flush, with both retirement and rename lanes. See below |
-| `reservation_station_twin` | The indexed source-write selects (LUT5 and LUT3) in the INT-station configuration equal their portable form. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input |
+| `reservation_station_twin` | The indexed source-write selects (LUT5 and LUT3) in the INT-station configuration equal their portable form. Both forms open undefined values, preserve matching compiled RAM initializers, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 600-second limit (see Primitive twins) |
 
 `reservation_station` checks the module's default parameters at BMC depth
 12; no production station uses exactly those defaults. The `*_tag_indexed`
@@ -780,7 +779,7 @@ the failing assertion.
 | `vec_vmt` | The vector memory table against a ghost reorder buffer (in-order allocation with scalar instructions between, allocation only while not full, the head passing a vector memory instruction alone through the commit bus, full and partial flushes with tag rollback, completion only after retirement, unconstrained range writes, the sequence starting anywhere so tags wrap). The head may also pass instructions on a flush edge, which the reorder buffer never does; a vector memory instruction passing on a full flush then retires and stays live over its own pending removal: an index is allocated only when free before the edge, an entry stays live for one cycle after a flush removes its instruction and otherwise exactly while the instruction is in flight, carries its tag through that cycle too, and is retired when the head has passed it without flushing it; its range is written once and then fixed, and the registered no-live-retired-entry output and the full flag are exact. 14 frames; covers reach a full table and reuse, a partial flush that keeps an older entry, the no-live-retired-entry output falling and rising, tag wrap, a retirement in the cycle after a flush and a flush in the cycle after a retirement, an allocation in the cleanup cycle and reuse of a cleaned index in the next cycle, all with no instruction passing on a flush edge, and a retirement on a full-flush edge that keeps its entry |
 | `sq_repair_mmio` | The early-address repair's two parallel MMIO flags equal MMIO classification of the full base-plus-immediate sum, including overflow |
 | `store_queue` | Live-count consistency, write prerequisites (committed, address and data valid), in-flight bounds (up to two overlapping cached plain writes, never shared with uncached, SC, `cbo.zero`, Zicbom or MMIO writes), the `o_coherent_write_more` and `o_coherent_next_same` hints, forwarding, and that committed stores survive a partial flush. A cached cbo.zero entry leaves as one write at its block base, marked for the L1D and for a block-wide L0 invalidation, and that write completes it. An uncached entry's beat count belongs to the drain cursor's unsent zero entry; each zero beat writes eight zero bytes with every strobe inside the entry's block, and only the eighth beat completes the entry. A Zicbom entry supplies its underlying physical DDR address to load forwarding and the vector range check. The native frontend check verifies an independent address predicate and enable for each store-queue slot. It issues no scalar data beat; it is released only as the committed drain cursor when not vector-held over its 64-byte block, with no write in flight or on the bus and no sent entry left, and frees on the next cycle; covers reach overlapping cached writes, a Zicbom entry freeing and a flush or inval block pulse. Formal builds of `store_queue` use a linear forwarding selector in place of the balanced tree, which Yosys's native frontend mishandles; `sq_forwarding_unit:tree_equiv` proves the shipped balanced tree equivalent to that linear selector through `read_slang`. Assumes, among other input rules, no allocation while the post-flush tail pullback is pending or while the registered full flags are set (which `dispatch_admission` proves of dispatch), and no combinational commit pulse during a flush. `bmc_trusted` and `cover_trusted` build the queue as the core does (`TRUST_DISPATCH_VALID`, `CACHE_NORMAL_MEMORY`, `PRECISE_UNCACHED`, `CMO_HOME`): allocation relies on dispatch for room, and the proof checks that the registered full flags never understate the live window and that the trusted enables equal the room-checked ones; a cover reaches a precise uncached store's completion. For precise uncached stores they assume the core's rule from a launch until the queue reports completion: the ROB head tag and the device shield stay, no full flush arrives, no partial flush kills the store, and an SC with a success permit or in flight is never discarded as failed. The queue's simulation checks `p_uncached_head_holds`, `p_uncached_shield_holds`, `p_uncached_no_flush`, `p_uncached_not_killed` and `p_sc_discard_not_permitted` check the same rule on its inputs in the core. The bounded tasks run 10 cycles, the depth at which a fully dead window first collapses and a partial flush first meets committed entries in the two highest slots (the covers reach both at steps 7 and 8) |
-| `store_queue_twin` | The write launch, write completion, in-flight special and sent-bit selects, and the same-sector claim's launch copy and final select, equal their portable forms at the module's default settings and at the CPU's (`TRUST_DISPATCH_VALID`, `PRECISE_UNCACHED`, `CACHE_NORMAL_MEMORY`) |
+| `store_queue_twin` | The write launch, write completion, in-flight special and sent-bit selects, and the same-sector claim's launch copy and final select, equal their portable forms at the module's default settings and at the CPU's (`TRUST_DISPATCH_VALID`, `PRECISE_UNCACHED`, `CACHE_NORMAL_MEMORY`). Both forms open undefined values, preserve matching compiled RAM initializers, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 120-second limit (see Primitive twins) |
 | `sq_forwarding_unit` | Store-queue forwarding unit at 8 entries against an independent ring-order scan from `i_sq_head_idx`, unbounded (`prove`): older-store address-known flag, dword and 64-byte `cbo.zero` conflict detection, Zicbom load conflicts through both views of a DDR block, same-cycle dual commit snoops, Zicbom, `cbo.zero`, MMIO, and SC forwarding vetoes, full byte-lane coverage, and registered winner-index and store-offset payload selection. `tree_equiv` (`read_slang` with `SYNTHESIS` defined and `FORMAL` undefined on the shipped copy, unbounded, assuming only an initial reset with no input assumptions) proves the shipped `ifndef FORMAL` balanced `fwd_node` reduction tree equivalent to the `ifdef FORMAL` linear ring scan. In `prove`, assumes an initial reset, equal replicated probe-address copies, `sq_is_zero` set whenever `sq_is_cmo` is set, write-once data-mirror stability across the consume cycle (which `load_queue` and `store_queue` establish), and byte masks formed by a copy of `mem_strobe_for` |
 | `line_align` | Extract and place in `line_align` equal a byte-by-byte reference for arbitrary lines, data, offsets and byte counts, and a placed access reads back unchanged, for 32-byte lines with 8 data bytes (`bmc`), 64-byte lines (`bmc_64x8`) and 32 data bytes (`bmc_32x32`) |
 | `ma_engine` | The misaligned-access engine from reset with an arbitrary walker, register file and line client: registered request controls equal their issue-state decodes, no sector request before both parts pass their checks, the lower sector issued first and an upper one only for a split access, each identity issued once with a stable payload, every check recorded before a request, completion only after every response, a load's response error reported as a load access fault after every response, at most one completion or fault and one register write per access, a store's masks covering exactly its bytes, nothing completed, faulted or requested on the edge that samples a hart stop or receives a failed write, and a failed write or hart stop terminal from the next cycle. The 16-frame BMC and cover tasks assume starts only while idle and one response per issued identity, at least a cycle after its request. The separate unbounded proof checks only equality of the request controls and issue-state decodes. It assumes an initial reset and leaves every subsequent input free |
@@ -810,7 +809,7 @@ count.
 | `rob_retire_stall` | Retirement strobes and every performance event equal a reference built from the serializer's full commit stall |
 | `rob_start_cofactor` | CSR and xRET start signals equal the reference equations, the head mask stays one-hot, and CSR and xRET entries never take the CDB bypass; unbounded. Assumes an initial reset |
 | `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), current pending/enable/delegation for each winning cause (including LCOFI), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain; the split trap-entry target and take outputs equal the reference ones. Assumes the start events are mutually exclusive. `prove` shows that `csr_file`'s entry enables equal the take and steering outputs, that the CSR entry enables and the assist start built with the re-entry inhibit at their last level equal their plain forms, and that a post-CSR selection refresh cannot consume an architectural interrupt, from arbitrary state. Once an exception has been latched, the trap value, which applies the pointer-masking transform after its registers, equals a reference that latches the transformed value on the same edges; unbounded in `prove` |
-| `csr_file_twin` | The fetch-return privilege select (LUT6, LUT4) equals its portable form, with VECTOR=0 and with VECTOR=1 at VLEN 256. This checks the primitive replacement, not vector CSR semantics |
+| `csr_file_twin` | The fetch-return privilege select (LUT6, LUT4) equals its portable form, with VECTOR=0 and with VECTOR=1 at VLEN 256. Both forms open undefined values, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 60-second limit (see Primitive twins). This checks the primitive replacement, not vector CSR semantics |
 
 ### Execution units and CDB
 
@@ -819,7 +818,7 @@ count.
 | `alu_shift_hint` | An ALU given the precomputed shift amount matches one without it, and both match an independent shift and rotate reference |
 | `pointer_masking` | Ssnpm: the base transform at MEM_RS issue gives the Sv39 canonical check, every Bare PMA decode and xtval the ignore transformation's result for every 64-bit base, signed 12-bit immediate and offered PMLEN. The assist starts at the exact transformed address; after an accepted lower part, its upper sector matches the transformation of that constituent address. Checks DDR apertures of 1, 2, 64 and 128 GiB and senvcfg.PMM write legalization |
 | `pm_mode_select` | Ssnpm: for every 64-bit base and immediate, every mode including the never-produced 01, and every other input, `coherent_store_pm_select`'s store PMA verdict and untranslated store completion, which apply the mode to terms of the issued operands, equal the physical map on the transformed base page adjusted by the offset sign and carry, and the completion regions on the transformed sum, with error responses and write-through memory on and off and three cached ranges; the trap value latched before the transform, with its mode, gives the value with the transform first, and `riscv_pkg::exception_tval` equals a selection by cause written out in the harness. Checks DDR apertures of 1, 2, 64 and 128 GiB |
-| `coherent_store_pma_twin` | The store page decoder's primitive form (the LUT6s that test seven groups of upper base bits for all zeros and all ones, and the final LUT5) equals its portable form at the 1 GiB and 2 GiB DDR sizes, where its bounded-map form holds those primitives |
+| `coherent_store_pma_twin` | The store page decoder's primitive form (the LUT6s that test seven groups of upper base bits for all zeros and all ones, and the final LUT5) equals its portable form at the 1 GiB and 2 GiB DDR sizes, where its bounded-map form holds those primitives. Both forms open undefined values, verify matching compiled ports and prove every comparison point including the LUT cone, within a 60-second limit (see Primitive twins) |
 | `cdb_arbiter` | The two-lane grant tree equals a reference priority scan. Grants are one-hot per lane, disjoint, at most two, and only to valid requesters, and a kill clears both CDB valid bits and the visible grants. Assumes the ALU value-source rule: a live value belongs to a valid completion and equals its value, and otherwise the fallback value does |
 | `divider` | Results equal RISC-V division and remainder at 8 bits, including signed, unsigned, divide by zero, overflow and W forms (`bmc_width8`). At 64 bits, `prove_width64` proves setup and recurrence control, held completion and cancellation, unbounded. Arithmetic values and a global latency bound at 64 bits are outside that proof. See below |
 | `fp_shim` | Busy exactly while the engine holds an operation, results only while busy and with the tag of the latest operation, a kill frees the engine on the next cycle, and no later result for an operation a flush squashed (a result in the flush cycle itself is the CDB adapter's to drop). The engine is replaced by a model with arbitrary latency, results, and flags. Assumes FP_RS issues only while the shim is not busy |
@@ -832,7 +831,7 @@ count.
 | `int_muldiv_shim` | Every tracked integer or carry-less multiply aligns with its unit pipeline. MUL FIFO credits hold under back-pressure and flushes. Carry-less tracker entries preserve the issue tag, and the FIFO input selects the carry-less result. For the divider: `o_div_busy` is high exactly while it is not idle, a completion carries the tag of the latest divide, a kill frees it on the next cycle, and a squashed divide never completes. Runs with the word multiplier on and off (`*_fallback`) and direct completion enabled (`*_direct`). Independent per-source live histories check exact surviving completions and tags through flushes and tag reuse. Direct output payloads select the aligned arithmetic result. Assumes a reset on the first cycle and divides presented only while the divider is idle. Arithmetic values, the FIFO output sequence, and liveness are out of scope |
 | `mul_completion_tag` | Leaving the MUL result's tag unqualified on invalid cycles changes no adapter state, valid result, or arbiter input. Assumes one initial reset |
 | `mul_adapter_grant` | With the real CDB arbiter, the MUL adapter's local grant and the always-granted MUL and MEM adapters produce the same completions and pending bits as stateful adapters, under arbitrary competing results, flushes, and tags; unbounded |
-| `fp_engine_twin` | The normalisation any-bit and partial-select LUTs equal their portable form |
+| `fp_engine_twin` | The normalisation any-bit and partial-select LUTs equal their portable form. Both forms open undefined values, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 60-second limit (see Primitive twins) |
 
 `divider` compares results with Verilog division at 8 bits, where division is
 cheap for the solver; the divider uses the same RTL at both widths. A start
@@ -960,16 +959,16 @@ the least populated ordinary partition, and keeps B-channel stability alone.
 | `dtlb_entry_verdict` | Inductive checks of entry validity, permissions, PMA and PPN against the data lookup for every offset. S1's PMA flags equal the registered flags on leaves uniform over the data PMA ranges. Both the default and 256 MiB DDR maps cover U-mode hits, uniform 2 MiB leaves, mixed leaves, and SUM, selective SFENCE.VMA and ASID changes. The small map also reaches a gigapage crossing the end of DDR and an NC load refused in the disabled alias window |
 | `l2tlb` | The second-level TLB, as a two-set, two-way array with a two-entry superpage side array: for a watched page and ASID, every hit is backed by a fill that no flush (page, ASID, both, or all) has removed and returns that fill's PPN, PBMT, permissions and level bit for bit, including a 2 MiB or 1 GiB fill whose region holds the page and a page flush that names another page of that region; no lookup runs or is accepted while a flush runs, only clean translations fill (4 KiB leaves the set-associative array, superpages the side array), a superpage hit never reaches the walker, no response leaves with a discard raised, and flush-all empties both arrays. Covers reach each flush form, a hit on a global entry, 2 MiB and global 1 GiB hits, and an ASID flush that spares a global superpage |
 | `uncached_read_capture` | The factored uncached-read pending-bit update preserves enqueue, downstream handoff, and reset priority from arbitrary state, with no assumptions |
-| `coherence_home_twin` | The home's probe-address match, writeback reply-capture select, forward turn selects, and the parking, waiter-mask and fill-image next-state selects equal their portable form, at one way with two fills, four ways with three fills, and 40-bit addresses. Portable and Xilinx-primitive builds are compared with Yosys equivalence checking (see Primitive twins); the primitive form of every LUT in the cone equals the portable form for any state and input. Saved copies are released after transfer into the active comparison. Each task has a 600-second SBY and runner limit |
-| `coherence_home_engine_twin` | The engine's probe-reply match (LUT6) equals its portable form at 32-byte and 64-byte lines and at 40-bit addresses, where all five address groups enter the LUT |
+| `coherence_home_twin` | The home's probe-address match, writeback reply-capture select, forward turn selects, and the parking, waiter-mask and fill-image next-state selects equal their portable form, at one way with two fills, four ways with three fills, and 40-bit addresses. Both forms open undefined values, preserve matching compiled RAM initializers, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone (see Primitive twins). Saved copies are released after transfer into the active comparison. `home_twin_small` and `home_twin_addr40` have a 600-second SBY and runner limit; `home_twin_four` has a 2,400-second limit |
+| `coherence_home_engine_twin` | The engine's probe-reply match (LUT6) equals its portable form at 32-byte and 64-byte lines and at 40-bit addresses, where all five address groups enter the LUT. Both forms open undefined values, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 240-second limit (see Primitive twins) |
 | `coherence_l1d_zero_index` | Unbounded equivalence of the complete look-ahead blocking vector, whose zero rule names a lower zero record's twin by the next record's upper flag, with the same vector naming the twin by its block address and by a next-index versus head test; the full-line rules are copied unchanged. The same task shows that the upper-flag `GetMZero` choice implies both alternatives. The comparison abstracts all selector inputs and assumes the upper-flag line (an upper record follows the lower sector of its own block and is never the head), twin pairing (a zero twin follows its lower zero record, a data twin its acquired full lower record) and the registered same-block head conflict. The companion `zero_index_invariants` task proves these queue and sampled-conflict facts by induction on the production store buffer with 56-bit addresses. It keeps all buffer assertions and assumes its documented push/pop/seal/acquire/claim contract; the L1D controller's compliance with that contract is outside this task, and the zero-line and full-line control BMCs check the upper-flag line on the composed L1D. Endpoint and write-back conflicts can only add blockers to the sampled older-record contribution |
 | `coherence_l1d_lookup` | The store head's readiness, with the gather hold, endpoint 0's write-back credit and the write-back address comparison applied in one final step, the SC readiness, with the grant selection applied last, and the Idle lookup address, formed for both values of the head's readiness and selected by it, equal a reference that forms each readiness as one conjunction and the address from one priority chain holding the head in its place. Every register and every submodule output is free and nothing is assumed; one, three and eight miss slots, the last with stream prefetching |
-| `coherence_l1d_twin` | The L1D acquisition-endpoint select (LUT3 per bit) and operation-register input selection (LUT6 per bit) equal their portable forms with one and three miss slots, and with eight miss slots and stream prefetching, the only configuration that sets the credited read turn and so reaches the LUT6's other half of rows. The read selector is compared by `coherence_control` |
-| `cached_tier_adapter_twin` | The read-slot valid, live, sent and open next-state LUTs equal their portable form, with and without split read requests |
-| `data_mem_request_router_twin` | The MMIO drain-accept gate (LUT4) equals its portable form |
-| `dmmu_twin` | The lookup-stage and result-stage VA selects (LUT3 per bit) equal their portable forms |
-| `immu_twin` | The physical-address-valid select (LUT5) and the next-state LUTs of word 1's fault, its cause, its VA-placeholder select and the neighbor-miss flag equal their portable form |
-| `immu_twin_hold` | The same at the fetch stage's four hold-polarity copies (`PA_VALID_COPIES=4`, `PA_COPY_HOLD=1`), where each copy LUT forms the fetch hold |
+| `coherence_l1d_twin` | The L1D acquisition-endpoint select (LUT3 per bit) and operation-register input selection (LUT6 per bit) equal their portable forms with one and three miss slots, and with eight miss slots and stream prefetching, the only configuration that sets the credited read turn and so reaches the LUT6's other half of rows. Both forms open undefined values, preserve matching compiled RAM initializers, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 600-second limit (see Primitive twins). The read selector is compared by `coherence_control` |
+| `cached_tier_adapter_twin` | The read-slot valid, live, sent and open next-state LUTs equal their portable form, with and without split read requests. Both forms open undefined values, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 60-second limit (see Primitive twins) |
+| `data_mem_request_router_twin` | The MMIO drain-accept gate (LUT4) equals its portable form. Both forms open undefined values, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 60-second limit (see Primitive twins) |
+| `dmmu_twin` | The lookup-stage and result-stage VA selects (LUT3 per bit) equal their portable forms. Both forms open undefined values, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 240-second limit (see Primitive twins) |
+| `immu_twin` | The physical-address-valid select (LUT5) and the next-state LUTs of word 1's fault, its cause, its VA-placeholder select and the neighbor-miss flag equal their portable form. Both forms open undefined values, cut every register, verify matching compiled ports and prove every comparison point including the LUT cone, within a 180-second limit (see Primitive twins) |
+| `immu_twin_hold` | The same at the fetch stage's four hold-polarity copies (`PA_VALID_COPIES=4`, `PA_COPY_HOLD=1`), where each copy LUT forms the fetch hold, within a 180-second limit (see Primitive twins) |
 
 `coherence_observation` follows an arbitrary ROB tag, so it covers all 32 at
 XLEN 64: the pending observation, its table entry and line, cleanup on
@@ -1202,8 +1201,8 @@ cycles, which clears arbitrary memory history.
    inputs giving another output. In-script implementation comparisons open
    each form and the comparison design separately. The Primitive twins
    section describes how a task pairs corresponding free values. The
-   fast Python tests check the opening of every script that
-   `UNDEFINED_OPENING_PENDING` and `UNDEFINED_OPENING_TWINS` do not list,
+   fast Python tests check the opening of every registered script (both
+   `UNDEFINED_OPENING_PENDING` and `UNDEFINED_OPENING_TWINS` are empty),
    including that the script runs this repository's `free_undefined.ys`
    itself: listed in `[files]` as that one name, never a changed copy,
    another path, a `[file]` section or the opening's commands written out.
@@ -1273,9 +1272,10 @@ FORMAL_TARGETS = [
    `tests/test_prim_twins.py`, with the reason. For an in-script comparison,
    start from `pd_target_candidate_twin.sby` or `decoded_bundle_queue_twin.sby`.
    Declare the inputs of both forms, their cut register count and clock,
-   their free-cell counts and both measured point floors in `TWIN_COMPARISONS`.
-   Keep the per-form initialization and clock checks, compiled port dump and
-   unrestricted point proof described in Primitive twins.
+   their initial-value counts, their free-cell counts and all measured point
+   floors in `TWIN_COMPARISONS`. Keep the per-form initialization and clock
+   checks, compiled port dump and unrestricted point proof described in
+   Primitive twins.
 
 ## Yosys SVA Limitations
 

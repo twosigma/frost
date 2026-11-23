@@ -357,9 +357,11 @@ ways: chparam -set CACHE_BYTES 256 -set WAYS 4 -set TAG_BITS 2 -set MISSES 3 coh
 # Tasks that drive no cbo.zero writes build the L1D without the zero path
 # and without full-line stores; the zero and full tasks build both.
 ~zero: chparam -set ZERO_LINE 0 -set FULL_LINE 0 coherence_l1d
+~conflict: hierarchy -top coherence_l1d
+~conflict: script free_undefined.ys
 ~conflict: prep -flatten -top coherence_l1d
 conflict: hierarchy -check -top coherence_l1d
-conflict: proc -noopt
+conflict: script free_undefined.ys
 conflict: flatten
 conflict: opt_expr -keepdc -noclkinv
 # The matching conflict proof supplies this guarded, clocked identity.
@@ -667,6 +669,7 @@ conflict: design -save conflict_cases
 conflict: connect -set prefetch_busy 1'b0
 conflict: opt -full
 conflict: async2sync
+conflict: setundef -anyseq
 conflict: chformal -lower
 conflict: select -assert-count 1 t:$assert
 conflict: sat -seq 2 -prove-asserts -verify -timeout 60
@@ -674,6 +677,7 @@ conflict: design -load conflict_cases
 conflict: connect -set prefetch_busy 1'b1
 conflict: opt -full
 conflict: async2sync
+conflict: setundef -anyseq
 conflict: chformal -lower
 conflict: select -assert-count 1 t:$assert
 conflict: sat -seq 2 -prove-asserts -verify -timeout 60
@@ -697,3 +701,4 @@ conflict: sat -seq 2 -prove-asserts -verify -timeout 60
 ../hw/rtl/lib/cache/coherence_read_payload.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
 ../hw/rtl/lib/cache/coherence_store_buffer.sv
+free_undefined.ys

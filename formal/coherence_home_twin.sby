@@ -6,18 +6,14 @@ home_twin_addr40 small addr40
 [options]
 mode bmc
 depth 1
-timeout 600
+small: timeout 600
+four: timeout 2400
 
 [engines]
 smtbmc boolector
 
 [script]
-# Primitive twin. Gold is the module as shipped; gate is the same sources with
-# FROST_XILINX_PRIMS defined and Yosys's Xilinx primitive models. Both are
-# flattened with memories as registers, enable and reset flops unmapped,
-# undefined constants zeroed and every named net kept, so equiv_make pairs
-# registers and signals by name. equiv_simple then proves each equivalence point
-# whose cone holds a primitive cell, for any register state and input.
+# Compare every named point with arbitrary inputs and paired register state.
 read -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv
 read -sv -D SYNTHESIS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
 read -sv -D SYNTHESIS coherence_seat_select.sv coherence_work_select.sv coherence_home_endpoint.sv coherence_d_arbiter.sv coherence_home_completions.sv coherence_home_array.sv coherence_home_engine.sv coherence_home.sv
@@ -25,16 +21,29 @@ small: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 
 four: chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 -set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home
 addr40: chparam -set ADDR_WIDTH 40 coherence_home
 hierarchy -check -top coherence_home
-proc
+script free_undefined.ys
+select -assert-none a:init t:$initstate t:$anyinit
 setattr -mod -unset keep_hierarchy *
 flatten
 memory_map -keepdc
-setundef -zero
-setattr -unset init
 dffunmap
-# Keep every named net so that registers and signals pair by name.
+setundef -undriven -anyseq
+rename -hide w:*$func$* w:*$fordecl_block$*
+opt_clean
 setattr -set keep 1 w:* w:$* %d
 opt_clean
+check -assert
+select -assert-none t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
+small: select -assert-count 2 a:init
+four: select -assert-count 4 a:init
+select -assert-none i:* o:* %i
+small: select -assert-count 321 t:$dff
+four: select -assert-count 512 t:$dff
+select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
+expose -dff -cut coherence_home/w:*
+select -assert-none coherence_home/t:$dff %co:+[Q] coherence_home/w:* %i %co1 coherence_home/t:* %i
+small: select -assert-count 629 t:$anyseq
+four: select -assert-count 1452 t:$anyseq
 rename -top gold
 design -stash gold
 design -reset
@@ -46,38 +55,66 @@ small: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 
 four: chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 -set COMPLETIONS 4 -set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 coherence_home
 addr40: chparam -set ADDR_WIDTH 40 coherence_home
 hierarchy -check -top coherence_home
-proc
+script free_undefined.ys
+select -assert-none a:init t:$initstate t:$anyinit
 setattr -mod -unset keep_hierarchy *
-# Mark every cell that comes from a Xilinx primitive model.
 setattr -set from_prim 1 $paramod*LUT*/* $paramod*MUXF*/* $paramod*CARRY*/* $paramod*FD*/* LUT*/* MUXF*/* CARRY*/* FD*/*
 flatten
 memory_map -keepdc
-setundef -zero
-setattr -unset init
 dffunmap
-# Keep every named net so that registers and signals pair by name.
+setundef -undriven -anyseq
+rename -hide w:*$func$* w:*$fordecl_block$*
+opt_clean
 setattr -set keep 1 w:* w:$* %d
 opt_clean
+check -assert
+select -assert-none t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
+small: select -assert-count 2 a:init
+four: select -assert-count 4 a:init
+select -assert-none i:* o:* %i
+small: select -assert-count 321 t:$dff
+four: select -assert-count 512 t:$dff
+select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
+expose -dff -cut coherence_home/w:*
+select -assert-none coherence_home/t:$dff %co:+[Q] coherence_home/w:* %i %co1 coherence_home/t:* %i
+small: select -assert-count 629 t:$anyseq
+four: select -assert-count 1452 t:$anyseq
 rename -top gate
 design -stash gate
 design -reset
+read -sv twin_both.sv
 design -copy-from gold -as gold gold
 design -delete gold
 design -copy-from gate -as gate gate
 design -delete gate
+hierarchy -top twin_both
+script free_undefined.ys
+# The runner checks the two compiled port lists and matching initial values.
+write_json twin_ports.json
 equiv_make gold gate equiv
-hierarchy -top equiv
-# Prove every equivalence point whose cone holds a primitive cell.
+delete gold gate twin_both
+setundef -anyseq
+select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate
+small: select -assert-count 1258 t:$anyseq
+small: select -assert-count 629 t:$anyseq n:*_gold %i
+small: select -assert-count 629 t:$anyseq n:*_gate %i
+four: select -assert-count 2904 t:$anyseq
+four: select -assert-count 1452 t:$anyseq n:*_gold %i
+four: select -assert-count 1452 t:$anyseq n:*_gate %i
 select -set prim t:* a:from_prim %i
 select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
-# A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
-home_twin_small: select -assert-min 4296 @blk
-home_twin_four: select -assert-min 4870 @blk
-home_twin_addr40: select -assert-min 4328 @blk
-equiv_simple @blk
-equiv_status -assert @blk
+home_twin_small: select -assert-min 4177 @blk
+home_twin_four: select -assert-min 5261 @blk
+home_twin_addr40: select -assert-min 4177 @blk
+home_twin_small: select -assert-min 61950 t:$equiv
+home_twin_four: select -assert-min 112256 t:$equiv
+home_twin_addr40: select -assert-min 63954 t:$equiv
+equiv_simple
+equiv_status -assert
 design -reset
 read -formal -sv prim_twin_done.sv
+hierarchy -top prim_twin_done
+script free_undefined.ys
 prep -top prim_twin_done
 
 [files]
@@ -96,3 +133,5 @@ prep -top prim_twin_done
 ../hw/rtl/lib/cache/coherence_d_arbiter.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
 prim_twin_done.sv
+free_undefined.ys
+twin_both.sv

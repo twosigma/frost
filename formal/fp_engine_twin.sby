@@ -4,63 +4,85 @@ fp_engine_twin fp
 [options]
 mode bmc
 depth 1
+timeout 60
 
 [engines]
 smtbmc boolector
 
 [script]
-# Primitive twin. Gold is the module as shipped; gate is the same sources with
-# FROST_XILINX_PRIMS defined and Yosys's Xilinx primitive models. Both are
-# flattened with memories as registers, enable and reset flops unmapped,
-# undefined constants zeroed and every named net kept, so equiv_make pairs
-# registers and signals by name. equiv_simple then proves each equivalence point
-# whose cone holds a primitive cell, for any register state and input.
+# Compare every named point with arbitrary inputs and paired register state.
 read -sv -D SYNTHESIS riscv_pkg.sv dsp_tiled_multiplier_unsigned.sv fp_engine.sv
 hierarchy -check -top fp_engine
-proc
+script free_undefined.ys
+select -assert-none a:init t:$initstate t:$anyinit
 setattr -mod -unset keep_hierarchy *
 flatten
 memory_map -keepdc
-setundef -zero
-setattr -unset init
 dffunmap
-# Keep every named net so that registers and signals pair by name.
+setundef -undriven -anyseq
+rename -hide w:*$func$* w:*$fordecl_block$*
 setattr -set keep 1 w:* w:$* %d
 opt_clean
+check -assert
+select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
+select -assert-none i:* o:* %i
+select -assert-count 63 t:$dff
+select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
+expose -dff -cut fp_engine/w:*
+select -assert-none fp_engine/t:$dff %co:+[Q] fp_engine/w:* %i %co1 fp_engine/t:* %i
+select -assert-count 679 t:$anyseq
 rename -top gold
 design -stash gold
 design -reset
 read_verilog -formal +/xilinx/cells_sim.v
 read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv dsp_tiled_multiplier_unsigned.sv fp_engine.sv
 hierarchy -check -top fp_engine
-proc
+script free_undefined.ys
+select -assert-none a:init t:$initstate t:$anyinit
 setattr -mod -unset keep_hierarchy *
-# Mark every cell that comes from a Xilinx primitive model.
 setattr -set from_prim 1 $paramod*LUT*/* $paramod*MUXF*/* $paramod*CARRY*/* $paramod*FD*/* LUT*/* MUXF*/* CARRY*/* FD*/*
 flatten
 memory_map -keepdc
-setundef -zero
-setattr -unset init
 dffunmap
-# Keep every named net so that registers and signals pair by name.
+setundef -undriven -anyseq
+rename -hide w:*$func$* w:*$fordecl_block$*
 setattr -set keep 1 w:* w:$* %d
 opt_clean
+check -assert
+select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
+select -assert-none i:* o:* %i
+select -assert-count 63 t:$dff
+select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
+expose -dff -cut fp_engine/w:*
+select -assert-none fp_engine/t:$dff %co:+[Q] fp_engine/w:* %i %co1 fp_engine/t:* %i
+select -assert-count 679 t:$anyseq
 rename -top gate
 design -stash gate
 design -reset
+read -sv twin_both.sv
 design -copy-from gold -as gold gold
 design -copy-from gate -as gate gate
+hierarchy -top twin_both
+script free_undefined.ys
+# The runner checks the two compiled port lists, including declared indices.
+write_json twin_ports.json
 equiv_make gold gate equiv
-hierarchy -top equiv
-# Prove every equivalence point whose cone holds a primitive cell.
+delete gold gate twin_both
+setundef -anyseq
+select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate
+fp_engine_twin: select -assert-count 1358 t:$anyseq
+select -assert-count 679 t:$anyseq n:*_gold %i
+select -assert-count 679 t:$anyseq n:*_gate %i
 select -set prim t:* a:from_prim %i
 select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
-# A primitive folded to a constant leaves no cell to find, so fix a floor on the count.
 fp_engine_twin: select -assert-min 43 @blk
-equiv_simple @blk
-equiv_status -assert @blk
+fp_engine_twin: select -assert-min 7930 t:$equiv
+equiv_simple
+equiv_status -assert
 design -reset
 read -formal -sv prim_twin_done.sv
+hierarchy -top prim_twin_done
+script free_undefined.ys
 prep -top prim_twin_done
 
 [files]
@@ -68,3 +90,5 @@ prep -top prim_twin_done
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv
 prim_twin_done.sv
+free_undefined.ys
+twin_both.sv
