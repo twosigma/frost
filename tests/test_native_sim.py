@@ -105,8 +105,20 @@ EXPECTED_NATIVE_ONLY_VERILATOR_FLAGS = {
     '-CFLAGS "$(NATIVE_CFLAGS)"',
 }
 
+EXPECTED_COCOTB_ONLY_VERILATOR_FLAGS = {
+    "-j $(NUMBER_OF_CPU_CORES)",
+    "+define+FROST_RUNTIME_DDR",
+    "$(FROST_VISIBILITY_CONFIG)",
+    "-fico-change-detect",
+    "+define+FROST_NO_RETIRE_TRACE",
+}
+
 EXPECTED_DOCUMENTED_DIFF_TOKENS = (
     "frost_native.vlt",
+    "frost_cocotb_visibility.vlt",
+    "-fico-change-detect",
+    "FROST_NO_RETIRE_TRACE",
+    "FROST_VERILATOR_THREADS",
     "--public-flat-rw",
     "--vpi",
     "-O3",
@@ -150,6 +162,10 @@ UNSEEDED_COCOTB_STRIP_ENV = (
     "FROST_COVERAGE",
     "FROST_COVERAGE_TOGGLE",
     "FROST_COVERAGE_FILE",
+    "FROST_FULL_VISIBILITY",
+    "FROST_HANG_PROBE",
+    "FROST_RETIRE_TRACE",
+    "FROST_VERILATOR_THREADS",
     "WAVES",
     "COCOTB_TEST_FILTER",
 )
@@ -348,21 +364,33 @@ def parse_cocotb_frost_verilator_flags(makefile_text: str) -> set[str]:
                     if match:
                         flags.update(_group_verilator_tokens(match.group(1)))
         elif stripped == "ifeq ($(TOPLEVEL),frost)":
-            skip_async = False
-            for sub in lines[idx + 1 : idx + 10]:
+            depth = 1
+            skip_depth = 0
+            for sub in lines[idx + 1 : idx + 25]:
                 sub_s = sub.strip()
-                if sub_s.startswith("ifneq ($(strip $(FROST_CPU_PERIOD_PS))"):
-                    skip_async = True
-                elif skip_async and sub_s == "endif":
-                    skip_async = False
+                if sub_s.startswith(("ifeq ", "ifneq ", "ifdef ", "ifndef ")):
+                    depth += 1
+                    if skip_depth == 0 and sub_s.startswith(
+                        (
+                            "ifneq ($(strip $(FROST_CPU_PERIOD_PS))",
+                            "ifneq ($(EFFECTIVE_VERILATOR_THREADS),1)",
+                        )
+                    ):
+                        skip_depth = depth
                 elif sub_s == "endif":
-                    break
-                elif not skip_async:
+                    if depth == skip_depth:
+                        skip_depth = 0
+                    depth -= 1
+                    if depth == 0:
+                        break
+                elif skip_depth == 0:
                     match = re.match(
-                        r"^(?:EXTRA_ARGS|COMPILE_ARGS)\s*\+=\s*(.*)$", sub_s
+                        r"^(?:EXTRA_ARGS|COMPILE_ARGS)\s*(?:\+=|:=)\s*(.*)$", sub_s
                     )
                     if match:
-                        flags.update(_group_verilator_tokens(match.group(1)))
+                        for tok in _group_verilator_tokens(match.group(1)):
+                            if tok != "$(COMPILE_ARGS)":
+                                flags.add(tok)
         elif stripped == "ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)":
             for sub in lines[idx + 1 : idx + 4]:
                 sub_s = sub.strip()
@@ -1870,10 +1898,11 @@ def test_native_makefile_matches_cocotb_toplevel_parameters(tmp_path: Path) -> N
         assert cocotb_g.get(param_name) == expected_expr
 
     cocotb_frost_flags = parse_cocotb_frost_verilator_flags(cocotb_text)
-    assert cocotb_frost_flags == EXPECTED_SHARED_VERILATOR_FLAGS | {
-        "-j $(NUMBER_OF_CPU_CORES)",
-        "+define+FROST_RUNTIME_DDR",
-    }
+    assert EXPECTED_COCOTB_ONLY_VERILATOR_FLAGS.issubset(cocotb_frost_flags)
+    assert (
+        cocotb_frost_flags - EXPECTED_COCOTB_ONLY_VERILATOR_FLAGS
+        == EXPECTED_SHARED_VERILATOR_FLAGS
+    )
 
     native_verilator_flags = parse_native_verilator_flags(native_text)
     assert EXPECTED_SHARED_VERILATOR_FLAGS.issubset(native_verilator_flags)
