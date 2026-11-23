@@ -300,19 +300,28 @@ taken with `o_hp_ready` reads the copy and every bank's row of its set on one
 edge; its hit shows two cycles later and the hit way's dword a cycle after
 that, both as of that edge. The port waits while the controller owns the address, during a write to its
 set and until the reset sweep ends. Victim selection uses the tag request's
-matching PLRU response. Each tree bit of the replacement state has its own
-RAM, and a touch writes only the bits on its way's path. A hit writes them
-from the registered way during data service or the reply, before
-another request or update can enter. A hit-port hit writes its way's bits in
-its third cycle unless the array writes replacement state in that cycle, which
-drops the touch. A lookup marked `i_req_no_touch`
-leaves replacement state unchanged on a hit; the L1D marks look-ahead
-lookups this way. The L1D's array uses bimodal insertion (see Sets and ways),
-and `i_update_touch` makes one insertion update replacement state. The L1D
-sets it for a fill with a read attached to its endpoint or another miss of its
-set not yet installed, which moves the fill off its set's next-victim position
-before the next installation in the set. Any other fill keeps bimodal
-insertion.
+matching replacement response. With `BIMODAL_INSERT && WAYS > 1` (the L1D),
+the array keeps one NRU reference bit per way in independent single-bit RAMs:
+hits set the accessed way's bit to 1; victim selection picks the lowest
+eligible invalid way, else the lowest eligible way with NRU bit 0 (falling
+back to the lowest eligible way when all eligible ways are 1); an insertion
+sets the filled way's bit to 1 on an upgrade hit, `i_update_touch`, or 1 time
+in 128 from the free-running LFSR (and 0 otherwise); and a miss fill into a
+full set whose NRU bits are all 1 clears the other ways to 0. Without
+`BIMODAL_INSERT` (or with one way), the array keeps tree pseudo-LRU state with
+one RAM per tree bit, and a touch writes only the bits on its way's path. A
+controller hit writes from the registered way during data service or the
+reply, before another request or update can enter. A hit-port hit writes its
+way's NRU bit in its third cycle unless the controller writes that same way's
+NRU RAM in that cycle (touches to distinct ways proceed concurrently); in
+tree pseudo-LRU configurations (`!(BIMODAL_INSERT && WAYS > 1)`), any
+controller replacement write in that cycle drops the hit-port touch. A
+lookup marked `i_req_no_touch` leaves replacement state unchanged on a hit; the
+L1D marks look-ahead lookups this way. `i_update_touch` makes one insertion
+promote its filled line; the L1D sets it for a fill with a read attached to its
+endpoint or another miss of its set not yet installed, which moves the fill off
+its set's next-victim position before the next installation in the set. Any
+other fill keeps bimodal insertion.
 An insertion update uses the most recent lookup's set and selected way;
 the controller completes that update before issuing another lookup.
 The L1D asserts this pairing for each grant installation.
@@ -1488,29 +1497,43 @@ direct-mapped L1s did. The L2's data array holds one line per row,
 addressed `{way, set}`, and is read one stage after the tag compare, from
 the way it picked, which adds one cycle to its longer lookup.
 
-Each set keeps a tree pseudo-LRU state, one bit per node of a binary tree
-over the ways (3 bits for four ways), in a small array read with the tags.
-Hits and allocations point the bits on their way's path away from it;
-probes, merges, and waiters leave the state alone. The L1D uses bimodal
-insertion (`BIMODAL_INSERT`): an allocation updates the state only one time
-in 32, chosen by a free-running LFSR, so a line that is filled and not hit
-again stays its set's next victim. A cyclic working set somewhat larger than
-the L1D then keeps part of itself resident, where updating on every fill
-would evict each line just before its next use. A miss slot owns its way
-from its allocation until it frees: the way's tag stays invalid while the
-slot fetches, and the fill installs there. A miss replaces the lowest
-invalid way that no pending miss owns, else the pseudo-LRU way among the
-ways no pending miss owns: the walk down the tree turns away from a subtree
-whose ways are all owned. When every way of a set is owned, a miss in that
-set waits. In a 4-way set, the next five accesses to the set after an
-installed line's last access evict it, whatever the set holds and has in
-flight, if they reach the cache, are to five different other lines that no
-miss is already fetching, and nothing invalidates a line of the set
-meanwhile. In the L1D each of those lines must also be hit once it is
-installed, since its fill alone usually leaves the state alone
-(`sw/lib/include/cache_evict.h` reads a line and then hits it). A line whose
-own fill is still pending cannot be evicted until the fill completes. The
-test programs that force evictions rely on this.
+Each set keeps a tree pseudo-LRU state in `frost_cache` (the L1I and component
+line-cache benches), in `coherence_home_array` (the L2), and in non-bimodal or
+one-way `coherence_array` instances: one bit per node of a binary tree over the
+ways (3 bits for four ways), in a small array read with the tags. Hits and
+allocations point the bits on their way's path away from it; probes, merges,
+and waiters leave the state alone. With `BIMODAL_INSERT`, `frost_cache` updates
+its tree PLRU state on an allocation only one time in 32, chosen by a
+free-running LFSR. The coherent L1D (`coherence_array` with
+`BIMODAL_INSERT && WAYS > 1`) instead uses 1-bit per-way NRU with 1/128 bimodal
+insertion: hits set the accessed way's NRU bit to 1, an insertion sets the
+filled way's NRU bit to 1 only on an upgrade hit, `i_update_touch`, or 1 time
+in 128 from the free-running LFSR (and 0 otherwise), and a miss fill into a
+full set whose NRU bits are all 1 clears the other ways to 0. A line that is
+filled and not hit again thus keeps NRU bit 0 and stays eligible as its set's
+next victim. A cyclic working set somewhat larger than the L1D then keeps part
+of itself resident, where promoting every fill would evict each line just
+before its next use. A miss slot owns its way from its allocation until it
+frees: the way's tag stays invalid while the slot fetches, and the fill
+installs there. In `frost_cache` and the other tree pseudo-LRU arrays, a miss
+replaces the lowest invalid way that no pending miss owns, else the pseudo-LRU
+way among the ways no pending miss owns: the walk down the tree turns away from
+a subtree whose ways are all owned. In the coherent L1D's per-way NRU array, a
+miss replaces the lowest eligible invalid way, else the lowest eligible way
+with NRU bit 0 (falling back to the lowest eligible way when all eligible ways
+have bit 1). When every way of a set is owned, a miss in that set waits. In a
+4-way tree pseudo-LRU set (`frost_cache` or the L2), the next five accesses to
+the set after an installed line's last access evict it, whatever the set holds
+and has in flight, if they reach the cache, are to five different other lines
+that no miss is already fetching, and nothing invalidates a line of the set
+meanwhile. In the 4-way coherent L1D (1-bit per-way NRU with 1/128 bimodal
+insertion), each evicting line must also be hit once it is installed so its NRU
+bit becomes 1 (`sw/lib/include/cache_evict.h` reads a line and then hits it),
+and up to seven (`2 * WAYS - 1`, `CACHE_EVICTING_LINES`) distinct touched lines
+evict any previously installed line (at most three fills reach an all-1 set,
+the fourth clears the remaining ways to 0, and up to three more sweep the
+cleared ways). A line whose own fill is still pending cannot be evicted until
+the fill completes. The test programs that force evictions rely on this.
 
 ### Requests and misses
 
@@ -2027,7 +2050,7 @@ response's error bit), the
 line-size adapter (`line_size_adapter`: strobes and data in the request's
 sector, and each response returning the sector its request recorded), the
 arbiter grant (`line_arbiter_grant`), the miss-slot byte merge
-(`cache_mshr_payload`), and the way choice (`cache_way_choice`: an
+(`cache_mshr_payload`), and `frost_cache`'s way choice (`cache_way_choice`: an
 allocation takes a way outside the tag stage's ownership mask, the
 timing-factored decision equals its reference, a touched way is never the
 next pseudo-LRU victim, and the restricted walk picks the pseudo-LRU way

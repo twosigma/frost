@@ -28,8 +28,10 @@ hw/rtl/lib/axi/axi_cdc.sv: o_src_bvalid
 hw/rtl/lib/axi/axi_cdc.sv: o_src_rvalid
 hw/rtl/lib/axi/axi_cdc.sv: r_fifo.i_ready
 hw/rtl/lib/axi/axi_cdc.sv: w_fifo.i_ready
-# Hit-port touches write the same unreset replacement RAM as plru_we; the
-# array's RAM-write comment documents why reset gates both write sources.
+# Hit-port touches and per-way NRU writes target the same unreset replacement
+# RAMs as plru_we; the array's RAM-write comment documents why reset gates them.
+hw/rtl/lib/cache/coherence_array.sv: ctrl_nru_we[way]
+hw/rtl/lib/cache/coherence_array.sv: hp_nru_we[way]
 hw/rtl/lib/cache/coherence_array.sv: hp_touch_we
 hw/rtl/lib/cache/coherence_array.sv: plru_we
 hw/rtl/lib/cache/coherence_array.sv: tag_we[way]

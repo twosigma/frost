@@ -139,8 +139,9 @@ backpressure; see the [CPU interface](cpu_top/README.md).
 
 Instruction fetch and data accesses both reach the cached region. The
 hierarchy has a 128 KiB L1D, a 16 KiB L1I, and a shared 2 MiB L2. All three
-are 4-way set-associative with tree pseudo-LRU replacement (the L1D with
-bimodal insertion). The L1I is read-only. The L1D and L2 write back dirty
+are 4-way set-associative; the L1I and L2 use tree pseudo-LRU replacement,
+and the L1D uses 1-bit per-way NRU with 1/128 bimodal insertion. The L1I is
+read-only. The L1D and L2 write back dirty
 data; L1D stores acquire M before changing their sector. The L1s use 32-byte
 lines; the L2 uses 64-byte lines, each holding two of them, and moves whole
 lines to and from DDR as single 512-bit AXI transfers. With
