@@ -33,7 +33,7 @@ from cocotb_tests.cpu_structs import (
 # Width constants from riscv_pkg
 # =============================================================================
 ROB_TAG_WIDTH = 5
-CHECKPOINT_ID_WIDTH = 3
+CHECKPOINT_ID_WIDTH = 4
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK64 = (1 << FLEN) - 1

@@ -33,7 +33,7 @@ from utils.packed_structs import (
 
 CLOCK_PERIOD_NS = 10
 ROB_TAG_WIDTH = 5
-CHECKPOINT_ID_WIDTH = 3
+CHECKPOINT_ID_WIDTH = 4
 MEM_SIZE_WIDTH = 2
 
 OP_BEQ = 23
@@ -65,6 +65,16 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_flush_for_mret.value = 0
     dut.i_trap_taken_reg.value = 0
     dut.i_mret_taken_reg.value = 0
+    dut.i_jal_launch.value = 0
+    dut.i_checkpoint_unresolved.value = 0
+    dut.i_head_tag.value = 0
+    dut.i_jal_capture.value = 0
+    dut.i_jal_tag.value = 0
+    dut.i_jal_checkpoint_id.value = 0
+    dut.i_jal_pc.value = 0
+    dut.i_jal_target.value = 0
+    dut.i_jal_is_compressed.value = 0
+    dut.i_jal_is_call.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -557,3 +567,431 @@ async def test_trap_and_mret_cancel_pending_recovery(dut: Any) -> None:
         await _settle_after_edge(dut)
 
         _assert_idle(dut)
+
+
+def _drive_jal_stage(
+    dut: Any,
+    *,
+    launch: bool = True,
+    capture: bool = True,
+    tag: int = 10,
+    checkpoint_id: int = 9,
+    pc: int = 0x8000_0500,
+    target: int = 0x8000_0700,
+    is_compressed: bool = False,
+    is_call: bool = False,
+    checkpoint_unresolved: int = 0,
+    head_tag: int = 0,
+) -> None:
+    """Drive the allocation-time JAL staging inputs."""
+    dut.i_jal_launch.value = 1 if launch else 0
+    dut.i_jal_capture.value = 1 if capture else 0
+    dut.i_jal_tag.value = tag
+    dut.i_jal_checkpoint_id.value = checkpoint_id
+    dut.i_jal_pc.value = pc
+    dut.i_jal_target.value = target
+    dut.i_jal_is_compressed.value = 1 if is_compressed else 0
+    dut.i_jal_is_call.value = 1 if is_call else 0
+    dut.i_checkpoint_unresolved.value = checkpoint_unresolved
+    dut.i_head_tag.value = head_tag
+
+
+@cocotb.test()
+async def test_early_jal_stage_launches_frontend_then_backend(dut: Any) -> None:
+    """A staged mispredicted JAL launches next cycle and runs both recovery phases."""
+    await _setup_test(dut)
+
+    # Capture without dispatch launch loads the staging payload inertly.
+    _drive_jal_stage(dut, launch=False, capture=True, tag=15, checkpoint_id=10)
+    await _settle_after_edge(dut)
+    _clear_inputs(dut)
+    await Timer(1, unit="ns")
+    assert not dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    cases = (
+        (False, False, 10, 8, 0x8000_0500, 0x8000_0700),
+        (False, True, 11, 9, 0x8000_0520, 0x8000_0740),
+        (True, False, 12, 10, 0x8000_0542, 0x8000_0782),
+        (True, True, 13, 11, 0x8000_0562, 0x8000_07C0),
+    )
+    for is_compressed, is_call, tag, checkpoint_id, pc, target in cases:
+        _clear_inputs(dut)
+        _drive_jal_stage(
+            dut,
+            tag=tag,
+            checkpoint_id=checkpoint_id,
+            pc=pc,
+            target=target,
+            is_compressed=is_compressed,
+            is_call=is_call,
+            head_tag=(tag + 1) & 0x1F,
+        )
+        # Cycle D: stage the JAL; no recovery starts yet.
+        await _settle_after_edge(dut)
+        _assert_idle(dut)
+
+        # Cycle D+1: no older unresolved checkpoints and not at ROB head -> launch.
+        _clear_inputs(dut)
+        dut.i_head_tag.value = (tag + 1) & 0x1F
+        await Timer(1, unit="ns")
+        assert dut.o_early_mispredict_fire.value
+        await _settle_after_edge(dut)
+
+        assert dut.o_early_mispredict_active.value
+        assert dut.o_early_recovery_en.value
+        assert dut.o_early_backend_recovery_hold.value
+        assert dut.o_backend_recovery_hold.value
+        assert not dut.o_early_backend_recovery_pending.value
+        assert dut.o_early_backend_recovery_pending_next.value
+        assert int(dut.o_early_mispredict_tag.value) == tag
+        assert int(dut.o_early_recovery_tag.value) == tag
+        assert int(dut.o_early_mispredict_checkpoint_id.value) == checkpoint_id
+        assert int(dut.o_early_mispredict_pc.value) == pc
+        assert int(dut.o_early_mispredict_branch_target.value) == target
+        assert int(dut.o_early_mispredict_redirect_pc.value) == target
+        assert dut.o_early_mispredict_branch_taken.value
+        assert bool(dut.o_early_mispredict_is_compressed.value) is is_compressed
+        assert bool(dut.o_early_mispredict_is_call.value) is is_call
+        assert dut.o_early_mispredict_is_jal.value
+        assert not dut.o_early_mispredict_is_jalr.value
+        assert not dut.o_early_mispredict_is_return.value
+
+        # Cycle D+2: backend partial flush carries the JAL's ROB tag.
+        _clear_inputs(dut)
+        await _settle_after_edge(dut)
+        assert not dut.o_early_mispredict_active.value
+        assert dut.o_early_backend_recovery_pending.value
+        assert int(dut.o_early_backend_flush_tag.value) == tag
+
+        # Cycle D+3: idle again.
+        await _settle_after_edge(dut)
+        _assert_idle(dut)
+
+    # A subsequent branch recovery clears o_early_mispredict_is_jal.
+    _drive_mispredict(dut, tag=4, checkpoint_id=2)
+    await _settle_after_edge(dut)
+    assert dut.o_early_mispredict_active.value
+    assert not dut.o_early_mispredict_is_jal.value
+    _clear_inputs(dut)
+    await _settle_after_edge(dut)
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+
+@cocotb.test()
+async def test_early_jal_waits_for_older_checkpoints_and_ignores_younger_jal(
+    dut: Any,
+) -> None:
+    """A staged JAL waits for sampled older checkpoints and ignores younger JALs."""
+    await _setup_test(dut)
+
+    # Stage older JAL while checkpoints 2 and 9 are unresolved.
+    _drive_jal_stage(
+        dut,
+        tag=10,
+        checkpoint_id=11,
+        pc=0x8000_1000,
+        target=0x8000_1200,
+        is_call=True,
+        checkpoint_unresolved=(1 << 2) | (1 << 9),
+        head_tag=3,
+    )
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    # Both bits unresolved: JAL waits.
+    _clear_inputs(dut)
+    dut.i_checkpoint_unresolved.value = (1 << 2) | (1 << 9)
+    dut.i_head_tag.value = 3
+    await Timer(1, unit="ns")
+    assert not dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    # Checkpoint 2 resolves; checkpoint 9 remains unresolved.
+    # A younger mispredicted JAL arrives while the older one is staged and must
+    # be ignored without replacing payload or wait bits.
+    _clear_inputs(dut)
+    _drive_jal_stage(
+        dut,
+        tag=14,
+        checkpoint_id=6,
+        pc=0x8000_9000,
+        target=0x8000_9400,
+        is_compressed=True,
+        is_call=False,
+        checkpoint_unresolved=(1 << 9),
+        head_tag=3,
+    )
+    await Timer(1, unit="ns")
+    assert not dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    # Checkpoint 9 resolves, and checkpoint 2 is reallocated to a younger branch
+    # (bit 2 set again). Because bit 2 was cleared from jal_q_wait on the prior
+    # edge, the reallocated bit does not block the staged JAL.
+    _clear_inputs(dut)
+    dut.i_checkpoint_unresolved.value = 1 << 2
+    dut.i_head_tag.value = 3
+    await Timer(1, unit="ns")
+    assert dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+
+    assert dut.o_early_mispredict_active.value
+    assert dut.o_early_mispredict_is_jal.value
+    assert int(dut.o_early_mispredict_tag.value) == 10
+    assert int(dut.o_early_mispredict_checkpoint_id.value) == 11
+    assert int(dut.o_early_mispredict_pc.value) == 0x8000_1000
+    assert int(dut.o_early_mispredict_redirect_pc.value) == 0x8000_1200
+    assert not dut.o_early_mispredict_is_compressed.value
+    assert dut.o_early_mispredict_is_call.value
+
+    _clear_inputs(dut)
+    await _settle_after_edge(dut)
+    assert dut.o_early_backend_recovery_pending.value
+    assert int(dut.o_early_backend_flush_tag.value) == 10
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+
+@cocotb.test()
+async def test_early_jal_defers_to_branch_payload_ownership(dut: Any) -> None:
+    """An issuing checkpointed branch owns the payload registers before a staged JAL."""
+    await _setup_test(dut)
+
+    # Case 1: a correctly predicted branch defers the JAL by one cycle without dropping it.
+    _drive_jal_stage(
+        dut,
+        tag=12,
+        checkpoint_id=7,
+        pc=0x8000_2000,
+        target=0x8000_2100,
+        is_call=True,
+        head_tag=1,
+    )
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    _clear_inputs(dut)
+    dut.i_head_tag.value = 1
+    _drive_mispredict(
+        dut,
+        tag=5,
+        checkpoint_id=2,
+        pc=0x8000_1800,
+        branch_target=0x8000_1900,
+        mispredicted=False,
+    )
+    await Timer(1, unit="ns")
+    assert not dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    # Next cycle without branch issue: the staged JAL launches with its own payload.
+    _clear_inputs(dut)
+    dut.i_head_tag.value = 1
+    await Timer(1, unit="ns")
+    assert dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+    assert dut.o_early_mispredict_active.value
+    assert dut.o_early_mispredict_is_jal.value
+    assert int(dut.o_early_mispredict_tag.value) == 12
+    assert int(dut.o_early_mispredict_redirect_pc.value) == 0x8000_2100
+
+    _clear_inputs(dut)
+    await _settle_after_edge(dut)
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    # Case 2: a mispredicted branch issue launches instead, and its pending phase
+    # drops the staged JAL to commit-time recovery.
+    _drive_jal_stage(
+        dut,
+        tag=16,
+        checkpoint_id=8,
+        pc=0x8000_2400,
+        target=0x8000_2500,
+        head_tag=2,
+    )
+    await _settle_after_edge(dut)
+
+    _clear_inputs(dut)
+    dut.i_head_tag.value = 2
+    _drive_mispredict(
+        dut,
+        tag=6,
+        checkpoint_id=3,
+        pc=0x8000_1A00,
+        branch_target=0x8000_1B00,
+        mispredicted=True,
+    )
+    await Timer(1, unit="ns")
+    assert dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+    assert dut.o_early_mispredict_active.value
+    assert not dut.o_early_mispredict_is_jal.value
+    assert int(dut.o_early_mispredict_tag.value) == 6
+
+    # During pending, jal_stage_kill clears jal_q_valid.
+    _clear_inputs(dut)
+    dut.i_head_tag.value = 2
+    await _settle_after_edge(dut)
+    assert dut.o_early_backend_recovery_pending.value
+    assert int(dut.o_early_backend_flush_tag.value) == 6
+
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+
+@cocotb.test()
+async def test_early_jal_suppressed_at_rob_head_and_dropped_on_own_commit(
+    dut: Any,
+) -> None:
+    """A staged JAL at the ROB head does not launch and drops on commit recovery."""
+    await _setup_test(dut)
+
+    # Already at head when staged.
+    _drive_jal_stage(
+        dut,
+        tag=9,
+        checkpoint_id=4,
+        pc=0x8000_3000,
+        target=0x8000_3100,
+        head_tag=9,
+    )
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    _clear_inputs(dut)
+    dut.i_head_tag.value = 9
+    await Timer(1, unit="ns")
+    assert not dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    # Commit-time recovery of the JAL clears the stage permanently.
+    dut.i_mispredict_recovery_pending.value = 1
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    _clear_inputs(dut)
+    dut.i_head_tag.value = 10
+    await Timer(1, unit="ns")
+    assert not dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    # Reaching head on the same cycle the last older checkpoint resolves
+    # suppresses early launch so commit-time recovery takes over without racing.
+    _drive_jal_stage(
+        dut,
+        tag=11,
+        checkpoint_id=5,
+        pc=0x8000_3200,
+        target=0x8000_3300,
+        checkpoint_unresolved=(1 << 1),
+        head_tag=10,
+    )
+    await _settle_after_edge(dut)
+
+    _clear_inputs(dut)
+    dut.i_checkpoint_unresolved.value = 0
+    dut.i_head_tag.value = 11
+    await Timer(1, unit="ns")
+    assert not dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    dut.i_mispredict_recovery_pending.value = 1
+    await _settle_after_edge(dut)
+    _clear_inputs(dut)
+    dut.i_head_tag.value = 12
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+
+@cocotb.test()
+async def test_early_jal_drops_on_flushes_and_blocks_staging_during_recovery(
+    dut: Any,
+) -> None:
+    """Flushes and other recoveries drop staged JALs and block further staging."""
+    await _setup_test(dut)
+
+    # Drop an already-staged waiting JAL on every flush or recovery kill cause.
+    kill_signals = (
+        "i_flush_all",
+        "i_mispredict_recovery_pending",
+        "i_fence_i_flush",
+        "i_trap_taken_reg",
+        "i_mret_taken_reg",
+        "i_rst",
+    )
+    for index, signal in enumerate(kill_signals):
+        _clear_inputs(dut)
+        _drive_jal_stage(
+            dut,
+            tag=5 + index,
+            checkpoint_id=index,
+            checkpoint_unresolved=(1 << 0),
+            head_tag=0,
+        )
+        await _settle_after_edge(dut)
+        _assert_idle(dut)
+
+        _clear_inputs(dut)
+        dut.i_checkpoint_unresolved.value = 1 << 0
+        getattr(dut, signal).value = 1
+        await _settle_after_edge(dut)
+
+        _clear_inputs(dut)
+        dut.i_rst.value = 0
+        dut.i_checkpoint_unresolved.value = 0
+        dut.i_head_tag.value = 0
+        await Timer(1, unit="ns")
+        assert not dut.o_early_mispredict_fire.value, signal
+        await _settle_after_edge(dut)
+        _assert_idle(dut)
+
+    # Block staging during flush_all and commit-time recovery.
+    for signal in ("i_flush_all", "i_mispredict_recovery_pending"):
+        _clear_inputs(dut)
+        _drive_jal_stage(dut, tag=20, checkpoint_id=9, head_tag=1)
+        getattr(dut, signal).value = 1
+        await _settle_after_edge(dut)
+        _clear_inputs(dut)
+        dut.i_head_tag.value = 1
+        await Timer(1, unit="ns")
+        assert not dut.o_early_mispredict_fire.value, signal
+        await _settle_after_edge(dut)
+        _assert_idle(dut)
+
+    # Block staging during both phases of another early recovery.
+    _clear_inputs(dut)
+    _drive_mispredict(dut, tag=3, checkpoint_id=1)
+    await _settle_after_edge(dut)
+    assert dut.o_early_mispredict_active.value
+
+    # Phase 1 (early_mispredict_pending): staging must be blocked.
+    _clear_inputs(dut)
+    _drive_jal_stage(dut, tag=21, checkpoint_id=10, head_tag=1)
+    await _settle_after_edge(dut)
+    assert dut.o_early_backend_recovery_pending.value
+
+    # Phase 2 (early_backend_recovery_pending): staging must also be blocked.
+    _clear_inputs(dut)
+    _drive_jal_stage(dut, tag=22, checkpoint_id=11, head_tag=1)
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
+
+    # Idle afterwards: neither JAL staged.
+    _clear_inputs(dut)
+    dut.i_head_tag.value = 1
+    await Timer(1, unit="ns")
+    assert not dut.o_early_mispredict_fire.value
+    await _settle_after_edge(dut)
+    _assert_idle(dut)

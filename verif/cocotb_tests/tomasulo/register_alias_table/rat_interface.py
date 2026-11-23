@@ -668,7 +668,7 @@ class RATInterface:
     ) -> None:
         """Drive checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 1
-        self.dut.i_checkpoint_id.value = checkpoint_id & 0x7
+        self.dut.i_checkpoint_id.value = checkpoint_id & 0xF
         self.dut.i_checkpoint_branch_tag.value = branch_tag & MASK_TAG
         self.dut.i_ras_tos.value = ras_tos & 0x7
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
@@ -678,7 +678,7 @@ class RATInterface:
         self._checkpoint_save_for_slot2_drv = 1 if for_slot2 else 0
         self._drive_alloc_candidates()
         self._pending_checkpoint_save = (
-            checkpoint_id & 0x7,
+            checkpoint_id & 0xF,
             branch_tag & MASK_TAG,
             ras_tos & 0x7,
             ras_valid_count & 0xF,
@@ -720,9 +720,9 @@ class RATInterface:
     def drive_checkpoint_restore(self, checkpoint_id: int) -> None:
         """Drive checkpoint restore signals."""
         self.dut.i_checkpoint_restore.value = 1
-        self.dut.i_checkpoint_restore_id.value = checkpoint_id & 0x7
+        self.dut.i_checkpoint_restore_id.value = checkpoint_id & 0xF
         self.dut.i_checkpoint_restore_reclaim_all.value = 0
-        self._pending_checkpoint_restore = checkpoint_id & 0x7
+        self._pending_checkpoint_restore = checkpoint_id & 0xF
 
     def clear_checkpoint_restore(self) -> None:
         """Clear checkpoint restore signals."""
@@ -752,8 +752,8 @@ class RATInterface:
     def drive_checkpoint_free(self, checkpoint_id: int) -> None:
         """Drive checkpoint free signals."""
         self.dut.i_checkpoint_free.value = 1
-        self.dut.i_checkpoint_free_id.value = checkpoint_id & 0x7
-        self._pending_checkpoint_free = checkpoint_id & 0x7
+        self.dut.i_checkpoint_free_id.value = checkpoint_id & 0xF
+        self._pending_checkpoint_free = checkpoint_id & 0xF
 
     def clear_checkpoint_free(self) -> None:
         """Clear checkpoint free signals."""
@@ -763,8 +763,8 @@ class RATInterface:
     def drive_checkpoint_free_2(self, checkpoint_id: int) -> None:
         """Drive the second checkpoint free port (slot-2 branch retirement)."""
         self.dut.i_checkpoint_free_2.value = 1
-        self.dut.i_checkpoint_free_id_2.value = checkpoint_id & 0x7
-        self._pending_checkpoint_free_2 = checkpoint_id & 0x7
+        self.dut.i_checkpoint_free_id_2.value = checkpoint_id & 0xF
+        self._pending_checkpoint_free_2 = checkpoint_id & 0xF
 
     def clear_checkpoint_free_2(self) -> None:
         """Clear the second checkpoint free port."""
@@ -773,8 +773,8 @@ class RATInterface:
 
     def drive_checkpoint_bulk_free(self, free_mask: int) -> None:
         """Drive checkpoint bulk free mask."""
-        self.dut.i_checkpoint_flush_free_mask.value = free_mask & 0xFF
-        self._pending_checkpoint_bulk_free_mask = free_mask & 0xFF
+        self.dut.i_checkpoint_flush_free_mask.value = free_mask & 0xFFF
+        self._pending_checkpoint_bulk_free_mask = free_mask & 0xFFF
 
     def clear_checkpoint_bulk_free(self) -> None:
         """Clear checkpoint bulk free mask."""

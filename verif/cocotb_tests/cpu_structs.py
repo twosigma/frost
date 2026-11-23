@@ -24,7 +24,7 @@ from config import FLEN, INSTR_OP_WIDTH, XLEN
 
 ROB_TAG_WIDTH = 5
 REG_ADDR_WIDTH = 5
-CHECKPOINT_ID_WIDTH = 3
+CHECKPOINT_ID_WIDTH = 4
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
 TAGE_INDEX_BITS = 9
@@ -261,7 +261,7 @@ COMMIT_FIELDS = [
     ("misprediction", 1),
     ("early_recovered", 1),
     ("has_checkpoint", 1),
-    ("checkpoint_id", 3),
+    ("checkpoint_id", CHECKPOINT_ID_WIDTH),
     ("redirect_pc", XLEN),
     ("predicted_taken", 1),
     ("branch_taken", 1),

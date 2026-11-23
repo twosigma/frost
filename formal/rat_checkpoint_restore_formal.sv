@@ -20,13 +20,14 @@
 //
 // An independent ROB-sequence architectural oracle (with zero epoch state)
 // verifies watched INT and FP registers chosen as symbolic constants across
-// all 31 non-zero INT registers, all 32 FP registers, and all 8 checkpoint
-// slots to unbounded depth by k-induction.
+// all 31 non-zero INT registers, all 32 FP registers, and every checkpoint
+// slot (riscv_pkg::NumCheckpoints, not a power of two) to unbounded depth by
+// k-induction.
 module rat_checkpoint_restore_formal #(
     parameter bit          CHECK_INT       = 1'b1,
     parameter bit          CHECK_FP        = 1'b1,
     parameter bit          CHECK_ACTIVE    = 1'b1,
-    parameter int unsigned CHECK_CKPT_MASK = 255
+    parameter int unsigned CHECK_CKPT_MASK = (1 << riscv_pkg::NumCheckpoints) - 1
 ) (
     input logic                                    i_clk,
     input logic                                    i_rst_n,
@@ -100,6 +101,11 @@ module rat_checkpoint_restore_formal #(
 
   always_comb begin
     assume (watch_int_reg != '0);
+    // Checkpoint IDs name a real checkpoint: the ID width encodes more than
+    // NumCheckpoints.
+    assume (watch_ckpt_id < CheckpointIdWidth'(NumCheckpoints));
+    assume (i_save_ckpt_id < CheckpointIdWidth'(NumCheckpoints));
+    assume (i_early_mispredict_ckpt_id < CheckpointIdWidth'(NumCheckpoints));
     if (!f_past_valid) begin
       assume (!i_rst_n);
     end else begin
@@ -177,7 +183,7 @@ module rat_checkpoint_restore_formal #(
   logic [RegAddrWidth-1:0] commit_dest_reg_2_q = '0;
   logic [TagWidth-1:0] commit_tag_2_q = '0;
 
-  // Head/head+1 checkpoint ownership decode directly from the 8-entry checkpoint pool.
+  // Head/head+1 checkpoint ownership decode directly from the checkpoint pool.
   logic [CheckpointIdWidth-1:0] head_ckpt_id;
   logic head_has_ckpt;
   logic [CheckpointIdWidth-1:0] head_next_ckpt_id;
@@ -1007,7 +1013,7 @@ module rat_checkpoint_restore_formal #(
     endcase
   endfunction
 
-  // Snapshot RAM invariants across all 8 checkpoints for watched INT and FP lanes.
+  // Snapshot RAM invariants across all checkpoints for watched INT and FP lanes.
   logic [NumCheckpoints-1:0] inv_ckpt_ok;
   genvar c;
   generate
@@ -1100,7 +1106,7 @@ module rat_checkpoint_restore_formal #(
   // Partitioned induction tasks share only the preceding cycle's assertion
   // results (initialized true), so a first failure on any cycle satisfies
   // prior_all_inv_ok and fails in its owning partition.
-  if (!CHECK_ACTIVE || (CHECK_CKPT_MASK != 255)) begin : g_partition_history
+  if (!CHECK_ACTIVE || (CHECK_CKPT_MASK != (1 << NumCheckpoints) - 1)) begin : g_partition_history
     logic prior_all_inv_ok = 1'b1;
     always_ff @(posedge i_clk) begin
       prior_all_inv_ok <= inv_active_ok && (&inv_ckpt_ok);
@@ -1116,11 +1122,14 @@ module rat_checkpoint_restore_formal #(
   always_ff @(posedge i_clk) begin
     if (f_past_valid && i_rst_n) begin
       if (CHECK_INT) begin
-        // Reach checkpoint pool exhaustion (all 8 checkpoints simultaneously live).
+        // Reach checkpoint pool exhaustion (every checkpoint simultaneously live).
         c_all_checkpoints_full : cover (!o_checkpoint_available);
 
-        // Reach highest priority-encoder slot selection (ids 0..6 occupied, id 7 free).
-        c_alloc_id_7 : cover (o_checkpoint_available && (o_checkpoint_alloc_id == 3'd7));
+        // Reach highest priority-encoder slot selection (every lower id occupied,
+        // the last id free).
+        c_alloc_id_last :
+        cover (o_checkpoint_available &&
+               (o_checkpoint_alloc_id == CheckpointIdWidth'(NumCheckpoints - 1)));
 
         // Reach slot-2 branch overlay save, wrong-path overwrite, and early restore of slot-1 tag.
         c_slot2_overlay_save_clobber_restore :
