@@ -287,7 +287,8 @@ and check AXI burst order, byte masks, allocation hints, errors and reset on bot
 
 `coherence_home_array` and its BRAM and packed-tag variants check concurrent
 tag decisions, explicit row reads and masked updates, including the banked
-UltraRAM form. They do not request parallel way reads. They exercise physical-row
+UltraRAM form, and verify that `o_resp_spec` holds through stage
+`DATA_READ_LATENCY - 1` and clears at stage `DATA_READ_LATENCY`. They exercise physical-row
 aliases, live victim exclusions, continuous read/write contention and reset
 with responses in flight. The `coherence_array_reset_*` and
 `coherence_home_array_reset_*` benches exercise both reset modes in block RAM
@@ -327,7 +328,9 @@ prefetch enabled or disabled.
 and CPU observation cuts; `coherence_home_rowread` runs the UltraRAM home with `PARALLEL_READ=0` so row reads after the decision and probe replies ahead of row data are exercised, and `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
 requests execute, preserve waiter order across an older writer, check
 current data on waiter reentry, sweep fills, puts and dirty probe updates
-across parallel way reads of a set, and run back-to-back hit lookups across
+across parallel way reads of a set, verify that `DMAWrite` and Zicbom lookups
+skip parallel way reads with `FAST_TAG_LAUNCH` off and on, and run back-to-back
+hit lookups across
 and within a set. Two DMA reads with an intervening clean,
 flush or invalidate check that the later reader leaves the fill's way
 available to the management request. Streaming cases check way-0 miss placement,
