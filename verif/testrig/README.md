@@ -599,12 +599,31 @@ mask-undisturbed readouts, `mf2` through `m4` group multipliers, legal
 register overlaps and illegal widening FP traps.
 [Widening FP operations](vector_fp_widen.S)
 
+The permute trace checks slides (`vslideup.{vx,vi}`, `vslidedown.{vx,vi}`),
+slide-by-one integer and floating-point moves (`vslide1up.vx`,
+`vslide1down.vx`, `vfslide1up.vf`, `vfslide1down.vf`), register gathers
+(`vrgather.{vv,vx,vi}`, `vrgatherei16.vv`), vector compression
+(`vcompress.vm`) and whole-register moves (`vmv1r.v`, `vmv2r.v`, `vmv4r.v`,
+`vmv8r.v`) across all supported element widths. It covers `vslideup` prefix
+preservation under `tu` and `ta`, `vslidedown` 64-bit index wraparound,
+exact `VLMAX - 1` versus `VLMAX` out-of-range zeroing, zero-extended five-bit
+immediates (`uimm5` 16 and 31), `vrgatherei16` indices across all four data
+widths including indices above 255 at SEW 8 and legal `vs2 == vs1` at SEW 16,
+floating-point `sNaN` pass-through and improperly NaN-boxed scalar unboxing
+without raising flags, `vcompress.vm` with all-zero, all-ones, sparse and
+`v0` masks, `vmv<nr>r.v` independence of `vl` and `vlmul` plus self-copy,
+masked and unmasked forms, vector lengths below, equal to and zero relative
+to VLMAX, fractional and multi-register group multipliers, legal in-place
+overlaps and illegal permute overlap, alignment, range, reserved and `vill`
+traps.
+[Vector permute operations](vector_permutes.S)
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at
 each of VLEN 128, 256 and 512. Each replays 12 generated traces of 20
 operation groups from seed 42, the source-width traces and the directed
 state, fractional LMUL, FP, cached DDR, integer comparison, widening and
-narrowing integer, fixed-point, single-width FP, whole-register memory and
-widening FP traces. Both
+narrowing integer, fixed-point, single-width FP, whole-register memory,
+widening FP and permute traces. Both
 implementations must return every planned trace and instruction. The
 VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer
@@ -612,9 +631,9 @@ source widths, fractional LMUL, base FP results, fused multiply-add, FP
 conversions, unit-stride memory, strided memory, indexed memory, segment
 memory, fault-only-first loads, integer comparisons, widening and
 narrowing integer operations, fixed-point operations, single-width FP
-operations, whole-register memory and widening FP operations. It checks `vcpop.m` for state and
-scalar results and FP comparisons. TestRIG must report each destination
-value mismatch.
+operations, whole-register memory, widening FP and permute operations. It
+checks `vcpop.m` for state and scalar results and FP comparisons. TestRIG
+must report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail

@@ -109,6 +109,7 @@ VECTOR_DIRECTED_TRACES = tuple(
         "fp_single",
         "whole_reg",
         "fp_widen",
+        "permutes",
     )
 )
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
@@ -1025,7 +1026,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="add directed vector state, scalar-result, fractional LMUL, FP, "
         "cached DDR, integer comparison, widening/narrowing integer, "
-        "fixed-point, single-width FP, whole-register memory and widening FP traces",
+        "fixed-point, single-width FP, whole-register memory, "
+        "widening FP and permute traces",
     )
     parser.add_argument(
         "--vlen",
