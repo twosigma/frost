@@ -9617,7 +9617,7 @@ def test_rs_payload_twin_assertion_groups(
         "memory_map -keepdc",
         "opt_clean",
         "setundef -zero -init",
-        "select -assert-count 104 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 112 t:$check r:FLAVOR=assume %i",
         "select -assert-count 175 t:$check r:FLAVOR=assert %i",
         "select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2",
         "select -set operands c:p_twin_operand_*",
@@ -9684,7 +9684,7 @@ def test_rs_payload_twin_assertion_groups(
 
     if not source:
         hashes = {
-            "rs_payload_twin.sby": "1e0b82aeab6501b385f689282c457e55c0d49e12d3ed446b75ecb25227f95b14",
+            "rs_payload_twin.sby": "d09dccd46f90225774a5c354cd7b7347cd24963d12ffac1f4316830d898ad625",
             "rs_payload_twin_formal.sv": "bf55b92f3eb8eda22aef16b2268c2a1c1f458f946711b536cdc397fbb008ae61",
             "free_undefined.ys": "d9383d13eaa8e490ab3671853c1390d92160abbfa19ca0d93fdf40138549e7d6",
         }
