@@ -1238,6 +1238,8 @@ jobs:
 
           check_ext_result zvfhmin vector_zvfhmin \
             'order=30 insn=0x42102557 rd=x10' '0x3e00 != 0x3e01'
+          check_ext_result zvbb vector_zvbb \
+            'order=24 insn=0x42202557 rd=x10' '0xfffffffff00a1030 != 0xfffffffff00a1031'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()

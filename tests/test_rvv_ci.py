@@ -150,6 +150,12 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
             "order=30 insn=0x42102557 rd=x10",
             "0x3e00 != 0x3e01",
         ],
+        [
+            "zvbb",
+            "vector_zvbb",
+            "order=24 insn=0x42202557 rd=x10",
+            "0xfffffffff00a1030 != 0xfffffffff00a1031",
+        ],
     ]
     assert job["steps"].index(ext_replay) < job["steps"].index(ext_control)
     control_command = shlex.split(control["run"].replace("\\\n", ""))

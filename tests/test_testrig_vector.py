@@ -4434,7 +4434,7 @@ def test_vector_ext_replay_and_coverage(tmp_path: Path) -> None:
     plan = test_testrig.prepare_inputs(args, tmp_path, config)
     ext_dir = tmp_path / "vector_ext"
     assert plan.command == ["-d", str(ext_dir)]
-    assert (plan.traces, plan.instructions) == (1, 738)
+    assert (plan.traces, plan.instructions) == (2, 738 + 1260)
 
     zvfhmin_trace = ext_dir / "vector_zvfhmin.S"
     assert (
@@ -4572,6 +4572,102 @@ def test_vector_ext_replay_and_coverage(tmp_path: Path) -> None:
         "vill_20",
     }
     assert ctrl_orders == [30]
+
+    zvbb_trace = ext_dir / "vector_zvbb.S"
+    assert (
+        zvbb_trace.read_bytes()
+        == (VERIF_DIR / "testrig" / "vector_zvbb.S").read_bytes()
+    )
+    zvbb_lines = zvbb_trace.read_text().splitlines()
+    assert sum(line.startswith(".4byte ") for line in zvbb_lines) == 1260
+    assert sum(line.startswith(".assert ") for line in zvbb_lines) == 808
+
+    zvbb_blocks = TRACE_WORD.split(zvbb_trace.read_text())[1:]
+    zvbb_slots_by_sew: set[tuple[int, int, int, int]] = set()
+    zvbb_masked_slots: set[tuple[int, int]] = set()
+    zvbb_policies: set[int] = set()
+    zvbb_vl0: set[int] = set()
+    zvbb_vlmax_lmuls: set[int] = set()
+    zvbb_traps = 0
+    zvbb_ctrl_orders: list[int] = []
+    sew = 8
+    lmul = 0
+    vtype = 0
+    avl_mode = ""
+    vl_imm = 0
+    for idx, block in enumerate(zvbb_blocks):
+        word = int(block.split()[1], 0)
+        opcode = word & 0x7F
+        f3 = (word >> 12) & 7
+        f6 = (word >> 26) & 0x3F
+        vm = (word >> 25) & 1
+        vs1 = (word >> 15) & 0x1F
+        if word == 0x4220_2557:
+            zvbb_ctrl_orders.append(idx)
+        if opcode == 0x73 and f3 in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            assert csr != 0x301, "vector_zvbb.S must not access misa"
+            assert csr != 0x008, "vector_zvbb.S must not write vstart"
+        if opcode == 0x57 and f3 == 7:
+            is_ivli = (word >> 30) == 0b11
+            vtype = ((word >> 20) & 0x3FF) if is_ivli else ((word >> 20) & 0x7FF)
+            sew_code = (vtype >> 3) & 7
+            lmul = vtype & 7
+            sew = 8 << min(sew_code, 3) if sew_code <= 3 else 128
+            avl_mode = "imm" if is_ivli else "vlmax"
+            vl_imm = vs1 if is_ivli else 0
+            continue
+        if opcode != 0x57:
+            continue
+        is_zvbb = (
+            (f6 == 0x01 and f3 in (0, 4))
+            or (f6 == 0x12 and f3 == 2 and vs1 in (8, 9, 10, 12, 13, 14))
+            or (f6 in (0x14, 0x15) and f3 in (0, 3, 4))
+            or (f6 == 0x35 and f3 in (0, 3, 4))
+        )
+        if not is_zvbb:
+            continue
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            zvbb_traps += 1
+            continue
+        assert re.search(r"(?m)^\.assert trap == 0\b", block)
+        slot_vs1 = vs1 if (f6 == 0x12 and f3 == 2) else -1
+        zvbb_slots_by_sew.add((sew, f6, f3, slot_vs1))
+        if vm == 0:
+            zvbb_masked_slots.add((f6, f3))
+            zvbb_policies.add(vtype & 0xC0)
+        if avl_mode == "imm" and vl_imm == 0:
+            zvbb_vl0.add(f6)
+        if avl_mode == "vlmax":
+            zvbb_vlmax_lmuls.add(lmul)
+
+    expected_single = {
+        (0x01, 0, -1),
+        (0x01, 4, -1),
+        (0x12, 2, 8),
+        (0x12, 2, 9),
+        (0x12, 2, 10),
+        (0x12, 2, 12),
+        (0x12, 2, 13),
+        (0x12, 2, 14),
+        (0x14, 0, -1),
+        (0x14, 3, -1),
+        (0x14, 4, -1),
+        (0x15, 0, -1),
+        (0x15, 3, -1),
+        (0x15, 4, -1),
+    }
+    expected_wsll = {(0x35, 0, -1), (0x35, 3, -1), (0x35, 4, -1)}
+    expected_all = {(s, *slot) for s in (8, 16, 32, 64) for slot in expected_single} | {
+        (s, *slot) for s in (8, 16, 32) for slot in expected_wsll
+    }
+    assert zvbb_slots_by_sew == expected_all
+    assert {(0x01, 0), (0x12, 2), (0x35, 0)} <= zvbb_masked_slots
+    assert zvbb_policies == {0x00, 0xC0}
+    assert {0x01, 0x12, 0x15, 0x35} <= zvbb_vl0
+    assert zvbb_vlmax_lmuls == {5, 6, 7, 0, 1, 2, 3}  # mf8..m8
+    assert zvbb_traps == 20
+    assert zvbb_ctrl_orders == [24]
 
 
 @pytest.mark.parametrize("vlen", vector.VECTOR_LENGTHS)

@@ -95,6 +95,7 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "int-vx-merge": 0x4340_2557,  # vmv.x.s a0, v20 in the integer scalar/merge trace
     "segment-matrix": 0x43D0_2557,  # vmv.x.s a0, v29 in the generated segment matrix trace
     "zvfhmin": 0x4210_2557,  # vmv.x.s a0, v1 in the Zvfhmin FP16 conversion trace
+    "zvbb": 0x4220_2557,  # vmv.x.s a0, v2 in the Zvbb bit-manipulation trace
 }
 
 # frost_rvfi_dii's error_flags bits.

@@ -716,6 +716,17 @@ compared in TestRIG:
 - `viota.m` with `LMUL > 1` whose source mask register is an upper register
   of the destination group (for example `viota.m v8, v9` at `m2`).
 
+Additional vector-extension behaviors are not compared against Sail 0.16:
+
+- `Zvkt` data-independent execution timing: Sail 0.16 is an instruction-level
+  functional model and has no cycle counts, so TestRIG cannot observe timing.
+  Fixed-latency, operand-independent timing is covered outside TestRIG by
+  `vec_integer_exec_v{128,256,512}`
+  (`verif/cocotb_tests/vector/test_vec_integer_exec.py:zvkt_arithmetic_latency`),
+  `vec_crypto_exec_v{128,256,512}`
+  (`verif/cocotb_tests/vector/test_vec_crypto_exec.py:crypto_families`), and
+  the `vec_int_lane` and `vec_mul_lane` unit benches.
+
 The Zvfhmin trace checks both RVA23U64 mandatory Zvfhmin half-precision
 floating-point conversion encodings (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at
 `SEW = 16`) alongside all six base-V `SEW = 16` integer/binary32 conversions
@@ -730,6 +741,20 @@ masked (`tu`/`mu` and `ta`/`ma`) execution with disabled `sNaN` flag
 suppression, `vl == 0`, portable `vl == VLMAX` from `mf4` through `m4`, legal
 register overlaps, and illegal `m8`, `e8`, `e64`, alignment, `v0`, overlap,
 reserved `frm` and `vill` traps. [Zvfhmin conversions](vector_zvfhmin.S)
+
+The Zvbb trace checks all sixteen RVA23U64 mandatory Zvbb (including the
+Zvkb subset) bit-manipulation mnemonics across all seventeen encoding slots:
+`vandn.{vv,vx}`, `vbrev8.v`, `vrev8.v`, `vbrev.v`, `vclz.v`, `vctz.v`,
+`vcpop.v`, `vrol.{vv,vx}`, `vror.{vv,vx}`, `vror.vi` (both `imm[5] = 0` and
+`imm[5] = 1`), and `vwsll.{vv,vx,vi}`. It covers all four legal element widths
+(`e8`, `e16`, `e32` and `e64`; `e8`, `e16` and `e32` for `vwsll`), shift and
+rotate masking modulo `SEW` and `2 * SEW`, `imm[5] = 1` rotations at `e64`,
+zero, all-ones, single-bit and high/low-word-zero corners, unsigned
+zero-extension in `vwsll`, masked and unmasked execution (`tu`/`mu` and
+`ta`/`ma`), `vl == 0`, portable `vl == VLMAX` across `mf8` through `m8`
+(`mf8` through `m4` for `vwsll`), legal in-place and upper-half overlaps, and
+illegal `vwsll` `e64`/`m8`/overlap, masked `v0`, alignment and `vill` traps.
+[Zvbb bit manipulation](vector_zvbb.S)
 
 On main pushes and pull requests labelled `run-ci`, CI runs three vector
 TestRIG shards (`core`, `segment` and `ext`) at each of VLEN 128, 256 and 512,
@@ -758,8 +783,8 @@ reporting and resumption, and `nf * EMUL <= 8`, register-wrap, indexed
 restores the `core` shard's replay and control timeouts to 55 and 50
 minutes. Together, `core` and `segment` retire all 627
 base-V machine encodings. The `ext` shard runs `--vector-ext` (`16m` replay /
-`11m` controls), starting with `vector_zvfhmin.S` (with `Zvfhmin` enabled in
-`sail_frost_vlen*.json`). Both
+`11m` controls), replaying `vector_zvfhmin.S` and `vector_zvbb.S` (with
+`Zvfhmin`, `Zvbb` and `Zvkt` enabled in `sail_frost_vlen*.json`). Both
 implementations must return every planned trace and instruction. The
 VLEN 128 `core`, `segment` and `ext` shards each reuse their simulator to flip one
 bit in a FROST integer destination in each control replay. The `core` shard
@@ -774,7 +799,7 @@ operations, and checks `vcpop.m` for state and scalar results and FP
 comparisons. The `segment` shard checks `vmv.x.s` for both the directed
 segment trace (`segment`) and field 1 of the generated unit-stride segment
 control load (`segment-matrix`). The `ext` shard checks `vmv.x.s` for
-`vector_zvfhmin.S` (`zvfhmin`). TestRIG must report
+`vector_zvfhmin.S` (`zvfhmin`) and `vector_zvbb.S` (`zvbb`). TestRIG must report
 each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
