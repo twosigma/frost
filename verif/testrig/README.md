@@ -121,7 +121,9 @@ The fixture uses `i_clk` for the CPU and SoC and requires
 
 CI runs four scalar TestRIG jobs in parallel. Each draws its own 100 sequences per
 template, 200 A-extension tests, 40 Sv39 MMU tests, and 80 CMO and Sstvala
-tests. The first job also runs the directed `--wfi` traces. Each job simulates
+tests. Shard 1 also replays `verif/testrig/traces` and runs `--crypto 50`,
+`--svinval 50`, `--sscofpmf`, and `--wfi`; shard 3 runs the startup assertion
+controls (`tests/random_start_sweep.py --require-controls`). Each job simulates
 the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 [tests/README.md](../../tests/README.md#environment-and-output)).
 
@@ -842,14 +844,17 @@ CI's TestRIG jobs replays all of them before its random run.
 | [`hpm_counters.S`](traces/hpm_counters.S) | Writable machine counter 3, zero-only machine counter/selector 31, and absent user alias 9 |
 | [`imsic_window_load.S`](traces/imsic_window_load.S) | An aligned doubleword load in the IMSIC window reaches the TestRIG device RAM without an access fault |
 | [`instret_nops.S`](traces/instret_nops.S) | NOP and C.NOP count in `minstret` |
+| [`lr_reserved_rs2.S`](traces/lr_reserved_rs2.S) | Reserved `LR.W`/`LR.D` encodings with nonzero `rs2` trap as illegal without creating a reservation; legal `rs2 = 0` forms still pair with `SC` |
 | [`lrsc_amo.S`](traces/lrsc_amo.S) | AMOs to the first two doublewords of the reserved line cancel the reservation; an AMO to the next line preserves it |
 | [`lrsc_jump.S`](traces/lrsc_jump.S) | A JAL, JALR, or taken branch between LR and SC keeps the reservation |
 | [`lrsc_older_store.S`](traces/lrsc_older_store.S) | An older store to the other word of the reserved doubleword drains before LR and permits the following SC |
 | [`pte_nonleaf_dau.S`](traces/pte_nonleaf_dau.S) | A non-leaf PTE with D, A, or U set raises a page fault |
+| [`svinval_sstc.S`](traces/svinval_sstc.S) | Svinval encodings, `mstatus.TVM`/U-mode legality, reserved `SYSTEM` `funct3=000` fields, and Sstc `stimecmp` gating across `menvcfg.STCE` and `mcounteren.TM` |
 | [`svpbmt_pbmte.S`](traces/svpbmt_pbmte.S) | PBMTE readback and PBMT page faults; Sail does not check the uncached alias transport or cache coherence |
 | [`svnapot_leaf.S`](traces/svnapot_leaf.S) | A 64 KiB NAPOT leaf (N, PPN[3:0] = 1000) translates two of its pages with PPN[3:0] = VA[15:12]; N with another PPN[3:0], in a 2 MiB leaf or in a pointer is a page fault |
 | [`ssu64xl_uxl.S`](traces/ssu64xl_uxl.S) | `mstatus.UXL`/`SXL` and `sstatus.UXL` read 2 and keep 2 when written with 3, 0 and 1 (UXLEN is 64) |
 | [`ssnpm_pmm.S`](traces/ssnpm_pmm.S) | `senvcfg.PMM` WARL (01 keeps the old value); with MPRV and MPP = U, tagged loads, stores and AMOs under Bare (PMLEN 16 and 7) and Sv39, masked faults with the transformed `mtval`, and no masking with MXR set or PMM = 00 |
 | [`sstvala_illegal.S`](traces/sstvala_illegal.S) | Illegal 32-bit and 16-bit instructions write their instruction bits to `mtval` and `stval` |
 | [`zawrs_ops.S`](traces/zawrs_ops.S) | `wrs.sto` and `wrs.nto` retire in M, S, and U modes and preserve an active `LR.D` reservation |
+| [`zcb_zimop_zcmop_ntl.S`](traces/zcb_zimop_zcmop_ntl.S) | Zcb, Zcmop, Zimop, and Zihintntl encodings in M-mode compared with Sail, plus reserved neighboring encodings that stay illegal |
 | [`zicbom_ops.S`](traces/zicbom_ops.S) | `cbo.clean`, `cbo.flush`, and `cbo.inval` across cached DDR, low BRAM, device windows, and unmapped addresses, with `CBIE`/`CBCFE` WARL checks |

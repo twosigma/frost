@@ -27,8 +27,10 @@ The diagram shows the X3 configuration; click it for the full-size version.
   architecture tests and random riscv-torture programs checked against Spike,
   the riscv-tests suites, and TestRIG, which compares FROST with the Sail
   RISC-V model one instruction at a time on random sequences drawn anew on
-  every run. The image also carries the riscv-vector-tests generator, and the
-  vector bring-up programs run on Spike on every change. Formal proofs, unit benches for the hardware blocks, and whole
+  every run. CI also runs generated `riscv-vector-tests` programs on the RTL
+  simulator at VLEN 128, 256, and 512, TestRIG vector traces against Sail at
+  all three vector lengths, and vector bring-up programs on Spike and RTL.
+  Formal proofs, unit benches for the hardware blocks, and whole
   programs from BRAM and DDR run alongside, and CI merges simulation coverage,
   including cover points for microarchitectural corner cases, into one report.
 - A reusable CPU: `cpu_top` packages the core, its MMUs, and the caches as one
@@ -44,10 +46,12 @@ The diagram shows the X3 configuration; click it for the full-size version.
   itself: building bitstreams and programming and loading the board.
 - A cycle-approximate [performance model](perf-modeling/README.md) of the CPU
   and memory system for design-space sweeps, with RTL event capture and a
-  CoreMark IPC comparison against the RTL. Architectural HPM counters 3–10
-  report retired branches, mispredictions, instruction and data TLB walks,
+  CoreMark IPC comparison against the RTL. Architectural HPM counters 3-10
+  report retired branches, mispredictions, L1 instruction and data TLB misses,
   L1D permission misses, store-queue capacity stalls, cycles, and retired
-  instructions through Linux `perf` and the OpenSBI PMU mapping, with
+  instructions, plus alternate events on counters 3-8 for L1I refills, L2
+  demand and prefetch misses, page-walker busy cycles, and TLB flushes, through
+  Linux `perf` and the OpenSBI PMU mapping, with
   Sscofpmf overflow interrupts for `perf record` sampling and per-privilege
   filtering. Optional custom profiling counters report
   stall causes, occupancy, and cache traffic.
@@ -234,7 +238,7 @@ every supported extension and privilege mode.
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
-| **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit scalar U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare). The unadvertised vector memory execution applies the same transform to each element address. |
+| **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit scalar U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare). Vector memory execution applies the same transform to each element address. |
 | **Supm**         | Scalar U-mode pointer masking supplied by Ssnpm when the execution environment enables it; the supplied Linux image does not expose the tagged-address ABI |
 | **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended; an instruction or data access, misaligned or page fault, a failed bus response included, writes the faulting virtual address |
 | **Ssu64xl**      | UXLEN is 64: `mstatus.UXL` and `sstatus.UXL` read 2 and cannot change |
@@ -243,7 +247,7 @@ every supported extension and privilege mode.
 | **Svnapot**      | 64 KiB NAPOT leaf PTEs (N = 1, PPN[3:0] = 1000 at level 0): each page translates with PPN[3:0] = VA[15:12] and fills the TLBs as a 4 KiB entry; every other N encoding is a page fault |
 | **Svpbmt**       | PTE bits 62:61 under `menvcfg.PBMTE`: NC and IO loads use the uncached path at the ROB head; DDR mappings require a configured alias into the coherent DMA port. The VCU118's 2 GiB map has no alias, so NC/IO DDR mappings raise access faults and the VCU118 device tree omits `svpbmt`; device mappings are unaffected. AMO/LR/SC, `cbo.zero` and fetch on NC or IO pages are access faults |
 | **Svvptc**       | A PTE changed from invalid to valid becomes visible to the walker without `sfence.vma` |
-| **Zic64b, Ziccif, Ziccrse, Ziccamoa, Zicclsm, Za64rs, Zkt, Ssccptr, Sstvecd, Sscounterenw** | RVA22 profile properties: 64-byte cache blocks, instruction fetch, LR/SC, AMOs and misaligned loads and stores in cached memory (in hardware on the X3, emulated by OpenSBI on the VCU118), reservation sets of at most 64 bytes, data-independent latency for the Zkt instructions, page-table walks of cached memory, direct-mode `stvec`, and a writable `scounteren` bit for each counter that is not read-only zero |
+| **Zic64b, Ziccif, Ziccrse, Ziccamoa, Zicclsm, Za64rs, Zkt, Ssccptr, Sstvecd, Sscounterenw** | RVA22 profile properties: 64-byte cache blocks, instruction fetch, LR/SC, AMOs and misaligned loads and stores in cached memory (performed in hardware by default on the X3 and VCU118), reservation sets of at most 64 bytes, data-independent latency for the Zkt instructions, page-table walks of cached memory, direct-mode `stvec`, and a writable `scounteren` bit for each counter that is not read-only zero |
 | **User Mode**    | U-mode privilege and system calls |
 
 ### Microarchitecture
@@ -266,8 +270,9 @@ every supported extension and privilege mode.
 - Branch prediction with a 256-entry BTB, a 1024-entry two-way backing BTB
   whose jump, call and return predictions redirect fetch from predecode, a
   bimodal and a tagged path-history direction predictor, and an 8-entry
-  return stack. A mispredicted conditional branch redirects fetch and
-  restores the rename tables the cycle after it resolves.
+  return stack. A mispredicted conditional branch or JALR redirects fetch and
+  restores the rename tables the cycle after it resolves, and a mispredicted
+  JAL launches early recovery once older branches and JALRs resolve.
 - Sv39 virtual memory with hardware page-table walks, separate 16-entry
   instruction and data TLBs backed by a 512-entry second-level TLB and a
   32-entry superpage array, and nine-bit ASIDs with global pages and

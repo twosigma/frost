@@ -378,17 +378,19 @@ the state after the reset cycle with every other register free, the hart
 maintenance lemma induction passes in about two minutes
 (`coh_hart_maint_owned_reset_prove` keeps that check), but the PDR proof
 that assumes its lemmas leaves one property unresolved in two hours.
-Fifty-four other `.sby` files run such an optimization after their own
-`setundef` or without one, and `coherence_l1d_twin.sby` and
-`store_queue_twin.sby` run a plain `memory_map`. Planned: `-keepdc` in
+Fifty-two other `.sby` files run such an optimization after their own
+`setundef` or without one, and twenty-one files in `DONT_CARE_OPEN` (three of
+them without `opt`: `coherence_l1d_twin.sby`, `coherence_read_capture.sby`,
+and `store_queue_twin.sby`) run a plain `memory_map`. Planned: `-keepdc` in
 those files, re-measured. In every command of every script, the fast check
 of the scripts accepts only Yosys command forms that, apart from edits the
 script names itself, keep the unknown starting value of registers and
 memories and never merge two free inputs, and for each task of a script it
 lists as open it pins every other command, in order. It also pins commands
-that read undefined bits as defined, in twenty-two more files and some of
-those above: seventeen in-script comparisons zero undefined constants before
-`equiv_simple`, which reads an undefined bit as 0. The predecode target,
+that read undefined bits as defined, in twenty-three more files and some of
+those above: seventeen unopened in-script comparisons zero undefined constants
+before `equiv_simple`, which reads an undefined bit as 0, and four opened ones
+run `equiv_simple` after opening both forms. The predecode target,
 decoded bundle queue, IMEM predecode and L0 store boundary comparisons open
 both forms and prove every point.
 `rs_payload_twin.sby` starts both copies from a zero state; the
@@ -406,8 +408,10 @@ or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
 `opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
 `prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). Of the 246 scripts, 218 open with `hierarchy -top` and
-`script free_undefined.ys`, which lowers processes pass by pass, frees the
+each case). Of the 254 scripts, 231 require the shared opening
+(`hierarchy -top` or `hierarchy -check -top` followed by
+`script free_undefined.ys`) across every task; `free_undefined.ys` lowers
+processes pass by pass, frees the
 undefined inputs of every multiplexer and the undefined bits of every
 connection with `setundef -anyseq` before `proc_dlatch` and every other
 undefined bit before `proc_dff`, and then runs `proc`'s own closing
@@ -416,9 +420,9 @@ port, a connection or a register when those passes run. Commands that a
 script's open entry pins are the exception: a plain `memory_map`, for one,
 writes x for words that nothing writes, and a plain `opt` after it can read
 them before SymbiYosys frees them. The fast check requires the shared
-opening for every task of those 218 scripts.
+opening for every task of those 231 scripts.
 
-Open: the 11 scripts listed in `UNDEFINED_OPENING_PENDING` in
+Open: the 6 scripts listed in `UNDEFINED_OPENING_PENDING` in
 `tests/test_run_formal.py`, each to be opened with every task rerun. The 17
 scripts listed in `UNDEFINED_OPENING_TWINS` need an opening for each
 form and a pairing for corresponding free values.

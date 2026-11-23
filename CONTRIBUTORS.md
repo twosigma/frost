@@ -30,7 +30,7 @@
 ### Erez Strauss ([@erez-strauss](https://github.com/erez-strauss))
 
 - Implemented the portable `sprintf`/`snprintf` library (`%d`, `%f`, `%e`, `%g`, `%x`, flags, width, precision, length modifiers)
-- Created the ~260-case integer, floating-point, string, and truncation test suite
+- Created the initial ~260-case integer, floating-point, string, and truncation test suite (since expanded to 344 checks)
 
 ## External
 
@@ -44,7 +44,7 @@
 - Professor at the University of Manchester, contributing in a personal capacity
 - Helps set the direction of the [roadmap](ROADMAP.md)
 - Found four RISC-V conformance bugs by differential testing against the Sail model
-- Suggested the RVFI-DII port and the TestRIG comparison against Sail that now runs in CI
+- Suggested the RVFI-DII port and the TestRIG comparison against Sail that runs in CI
 - Co-authored the fixes that make the unimplemented machine HPM counters
   read-only zero and that page-fault on a non-leaf PTE with D, A, or U set
 - Designed the 64-byte L2 and its 512-bit DDR port
@@ -88,7 +88,7 @@
   home's prefetcher, with a VCU118 board data set and its calibration tool
 - Moved signal declarations ahead of their first use across the RTL, as the
   SystemVerilog standard requires, and added a yosys-slang front-end check to CI
-- Implemented the Ethernet NIC offload engine (checksums, segmentation and scatter-gather), scalable ingress buffering, 802.3x flow control, telemetry and the matching Linux driver support
+- Implemented the Ethernet NIC offload engine (checksums, segmentation and scatter-gather), configurable ingress buffering, 802.3x flow control, telemetry and the matching Linux driver support
 - Added mixed-tier store serialization coverage, the VCU118 4 MiB L2 configuration and a dependent-load cache-capacity measurement application
 - Preserved TLB entries across SUM/MXR changes, added Svvptc and translation events, and cached upper-level page-table pointers
 - Implemented Sscofpmf counter overflow, privilege filtering, delegated local interrupts, and programmable cycle and instruction counters
@@ -131,7 +131,7 @@
 - Implemented pipelined DSP multiplication and radix-4 division for single- and double-precision floating-point operations and added a regression for the latency of arithmetic operations
 - Implemented pipelined scalar floating-point arithmetic, radix-16 division and early wakeup of dependent operations.
 - Implemented Zicbom clean, flush and invalidate through the coherent cache hierarchy.
-- Extended the backing branch target buffer, added tagged indirect target
+- Extended the backing branch target buffer, added tagged indirect target prediction (ITTAGE), and switched TAGE to global direction history.
 - Added front-end redirect checks and a seeded control-flow test suite.
 - Added early recovery of mispredicted indirect jumps and a misprediction cost probe.
 - Isolated each IP synthesis run in its own Tcl Store user area and bounded the VCU118 NIC pause-event mailbox payload.
