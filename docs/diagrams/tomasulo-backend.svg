@@ -96,7 +96,7 @@
   <path d="M 316 213 H 356" class="flow" marker-end="url(#flow-arrow)"/>
   <rect x="356" y="162" width="694" height="102" rx="13" class="station"/>
   <text x="380" y="196" class="heading">Dispatch + INT / FP register alias tables</text>
-  <text x="380" y="227" class="body">2-wide rename · 8 branch checkpoints</text>
+  <text x="380" y="227" class="body">2-wide rename · 12 branch checkpoints</text>
   <text x="380" y="252" class="small">Allocates ROB / RS entries; checks LQ / SQ space</text>
   <circle cx="1024" cy="188" r="15" class="allocation"/><text x="1024" y="194" class="badge-text">A</text>
 

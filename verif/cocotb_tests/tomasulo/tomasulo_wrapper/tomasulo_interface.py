@@ -1045,7 +1045,7 @@ class TomasuloInterface:
     ) -> None:
         """Drive RAT checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 1
-        self.dut.i_checkpoint_id.value = checkpoint_id & 0x7
+        self.dut.i_checkpoint_id.value = checkpoint_id & 0xF
         self.dut.i_checkpoint_branch_tag.value = branch_tag & MASK_TAG
         self.dut.i_ras_tos.value = ras_tos & 0x7
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
@@ -1062,7 +1062,7 @@ class TomasuloInterface:
     def drive_checkpoint_restore(self, checkpoint_id: int) -> None:
         """Drive RAT checkpoint restore signals."""
         self.dut.i_checkpoint_restore.value = 1
-        self.dut.i_checkpoint_restore_id.value = checkpoint_id & 0x7
+        self.dut.i_checkpoint_restore_id.value = checkpoint_id & 0xF
 
     def clear_checkpoint_restore(self) -> None:
         """Deassert checkpoint restore."""
@@ -1071,7 +1071,7 @@ class TomasuloInterface:
     def drive_checkpoint_free(self, checkpoint_id: int) -> None:
         """Drive RAT checkpoint free signals."""
         self.dut.i_checkpoint_free.value = 1
-        self.dut.i_checkpoint_free_id.value = checkpoint_id & 0x7
+        self.dut.i_checkpoint_free_id.value = checkpoint_id & 0xF
 
     def clear_checkpoint_free(self) -> None:
         """Deassert checkpoint free."""

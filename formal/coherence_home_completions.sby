@@ -3,9 +3,12 @@ coh_completions_prove proof plain base
 coh_completions_pairs_prove proof pairs plain base
 coh_completions_partition_prove proof partition base
 coh_completions_partition2_prove proof partition2 base
+coh_completions_fast_prove proof plain fast base
+coh_completions_fast_partition_prove proof partition fast base
 coh_completions_cover covers plain base
 coh_completions_partition_cover covers partition base
 coh_completions_partition2_cover covers partition2 base
+coh_completions_fast_cover covers plain fast base
 coh_if_pair_cover covers if_pair plain
 
 [options]
@@ -30,6 +33,7 @@ pairs: read -formal -sv -D COHERENCE_COMPLETIONS_PAIRS coherence_home_completion
 plain: chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 -set PREFETCH_SLOTS 0 coherence_home_completions
 partition: chparam -set SLOTS 3 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 -set PREFETCH_SLOTS 1 coherence_home_completions
 partition2: chparam -set SLOTS 4 -set RESULT_SLOTS 2 -set CACHE_BYTES 256 -set WAYS 2 -set PREFETCH_SLOTS 2 coherence_home_completions
+fast: chparam -set FAST_TAG_LAUNCH 1 coherence_home_completions
 base: hierarchy -top coherence_home_completions
 base: script free_undefined.ys
 base: prep -top coherence_home_completions -flatten

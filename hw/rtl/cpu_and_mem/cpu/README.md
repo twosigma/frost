@@ -48,9 +48,9 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `ooo_register_files` | `register_files/` | INT and FP architectural register files, two write ports each for two-wide commit, and a bypass that forwards a same-cycle commit to dispatch; with `EXTRA_READ_PORT`, one more read port on each file for the misaligned-access engine |
 | `commit_actions` | `commit/` | Register writes at commit, the delayed CSR writeback, the misaligned-access engine's load result on port 0, the retire valid, and the instret increment |
 | `branch_resolution` | `branch_recovery/` | Resolves conditional branches and JALRs from INT_RS with `branch_jump_unit` and reports them to the ROB, ignoring a branch whose checkpoint was reused. A JAL resolves when the ROB allocates it |
-| `early_misprediction_recovery` | `branch_recovery/` | Redirects fetch and restores the RAT one cycle after a checkpointed conditional branch or enabled JALR resolves as mispredicted |
+| `early_misprediction_recovery` | `branch_recovery/` | Redirects fetch and restores the RAT one cycle after a checkpointed conditional branch or enabled JALR resolves as mispredicted, or after a staged mispredicted JAL launches once older branches and JALRs resolve |
 | `misprediction_flush_controller` | `branch_recovery/` | Commit-time mispredictions, full and partial flush priority, checkpoint restore and free. Fetch samples the combined flush on the same edge as the individual recovery pulses |
-| `tage_history` | `branch_recovery/` | Path and direction history recovery, conditional-branch and JALR lookup snapshots, and training at commit |
+| `tage_history` | `branch_recovery/` | Path and direction history recovery, conditional-branch and JALR lookup snapshots, JAL history snapshots when `EarlyJalRecovery` is set, and training at commit |
 | `ex_comb_synthesizer` | `recovery/` | Builds IF's redirect, BTB-update, and RAS-restore bus from early recovery, commit-time recovery, and correct-branch commits, in that priority |
 | `data_mem_request_router` | `memory_if/` | Data-port arbitration (SQ writes, then AMO writes, then LQ reads), staged device reads, tagged completion for the cached tier; see the [data-tier bus rules](../../README.md#data-tier-bus-contract) |
 | `perf_counter_aggregator` | `perf/` | Top-level and cache profiling counters and the counter read mux, present only with `PERF_COUNTERS=1` ([counter reference](cpu_ooo/perf/README.md)) |
@@ -168,8 +168,11 @@ match vetoes it there). At a halfword PC, a slot-2 hit predicts
 only if the entry was trained for an instruction of the same size: slot 2
 redirects both PCs immediately without a pending handoff, and a 32-bit
 instruction in the second word's upper half does not fit the 64-bit window. A
-JAL that misses both the BTB and the backing BTB mispredicts once; training at
-commit makes its next execution hit.
+JAL that misses both the BTB and the backing BTB mispredicts once; recovery
+trains both tables so its next execution hits. With `EarlyJalRecovery` set, a
+mispredicted JAL stages at allocation and launches early recovery once older
+branches and JALRs resolve and no checkpointed branch or JALR issues; otherwise
+it recovers at commit.
 
 BTB tags are fetch PCs, with no ASID or translation mode, and nothing
 corrects a taken hit on an instruction that is not control flow: PD and the
@@ -179,15 +182,15 @@ branch unit check only branches and jumps.
 
 The BTB learns from three prioritized sources selected by
 `ex_comb_synthesizer` and registered one cycle in
-`branch_prediction_controller`: execute-time early misprediction recovery
-(conditional branches, and JALRs when `EarlyJalrRecovery` is set),
+`branch_prediction_controller`: early misprediction recovery
+(conditional branches, JALRs when `EarlyJalrRecovery` is set, and allocated
+JALs when `EarlyJalRecovery` is set),
 commit-time misprediction recovery (conditional branches, JALs, and JALRs),
 and correctly predicted conditional branches at commit. Whenever the
 selected update trains a JAL or JALR, it also trains the backing BTB.
 Training before retirement is by design: an early recovery writes the BTB
-(and, for a JALR, the backing BTB) as soon as execution resolves the
-instruction, while older instructions in the reorder buffer are still
-uncommitted.
+(and, for a JAL or JALR, the backing BTB) as soon as recovery fires,
+while older instructions in the reorder buffer are uncommitted.
 
 A later redirect from an older branch or jump does not clear the BTB or
 cancel an update already registered for it, so an entry trained by an
@@ -209,10 +212,10 @@ An entry left in the BTB by a flushed instruction can cost cycles only,
 never architectural correctness, because four guards hold:
 
 - **Decode admission and branch resolution**: Only fault-free, legally
-  decoded conditional branches and JALRs can enter early recovery, and
-  branch resolution checks the direction and full target of every matching
-  control-flow instruction, turning any stale direction or indirect target
-  into a recovery redirect.
+  decoded conditional branches, JALs, and JALRs can enter early recovery;
+  allocation checks each JAL target and branch resolution checks the direction
+  and full target of every conditional branch and JALR, turning any stale
+  direction or target into a recovery redirect.
 - **Walk-past handling**: If wrong-path fetch trains an entry at the
   interior halfword of a 32-bit instruction that is not control flow
   (compressed, or at an odd halfword also 32-bit), the slot-1 prediction
@@ -304,7 +307,7 @@ register, so a lookup sees every packet PD passed up to two fetches before
 it. A not-taken branch now reaches the history, which is what loop exits and
 correlated branches need. Early recovery restores the instruction's PD-time
 direction history and shifts in the resolved conditional outcome or bit 2 of
-the resolved JALR target. Each of the four folded table indices shifts in that
+the resolved jump target. Each of the four folded table indices shifts in that
 same bit, using the instruction's saved direction history. A trap, xRET, FENCE-class flush or commit-time
 recovery takes the retired direction history (each retired branch's outcome
 and each jump's target bit 2), with the same registered arms as the path history. A PD redirect needs no restore: the redirecting
@@ -337,14 +340,15 @@ row belongs to another tag, both copies receive that row. Before this, a
 `switch` on a state variable (CoreMark-PRO core's state machine) mispredicted
 nearly every time, since the BTB keeps only the last target.
 
-When PD passes a conditional branch or a JALR to ID, its lookup (for a branch
-the indices, tags, which tables matched, the alternate direction, and the
-history; for a JALR that is not a return the indirect target lookup) goes to
-a 64-entry circular buffer. Dispatch sees the branches in the same order, so it gives the
-branch the same index from a pointer of its own and records it by ROB tag;
-every flush that drops branches in between rewinds both pointers to the same
-entry. Commit trains from that entry, one branch per cycle with the same
-slot-2 hold. The provider's direction counter moves toward the outcome. When
+When PD passes a conditional branch, a JALR, or (with `EarlyJalRecovery` set)
+a JAL to ID, its lookup (for a branch the indices, tags, which tables matched,
+the alternate direction, and the history; for a JALR that is not a return the
+indirect target lookup; for a JAL only the history) goes to a 64-entry circular
+buffer. Dispatch sees them in the same order, so it gives each entry the same
+index from a pointer of its own and records it by ROB tag; every flush that
+drops entries in between rewinds both pointers to the same entry. Commit trains
+conditional branches and JALRs from that entry, one per cycle with the same
+slot-2 hold, and frees JAL entries without training. The provider's direction counter moves toward the outcome. When
 the provider and alternate disagree, the two-bit usefulness counter moves up
 for a correct provider and down for an incorrect one, saturating at either
 end. A misprediction allocates a weak entry in the shortest eligible table
@@ -1395,8 +1399,9 @@ IF accepts no packet, so the stack sees it one cycle later than a typed
 BTB prediction's; the packets in IF and PD in the meantime are wrong-path
 ones that the redirect drops. The operation happens once even when a stall
 holds the redirect. A flush in that first cycle drops it. An older
-mispredicted branch restores its own stack checkpoint. With early JALR recovery enabled,
-dispatch saves each instruction's stack checkpoint under its ROB tag. On
+mispredicted branch restores its own stack checkpoint. With early JALR or JAL
+recovery enabled, dispatch saves each instruction's stack checkpoint under its
+ROB tag. On
 a full flush with a live head, the stack restores the head's pointer,
 valid count and full return address, without replaying the discarded
 head's operation. Adjacent tags use opposite banks so both dispatch slots
@@ -1438,8 +1443,8 @@ the BTB writes; a refresh that misses writes nothing. A request that reads
 the set being written takes the written set, and one to the same set as an
 update in the stage ahead of it is dropped, which costs accuracy only.
 
-An indirect jump can train both the BTB and the backing BTB when it
-resolves before retirement. If an older instruction subsequently traps on
+A JAL or JALR can train both the BTB and the backing BTB on early recovery
+before retirement. If an older instruction subsequently traps on
 the same side of bare-versus-Sv39 fetch, the trained target remains in both
 tables after the jump is squashed (see
 [Fast-lookup training, flushes, and safety guards](#fast-lookup-training-flushes-and-safety-guards)).

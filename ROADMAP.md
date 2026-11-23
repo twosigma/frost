@@ -227,12 +227,12 @@ that repeatedly exercise the recovery paths.
 
 CPU resets (`ndmreset` and SYSRESET) discard dirty cache lines; preserving modified data and restoring mutable boot images for a complete reboot remain software responsibilities.
 
-The L1D, L1I, and L2 are 4-way set-associative with tree pseudo-LRU
-replacement, one design for every target. The L1D inserts lines bimodally: a
-fill becomes its set's most recently used only one time in 32, or when a read
-waits on it or another miss of its set has not installed. A working set
-somewhat larger than the L1D so keeps part of itself resident instead of
-evicting each line just before its next use. The L1I and the L1D read every
+The L1D, L1I, and L2 are 4-way set-associative, one design for every target.
+The L1I and L2 use tree pseudo-LRU replacement; the L1D uses 1-bit per-way NRU
+with bimodal insertion: a fill promotes its way only on an upgrade hit, one time
+in 128, or when a read waits on it or another miss of its set has not installed.
+A working set somewhat larger than the L1D so keeps part of itself resident
+instead of evicting each line just before its next use. The L1I and the L1D read every
 way's data at the tag decision, which keeps their hit latency at that of a
 direct-mapped cache, and the L1D's hit path reads a copy of the tags and every
 way's row of a load's set on one edge. In UltraRAM builds the L2 banks its
@@ -492,7 +492,7 @@ an ASIC, the RTL also needs:
 
 ## Single-core performance
 
-FROST runs CoreMark at 4.88 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
+FROST runs CoreMark at 4.89 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
 The next goal is 5 CoreMark/MHz. Work toward it is paused while memory
 performance on the coherent hierarchy and timing margin at the target clock
 are restored. A score counts only from a run of at least ten seconds that

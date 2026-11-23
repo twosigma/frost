@@ -1,6 +1,7 @@
 [tasks]
 bmc
 cover
+cover_alu_issue
 fp_repair_bmc
 
 [options]
@@ -9,12 +10,16 @@ bmc: depth 4
 cover: mode cover
 cover: depth 6
 cover: vcd off
+cover_alu_issue: mode cover
+cover_alu_issue: depth 6
+cover_alu_issue: vcd off
 fp_repair_bmc: mode bmc
 fp_repair_bmc: depth 4
 
 [engines]
 bmc: smtbmc boolector
 cover: smtbmc boolector
+cover_alu_issue: smtbmc boolector
 # Skip presat for runtime. The bmc task checks satisfiability with the same
 # harness and assumptions; only the internal ENABLE_DISPATCH_DONE_REPAIR
 # logic differs. This retains a check against contradictory assumptions.
@@ -74,6 +79,14 @@ fp_repair_bmc: chparam -set ENABLE_DISPATCH_DONE_REPAIR 1 tomasulo_wrapper
 hierarchy -top tomasulo_wrapper
 script free_undefined.ys
 prep -top tomasulo_wrapper
+# cover_alu_issue keeps only the three ALU-issue covers and cover the others.
+# With 12 checkpoints the three took 50 to 60 minutes to reach at step 5 of a
+# single task; the others are reached by step 3.
+cover: select -assert-count 3 t:$check r:FLAVOR=cover %i c:cover_port0_through_alu2_* c:cover_head_done_result_held %u %i
+cover: chformal -cover -remove c:cover_port0_through_alu2_* c:cover_head_done_result_held %u
+cover: select -assert-count 15 t:$check r:FLAVOR=cover %i
+cover_alu_issue: chformal -cover -remove t:$check r:FLAVOR=cover %i c:cover_port0_through_alu2_* c:cover_head_done_result_held %u %d
+cover_alu_issue: select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

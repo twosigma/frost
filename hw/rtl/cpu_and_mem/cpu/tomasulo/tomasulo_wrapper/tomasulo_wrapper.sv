@@ -5865,6 +5865,19 @@ module tomasulo_wrapper #(
     if (i_checkpoint_restore) assume (f_cp_valid[i_checkpoint_restore_id]);
   end
 
+  // Checkpoint IDs name a real checkpoint; NumCheckpoints need not be a
+  // power of two.
+  always_comb begin
+    if (i_checkpoint_save)
+      assume (i_checkpoint_id < riscv_pkg::CheckpointIdWidth'(riscv_pkg::NumCheckpoints));
+    if (i_checkpoint_free)
+      assume (i_checkpoint_free_id < riscv_pkg::CheckpointIdWidth'(riscv_pkg::NumCheckpoints));
+    if (i_checkpoint_free_2)
+      assume (i_checkpoint_free_id_2 < riscv_pkg::CheckpointIdWidth'(riscv_pkg::NumCheckpoints));
+    if (i_checkpoint_restore)
+      assume (i_checkpoint_restore_id < riscv_pkg::CheckpointIdWidth'(riscv_pkg::NumCheckpoints));
+  end
+
   // Dispatch never renames x0 to INT (either slot)
   always_comb begin
     if (i_rat_alloc_valid && !i_rat_alloc_dest_rf) assume (i_rat_alloc_dest_reg != '0);

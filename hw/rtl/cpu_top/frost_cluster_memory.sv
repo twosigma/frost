@@ -31,6 +31,8 @@ module frost_cluster_memory #(
     parameter int unsigned L2_PREFETCH_DISTANCE = 8,
     parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     parameter int unsigned L2_LINE_BYTES = 64,
+    // Direct tag launch in the coherent home (coherence_home FAST_TAG_LAUNCH).
+    parameter bit HOME_FAST_TAG_LAUNCH = 1'b0,
     parameter int unsigned SIM_FAST_MAINT = 0,
     // The hart's uncached instruction fetch block (cpu_memory_fabric
     // FETCH_BYTES).
@@ -402,6 +404,7 @@ module frost_cluster_memory #(
         .CACHE_BYTES(L2_CACHE_BYTES),
         .WAYS(L2_WAYS),
         .NUM_WB(L2_NUM_WB),
+        .FAST_TAG_LAUNCH(HOME_FAST_TAG_LAUNCH),
         .SIM_FAST_MAINT(SIM_FAST_MAINT),
         .FILLS(L2_NUM_MSHR),
         .PREFETCH_RESERVE(L2_NUM_MSHR / 4)

@@ -666,8 +666,17 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),cpu_top)
+ifneq ($(findstring +define+FROST_TEST_EARLY_JALR_OFF,$(FROST_VERILATOR_EXTRA_ARGS)),)
+EARLY_JALR_OFF_PKG := $(SIM_BUILD)/riscv_pkg.sv
+EARLY_JALR_OFF_CPU_F := $(SIM_BUILD)/cpu_ooo_early_jalr_off.f
+EARLY_JALR_OFF_TOP_F := $(SIM_BUILD)/cpu_top_early_jalr_off.f
+COMPILE_ARGS := -f $(EARLY_JALR_OFF_TOP_F)
+CUSTOM_COMPILE_DEPS += $(EARLY_JALR_OFF_PKG) $(EARLY_JALR_OFF_CPU_F) $(EARLY_JALR_OFF_TOP_F)
+VERILOG_SOURCES :=
+else
 COMPILE_ARGS := -f $(ROOT)/hw/rtl/cpu_top/cpu_top.f
 VERILOG_SOURCES :=
+endif
 else ifeq ($(TOPLEVEL),fetch_provider)
 # Fetch window provider unit bench (quadrant steer, fetch buffer, fills)
 COMPILE_ARGS := \
@@ -877,4 +886,21 @@ ifneq ($(VCU118_CONE),)
 $(VCU118_CONE): $(ROOT)/boards/vcu118/vcu118_frost.sv $(ROOT)/boards/vcu118/vcu118_clock.sv $(ROOT)/boards/xilinx_frost_subsystem.sv | $(SIM_BUILD)
 	sed "s/\.REGION_BYTES(32'h8000_0000)/.REGION_BYTES(256)/" $< > $@
 	for src in $(wordlist 2,3,$^); do sed '/^);/q' $$src; echo endmodule; done >> $@
+endif
+
+ifneq ($(EARLY_JALR_OFF_TOP_F),)
+# Exercise EarlyJalrRecovery=0 with EarlyJalRecovery=1 on unmodified RTL sources.
+$(EARLY_JALR_OFF_PKG): $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv | $(SIM_BUILD)
+	sed "s/localparam bit EarlyJalrRecovery = 1'b1;/localparam bit EarlyJalrRecovery = 1'b0;/" $< > $@
+	grep -q "localparam bit EarlyJalrRecovery = 1'b0;" $@
+	grep -q "localparam bit EarlyJalRecovery = 1'b1;" $@
+$(EARLY_JALR_OFF_CPU_F): $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f | $(SIM_BUILD)
+	sed "s|\$$(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv|$(EARLY_JALR_OFF_PKG)|" $< > $@
+	grep -q "$(EARLY_JALR_OFF_PKG)" $@
+$(EARLY_JALR_OFF_TOP_F): $(ROOT)/hw/rtl/cpu_top/cpu_top.f | $(SIM_BUILD)
+	sed "s|\$$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f|$(EARLY_JALR_OFF_CPU_F)|" $< > $@
+	grep -q "$(EARLY_JALR_OFF_CPU_F)" $@
+ifneq ($(TOGGLE_CONFIG),)
+$(TOGGLE_CONFIG): $(EARLY_JALR_OFF_PKG) $(EARLY_JALR_OFF_CPU_F) $(EARLY_JALR_OFF_TOP_F)
+endif
 endif

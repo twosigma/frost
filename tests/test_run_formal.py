@@ -70,10 +70,15 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home", "coh_home_control64_prove"): 1800,
     ("coherence_home", "coh_home_control_partition_prove"): 1800,
     ("coherence_home", "coh_home_control_ultra_prove"): 900,
+    ("coherence_home", "coh_home_control_fast_prove"): 1800,
+    ("coherence_home", "coh_home_control64_fast_prove"): 1800,
+    ("coherence_home", "coh_home_control_partition_fast_prove"): 1800,
     ("coherence_home", "coh_home_fill_cover"): 1800,
     ("coherence_home", "coh_home_control4_bmc"): 1200,
     ("coherence_home", "coh_home_control4_ultra_bmc"): 1200,
+    ("coherence_home", "coh_home_control4_ultra_fast_bmc"): 1200,
     ("coherence_home", "coh_home_prefetch_cover"): 1200,
+    ("coherence_home", "coh_home_fast_cover"): 600,
     ("coherence_home", "coh_home_wb_prove"): 180,
     ("coherence_home", "coh_home_victim_cover"): 180,
     ("coherence_home", "coh_home_error_cover"): 180,
@@ -562,9 +567,12 @@ FORMAL_TARGETS = [
             "coh_completions_pairs_prove",
             "coh_completions_partition_prove",
             "coh_completions_partition2_prove",
+            "coh_completions_fast_prove",
+            "coh_completions_fast_partition_prove",
             "coh_completions_cover",
             "coh_completions_partition_cover",
             "coh_completions_partition2_cover",
+            "coh_completions_fast_cover",
             "coh_if_pair_cover",
         ),
     ),
@@ -588,8 +596,12 @@ FORMAL_TARGETS = [
             "coh_home_control64_prove",
             "coh_home_control_partition_prove",
             "coh_home_control_ultra_prove",
+            "coh_home_control_fast_prove",
+            "coh_home_control64_fast_prove",
+            "coh_home_control_partition_fast_prove",
             "coh_home_control4_bmc",
             "coh_home_control4_ultra_bmc",
+            "coh_home_control4_ultra_fast_bmc",
             "coh_home_fill_cover",
             "coh_home_cmo_cover",
             "coh_home_wb_prove",
@@ -597,6 +609,7 @@ FORMAL_TARGETS = [
             "coh_home_error_cover",
             "coh_home_prefetch_cover",
             "coh_home_dispatch_cover",
+            "coh_home_fast_cover",
         ),
     ),
     FormalTarget(
@@ -2035,7 +2048,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo commit and flush integration, including FP dispatch done repair",
-        tasks=("bmc", "cover", "fp_repair_bmc"),
+        tasks=("bmc", "cover", "cover_alu_issue", "fp_repair_bmc"),
     ),
     FormalTarget(
         "tomasulo_wrapper_commit_bus.sby",
@@ -2227,9 +2240,11 @@ FORMAL_TARGETS = [
         tasks=(
             "prove_int_active",
             "prove_int_ckpt_lo",
+            "prove_int_ckpt_mid",
             "prove_int_ckpt_hi",
             "prove_fp_active",
             "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_mid",
             "prove_fp_ckpt_hi",
             "cover",
         ),
@@ -3128,6 +3143,14 @@ SBY_TASKS = [
         "Two kept prefetch slots sharing one place in the work rotation.",
     ),
     (
+        "coh_completions_fast_prove",
+        "Direct D selection and registered work metadata with completion invariants.",
+    ),
+    (
+        "coh_completions_fast_partition_prove",
+        "Direct D selection with a completion slot kept for prefetches.",
+    ),
+    (
         "coh_completions_cover",
         "Concurrent results, independent release and a suppressed DMA read through release.",
     ),
@@ -3138,6 +3161,10 @@ SBY_TASKS = [
     (
         "coh_completions_partition2_cover",
         "The prefetch rotation passing over an offered prefetch slot.",
+    ),
+    (
+        "coh_completions_fast_cover",
+        "Direct D selection reachability alongside blocked or prefetch admissions.",
     ),
     ("coh_seat_select_prove", "Fill waiter ranks match serial seat allocation."),
     (
@@ -3171,12 +3198,28 @@ SBY_TASKS = [
         "Composed home ownership and parallel-read delivery bounds with UltraRAM.",
     ),
     (
+        "coh_home_control_fast_prove",
+        "Composed home ownership with direct D selection and direct tag launch.",
+    ),
+    (
+        "coh_home_control64_fast_prove",
+        "Composed home ownership across sibling sectors with direct tag launch.",
+    ),
+    (
+        "coh_home_control_partition_fast_prove",
+        "Composed home ownership with prefetch slots and direct tag launch.",
+    ),
+    (
         "coh_home_control4_bmc",
         "Bounded home checks with four ways, three fills and a fill reserve.",
     ),
     (
         "coh_home_control4_ultra_bmc",
         "Bounded four-way home checks with the registered tag array.",
+    ),
+    (
+        "coh_home_control4_ultra_fast_bmc",
+        "Bounded four-way registered-tag home checks with direct tag launch.",
     ),
     (
         "coh_home_prefetch_cover",
@@ -3190,6 +3233,10 @@ SBY_TASKS = [
     (
         "coh_home_dispatch_cover",
         "A dispatch-cycle lookup offer that loses the tag arbiter and wins from Lookup.",
+    ),
+    (
+        "coh_home_fast_cover",
+        "Direct tag launch for demand, prefetch and management work plus arbiter fallback.",
     ),
     ("coh_home_array_prove", "Independent L2 ports preserve watched bytes."),
     *[
@@ -3774,6 +3821,10 @@ SBY_TASKS = [
         "fp_repair_bmc",
         "Bounded model checking with production FP dispatch done repair enabled",
     ),
+    (
+        "cover_alu_issue",
+        "Cover search for the ALU-issue scenarios, split from the other covers",
+    ),
     # INT reservation-station features at eight-entry component capacity;
     # the wrapper target checks the production sixteen-entry station.
     (
@@ -4016,8 +4067,12 @@ SBY_TASKS = [
         "Unbounded RAT proof for integer snapshot invariants in checkpoints 0 through 3.",
     ),
     (
-        "prove_int_ckpt_hi",
+        "prove_int_ckpt_mid",
         "Unbounded RAT proof for integer snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "prove_int_ckpt_hi",
+        "Unbounded RAT proof for integer snapshot invariants in checkpoints 8 through 11.",
     ),
     (
         "prove_fp_active",
@@ -4028,8 +4083,12 @@ SBY_TASKS = [
         "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 0 through 3.",
     ),
     (
-        "prove_fp_ckpt_hi",
+        "prove_fp_ckpt_mid",
         "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 4 through 7.",
+    ),
+    (
+        "prove_fp_ckpt_hi",
+        "Unbounded RAT proof for floating-point snapshot invariants in checkpoints 8 through 11.",
     ),
     (
         "bmc_addr1",
@@ -4616,9 +4675,11 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "rat_checkpoint_restore": [
             "prove_int_active",
             "prove_int_ckpt_lo",
+            "prove_int_ckpt_mid",
             "prove_int_ckpt_hi",
             "prove_fp_active",
             "prove_fp_ckpt_lo",
+            "prove_fp_ckpt_mid",
             "prove_fp_ckpt_hi",
         ],
         "coherent_hart_cache": [
@@ -4723,6 +4784,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
     allowance_shards = (set(dedicated_shards.values()) - {"Store boundary"}) | {
         "Load queue",
         "Coherence store lookup banks",
+        "Coherence home fast",
         "Coherence links pressure",
         "Coherence L1D data single-endpoint",
         "Coherence L1D data multi-endpoint",
@@ -5120,7 +5182,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_home": (
         "not converted: memory_map and opt without -keepdc; no setundef",
         {
-            "coh_home_control_prove coh_home_control64_prove coh_home_control_partition_prove coh_home_control4_bmc coh_home_control4_ultra_bmc coh_home_fill_cover coh_home_cmo_cover coh_home_wb_prove coh_home_victim_cover coh_home_error_cover coh_home_prefetch_cover coh_home_dispatch_cover": [
+            "coh_home_control_prove coh_home_control64_prove coh_home_control_partition_prove coh_home_control_fast_prove coh_home_control64_fast_prove coh_home_control_partition_fast_prove coh_home_control4_bmc coh_home_control4_ultra_bmc coh_home_control4_ultra_fast_bmc coh_home_fill_cover coh_home_cmo_cover coh_home_wb_prove coh_home_victim_cover coh_home_error_cover coh_home_prefetch_cover coh_home_dispatch_cover coh_home_fast_cover": [
                 "memory_map",
                 "opt",
             ],
@@ -5480,7 +5542,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "rat_checkpoint_restore": (
         "runs memory_map and opt -full without -keepdc after the opening",
         {
-            "prove_int_active prove_int_ckpt_lo prove_int_ckpt_hi prove_fp_active prove_fp_ckpt_lo prove_fp_ckpt_hi cover": [
+            "prove_int_active prove_int_ckpt_lo prove_int_ckpt_mid prove_int_ckpt_hi prove_fp_active prove_fp_ckpt_lo prove_fp_ckpt_mid prove_fp_ckpt_hi cover": [
                 "memory_map",
                 "opt -full",
             ],
@@ -9208,46 +9270,50 @@ def test_home_twin_snapshot_budget() -> None:
 
 
 def test_home_shard_budget() -> None:
-    """The complete home task limits and image setup fit their CI job."""
+    """The complete home task limits and image setup fit their CI jobs."""
     import yaml
     from _pytest.mark.expression import Expression
 
     root = Path(__file__).resolve().parents[1]
     workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
     shards = workflow["jobs"]["test-formal"]["strategy"]["matrix"]["include"]
-    shard = next(row for row in shards if row["shard"] == "Coherence home")
-    expression = Expression.compile(shard["pytest_filter"])
-    selected = []
-    for target in FORMAL_TARGETS:
-        for task in target.tasks:
-            node = f"{target.name}_{task}"
-
-            def matches_keyword(
-                keyword: str, /, **kwargs: str | int | bool | None
-            ) -> bool:
-                assert not kwargs
-                return keyword.casefold() in node.casefold()
-
-            if expression.evaluate(matches_keyword):
-                selected.append((target.name, task))
     home = next(target for target in FORMAL_TARGETS if target.name == "coherence_home")
-    assert selected == [(home.name, task) for task in home.tasks]
-    limits = []
-    for target_name, task in selected:
-        options = {
-            key: value
-            for key, value in (
-                line.split(None, 1)
-                for line in formal_task_config(target_name, task)["[options]"]
-            )
-        }
-        limit = formal_task_timeout_s(target_name, task)
-        sby_limit = int(options.get("timeout", str(limit)))
-        if (target_name, task) in SBY_TASK_TIMEOUT_OVERRIDES_S:
-            assert sby_limit == limit, task
-        limits.append(min(sby_limit, limit))
+    all_selected: list[tuple[str, str]] = []
     setup_seconds = 20 * 60
-    assert sum(limits) + setup_seconds <= shard["timeout_minutes"] * 60
+    for shard_name in ("Coherence home", "Coherence home fast"):
+        shard = next(row for row in shards if row["shard"] == shard_name)
+        expression = Expression.compile(shard["pytest_filter"])
+        selected = []
+        for target in FORMAL_TARGETS:
+            for task in target.tasks:
+                node = f"{target.name}_{task}"
+
+                def matches_keyword(
+                    keyword: str, /, **kwargs: str | int | bool | None
+                ) -> bool:
+                    assert not kwargs
+                    return keyword.casefold() in node.casefold()
+
+                if expression.evaluate(matches_keyword):
+                    selected.append((target.name, task))
+        assert selected, shard_name
+        limits = []
+        for target_name, task in selected:
+            options = {
+                key: value
+                for key, value in (
+                    line.split(None, 1)
+                    for line in formal_task_config(target_name, task)["[options]"]
+                )
+            }
+            limit = formal_task_timeout_s(target_name, task)
+            sby_limit = int(options.get("timeout", str(limit)))
+            if (target_name, task) in SBY_TASK_TIMEOUT_OVERRIDES_S:
+                assert sby_limit == limit, task
+            limits.append(min(sby_limit, limit))
+        assert sum(limits) + setup_seconds <= shard["timeout_minutes"] * 60
+        all_selected.extend(selected)
+    assert sorted(all_selected) == sorted((home.name, task) for task in home.tasks)
 
 
 def l1d_task_config(task: str) -> dict[str, list[str]]:

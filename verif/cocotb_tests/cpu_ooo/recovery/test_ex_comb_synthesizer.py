@@ -32,7 +32,7 @@ from utils.packed_structs import (
 
 
 ROB_TAG_WIDTH = 5
-CHECKPOINT_ID_WIDTH = 3
+CHECKPOINT_ID_WIDTH = 4
 RAS_PTR_BITS = 3
 
 
@@ -67,6 +67,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_mispredict_is_jalr.value = 0
     dut.i_early_mispredict_is_call.value = 0
     dut.i_early_mispredict_is_return.value = 0
+    dut.i_early_mispredict_is_jal.value = 0
     dut.i_restored_ras_tos.value = 0
     dut.i_restored_ras_valid_count.value = 0
     dut.i_restored_ras_top.value = 0
@@ -196,6 +197,62 @@ async def test_early_jalr_trains_btb_and_replays_stack_operation(dut: Any) -> No
     _assert_btb_update(output, pc=0, target=0, taken=False, compressed=False)
     assert not output["ras_pop_after_restore"]
     assert not output["ras_push_after_restore"]
+
+
+@cocotb.test()
+async def test_early_jal_trains_btb_and_replays_call_push(dut: Any) -> None:
+    """An early direct jump trains the BTB as a jump and pushes only calls."""
+    await _setup_test(dut)
+    dut.i_early_mispredict_active.value = 1
+    dut.i_early_mispredict_is_jal.value = 1
+    dut.i_early_mispredict_branch_taken.value = 1
+    target = 0x0000_0002_8000_0380
+    dut.i_early_mispredict_branch_target.value = target
+    dut.i_early_mispredict_redirect_pc.value = target
+    dut.i_restored_ras_tos.value = 4
+    dut.i_restored_ras_valid_count.value = 5
+    dut.i_restored_ras_top.value = 0x0000_0001_8000_0204
+    _drive_mispredict_commit(
+        dut,
+        {
+            "redirect_pc": 0x11111111,
+            "pc": 0x22222222,
+            "branch_target": 0x33333333,
+            "branch_taken": False,
+            "is_branch": True,
+        },
+    )
+
+    for compressed, pc in ((False, 0x0000_0001_FFFF_FFFC), (True, MASK_XLEN - 1)):
+        link = (pc + (2 if compressed else 4)) & MASK_XLEN
+        dut.i_early_mispredict_pc.value = pc
+        dut.i_early_mispredict_is_compressed.value = compressed
+        # A direct jump is never a return even if i_early_mispredict_is_return is high.
+        for call, ret in ((False, False), (True, False), (False, True), (True, True)):
+            dut.i_early_mispredict_is_call.value = call
+            dut.i_early_mispredict_is_return.value = ret
+            await _settle()
+            output = _read_from_ex(dut)
+            assert output["branch_taken"] and output["branch_target_address"] == target
+            _assert_btb_update(
+                output,
+                pc=pc,
+                target=target,
+                taken=True,
+                compressed=compressed,
+                call=call,
+                ret=False,
+                jump=True,
+            )
+            assert output["ras_misprediction"]
+            assert output["ras_restore_tos"] == 4
+            assert output["ras_restore_valid_count"] == 5
+            assert output["ras_restore_top"] == 0x0000_0001_8000_0204
+            assert not output["ras_pop_after_restore"]
+            assert output["ras_push_after_restore"] is call
+            if call:
+                assert output["ras_push_address_after_restore"] == link
+            _assert_late_btb_candidate(dut, pc=0x22222222, taken=False)
 
 
 @cocotb.test()

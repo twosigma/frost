@@ -64,6 +64,8 @@ module platform_top #(
     parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     // L2 line size is 32 or 64 bytes. Each AXI beat carries one L2 line.
     parameter int unsigned L2_LINE_BYTES = 64,
+    // Direct tag launch in the coherent home (coherence_home FAST_TAG_LAUNCH).
+    parameter bit HOME_FAST_TAG_LAUNCH = 1'b0,
     // Register stages on every channel between the hart and the cluster
     // memory (cpu_top MEMORY_LINK_STAGES); 0 connects them directly.
     parameter int unsigned MEMORY_LINK_STAGES = 0,
@@ -490,6 +492,7 @@ module platform_top #(
       .L2_PREFETCH_DISTANCE(L2_PREFETCH_DISTANCE),
       .L2_PREFETCH_INFLIGHT(L2_PREFETCH_INFLIGHT),
       .L2_LINE_BYTES(L2_LINE_BYTES),
+      .HOME_FAST_TAG_LAUNCH(HOME_FAST_TAG_LAUNCH),
       .SIM_FAST_MAINT(SIM_FAST_MAINT),
       .PERF_COUNTERS(PERF_COUNTERS),
       .VECTOR(VECTOR),

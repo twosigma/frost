@@ -62,6 +62,8 @@ module frost_rvfi_platform #(
     // leaves out the line-size adapter. Every DDR AXI transfer carries one L2
     // line in a single beat.
     parameter int unsigned L2_LINE_BYTES = 64,
+    // Direct tag launch in the coherent home (coherence_home FAST_TAG_LAUNCH).
+    parameter bit HOME_FAST_TAG_LAUNCH = 1'b0,
     // Accepted for the production interface; this fixture has no cluster
     // memory and so no links between it and the hart.
     parameter int unsigned MEMORY_LINK_STAGES = 0,
@@ -2431,6 +2433,7 @@ module frost_rvfi_platform #(
         .CACHE_BYTES(L2_CACHE_BYTES),
         .WAYS(L2_WAYS),
         .NUM_WB(L2_NUM_WB),
+        .FAST_TAG_LAUNCH(HOME_FAST_TAG_LAUNCH),
         .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) home (
         .i_clk(i_clk),

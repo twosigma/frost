@@ -72,7 +72,10 @@ module ooo_pipeline_control #(
     output logic [1:0] o_post_flush_holdoff_q,
     output logic o_trap_taken_reg,
     output logic o_mret_taken_reg,
-    output logic [XLEN-1:0] o_trap_target_reg
+    output logic [XLEN-1:0] o_trap_target_reg,
+    // Live checkpoints whose conditional branch or JALR has not resolved
+    // correctly (registered state; a JAL never sets its bit).
+    output logic [riscv_pkg::NumCheckpoints-1:0] o_checkpoint_unresolved
 );
 
 
@@ -364,5 +367,6 @@ module ooo_pipeline_control #(
   assign o_trap_taken_reg                 = trap_taken_reg;
   assign o_mret_taken_reg                 = mret_taken_reg;
   assign o_trap_target_reg                = trap_target_reg;
+  assign o_checkpoint_unresolved          = checkpoint_unresolved_q & checkpoint_in_use;
 
 endmodule : ooo_pipeline_control

@@ -28,10 +28,24 @@
  * riscv_pkg::EarlyJalrRecovery is set: its redirect is its resolved target,
  * and the payload keeps its call, return and JALR bits for the BTB, RAS and
  * history repair. The RAT keeps a call's own link-register mapping across the
- * restore (register_alias_table). JAL mispredictions recover at commit. The
- * wide payload registers capture on an issue-local superset of the fire
- * condition, but only the checkpoint-qualified misprediction launches a
- * recovery, and only one recovery runs at a time.
+ * restore (register_alias_table). The wide payload registers capture on an
+ * issue-local superset of the fire condition, but only the checkpoint-qualified
+ * misprediction launches a recovery, and only one recovery runs at a time.
+ *
+ * A mispredicted JAL (riscv_pkg::EarlyJalRecovery) is known at allocation:
+ * no BTB prediction, or a BTB target other than its decoded one. Dispatch
+ * loads it into a staging register (cycle D) with the set of older
+ * checkpointed branches and JALRs still unresolved. From D + 1 it launches
+ * through the same pending/active/backend phases as a branch, once that set
+ * has resolved (an older branch can still mispredict and recover early,
+ * which flushes the JAL) and in a cycle when no checkpointed branch or JALR
+ * issues (that one owns the payload registers). It waits while only these
+ * block it, and is dropped to commit-time recovery when another recovery, a
+ * flush or the JAL's own commit-time recovery starts. A JAL at the ROB head
+ * never launches: it is done at allocation, so it can retire and recover at
+ * commit in the same cycle, and the early launch would only race that. Its
+ * redirect is its target, and the payload carries its call bit for the RAS
+ * replay.
  */
 
 module early_misprediction_recovery #(
@@ -58,9 +72,27 @@ module early_misprediction_recovery #(
     input logic i_trap_taken_reg,
     input logic i_mret_taken_reg,
 
+    // A mispredicted JAL allocated this cycle (dispatch fire), and its
+    // payload. i_jal_capture is a superset of i_jal_launch that does not
+    // depend on the dispatch fire; it loads the staging payload.
+    input logic                                        i_jal_launch,
+    // Live checkpoints whose conditional branch or JALR is unresolved
+    // (registered). Sampled when a JAL stages, they are all older than it.
+    input logic [       riscv_pkg::NumCheckpoints-1:0] i_checkpoint_unresolved,
+    // The ROB head tag (registered).
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_tag,
+    input logic                                        i_jal_capture,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_jal_tag,
+    input logic [    riscv_pkg::CheckpointIdWidth-1:0] i_jal_checkpoint_id,
+    input logic [                            XLEN-1:0] i_jal_pc,
+    input logic [                            XLEN-1:0] i_jal_target,
+    input logic                                        i_jal_is_compressed,
+    input logic                                        i_jal_is_call,
+
     output logic                                        o_early_mispredict_active,
     output logic                                        o_early_mispredict_pending,
-    // Capture request before the synchronous reset and full-flush veto.
+    // Capture request (a resolved branch or JALR, or a staged JAL) before the
+    // synchronous reset and full-flush veto.
     output logic                                        o_early_mispredict_fire,
     output logic                                        o_early_backend_recovery_pending,
     // Next state of o_early_backend_recovery_pending, for the flush
@@ -78,6 +110,8 @@ module early_misprediction_recovery #(
     output logic                                        o_early_mispredict_is_jalr,
     output logic                                        o_early_mispredict_is_call,
     output logic                                        o_early_mispredict_is_return,
+    // The recovering instruction is a JAL launched from allocation.
+    output logic                                        o_early_mispredict_is_jal,
     output logic                                        o_early_recovery_en,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_early_recovery_tag,
     output logic                                        o_early_backend_recovery_hold,
@@ -132,6 +166,7 @@ module early_misprediction_recovery #(
   logic early_mispredict_is_jalr;
   logic early_mispredict_is_call;
   logic early_mispredict_is_return;
+  logic early_mispredict_is_jal;
 
   // Conditional branches, and JALRs when EarlyJalrRecovery is set, recover at
   // execute. For a conditional branch the direct form below equals the
@@ -151,17 +186,76 @@ module early_misprediction_recovery #(
   // Capture checkpointed conditional-branch and JALR payloads while recovery
   // can launch. This includes every fire on the same edge. Extra captures are
   // inert because only early_mispredict_pending exposes the payload.
-  assign early_mispredict_payload_capture =
+  // A checkpointed branch or admitted JALR at stage 2, from registered issue
+  // fields only: it owns the payload registers this cycle and blocks a JAL.
+  logic branch_issue_owns_payload;
+  assign branch_issue_owns_payload =
       rs_issue_int.valid && rs_issue_int.is_branch_class && rs_issue_int.has_checkpoint &&
-      !rs_issue_int.is_jal && jalr_admitted &&
+      !rs_issue_int.is_jal && jalr_admitted;
+  assign early_mispredict_payload_capture = branch_issue_owns_payload &&
       !early_mispredict_pending && !early_backend_recovery_pending;
   assign early_mispredict_fire = early_mispredict_capture &&
                                   rs_issue_int.has_checkpoint && jalr_admitted &&
                                   !fence_i_flush && !mispredict_recovery_pending;
 
+  // ---------------------------------------------------------------------------
+  // Mispredicted JAL staging (EarlyJalRecovery)
+  // ---------------------------------------------------------------------------
+  // Dispatch's fire reaches only jal_q_valid; the payload loads on the
+  // fire-independent capture superset while the stage is empty. Every input of
+  // jal_fire is a register output, so the launch adds no dispatch-decision
+  // term to early_mispredict_pending. A newer JAL never replaces a staged one:
+  // the staged JAL is mispredicted, so every younger instruction is on its
+  // wrong path.
+  logic jal_q_valid;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] jal_q_tag;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] jal_q_checkpoint_id;
+  logic [XLEN-1:0] jal_q_pc;
+  logic [XLEN-1:0] jal_q_target;
+  logic jal_q_is_compressed;
+  logic jal_q_is_call;
+  // Older unresolved branches the staged JAL waits for: sampled at staging,
+  // then each bit clears for good when its branch resolves or is freed.
+  logic [riscv_pkg::NumCheckpoints-1:0] jal_q_wait;
+  logic jal_older_unresolved;
+  logic jal_stage_kill;
+  logic jal_stage_load_block;
+  logic jal_fire;
+  logic early_launch;
+  assign jal_stage_kill = early_mispredict_pending || early_backend_recovery_pending ||
+                          mispredict_recovery_pending || fence_i_flush ||
+                          trap_taken_reg || mret_taken_reg;
+  assign jal_stage_load_block = early_mispredict_pending || early_backend_recovery_pending ||
+                                mispredict_recovery_pending || flush_all;
+  assign jal_older_unresolved = |(jal_q_wait & i_checkpoint_unresolved);
+  assign jal_fire = riscv_pkg::EarlyJalRecovery && jal_q_valid && !jal_stage_kill &&
+                    !branch_issue_owns_payload && !jal_older_unresolved &&
+                    (jal_q_tag != i_head_tag);
+  assign early_launch = early_mispredict_fire || jal_fire;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_all || !riscv_pkg::EarlyJalRecovery) jal_q_valid <= 1'b0;
+    else if (jal_q_valid) jal_q_valid <= !(jal_fire || jal_stage_kill);
+    else jal_q_valid <= i_jal_launch && !jal_stage_load_block;
+  end
+  always_ff @(posedge i_clk) begin
+    if (!jal_q_valid) jal_q_wait <= i_checkpoint_unresolved;
+    else jal_q_wait <= jal_q_wait & i_checkpoint_unresolved;
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_jal_capture && !jal_q_valid) begin
+      jal_q_tag           <= i_jal_tag;
+      jal_q_checkpoint_id <= i_jal_checkpoint_id;
+      jal_q_pc            <= i_jal_pc;
+      jal_q_target        <= i_jal_target;
+      jal_q_is_compressed <= i_jal_is_compressed;
+      jal_q_is_call       <= i_jal_is_call;
+    end
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) early_mispredict_pending <= 1'b0;
-    else early_mispredict_pending <= early_mispredict_fire;
+    else early_mispredict_pending <= early_launch;
   end
 
   // The wrapper samples fatal stop on the same edge as early recovery.
@@ -169,7 +263,7 @@ module early_misprediction_recovery #(
   logic backend_recovery_hold_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) backend_recovery_hold_q <= 1'b0;
-    else backend_recovery_hold_q <= i_fatal_stop || (!flush_all && early_mispredict_fire);
+    else backend_recovery_hold_q <= i_fatal_stop || (!flush_all && early_launch);
   end
 
   assign early_mispredict_active = early_mispredict_pending &&
@@ -197,10 +291,24 @@ module early_misprediction_recovery #(
     end
   end
 
-  // Capture recovery data on the issue-local superset of the fire cycle.  The
-  // pending bit above is the only launch.
+  // Capture recovery data on the issue-local superset of the fire cycle, or
+  // from the JAL stage when it launches (never both: a branch issue that owns
+  // the payload blocks the JAL). The pending bit above is the only launch.
   always_ff @(posedge i_clk) begin
-    if (early_mispredict_payload_capture) begin
+    if (jal_fire) begin
+      early_mispredict_tag           <= jal_q_tag;
+      early_mispredict_redirect_pc   <= jal_q_target;
+      early_mispredict_checkpoint_id <= jal_q_checkpoint_id;
+      early_mispredict_pc            <= jal_q_pc;
+      early_mispredict_branch_target <= jal_q_target;
+      early_mispredict_branch_taken  <= 1'b1;
+      early_mispredict_is_compressed <= jal_q_is_compressed;
+      early_mispredict_is_jalr       <= 1'b0;
+      early_mispredict_is_call       <= jal_q_is_call;
+      early_mispredict_is_return     <= 1'b0;
+      early_mispredict_is_jal        <= 1'b1;
+    end else if (early_mispredict_payload_capture) begin
+      early_mispredict_is_jal <= 1'b0;
       early_mispredict_tag <= branch_update.tag;
 
       // Redirect to the taken target or fallthrough (link_addr). The INT
@@ -239,7 +347,9 @@ module early_misprediction_recovery #(
   // --- Output wiring.
   assign o_early_mispredict_active = early_mispredict_active;
   assign o_early_mispredict_pending = early_mispredict_pending;
-  assign o_early_mispredict_fire = early_mispredict_fire;
+  // A JAL launch is a capture request too: the flush controller registers the
+  // fetch flush from it.
+  assign o_early_mispredict_fire = early_launch;
   assign o_early_backend_recovery_pending = early_backend_recovery_pending;
   assign o_early_backend_recovery_pending_next = early_backend_recovery_pending_next;
   assign o_early_backend_flush_tag = early_backend_flush_tag;
@@ -253,6 +363,7 @@ module early_misprediction_recovery #(
   assign o_early_mispredict_is_jalr = early_mispredict_is_jalr;
   assign o_early_mispredict_is_call = early_mispredict_is_call;
   assign o_early_mispredict_is_return = early_mispredict_is_return;
+  assign o_early_mispredict_is_jal = early_mispredict_is_jal;
   assign o_early_recovery_en = early_recovery_en;
   assign o_early_recovery_tag = early_recovery_tag;
   assign o_early_backend_recovery_hold = early_backend_recovery_hold;
@@ -366,6 +477,20 @@ module early_misprediction_recovery #(
       assert (rs_issue_int.is_jalr || (branch_mispredicted_direct == branch_update.mispredicted));
       p_fire_implies_payload_capture :
       assert (!early_mispredict_fire || early_mispredict_payload_capture);
+      // A JAL launch and a branch payload capture never share a cycle.
+      p_jal_fire_excludes_branch_capture :
+      assert (!(jal_fire && (early_mispredict_payload_capture || early_mispredict_fire)));
+    end
+  end
+
+  // A launched JAL recovers to its target, taken, as a non-JALR.
+  always_ff @(posedge i_clk) begin
+    if (check_reset_seen_q && !i_rst && o_early_mispredict_active &&
+        o_early_mispredict_is_jal) begin
+      p_early_jal_payload_is_taken_target :
+      assert (o_early_mispredict_branch_taken && !o_early_mispredict_is_jalr &&
+              !o_early_mispredict_is_return &&
+              (o_early_mispredict_redirect_pc == o_early_mispredict_branch_target));
     end
   end
 `endif
