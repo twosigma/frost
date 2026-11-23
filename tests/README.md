@@ -1598,8 +1598,8 @@ scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison,
 FP conversion, cached DDR probe, unit-stride memory, strided memory,
 indexed memory, segment memory, fault-only-first load, integer comparison,
 widening and narrowing integer, fixed-point, single-width FP, whole-register
-memory, widening FP, permute, reduction, carry/borrow, mask-register and
-integer multiply-add traces.
+memory, widening FP, permute, reduction, carry/borrow, mask-register,
+integer multiply-add and integer scalar/merge traces.
 Every vector store trace compares all written bytes through immediate
 scalar loads. CI compares the seeded and directed traces at each length.
 The VLEN 128 job injects one incorrect value in each control replay and

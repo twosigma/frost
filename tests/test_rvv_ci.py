@@ -52,7 +52,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         if step.get("name") == "Compare seeded and directed vector traces"
     )
     command = shlex.split(replay["run"].replace("\\\n", ""))
-    assert command[command.index("--kill-after=10s") + 1] == "55m", (
+    assert command[command.index("--kill-after=10s") + 1] == "60m", (
         "Vector TestRIG replay needs the registered budget"
     )
     arguments = command[command.index("tests/test_testrig.py") + 1 :]
@@ -68,7 +68,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         if step.get("name") == "Check detection of an incorrect vector result"
     )
     assert control["if"] == "matrix.vlen == 128"
-    assert control["timeout-minutes"] == 50, (
+    assert control["timeout-minutes"] == 55, (
         "Vector controls need the registered budget"
     )
     control_command = shlex.split(control["run"].replace("\\\n", ""))
@@ -226,6 +226,12 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
             "vector_int_mul_add",
             "order=52 insn=0x43702557 rd=x10",
             "0x10010010 != 0x10010011",
+        ],
+        [
+            "int-vx-merge",
+            "vector_int_vx_merge",
+            "order=18 insn=0x43402557 rd=x10",
+            "0x20020020 != 0x20020021",
         ],
     ]
 

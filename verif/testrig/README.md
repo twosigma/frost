@@ -685,6 +685,24 @@ register overlaps (`vd == vs1`, `vd == vs2`, `vs1 == vs2`,
 register-group alignment and `vill` traps.
 [Vector integer multiply-add operations](vector_int_mul_add.S)
 
+The integer scalar and merge trace checks the remaining eighteen non-segment
+base-V single-width integer encodings: sixteen `.vx` forms (`vrsub.vx`,
+`vand.vx`, `vsll.vx`, `vsrl.vx`, `vsra.vx`, `vminu.vx`, `vmin.vx`,
+`vmaxu.vx`, `vmax.vx`, `vmulhu.vx`, `vmulh.vx`, `vmulhsu.vx`, `vdivu.vx`,
+`vdiv.vx`, `vremu.vx` and `vrem.vx`) and both remaining integer merges
+(`vmerge.vvm` and `vmerge.vxm`), across all four element widths (`e8`,
+`e16`, `e32` and `e64`). It covers scalar upper-bit truncation, shift-amount
+masking to `log2(SEW)` bits, signed versus unsigned comparison and high-half
+multiply signedness, signed and unsigned division and remainder across all
+sign combinations plus divide-by-zero and signed-minimum divided by `-1`
+overflow at every width, merge selection under alternating, all-zero and
+all-one masks, masked and unmasked `.vx` execution, `tu`/`mu` preservation
+and `ta`/`ma` execution across multi-register boundaries, `vl == 0`,
+portable `vl == VLMAX` from `mf8` through `m8`, legal register overlaps,
+and illegal masked `v0`-overlap, `vmerge` `v0`-overlap, register-group
+alignment and `vill` traps.
+[Vector integer scalar and merge operations](vector_int_vx_merge.S)
+
 Two reserved vector overlap encodings trap as illegal instructions in FROST
 and Spike under RVV 1.0, while Sail 0.16 allows them, so they are not
 compared in TestRIG:
@@ -700,8 +718,8 @@ each of VLEN 128, 256 and 512. Each replays 12 generated traces of 20
 operation groups from seed 42, the source-width traces and the directed
 state, fractional LMUL, FP, cached DDR, integer comparison, widening and
 narrowing integer, fixed-point, single-width FP, whole-register memory,
-widening FP, permute, reduction, carry/borrow, mask-register and integer
-multiply-add traces. Both
+widening FP, permute, reduction, carry/borrow, mask-register, integer
+multiply-add and integer scalar/merge traces. Both
 implementations must return every planned trace and instruction. The
 VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer
@@ -710,7 +728,8 @@ conversions, unit-stride memory, strided memory, indexed memory, segment
 memory, fault-only-first loads, integer comparisons, widening and
 narrowing integer operations, fixed-point operations, single-width FP
 operations, whole-register memory, widening FP, permute, reduction,
-carry/borrow, mask-register and integer multiply-add operations. It checks
+carry/borrow, mask-register, integer multiply-add and integer scalar/merge
+operations. It checks
 `vcpop.m` for state and scalar results and FP comparisons. TestRIG must
 report each destination value mismatch.
 
