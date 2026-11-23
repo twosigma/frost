@@ -1263,7 +1263,7 @@ jobs:
       - name: Merge and report
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
-            make -C tests TOPLEVEL=vcu118_frost sim_build/vcu118_ddr_cone.sv
+            make -C tests coverage-sources
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/coverage_report.py report coverage-jobs \
               --output-dir coverage-report --annotate --require-ci-artifacts \
