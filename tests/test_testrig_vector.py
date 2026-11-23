@@ -4421,6 +4421,239 @@ def test_vector_segments_two_sail_agree(tmp_path: Path, vlen: int) -> None:
     )
 
 
+def test_vector_ext_replay_and_coverage(tmp_path: Path) -> None:
+    """Check --vector-ext CLI, trace counts, Zvfhmin/base-e16 conversion coverage, and zero Zvfh arithmetic."""
+    args = test_testrig.parse_arguments(["--vector-ext"])
+    assert args.vector_ext and args.vlen == 128
+    with pytest.raises(SystemExit):
+        test_testrig.parse_arguments(["--vector-ext", "--vector", "1"])
+    with pytest.raises(SystemExit):
+        test_testrig.parse_arguments(["--vector-ext", "--vector-segments"])
+
+    config = test_testrig.write_sail_config(30, tmp_path, vlen=128)
+    plan = test_testrig.prepare_inputs(args, tmp_path, config)
+    ext_dir = tmp_path / "vector_ext"
+    assert plan.command == ["-d", str(ext_dir)]
+    assert (plan.traces, plan.instructions) == (1, 738)
+
+    zvfhmin_trace = ext_dir / "vector_zvfhmin.S"
+    assert (
+        zvfhmin_trace.read_bytes()
+        == (VERIF_DIR / "testrig" / "vector_zvfhmin.S").read_bytes()
+    )
+    lines = zvfhmin_trace.read_text().splitlines()
+    assert sum(line.startswith(".4byte ") for line in lines) == 738
+    assert sum(line.startswith(".assert ") for line in lines) == 512
+
+    # Verify every non-trapping OPFVV/OPFVF instruction in vector_zvfhmin.S is either
+    # one of the two Zvfhmin conversions (vs1=12, 20) or one of the six base-V SEW=16
+    # int16<->FP32 conversions (vs1=10, 11, 16, 17, 22, 23): zero Zvfh arithmetic!
+    blocks = TRACE_WORD.split(zvfhmin_trace.read_text())[1:]
+    retired_subs: set[tuple[int, int]] = set()
+    frm_modes_vfncvt: set[int] = set()
+    frm_readbacks: set[int] = set()
+    masked_subs: set[int] = set()
+    policies_seen: set[int] = set()
+    vlmax_lmuls: set[int] = set()
+    vl0_subs: set[int] = set()
+    traps_seen: set[str] = set()
+    ctrl_orders: list[int] = []
+
+    sew = 8
+    lmul = 0
+    vtype = 0
+    avl_mode = ""
+    vl_imm = 0
+    frm = 0
+    for idx, block in enumerate(blocks):
+        word = int(block.split()[1], 0)
+        opcode = word & 0x7F
+        f3 = (word >> 12) & 7
+        f6 = (word >> 26) & 0x3F
+        vm = (word >> 25) & 1
+        vs1 = (word >> 15) & 0x1F
+        if word == 0x4210_2557:
+            ctrl_orders.append(idx)
+        # No misa reads and no vstart writes.
+        if opcode == 0x73 and f3 in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            assert csr != 0x301, "vector_zvfhmin.S must not access misa"
+            assert csr != 0x008, "vector_zvfhmin.S must not write vstart"
+            if csr == 0x002 and f3 == 5:  # csrwi frm, uimm
+                frm = vs1
+            elif csr == 0x002 and f3 == 2:  # csrr rd, frm
+                m_rd = re.search(r"rd_wdata == 0x([0-9a-f]+)", block)
+                if m_rd:
+                    frm_readbacks.add(int(m_rd.group(1), 16))
+        if opcode == 0x57 and f3 == 7:
+            is_ivli = (word >> 30) == 0b11
+            vtype = ((word >> 20) & 0x3FF) if is_ivli else ((word >> 20) & 0x7FF)
+            sew_code = (vtype >> 3) & 7
+            lmul = vtype & 7
+            sew = 8 << min(sew_code, 3) if sew_code <= 3 else 128
+            avl_mode = "imm" if is_ivli else "vlmax"
+            vl_imm = vs1 if is_ivli else 0
+            continue
+        if opcode == 0x57 and f3 in (1, 5):
+            assert f3 == 1 and f6 == 0x12, (
+                f"Unexpected non-conversion vector FP op in vector_zvfhmin.S: 0x{word:08x}"
+            )
+            assert vs1 in {10, 11, 12, 16, 17, 20, 22, 23}, (
+                f"Zvfh-only conversion subopcode {vs1} found in vector_zvfhmin.S"
+            )
+            if re.search(r"(?m)^\.assert trap == 1\b", block):
+                if "m8" in block:
+                    traps_seen.add(f"m8_{vs1}")
+                elif "FP8" in block:
+                    traps_seen.add(f"e8_{vs1}")
+                elif "EEW 128" in block:
+                    traps_seen.add(f"e64_{vs1}")
+                elif "misaligned" in block:
+                    traps_seen.add(f"misaligned_{vs1}")
+                elif "vd==v0" in block:
+                    traps_seen.add(f"v0_vd_{vs1}")
+                elif "vs2==v0" in block:
+                    traps_seen.add(f"v0_vs2_{vs1}")
+                elif "fractional overlap" in block:
+                    traps_seen.add("overlap_frac")
+                elif "overlap" in block:
+                    traps_seen.add(f"overlap_{vs1}")
+                elif "frm=5" in block:
+                    traps_seen.add("frm5")
+                elif "vill" in block:
+                    traps_seen.add(f"vill_{vs1}")
+                continue
+            assert re.search(r"(?m)^\.assert trap == 0\b", block)
+            retired_subs.add((sew, vs1))
+            if vs1 == 20 and sew == 16 and avl_mode == "imm" and vl_imm > 0:
+                frm_modes_vfncvt.add(frm)
+            if vm == 0:
+                masked_subs.add(vs1)
+                policies_seen.add(vtype & 0xC0)
+            if avl_mode == "vlmax" and vs1 in (12, 20):
+                vlmax_lmuls.add(lmul)
+            if avl_mode == "imm" and vl_imm == 0:
+                vl0_subs.add(vs1)
+
+    assert retired_subs == {
+        (16, 10),
+        (16, 11),
+        (16, 12),
+        (16, 16),
+        (16, 17),
+        (16, 20),
+        (16, 22),
+        (16, 23),
+    }
+    assert frm_modes_vfncvt == {0, 1, 2, 3, 4}
+    assert frm_readbacks == {0, 1, 2, 3, 4}
+    assert masked_subs == {12, 20}
+    assert policies_seen == {0x00, 0xC0}
+    assert vlmax_lmuls == {6, 7, 0, 1, 2}  # mf4, mf2, m1, m2, m4
+    assert vl0_subs == {12, 20}
+    assert traps_seen == {
+        "m8_12",
+        "m8_20",
+        "e8_12",
+        "e8_20",
+        "e64_12",
+        "e64_20",
+        "misaligned_12",
+        "misaligned_20",
+        "v0_vd_12",
+        "v0_vd_20",
+        "v0_vs2_12",
+        "v0_vs2_20",
+        "overlap_12",
+        "overlap_20",
+        "overlap_frac",
+        "frm5",
+        "vill_12",
+        "vill_20",
+    }
+    assert ctrl_orders == [30]
+
+
+@pytest.mark.parametrize("vlen", vector.VECTOR_LENGTHS)
+def test_vector_ext_two_sail_agree(tmp_path: Path, vlen: int) -> None:
+    """Two Sail instances agree on all vector extension traces at each VLEN."""
+    traces = tmp_path / "ext"
+    traces.mkdir()
+    for trace in test_testrig.VECTOR_EXT_TRACES:
+        shutil.copyfile(trace, traces / trace.name)
+    result = _compare_two_sail(tmp_path, traces, vlen, vlen)
+    assert result.returncode == 0 and "No Failure" in result.stdout, (
+        result.stdout[-2000:] + result.stderr[-2000:]
+    )
+
+
+def test_zvfhmin_runs_without_zvfh(tmp_path: Path) -> None:
+    """vector_zvfhmin.S passes on Sail with Zvfhmin enabled and Zvfh explicitly disabled."""
+    sail = shutil.which("sail_riscv_sim")
+    engine = shutil.which("QCVEngine")
+    if sail is None or engine is None:
+        pytest.skip("sail_riscv_sim or QCVEngine is not installed (frost image)")
+    traces = tmp_path / "zvfhmin_only"
+    traces.mkdir()
+    src = VERIF_DIR / "testrig" / "vector_zvfhmin.S"
+    shutil.copyfile(src, traces / src.name)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    cfg_path = test_testrig.write_sail_config(30, cfg_dir, vlen=128)
+    cfg_data = json.loads(cfg_path.read_text())
+    cfg_data["extensions"]["Zvfhmin"] = {"supported": True}
+    cfg_data["extensions"]["Zvfh"] = {"supported": False}
+    cfg_path.write_text(json.dumps(cfg_data, indent=2) + "\n")
+    port_a, port_b = test_testrig.free_ports()
+    procs = [
+        subprocess.Popen(
+            [
+                sail,
+                "--config-override",
+                str(cfg_path),
+                "--disable-trap-loop-detection",
+                "--rvfi-dii",
+                str(port),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for port in (port_a, port_b)
+    ]
+    try:
+        time.sleep(2)
+        result = subprocess.run(
+            [
+                engine,
+                "-a",
+                str(port_a),
+                "-b",
+                str(port_b),
+                "-r",
+                vector.ARCHITECTURE,
+                "-d",
+                str(traces),
+                "-v",
+                "1",
+                "-S",
+                "--no-save",
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+        assert result.returncode == 0 and "No Failure" in result.stdout, (
+            result.stdout[-2000:] + result.stderr[-2000:]
+        )
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait()
+
+
 def test_readout_sees_every_register_and_vxsat() -> None:
     """The read-out reads v31 and vxsat as well as the other registers."""
     lines = vector.trace(random.Random(5), 128, 3)

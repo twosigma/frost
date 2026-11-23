@@ -6,6 +6,7 @@
     "mstatus": {"vs_legal_states": "ExtContext_FourState"}
   },
   "extensions": {
-    "V": {"support_level": "Full", "mutable_misa": false, "vlen_exp": 9}
+    "V": {"support_level": "Full", "mutable_misa": false, "vlen_exp": 9},
+    "Zvfhmin": {"supported": true}
   }
 }

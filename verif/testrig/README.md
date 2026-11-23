@@ -144,6 +144,7 @@ the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--vector-source-widths` | off | Add the directed integer, FP and memory source-width traces to `--vector` |
 | `--vector-directed` | off | Add the directed vector CSR, scalar-result, fractional LMUL, FP and cached DDR memory traces to `--vector` |
 | `--vector-segments` | off | Replay the five seeded generated segment traces from `verif/testrig/vector_segments.py` plus `verif/testrig/vector_segment.S` (sets `--vlen` to 128 when omitted) |
+| `--vector-ext` | off | Replay the directed RVA23 vector extension traces (sets `--vlen` to 128 when omitted) |
 | `--vlen` | 128 with `--vector` / `--vector-segments` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
 | `--seed` | random (fixed for `--vector-segments`) | Seed for `--atomics`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`, `--svinval`, `--crypto`, `--vector` and `--vector-segments`; the runner prints the one it used |
 | `--test-length` | 200 | Maximum instructions per test |
@@ -715,8 +716,23 @@ compared in TestRIG:
 - `viota.m` with `LMUL > 1` whose source mask register is an upper register
   of the destination group (for example `viota.m v8, v9` at `m2`).
 
-On main pushes and pull requests labelled `run-ci`, CI runs two vector
-TestRIG shards (`core` and `segment`) at each of VLEN 128, 256 and 512,
+The Zvfhmin trace checks both RVA23U64 mandatory Zvfhmin half-precision
+floating-point conversion encodings (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at
+`SEW = 16`) alongside all six base-V `SEW = 16` integer/binary32 conversions
+(`vfwcvt.f.{xu,x}.v` and `vfncvt.{xu,x,rtz.xu,rtz.x}.f.w`) with no Zvfh-only
+FP16 arithmetic in the trace. It covers all five rounding modes with `frm`
+CSR readbacks across `vfncvt.f.f.w` ties, overflow (`±65536.0` and the
+`+65520.0` rounding-boundary case), exact and inexact subnormals,
+tininess-after-rounding (`0x387ff800`), underflow to zero, signed zeros,
+infinities, non-canonical quiet and signaling NaNs (`0x7e00` / `0x7fc00000`),
+accrued `fflags` exactness, scalar `Zfhmin` NaN-boxing interoperability,
+masked (`tu`/`mu` and `ta`/`ma`) execution with disabled `sNaN` flag
+suppression, `vl == 0`, portable `vl == VLMAX` from `mf4` through `m4`, legal
+register overlaps, and illegal `m8`, `e8`, `e64`, alignment, `v0`, overlap,
+reserved `frm` and `vill` traps. [Zvfhmin conversions](vector_zvfhmin.S)
+
+On main pushes and pull requests labelled `run-ci`, CI runs three vector
+TestRIG shards (`core`, `segment` and `ext`) at each of VLEN 128, 256 and 512,
 sharing one prebuilt simulator per vector length. The `core` shard replays
 12 generated traces of 20 operation groups from seed 42, the source-width
 traces and the directed
@@ -740,10 +756,12 @@ reporting and resumption, and `nf * EMUL <= 8`, register-wrap, indexed
 `vd`-group overlap, masked `v0`, alignment and `vill` traps. Moving
 `vector_segment.S` and its `segment` control into the `segment` shard
 restores the `core` shard's replay and control timeouts to 55 and 50
-minutes. Together, both shards retire all 627
-base-V machine encodings. Both
+minutes. Together, `core` and `segment` retire all 627
+base-V machine encodings. The `ext` shard runs `--vector-ext` (`16m` replay /
+`11m` controls), starting with `vector_zvfhmin.S` (with `Zvfhmin` enabled in
+`sail_frost_vlen*.json`). Both
 implementations must return every planned trace and instruction. The
-VLEN 128 `core` and `segment` shards each reuse their simulator to flip one
+VLEN 128 `core`, `segment` and `ext` shards each reuse their simulator to flip one
 bit in a FROST integer destination in each control replay. The `core` shard
 checks `vmv.x.s` for integer
 source widths, fractional LMUL, base FP results, fused multiply-add, FP
@@ -755,7 +773,8 @@ carry/borrow, mask-register, integer multiply-add and integer scalar/merge
 operations, and checks `vcpop.m` for state and scalar results and FP
 comparisons. The `segment` shard checks `vmv.x.s` for both the directed
 segment trace (`segment`) and field 1 of the generated unit-stride segment
-control load (`segment-matrix`). TestRIG must report
+control load (`segment-matrix`). The `ext` shard checks `vmv.x.s` for
+`vector_zvfhmin.S` (`zvfhmin`). TestRIG must report
 each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
