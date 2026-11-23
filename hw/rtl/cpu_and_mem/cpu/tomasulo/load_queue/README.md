@@ -277,8 +277,8 @@ With `PROBE_LAUNCH=1`, an ordinary load to the cached tier that misses the L0
 launches its read in the cycle it probes the SQ, one cycle before the
 verdict. Device loads, LRs, AMOs, misaligned or faulting loads and loads
 outside the cached tier launch only after the verdict. Whether the staged
-load may launch this way (`probe_launch_ok_q`) is registered when it is
-staged, so the probe cycle's launch adds only the probe's own live terms
+load may launch this way (`probe_launch_ok`) is formed from the already-registered
+stage class, so the probe cycle's launch adds only the probe's own live terms
 beside the phase-2 launch, and the L0 hit meets the memory port last.
 The launch takes a cached slot marked `cs_spec` for the next cycle, the
 verdict cycle:

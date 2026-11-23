@@ -775,11 +775,12 @@ module dmmu (
   assign o_iss_out_amo_rs2 = s2_amo_rs2_q;
 
   // A surviving S1 operation owns the next S2 packet. Otherwise only a live
-  // issue can bypass into S2. The tag can precede bypass eligibility because
-  // the LQ consumes its registered match only with an address-update packet.
+  // issue can bypass into S2. Both the tag and LQ-need look-ahead precede
+  // bypass eligibility because the LQ consumes its registered match only with
+  // an address-update packet.
   assign o_pre_rob_tag = (!s1_valid_q || s1_killed) ? iss_in.tag : s1_q.tag;
-  assign o_pre_needs_lq = iss_can_bypass ?
-      (i_iss_valid && !iss_in.needs_sq) : (s1_valid_q && !s1_q.needs_sq);
+  assign o_pre_needs_lq = (!s1_valid_q || s1_killed) ?
+      (i_iss_valid && !iss_in.needs_sq) : !s1_q.needs_sq;
 
   // Request a walk once for a live, canonical S1 miss with no trapping
   // misalignment or matching response. Hold valid until accepted. Suppress
