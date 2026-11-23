@@ -60,21 +60,27 @@ module vec_vrf #(
     end
   end
 
-  // The last writer of every byte of every entry, and its registered read
+  // Per-byte live-value tables: one shared write-address decode feeds each
+  // byte's DEPTH-entry table of last writers and registered read selectors
   // (used only with NW > 1).
-  logic [Bytes*PortBits-1:0] lvt[DEPTH];
-  logic [NR-1:0][Bytes*PortBits-1:0] sel_q;
   if (NW > 1) begin : gen_lvt
-    always_ff @(posedge i_clk) begin
-      for (int w = 0; w < int'(NW); w++)
-      for (int b = 0; b < int'(Bytes); b++)
-      if (i_we[w] && i_wbe[w][b]) lvt[i_waddr[w]][PortBits*b+:PortBits] <= PortBits'(w);
-      for (int r = 0; r < int'(NR); r++) sel_q[r] <= lvt[i_raddr[r]];
-    end
+    logic [DEPTH-1:0] wsel[NW];
     always_comb begin
-      for (int r = 0; r < int'(NR); r++)
-      for (int b = 0; b < int'(Bytes); b++)
-      o_rdata[r][8*b+:8] = copy_q[sel_q[r][PortBits*b+:PortBits]][r][8*b+:8];
+      for (int w = 0; w < int'(NW); w++)
+      for (int e = 0; e < int'(DEPTH); e++) wsel[w][e] = i_we[w] && (i_waddr[w] == AddrBits'(e));
+    end
+
+    for (genvar b = 0; b < Bytes; b++) begin : gen_b
+      logic [PortBits-1:0] lvt[DEPTH];
+      always_ff @(posedge i_clk) begin
+        for (int e = 0; e < int'(DEPTH); e++)
+        for (int w = 0; w < int'(NW); w++) if (wsel[w][e] && i_wbe[w][b]) lvt[e] <= PortBits'(w);
+      end
+      for (genvar r = 0; r < NR; r++) begin : gen_r
+        logic [PortBits-1:0] sel_q;
+        always_ff @(posedge i_clk) sel_q <= lvt[i_raddr[r]];
+        assign o_rdata[r][8*b+:8] = copy_q[sel_q][r][8*b+:8];
+      end
     end
   end else begin : gen_single
     always_comb for (int r = 0; r < int'(NR); r++) o_rdata[r] = copy_q[0][r];

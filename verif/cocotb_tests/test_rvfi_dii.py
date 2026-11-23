@@ -86,6 +86,9 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "fixed-point": 0x42F0_2557,  # vmv.x.s a0, v15 in the fixed-point trace
     "fp-single": 0x42D0_2557,  # vmv.x.s a0, v13 in the single-width FP trace
     "whole-reg": 0x42C0_2557,  # vmv.x.s a0, v12 in the whole-register memory trace
+    "fp-widen": 0x42A0_2557,  # vmv.x.s a0, v10 in the widening FP trace
+    "permutes": 0x42B0_2557,  # vmv.x.s a0, v11 in the permutes trace
+    "reductions": 0x4320_2557,  # vmv.x.s a0, v18 in the reductions trace
 }
 
 # frost_rvfi_dii's error_flags bits.
