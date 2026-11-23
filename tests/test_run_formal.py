@@ -2056,6 +2056,9 @@ FORMAL_TARGETS = [
             "bmc_depth6",
             "bmc_wakeup_depth6",
             "fp_repair_bmc_depth6",
+            "cover_depth6",
+            "cover_wakeup_depth6",
+            "cover_fu_depth6",
         ),
     ),
     FormalTarget(
@@ -3844,6 +3847,18 @@ SBY_TASKS = [
     (
         "fp_repair_bmc_depth6",
         "Depth-6 bounded model checking with FP dispatch done repair enabled and abstract leaf FUs",
+    ),
+    (
+        "cover_depth6",
+        "Cover search for frames 4 and 5 in the abstract-FU depth-6 environment",
+    ),
+    (
+        "cover_wakeup_depth6",
+        "Cover search for queue overlap, recovery, ALU CDB, and wakeup merge in the narrowed depth-6 wakeup environment",
+    ),
+    (
+        "cover_fu_depth6",
+        "Cover search for multi-cycle abstracted MUL and FP engine completions reaching the CDB with FU test ports tied to zero",
     ),
     (
         "cover_alu_issue",

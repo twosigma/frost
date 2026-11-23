@@ -637,13 +637,27 @@ are not exercised at depth 4 or 6. The three commit-bus properties
 (`p_registered_native_fence_implies_flush`,
 `p_native_fence_copy_matches_non_translation_flush`, and
 `p_rename_wins_over_commit`) are proved to depth 10 in
-`tomasulo_wrapper_commit_bus`, which supplies the ROB's one-class allocation
-and slot-2 rename contracts. `bmc_wakeup_depth6` checks all 44
-`mem_wakeup_merge` assertions at depth 6 (including the four
+`tomasulo_wrapper_commit_bus`, a separate environment that supplies the ROB's
+one-class allocation and slot-2 rename contracts. `bmc_wakeup_depth6` checks
+all 44 `mem_wakeup_merge` assertions at depth 6 (including the four
 `duplicates_registered_lane` checks) with unused test-injection ports
-`i_fu_complete_0..7` tied to zero (matching `cpu_ooo` with `VECTOR=0`) and
+`i_fu_complete_0..7` tied to zero (matching `cpu_ooo`) and
 `TOMASULO_WRAPPER_LQ_SQ_DISJOINT` matching `instr_operand_classifier`'s
-mutually exclusive `needs_lq`/`needs_sq` outputs. The wrapper is built with
+mutually exclusive `needs_lq`/`needs_sq` outputs. Three registered cover tasks
+check non-vacuity of the abstract-FU and narrowed wakeup environments:
+`cover_depth6` (depth 6, matching `bmc_depth6`'s 56 assumptions) reaches
+port-0 ALU2 redirect, a done head waiting on a held ALU result, and wakeup
+merges at frames 4 and 5; `cover_wakeup_depth6` (depth 6, matching
+`bmc_wakeup_depth6`'s 57 assumptions and zeroed `i_fu_complete_0..7`) reaches
+simultaneous in-flight loads and stores, partial recovery and full flush with
+both queues occupied, memory wakeup merges at frames 4 and 5 (including a
+staged load alongside a registered CDB broadcast), and `FU_ALU` and `FU_ALU2`
+completions on the registered CDB; `cover_fu_depth6` (depth 8, same narrowed
+environment) reaches carry-less multiplier (`MUL_SEL_CL`), word multiplier
+(`MUL_SEL_SEXT_W`), and abstract `fp_shim` engine (`FU_FP_ADD`) completions on
+the CDB through their adapters (`fp_fma_pipe` and 64-bit `multiplier` require
+longer pipelines covered by `fp_forward_wake`, `fp_forward_route`, and
+`int_muldiv_shim`). The wrapper is built with
 its default parameters, not the core's: `SPLIT_RS_DISPATCH`,
 `ROB_SHARED_LINK_BANK`, `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS`,
 `CACHE_NORMAL_MEMORY`, `CMO_HOME` and `VECTOR` are 0 and `L0_CACHE_DEPTH` is
