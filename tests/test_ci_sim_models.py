@@ -109,8 +109,10 @@ def test_shared_models_match_the_consumers() -> None:
     assert not consumers["test-testrig"]["3"]["shared"]
     assert len(consumers["test-testrig"]["3"]["local"]) == 1
     for width in ("128", "256", "512"):
-        entry = consumers["test-testrig-vector"][width]
-        assert not entry["shared"] and len(entry["local"]) == 1
+        core_entry = consumers["test-testrig-vector"][f"{width}/core"]
+        seg_entry = consumers["test-testrig-vector"][f"{width}/segment"]
+        assert len(core_entry["shared"]) == 1 and not core_entry["local"]
+        assert seg_entry == core_entry
     assert len(consumers["test-native"]["live"]["shared"]) == 1
     assert len(consumers["test-native"]["live"]["local"]) == 1
 
@@ -753,7 +755,13 @@ def _workflow_runtime_cases(
         yield "test-testrig", str(row["shard"]), cases
     if event in ("push", "pull_request"):
         vec_threads = _workflow_job_threads(jobs["test-testrig-vector"])
+        shard_controls = {
+            "core": ("state",),
+            "segment": ("segment", "segment-matrix"),
+        }
         for row in expand_matrix(jobs["test-testrig-vector"]["strategy"]["matrix"]):
+            shard = row["shard"]
+            controls = shard_controls[shard]
             env = {
                 "FROST_DDR_MODEL_SEED": "testrig-vector",
                 "FROST_RANDOM_START_SEED": "testrig-vector",
@@ -764,13 +772,16 @@ def _workflow_runtime_cases(
                 (simulator_config(DEFAULT_DDR_CAPACITY_LOG2_BYTES, row["vlen"]), env)
             ]
             if row["vlen"] == 128:
-                cases.append(
-                    (
-                        simulator_config(DEFAULT_DDR_CAPACITY_LOG2_BYTES, row["vlen"]),
-                        {**env, "FROST_TESTRIG_VECTOR_RESULT_CONTROL": "state"},
+                for selector in controls:
+                    cases.append(
+                        (
+                            simulator_config(
+                                DEFAULT_DDR_CAPACITY_LOG2_BYTES, row["vlen"]
+                            ),
+                            {**env, "FROST_TESTRIG_VECTOR_RESULT_CONTROL": selector},
+                        )
                     )
-                )
-            yield "test-testrig-vector", str(row["vlen"]), cases
+            yield "test-testrig-vector", f"{row['vlen']}/{shard}", cases
     native_threads = _workflow_job_threads(jobs["test-native"])
     native_env = {"FROST_VERILATOR_THREADS": native_threads}
     stripped_native_env = {
