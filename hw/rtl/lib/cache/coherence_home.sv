@@ -38,6 +38,9 @@ module coherence_home #(
     // (coherence_home_array, UltraRAM only); 0 reads the hit row after the
     // decision.
     parameter bit PARALLEL_READ = 1'b1,
+    // Select an unblocked non-prefetch demand into the idle work register on
+    // admission and launch its tag lookup directly into an idle array.
+    parameter bit FAST_TAG_LAUNCH = 1'b0,
     parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned WbBits = NUM_WB > 1 ? $clog2(NUM_WB) : 1
@@ -192,6 +195,15 @@ module coherence_home #(
   (* extract_enable = "no" *) put_phase_t put_phase_q[Puts];
   (* max_fanout = 64 *) logic run;
   logic fatal_event, work_valid, work_error;
+  logic [ADDR_WIDTH-1:0] work_addr_out;
+  logic work_prefetch, work_cmo;
+  logic array_init_done, direct_tag_valid;
+  logic array_req_valid, array_req_spec;
+  logic [ADDR_WIDTH-1:0] array_req_addr;
+  logic [ TokenBits-1:0] array_req_token;
+`ifndef SYNTHESIS
+  logic f_array_busy_q, f_other_tag_valid, f_direct_array_ready;
+`endif
   coh_d_t work;
   logic [5:0] work_tid;
   logic [ResultBits-1:0] work_buffer;
@@ -522,7 +534,8 @@ module coherence_home #(
       .WAYS(WAYS),
       .SLOTS(COMPLETIONS),
       .RESULT_SLOTS(RESULTS),
-      .PREFETCH_SLOTS(PREFETCH_SLOTS)
+      .PREFETCH_SLOTS(PREFETCH_SLOTS),
+      .FAST_TAG_LAUNCH(FAST_TAG_LAUNCH)
   ) completions (
       .i_clk,
       .i_rst,
@@ -538,6 +551,9 @@ module coherence_home #(
       .o_work_error(work_error),
       .o_work_counted(work_counted),
       .o_work_nofill(work_nofill),
+      .o_work_addr(work_addr_out),
+      .o_work_prefetch(work_prefetch),
+      .o_work_cmo(work_cmo),
       .o_accepted,
       .o_accepted_opcode,
       .o_accepted_q,
@@ -594,6 +610,7 @@ module coherence_home #(
   );
 
   for (genvar engine = 0; engine < RESULTS; engine++) begin : gen_engine
+    logic engine_lookup_ready;
     coherence_home_engine #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .LINE_BYTES(LINE_BYTES),
@@ -608,7 +625,7 @@ module coherence_home #(
         .i_work_error(work_error),
         .o_idle(engine_idle[engine]),
         .o_lookup_valid(engine_lookup[engine]),
-        .i_lookup_ready(tag_ready[engine]),
+        .i_lookup_ready(engine_lookup_ready),
         .o_lookup_addr(engine_lookup_addr[engine]),
         .o_addr(engine_addr[engine]),
         .o_tid(engine_tid[engine]),
@@ -658,21 +675,44 @@ module coherence_home #(
     // The engine's work is a prefetch, and that prefetch may not allocate a
     // fill: registered with the work, so the tag decision and the victim
     // terms read one flop per engine.
-    always_ff @(posedge i_clk) begin
-      if (i_rst) begin
-        engine_counted_q[engine]  <= 1'b0;
-        engine_prefetch_q[engine] <= 1'b0;
-        engine_nofill_q[engine]   <= 1'b0;
-        engine_cmo_q[engine]      <= 1'b0;
-      end else if (work_valid && work_buffer == ResultBits'(engine)) begin
-        engine_counted_q[engine]  <= work_counted;
-        engine_prefetch_q[engine] <= work.opcode == coherence_pkg::Prefetch;
-        engine_nofill_q[engine]   <= work_nofill;
-        engine_cmo_q[engine]      <= coherence_pkg::is_cmo(work.opcode);
+    if (FAST_TAG_LAUNCH) begin : gen_engine_fast
+      wire engine_direct_lookup = direct_tag_valid && work_buffer == ResultBits'(engine);
+      assign engine_lookup_ready = tag_ready[engine] || engine_direct_lookup;
+      always_ff @(posedge i_clk) begin
+        if (i_rst) begin
+          engine_counted_q[engine]  <= 1'b0;
+          engine_prefetch_q[engine] <= 1'b0;
+          engine_nofill_q[engine]   <= 1'b0;
+          engine_cmo_q[engine]      <= 1'b0;
+        end else if (work_valid && work_buffer == ResultBits'(engine)) begin
+          engine_counted_q[engine]  <= work_counted;
+          engine_prefetch_q[engine] <= work_prefetch;
+          engine_nofill_q[engine]   <= work_nofill;
+          engine_cmo_q[engine]      <= work_cmo;
+        end
       end
+      assign tag_valid[engine] = engine_lookup[engine] && !engine_direct_lookup;
+      assign tag_payload[engine] = {
+        TokenBits'(engine), engine_idle[engine] ? work_addr_out : engine_lookup_addr[engine]
+      };
+    end else begin : gen_engine_base
+      assign engine_lookup_ready = tag_ready[engine];
+      always_ff @(posedge i_clk) begin
+        if (i_rst) begin
+          engine_counted_q[engine]  <= 1'b0;
+          engine_prefetch_q[engine] <= 1'b0;
+          engine_nofill_q[engine]   <= 1'b0;
+          engine_cmo_q[engine]      <= 1'b0;
+        end else if (work_valid && work_buffer == ResultBits'(engine)) begin
+          engine_counted_q[engine]  <= work_counted;
+          engine_prefetch_q[engine] <= work.opcode == coherence_pkg::Prefetch;
+          engine_nofill_q[engine]   <= work_nofill;
+          engine_cmo_q[engine]      <= coherence_pkg::is_cmo(work.opcode);
+        end
+      end
+      assign tag_valid[engine]   = engine_lookup[engine];
+      assign tag_payload[engine] = {TokenBits'(engine), engine_lookup_addr[engine]};
     end
-    assign tag_valid[engine] = engine_lookup[engine];
-    assign tag_payload[engine] = {TokenBits'(engine), engine_lookup_addr[engine]};
     assign read_payload[engine] = {TokenBits'(engine), engine_way[engine], engine_addr[engine]};
     assign update_valid[engine] = engine_update[engine];
     assign update_payload[engine] = {
@@ -803,6 +843,47 @@ module coherence_home #(
   assign o_wa_valid = run && ack_out_valid;
   assign o_wa = ack_out;
 
+  if (FAST_TAG_LAUNCH) begin : gen_fast_tag_launch
+    logic array_busy_q, array_is_idle;
+    logic other_tag_valid, direct_array_ready;
+    always_ff @(posedge i_clk) begin
+      if (i_rst) array_busy_q <= 1'b0;
+      else if (array_req_valid && tag_request_ready) array_busy_q <= 1'b1;
+      else if (array_response && run) array_busy_q <= 1'b0;
+    end
+    assign array_is_idle = array_init_done && !array_busy_q;
+    always_comb begin
+      other_tag_valid = 1'b0;
+      for (int engine = 0; engine < RESULTS; engine++)
+      other_tag_valid |= !engine_idle[engine] && engine_lookup[engine];
+      for (int put = 0; put < Puts; put++) other_tag_valid |= put_phase_q[put] == PutLookup;
+    end
+    assign direct_array_ready = array_is_idle &&
+        !(update_request_valid && update_request.tag_write);
+    assign direct_tag_valid = run && work_valid && !work_error && !tag_request_valid &&
+        !other_tag_valid && direct_array_ready;
+    assign array_req_valid = (tag_request_valid && run) || direct_tag_valid;
+    assign array_req_addr = !tag_request_valid ? work_addr_out : tag_request.addr;
+    assign array_req_token = !tag_request_valid ? TokenBits'(work_buffer) : tag_request.token;
+    assign array_req_spec = !tag_request_valid ? (PARALLEL_READ && !work_prefetch) : lookup_spec;
+`ifndef SYNTHESIS
+    assign f_array_busy_q = array_busy_q;
+    assign f_other_tag_valid = other_tag_valid;
+    assign f_direct_array_ready = direct_array_ready;
+`endif
+  end else begin : gen_no_fast_tag_launch
+    assign direct_tag_valid = 1'b0;
+    assign array_req_valid  = tag_request_valid && run;
+    assign array_req_addr   = tag_request.addr;
+    assign array_req_token  = tag_request.token;
+    assign array_req_spec   = lookup_spec;
+`ifndef SYNTHESIS
+    assign f_array_busy_q = 1'b0;
+    assign f_other_tag_valid = 1'b0;
+    assign f_direct_array_ready = 1'b0;
+`endif
+  end
+
   coherence_home_array #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(LINE_BYTES),
@@ -814,12 +895,12 @@ module coherence_home #(
   ) array (
       .i_clk,
       .i_rst,
-      .o_init_done(),
-      .i_req_valid(tag_request_valid && run),
+      .o_init_done(array_init_done),
+      .i_req_valid(array_req_valid),
       .o_req_ready(tag_request_ready),
-      .i_req_addr(tag_request.addr),
-      .i_req_token(tag_request.token),
-      .i_req_spec(lookup_spec),
+      .i_req_addr(array_req_addr),
+      .i_req_token(array_req_token),
+      .i_req_spec(array_req_spec),
       .o_query_addr(array_query),
       .o_query_token(array_query_token),
       .i_exclude(array_exclude),
@@ -867,27 +948,57 @@ module coherence_home #(
       .o_updated_token(array_updated_token)
   );
 
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      lookup_prefetch_q <= 1'b0;
-      lookup_fill_q <= 1'b0;
-      lookup_cmo_q <= 1'b0;
-      prefetch_fill_q <= 1'b0;
-      prefetch_room_q <= 1'b0;
-      wb_two_free_q <= 1'b0;
-    end else begin
-      if (tag_request_valid && run && tag_request_ready) begin
-        lookup_prefetch_q <= int'(tag_request.token) < RESULTS &&
-            engine_prefetch_q[ResultBits'(tag_request.token)];
-        lookup_fill_q <= int'(tag_request.token) < RESULTS &&
-            engine_prefetch_q[ResultBits'(tag_request.token)] &&
-            !engine_nofill_q[ResultBits'(tag_request.token)];
-        lookup_cmo_q <= int'(tag_request.token) < RESULTS &&
-            engine_cmo_q[ResultBits'(tag_request.token)];
+  if (FAST_TAG_LAUNCH) begin : gen_lookup_meta_fast
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        lookup_prefetch_q <= 1'b0;
+        lookup_fill_q <= 1'b0;
+        lookup_cmo_q <= 1'b0;
+        prefetch_fill_q <= 1'b0;
+        prefetch_room_q <= 1'b0;
+        wb_two_free_q <= 1'b0;
+      end else begin
+        if (tag_request_valid && run && tag_request_ready) begin
+          lookup_prefetch_q <= int'(tag_request.token) < RESULTS &&
+              engine_prefetch_q[ResultBits'(tag_request.token)];
+          lookup_fill_q <= int'(tag_request.token) < RESULTS &&
+              engine_prefetch_q[ResultBits'(tag_request.token)] &&
+              !engine_nofill_q[ResultBits'(tag_request.token)];
+          lookup_cmo_q <= int'(tag_request.token) < RESULTS &&
+              engine_cmo_q[ResultBits'(tag_request.token)];
+        end else if (direct_tag_valid) begin
+          lookup_prefetch_q <= work_prefetch;
+          lookup_fill_q <= work_prefetch && !work_nofill;
+          lookup_cmo_q <= work_cmo;
+        end
+        prefetch_room_q <= $countones(~fill_live_q) > PREFETCH_RESERVE;
+        prefetch_fill_q <= lookup_fill_q && $countones(~fill_live_q) > PREFETCH_RESERVE;
+        wb_two_free_q   <= $countones(~wb_valid_q) >= 2;
       end
-      prefetch_room_q <= $countones(~fill_live_q) > PREFETCH_RESERVE;
-      prefetch_fill_q <= lookup_fill_q && $countones(~fill_live_q) > PREFETCH_RESERVE;
-      wb_two_free_q   <= $countones(~wb_valid_q) >= 2;
+    end
+  end else begin : gen_lookup_meta_base
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        lookup_prefetch_q <= 1'b0;
+        lookup_fill_q <= 1'b0;
+        lookup_cmo_q <= 1'b0;
+        prefetch_fill_q <= 1'b0;
+        prefetch_room_q <= 1'b0;
+        wb_two_free_q <= 1'b0;
+      end else begin
+        if (tag_request_valid && run && tag_request_ready) begin
+          lookup_prefetch_q <= int'(tag_request.token) < RESULTS &&
+              engine_prefetch_q[ResultBits'(tag_request.token)];
+          lookup_fill_q <= int'(tag_request.token) < RESULTS &&
+              engine_prefetch_q[ResultBits'(tag_request.token)] &&
+              !engine_nofill_q[ResultBits'(tag_request.token)];
+          lookup_cmo_q <= int'(tag_request.token) < RESULTS &&
+              engine_cmo_q[ResultBits'(tag_request.token)];
+        end
+        prefetch_room_q <= $countones(~fill_live_q) > PREFETCH_RESERVE;
+        prefetch_fill_q <= lookup_fill_q && $countones(~fill_live_q) > PREFETCH_RESERVE;
+        wb_two_free_q   <= $countones(~wb_valid_q) >= 2;
+      end
     end
   end
   assign o_prefetch_room = prefetch_room_q;
@@ -962,7 +1073,11 @@ module coherence_home #(
   // The put selection does not wait for the stop condition either: W
   // readiness already requires the home to be active.
   assign held_put_next = put_selected_q ? selected_put_q.addr : incoming_put.addr;
-  assign work_addr = request_addr(work);
+  if (FAST_TAG_LAUNCH) begin : gen_work_addr_fast
+    assign work_addr = work_addr_out;
+  end else begin : gen_work_addr_base
+    assign work_addr = request_addr(work);
+  end
   // One blocking term per owner: blocks a same-sector query, victims a
   // victim block that the owner holds. The decision and the W readiness that
   // follows it are built from kept nodes, each a function of at most six kept
@@ -2431,6 +2546,10 @@ module coherence_home #(
   // is held from the cycle the engine enters Lookup.
   always_ff @(posedge i_clk)
     if (!i_rst) begin
+      if (FAST_TAG_LAUNCH) begin
+        assert (f_array_busy_q == |f_tag_owner);
+        if (f_array_busy_q) assert (array_init_done);
+      end
       for (int engine = 0; engine < RESULTS; engine++)
       if (tag_selected[engine])
         assert (!engine_idle[engine] && !f_tag_owner[engine] && (engine_lookup[engine] || !run));
@@ -2532,6 +2651,10 @@ module coherence_home #(
         assert (image_data == (int'(image_index) == RESULTS ? forward_data_q :
             engine_image[ResultBits'(image_index)]));
       if (work_valid && run) assert (engine_idle[work_buffer]);
+      if (direct_tag_valid) begin
+        assert (tag_request_ready);
+        assert (!tag_request_valid && !f_other_tag_valid);
+      end
       if (array_response && decision_engine)
         assert (same_block(array_query, engine_addr[ResultBits'(array_token)]));
       for (int engine = 0; engine < RESULTS; engine++)
@@ -2982,6 +3105,17 @@ module coherence_home #(
              fill_dirty_q[0] && fill_cmo_inval_q[0]);
       cover (run && forward_accept && forward_pick[0] && fill_phase_q[0] == FillCmoGrant &&
              !fill_cmo_hit_q[0]);
+    end
+`endif
+`ifdef COHERENCE_HOME_FAST_COVER
+    // Direct tag launch fires for ordinary demands, prefetches and CMOs, and
+    // yields to the tag arbiter when another client or a tag write holds it.
+    if (!i_rst) begin
+      cover (direct_tag_valid);
+      cover (direct_tag_valid && work_prefetch);
+      cover (direct_tag_valid && work_cmo);
+      cover (run && work_valid && !work_error && !direct_tag_valid &&
+             (tag_request_valid || f_other_tag_valid || !f_direct_array_ready));
     end
 `endif
 `ifdef COHERENCE_HOME_COVER

@@ -4426,6 +4426,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="One hart, DMA, pending stores, recalls, and atomic ownership",
     ),
+    "coherence_cluster_fast_tag": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GHOME_FAST_TAG_LAUNCH=1"),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="One hart, DMA, pending stores, recalls, and atomic ownership "
+        "with direct tag launch in the home",
+    ),
     "coherence_line_client": CocotbRunConfig(
         verilator_extra_args=("--assert",),
         python_test_module="cocotb_tests.cache.test_coherence_line_client",
@@ -4629,6 +4636,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         "forwarded results, and prefetch slots",
         verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
     ),
+    "coherence_home_completions_fast_tag": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home_completions",
+        hdl_toplevel_module="coherence_home_completions",
+        description="Independent results, completion pins, same-sector predecessors, "
+        "forwarded results, prefetch slots, and direct D selection",
+        verilator_extra_args=("--assert", "-GCACHE_BYTES=1024", "-GFAST_TAG_LAUNCH=1"),
+    ),
     "coherence_array_reset_bram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
@@ -4828,6 +4842,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=1024",
+        ),
+    ),
+    "coherence_home_fast_tag": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home",
+        hdl_toplevel_module="coherence_home",
+        description=(
+            "Coherent home with direct D selection and direct tag launch into an idle array"
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=1024",
+            "-GFAST_TAG_LAUNCH=1",
         ),
     ),
     "coherence_home_rowread": CocotbRunConfig(

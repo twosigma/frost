@@ -3,8 +3,12 @@ coh_home_control_prove control ctl
 coh_home_control64_prove control ctl wide
 coh_home_control_partition_prove control ctl partition
 coh_home_control_ultra_prove control ultra_ctl
+coh_home_control_fast_prove control ctl fast
+coh_home_control64_fast_prove control ctl wide fast
+coh_home_control_partition_fast_prove control ctl partition fast
 coh_home_control4_bmc bmc4 ctl four
 coh_home_control4_ultra_bmc bmc4 ctl four ultra
+coh_home_control4_ultra_fast_bmc bmc4 ctl four ultra fast
 coh_home_fill_cover control ctl fill_covers
 coh_home_cmo_cover control ctl cmo_covers cmo_witness
 coh_home_wb_prove wb unit
@@ -12,6 +16,7 @@ coh_home_victim_cover covers
 coh_home_error_cover covers error
 coh_home_prefetch_cover pfcover ctl four
 coh_home_dispatch_cover control ctl dispatch_covers four
+coh_home_fast_cover fast_covers ctl four ultra fast
 
 [options]
 control: mode prove
@@ -36,6 +41,9 @@ dispatch_covers: depth 30
 cmo_covers: mode cover
 cmo_covers: depth 40
 cmo_covers: timeout 6000
+fast_covers: mode cover
+fast_covers: depth 30
+fast_covers: timeout 600
 
 [engines]
 control: smtbmc boolector
@@ -43,6 +51,7 @@ pfcover: smtbmc boolector
 bmc4: smtbmc boolector
 wb: smtbmc boolector
 covers: smtbmc boolector
+fast_covers: smtbmc boolector
 
 [script]
 ~ultra_ctl: read -formal -sv coherence_seat_select.sv coherence_work_select.sv
@@ -52,6 +61,7 @@ pfcover: verilog_defines -D COHERENCE_HOME_PREFETCH_COVER
 fill_covers: verilog_defines -D COHERENCE_HOME_FILL_COVER
 dispatch_covers: verilog_defines -D COHERENCE_HOME_DISPATCH_COVER
 cmo_covers: verilog_defines -D COHERENCE_HOME_CMO_COVER
+fast_covers: verilog_defines -D COHERENCE_HOME_FAST_COVER
 # Drive the grant witnesses because the undirected cover search exceeds the task budget.
 cmo_witness: verilog_defines -D COHERENCE_HOME_CMO_WITNESS
 ~ultra_ctl: read -sv coherence_pkg.sv
@@ -80,6 +90,7 @@ wide: chparam -set LINE_BYTES 64 -set WAYS 1 coherence_home_control_harness
 four: chparam -set WAYS 4 -set FILLS 3 -set PREFETCH_RESERVE 1 coherence_home_control_harness
 ultra: chparam -set ULTRA 1 -set PREFETCH_RESERVE 0 coherence_home_control_harness
 partition: chparam -set PREFETCH_SLOTS 1 coherence_home_control_harness
+fast: chparam -set FAST_TAG_LAUNCH 1 coherence_home_control_harness
 ctl: prep -flatten -top coherence_home_control_harness
 ultra_ctl: hierarchy -top coherence_home_control_harness
 ultra_ctl: script free_undefined.ys
