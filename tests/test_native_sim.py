@@ -2367,6 +2367,33 @@ def test_effective_cpu_count_and_demo_script_respect_cgroup_quotas(
         assert "stub_t" in bad_proc.stdout
 
 
+def test_native_makefile_default_cpu_cores_is_positive_integer() -> None:
+    """hw/sim/native/Makefile resolves NUMBER_OF_CPU_CORES when unset in env."""
+    env = dict(os.environ)
+    env.pop("NUMBER_OF_CPU_CORES", None)
+    proc = subprocess.run(
+        [
+            "make",
+            "-C",
+            str(NATIVE_DIR),
+            "--no-print-directory",
+            "--eval",
+            'print-cpu-cores:; @printf "%s\\n" "$(NUMBER_OF_CPU_CORES)"',
+            "print-cpu-cores",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"make failed: {proc.stderr}\n{proc.stdout}"
+    assert proc.stderr == "", f"unexpected make stderr: {proc.stderr}"
+    value = proc.stdout.strip()
+    assert re.fullmatch(r"[1-9][0-9]*", value), (
+        f"expected positive integer NUMBER_OF_CPU_CORES, got {value!r}"
+    )
+
+
 def test_parse_cocotb_program_log_extracts_cycles_ticks_and_uart() -> None:
     """Log parser strips cocotb status lines and preserves exact UART bytes."""
     hello_cycles = 11824

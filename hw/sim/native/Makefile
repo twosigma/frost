@@ -32,12 +32,12 @@ EXTRA_RUN_ARGS ?=
 
 NUMBER_OF_CPU_CORES ?= $(shell \
 	cpus=$$(nproc 2>/dev/null || echo 1); \
-	case "$$cpus" in ''|*[!0-9]*|0) cpus=1 ;; esac; \
+	case "$$cpus" in (''|*[!0-9]*|0) cpus=1 ;; esac; \
 	if [ -r /sys/fs/cgroup/cpu.max ]; then \
 		read -r quota period _rest < /sys/fs/cgroup/cpu.max || true; \
 		case "$${quota:-}:$${period:-}" in \
-			''|:*|*:|*[!0-9]*:*|*:*[!0-9]*) ;; \
-			*) if [ "$$quota" -gt 0 ] && [ "$$period" -gt 0 ]; then \
+			(''|:*|*:|*[!0-9]*:*|*:*[!0-9]*) ;; \
+			(*) if [ "$$quota" -gt 0 ] && [ "$$period" -gt 0 ]; then \
 				cg=$$(( quota / period )); \
 				[ "$$cg" -lt 1 ] && cg=1; \
 				[ "$$cg" -lt "$$cpus" ] && cpus="$$cg"; \
@@ -47,8 +47,8 @@ NUMBER_OF_CPU_CORES ?= $(shell \
 		read -r quota _rest < /sys/fs/cgroup/cpu/cpu.cfs_quota_us || true; \
 		read -r period _rest < /sys/fs/cgroup/cpu/cpu.cfs_period_us || true; \
 		case "$${quota:-}:$${period:-}" in \
-			''|:*|*:|*[!0-9]*:*|*:*[!0-9]*) ;; \
-			*) if [ "$$quota" -gt 0 ] && [ "$$period" -gt 0 ]; then \
+			(''|:*|*:|*[!0-9]*:*|*:*[!0-9]*) ;; \
+			(*) if [ "$$quota" -gt 0 ] && [ "$$period" -gt 0 ]; then \
 				cg=$$(( quota / period )); \
 				[ "$$cg" -lt 1 ] && cg=1; \
 				[ "$$cg" -lt "$$cpus" ] && cpus="$$cg"; \
