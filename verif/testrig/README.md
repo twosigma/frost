@@ -671,12 +671,37 @@ multipliers, legal `v0` and odd-register overlaps, and illegal reserved
 and `vill` traps.
 [Vector mask-register operations](vector_mask_ops.S)
 
+The integer multiply-add trace checks all eight base-V single-width integer
+multiply-add encodings (`vmacc`, `vnmsac`, `vmadd` and `vnmsub` in `.vv` and
+`.vx` forms) across all four element widths (`e8`, `e16`, `e32` and `e64`).
+It covers asymmetric operands that distinguish `vd` as accumulator (`vmacc`,
+`vnmsac`) from `vd` as multiplicand (`vmadd`, `vnmsub`), low-SEW wraparound
+at unsigned and signed boundaries at every width, scalar upper-bit truncation
+for `.vx` forms, masked and unmasked execution for all eight encodings,
+`tu`/`mu` preservation and `ta`/`ma` execution across multi-register
+boundaries, `vl == 0`, portable `vl == VLMAX` from `mf8` through `m8`, legal
+register overlaps (`vd == vs1`, `vd == vs2`, `vs1 == vs2`,
+`vd == vs1 == vs2` and unmasked `v0`), and illegal masked `v0`-overlap,
+register-group alignment and `vill` traps.
+[Vector integer multiply-add operations](vector_int_mul_add.S)
+
+Two reserved vector overlap encodings trap as illegal instructions in FROST
+and Spike under RVV 1.0, while Sail 0.16 allows them, so they are not
+compared in TestRIG:
+
+- carry-out and borrow-out mask operations (`vmadc`, `vmsbc` with
+  `LMUL > 1`) whose destination mask register overlaps an upper register of
+  a multi-register source group (`vs2` or `vs1` beyond its lowest register);
+- `viota.m` with `LMUL > 1` whose source mask register is an upper register
+  of the destination group (for example `viota.m v8, v9` at `m2`).
+
 On main pushes and pull requests labelled `run-ci`, CI runs one job at
 each of VLEN 128, 256 and 512. Each replays 12 generated traces of 20
 operation groups from seed 42, the source-width traces and the directed
 state, fractional LMUL, FP, cached DDR, integer comparison, widening and
 narrowing integer, fixed-point, single-width FP, whole-register memory,
-widening FP, permute, reduction, carry/borrow and mask-register traces. Both
+widening FP, permute, reduction, carry/borrow, mask-register and integer
+multiply-add traces. Both
 implementations must return every planned trace and instruction. The
 VLEN 128 job reuses its simulator to flip one bit in a FROST integer
 destination in each control replay. It checks `vmv.x.s` for integer
@@ -685,9 +710,9 @@ conversions, unit-stride memory, strided memory, indexed memory, segment
 memory, fault-only-first loads, integer comparisons, widening and
 narrowing integer operations, fixed-point operations, single-width FP
 operations, whole-register memory, widening FP, permute, reduction,
-carry/borrow and mask-register operations. It checks `vcpop.m` for state and
-scalar results and FP comparisons. TestRIG must report each destination
-value mismatch.
+carry/borrow, mask-register and integer multiply-add operations. It checks
+`vcpop.m` for state and scalar results and FP comparisons. TestRIG must
+report each destination value mismatch.
 
 The unit tests in `tests/test_testrig_vector.py` check the replay inputs
 and match generated words against the assembler. They validate the Sail

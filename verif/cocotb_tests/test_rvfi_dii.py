@@ -91,6 +91,7 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "reductions": 0x4320_2557,  # vmv.x.s a0, v18 in the reductions trace
     "carry-borrow": 0x4330_2557,  # vmv.x.s a0, v19 in the carry/borrow trace
     "mask-ops": 0x4350_2557,  # vmv.x.s a0, v21 in the mask-register ops trace
+    "int-mul-add": 0x4370_2557,  # vmv.x.s a0, v23 in the integer multiply-add trace
 }
 
 # frost_rvfi_dii's error_flags bits.
