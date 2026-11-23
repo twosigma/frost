@@ -89,6 +89,8 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "fp-widen": 0x42A0_2557,  # vmv.x.s a0, v10 in the widening FP trace
     "permutes": 0x42B0_2557,  # vmv.x.s a0, v11 in the permutes trace
     "reductions": 0x4320_2557,  # vmv.x.s a0, v18 in the reductions trace
+    "carry-borrow": 0x4330_2557,  # vmv.x.s a0, v19 in the carry/borrow trace
+    "mask-ops": 0x4350_2557,  # vmv.x.s a0, v21 in the mask-register ops trace
 }
 
 # frost_rvfi_dii's error_flags bits.
