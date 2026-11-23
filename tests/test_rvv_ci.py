@@ -197,6 +197,12 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
             "order=22 insn=0x42a02557 rd=x10",
             "0x400e000000000000 != 0x400e000000000001",
         ],
+        [
+            "permutes",
+            "vector_permutes",
+            "order=23 insn=0x42b02557 rd=x10",
+            "0x2468ace0 != 0x2468ace1",
+        ],
     ]
 
 

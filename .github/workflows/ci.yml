@@ -1142,6 +1142,8 @@ jobs:
             'order=45 insn=0x42c02557 rd=x10' '0x135724689acebdf1 != 0x135724689acebdf0'
           check_vector_result fp-widen vector_fp_widen \
             'order=22 insn=0x42a02557 rd=x10' '0x400e000000000000 != 0x400e000000000001'
+          check_vector_result permutes vector_permutes \
+            'order=23 insn=0x42b02557 rd=x10' '0x2468ace0 != 0x2468ace1'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
