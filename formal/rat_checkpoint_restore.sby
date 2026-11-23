@@ -1,9 +1,11 @@
 [tasks]
 prove_int_active prove
 prove_int_ckpt_lo prove
+prove_int_ckpt_mid prove
 prove_int_ckpt_hi prove
 prove_fp_active prove
 prove_fp_ckpt_lo prove
+prove_fp_ckpt_mid prove
 prove_fp_ckpt_hi prove
 cover
 
@@ -11,7 +13,7 @@ cover
 prove: mode prove
 prove: depth 1
 cover: mode cover
-cover: depth 11
+cover: depth 15
 
 [engines]
 prove: smtbmc --nopresat boolector -- --noincr
@@ -20,11 +22,13 @@ cover: smtbmc boolector
 [script]
 prove_int_active: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=1 -GCHECK_FP=0 -GCHECK_ACTIVE=1 -GCHECK_CKPT_MASK=0 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
 prove_int_ckpt_lo: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=1 -GCHECK_FP=0 -GCHECK_ACTIVE=0 -GCHECK_CKPT_MASK=15 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
-prove_int_ckpt_hi: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=1 -GCHECK_FP=0 -GCHECK_ACTIVE=0 -GCHECK_CKPT_MASK=240 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
+prove_int_ckpt_mid: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=1 -GCHECK_FP=0 -GCHECK_ACTIVE=0 -GCHECK_CKPT_MASK=240 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
+prove_int_ckpt_hi: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=1 -GCHECK_FP=0 -GCHECK_ACTIVE=0 -GCHECK_CKPT_MASK=3840 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
 prove_fp_active: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=0 -GCHECK_FP=1 -GCHECK_ACTIVE=1 -GCHECK_CKPT_MASK=0 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
 prove_fp_ckpt_lo: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=0 -GCHECK_FP=1 -GCHECK_ACTIVE=0 -GCHECK_CKPT_MASK=15 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
-prove_fp_ckpt_hi: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=0 -GCHECK_FP=1 -GCHECK_ACTIVE=0 -GCHECK_CKPT_MASK=240 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
-cover: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=1 -GCHECK_FP=1 -GCHECK_ACTIVE=1 -GCHECK_CKPT_MASK=255 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
+prove_fp_ckpt_mid: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=0 -GCHECK_FP=1 -GCHECK_ACTIVE=0 -GCHECK_CKPT_MASK=240 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
+prove_fp_ckpt_hi: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=0 -GCHECK_FP=1 -GCHECK_ACTIVE=0 -GCHECK_CKPT_MASK=3840 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
+cover: read_slang --top rat_checkpoint_restore_formal --single-unit -GCHECK_INT=1 -GCHECK_FP=1 -GCHECK_ACTIVE=1 -GCHECK_CKPT_MASK=4095 riscv_pkg.sv sdp_dist_ram.sv register_alias_table.sv rat_checkpoint_restore_formal.sv
 hierarchy -top rat_checkpoint_restore_formal
 script free_undefined.ys
 prep -top rat_checkpoint_restore_formal -flatten

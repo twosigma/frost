@@ -154,14 +154,17 @@ module coherence_array_progress #(
   `define PROGRESS_REGS(path) {path.phase_q, path.count_q, path.init_set_q, path.init_done_q, \
     path.set_q, path.tag_q, path.visit_q, path.skip_data_q, path.modified_data_q, \
     path.no_touch_q, path.hit_data_q, path.victim_data_q, path.tags_only_q, path.bank_owner_q, \
-    path.visit_way_q, path.exclude_q, path.plru_q, path.insert_lfsr_q, path.plru_hit_q, \
+    path.visit_way_q, path.exclude_q, path.plru_q, path.nru_q, path.nru_clear_q, \
+    path.insert_lfsr_q, path.plru_hit_q, \
     path.resp_valid_q, path.data_valid_q, path.o_resp_hit, path.o_resp_available, path.o_resp_way, \
     path.o_resp_addr, path.o_resp_state}
   always_ff @(posedge i_clk)
     if (started) begin
       p_induct_controller :
       assert (`PROGRESS_REGS(gen_copy[0].array) == `PROGRESS_REGS(gen_copy[1].array));
-      p_induct_plru_read : assert (gen_copy[0].array.plru_read == gen_copy[1].array.plru_read);
+      p_induct_plru_read :
+      assert (gen_copy[0].array.nru_read == gen_copy[1].array.nru_read &&
+          gen_copy[0].array.plru_read == gen_copy[1].array.plru_read);
     end
   `undef PROGRESS_REGS
   for (genvar w = 0; w < WAYS; w++) begin : gen_induct_way
@@ -180,14 +183,16 @@ module coherence_array_progress #(
         end
     end
   end
-  for (genvar node = 0; node < WAYS - 1; node++) begin : gen_induct_node
-    for (genvar s = 0; s < 2; s++) begin : gen_set
-      always_ff @(posedge i_clk)
-        if (started) begin
-          p_induct_plru :
-          assert (gen_copy[0].array.gen_replacement[node].replacement.ram[s] ==
-            gen_copy[1].array.gen_replacement[node].replacement.ram[s]);
-        end
+  if (WAYS > 1) begin : gen_induct_nru
+    for (genvar w = 0; w < WAYS; w++) begin : gen_induct_node
+      for (genvar s = 0; s < 2; s++) begin : gen_set
+        always_ff @(posedge i_clk)
+          if (started) begin
+            p_induct_plru :
+            assert (gen_copy[0].array.gen_nru_replacement.gen_nru[w].replacement.ram[s] ==
+              gen_copy[1].array.gen_nru_replacement.gen_nru[w].replacement.ram[s]);
+          end
+      end
     end
   end
 `endif

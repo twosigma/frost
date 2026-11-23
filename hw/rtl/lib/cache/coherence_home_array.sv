@@ -643,6 +643,7 @@ module coherence_home_array #(
   assign o_query_held = !i_rst && (selecting || phase_q == Reply);
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
+      assert (phase_q <= Reply);
       if (phase_q == Reply && !o_resp_hit && o_resp_available) assert (!i_exclude[o_resp_way]);
       if (FoldSelect) assert (phase_q != Select);
       if (phase_q == Reply && o_resp_two_available) assert (o_resp_available);

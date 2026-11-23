@@ -37,7 +37,9 @@ module coherence_cluster_test_harness #(
     // links takes every message.
     parameter int unsigned LINK_STAGES = 0,
     // 0 builds the L1D without full-line stores, for comparisons.
-    parameter bit L1D_FULL_LINE = 1'b1
+    parameter bit L1D_FULL_LINE = 1'b1,
+    // Direct tag launch in the coherent home (coherence_home FAST_TAG_LAUNCH).
+    parameter bit HOME_FAST_TAG_LAUNCH = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -717,7 +719,8 @@ module coherence_cluster_test_harness #(
       .RESULTS(HOME_RESULTS),
       .FILLS(HOME_FILLS),
       .PREFETCH_SLOTS(HOME_PREFETCH_SLOTS),
-      .LINE_BYTES(LINE_BYTES)
+      .LINE_BYTES(LINE_BYTES),
+      .FAST_TAG_LAUNCH(HOME_FAST_TAG_LAUNCH)
   ) home (
       .i_clk(i_clk),
       .i_rst(i_rst),

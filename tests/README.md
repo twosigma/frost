@@ -188,8 +188,9 @@ runner compiles first. A failing RTL assertion fails the simulation.
 | `bpred_trap_pair_test` | Checks fetch pairing, PD redirect suppression, and exact trap/return state across `ebreak`, `c.ebreak`, `ecall`, `xret`, trapping `wfi`, and reserved compressed and 32-bit encodings in both slots and both orders under primary BTB, backing BTB, ITTAGE and TAGE hits. |
 | `fefuzz_1`, `fefuzz_4`, `fefuzz_7`, `fefuzz_11`, `fefuzz_13`, `fefuzz_19`, `fefuzz_22`, `fefuzz_23` | Front-end fuzzer, one generated program per seed: conditional branches, direct and indirect calls, jump tables, returns and loops in mixed encodings and alignments. The UART seed and signature must match the requested program. Each boot requires at least one accepted indirect-target hit, one fetch redirect each from direction slot 1, direction slot 2, backing BTB and indirect prediction, and one early recovery inside the generated code. Reset separates the two BRAM counts. The generator does not exercise traps, interrupts or FENCE.I, or compare restored direction history or return-stack contents. |
 
-`wfi_seed_recovery` disables branch prediction and holds retirement at an older
-WFI. The bench raises the external interrupt once the direct JAL and its
+`wfi_seed_recovery` disables branch prediction, holds the JAL's
+allocation-time recovery request (`jal_launch`) low so the jump recovers at
+commit, and holds retirement at an older WFI. The bench raises the external interrupt once the direct JAL and its
 fall-through WFI are both in the ROB. Each run must see the younger WFI at
 the valid head during commit recovery and see it flushed. The interrupt
 resume PC must hold the linked JAL target until that target retires. Each
@@ -675,8 +676,14 @@ flush against the latest snapshot dispatched to the ROB head. Its covers
 exercise both allocation slots and a head tag that wrapped to zero.
 
 `ex_comb_synthesizer` checks the selected BTB update and return-stack
-operation for an early indirect jump, call, return, or coroutine swap. It
-checks both instruction lengths and the full link address for a push.
+operation for an early direct or indirect jump, call, return, or coroutine swap.
+It checks both instruction lengths and the full link address for a push.
+`early_misprediction_recovery` checks execute-time branch and JALR recovery as
+well as allocation-time JAL staging, launch conditions, and fallback to
+commit-time recovery. `cpu_top_early_jal_ras_flush` builds `cpu_top` with
+`EarlyJalrRecovery` cleared and `EarlyJalRecovery` set and checks that an older
+load fault restores the return stack after a younger direct call has launched
+early recovery.
 
 `debug_fetch_barrier` checks invalidation before GO, retained targets, request
 withdrawal, acknowledgement without replay, and reset in each request phase.
@@ -1600,7 +1607,7 @@ scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison,
 FP conversion, cached DDR probe, unit-stride memory, strided memory,
 indexed memory, segment memory, fault-only-first load, integer comparison,
 widening and narrowing integer, fixed-point, single-width FP, whole-register
-memory and widening FP traces.
+memory, widening FP, permute and reduction traces.
 Every vector store trace compares all written bytes through immediate
 scalar loads. CI compares the seeded and directed traces at each length.
 The VLEN 128 job injects one incorrect value in each control replay and
@@ -2162,12 +2169,12 @@ and Fast Python Tests jobs locally.
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
-| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares seeded integer traces and directed source-width, vector state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride memory, strided memory, indexed memory, segment memory, fault-only-first load, integer comparison, widening and narrowing integer, fixed-point, single-width FP, whole-register memory and widening FP traces against Sail |
+| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares seeded integer traces and directed source-width, vector state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride memory, strided memory, indexed memory, segment memory, fault-only-first load, integer comparison, widening and narrowing integer, fixed-point, single-width FP, whole-register memory, widening FP, permute and reduction traces against Sail |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
-| Formal verification | The 56 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), frontend and predictor, block proofs, floating-point and vector memory, ROB retirement successor, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
+| Formal verification | The 57 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home (two jobs), coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), frontend and predictor, block proofs, floating-point and vector memory, ROB retirement successor, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) synthesis and floorplanning on Nangate45, with OpenRAM's SRAM macros, in a separate workflow, which a newer push to `main` does not cancel; the rest of the flow, to GDS, runs with `./asic/orfs.py run` outside CI |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges coverage from 33 jobs into a report |

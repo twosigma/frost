@@ -45,8 +45,8 @@ EXC_CAUSE_WIDTH = 5
 # fp_flags_t: 5 bits
 FP_FLAGS_WIDTH = 5
 
-# checkpoint_id_t: NumCheckpoints=8 -> 3 bits
-CHECKPOINT_ID_WIDTH = 3
+# checkpoint_id_t: NumCheckpoints=12 -> 4 bits
+CHECKPOINT_ID_WIDTH = 4
 
 # fu_complete_t total width
 FU_COMPLETE_WIDTH = FP_FLAGS_WIDTH + EXC_CAUSE_WIDTH + 1 + FLEN + ROB_TAG_WIDTH + 1

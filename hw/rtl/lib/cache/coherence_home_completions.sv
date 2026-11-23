@@ -30,6 +30,10 @@ module coherence_home_completions #(
     // as accepted when presented: the consumer must keep i_g_ready set while
     // a source-3 G is valid.
     parameter int unsigned PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
+    // Select an unblocked non-prefetch demand into an idle work register on
+    // its admission edge, and register the selected work's address, error,
+    // prefetch and management flags beside the slot index.
+    parameter bit FAST_TAG_LAUNCH = 1'b0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned SlotBits = SLOTS > 1 ? $clog2(SLOTS) : 1,
     localparam int unsigned ResultBits = RESULT_SLOTS > 1 ? $clog2(RESULT_SLOTS) : 1,
@@ -52,6 +56,9 @@ module coherence_home_completions #(
     // The work is a prefetch whose block a non-prefetch request held live
     // before the prefetch's dispatch: it must not allocate a fill.
     output logic o_work_nofill,
+    output logic [ADDR_WIDTH-1:0] o_work_addr,
+    output logic o_work_prefetch,
+    output logic o_work_cmo,
     // A registered copy of D acceptance: the strobe on the cycle after it,
     // with the accepted request's opcode, identity and address.
     output logic o_accepted,
@@ -397,9 +404,38 @@ module coherence_home_completions #(
   assign o_work = work[work_slot_q];
   assign o_work_tid = 6'(work_slot_q);
   assign o_work_buffer = work_buffer_q;
-  assign o_work_error = wake_error_q[work_slot_q];
   assign o_work_counted = counted_q[work_slot_q];
   assign o_work_nofill = nofill_q[work_slot_q];
+  if (FAST_TAG_LAUNCH) begin : gen_work_meta
+    logic [ADDR_WIDTH-1:0] work_addr_q;
+    logic work_error_q, work_prefetch_q, work_cmo_q;
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        work_addr_q <= '0;
+        work_error_q <= 1'b0;
+        work_prefetch_q <= 1'b0;
+        work_cmo_q <= 1'b0;
+      end else if (!work_selected_q) begin
+        work_addr_q <= work_found ? work_address[work_pick] : incoming.addr;
+        work_error_q <= work_found ? wake_error_q[work_pick] : 1'b0;
+        work_prefetch_q <= work_found ? slot_prefetch[work_pick] : 1'b0;
+        work_cmo_q <= work_found ? coherence_pkg::is_cmo(
+            request_opcode(work[work_pick])
+        ) : coherence_pkg::is_cmo(
+            incoming.opcode
+        );
+      end
+    end
+    assign o_work_error = work_error_q;
+    assign o_work_addr = work_addr_q;
+    assign o_work_prefetch = work_prefetch_q;
+    assign o_work_cmo = work_cmo_q;
+  end else begin : gen_no_work_meta
+    assign o_work_error = wake_error_q[work_slot_q];
+    assign o_work_addr = '0;
+    assign o_work_prefetch = 1'b0;
+    assign o_work_cmo = 1'b0;
+  end
   assign o_waiting_request = work;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_waiting
     // A CMO needs its own way even on a hit. A younger reader parked on an
@@ -788,11 +824,23 @@ module coherence_home_completions #(
     end
   end
 
-  always_ff @(posedge i_clk) begin
-    if (i_rst) work_selected_slots_q <= '0;
-    else if (work_selected_q) begin
-      if ((|work_parked_q) || (!i_fatal_stop && i_work_ready)) work_selected_slots_q <= '0;
-    end else work_selected_slots_q <= free_buffer ? work_pick_slots : '0;
+  if (FAST_TAG_LAUNCH) begin : gen_fast_work_selected_slots
+    wire direct_d_select = accept_request && !work_selected_q && !work_found && free_buffer &&
+        !incoming_prefetch && accepted_clear_if_hold;
+    wire [SLOTS-1:0] direct_d_slots = direct_d_select ? (SLOTS'(1) << free_slot_index) : '0;
+    always_ff @(posedge i_clk) begin
+      if (i_rst) work_selected_slots_q <= '0;
+      else if (work_selected_q) begin
+        if ((|work_parked_q) || (!i_fatal_stop && i_work_ready)) work_selected_slots_q <= '0;
+      end else work_selected_slots_q <= free_buffer ? (work_pick_slots | direct_d_slots) : '0;
+    end
+  end else begin : gen_base_work_selected_slots
+    always_ff @(posedge i_clk) begin
+      if (i_rst) work_selected_slots_q <= '0;
+      else if (work_selected_q) begin
+        if ((|work_parked_q) || (!i_fatal_stop && i_work_ready)) work_selected_slots_q <= '0;
+      end else work_selected_slots_q <= free_buffer ? work_pick_slots : '0;
+    end
   end
 
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_parked_next
@@ -823,97 +871,198 @@ module coherence_home_completions #(
     end
   end
 
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      parked_q <= '0;
-      nofill_q <= '0;
-      work_buffer_q <= '0;
-      work_selected_q <= 1'b0;
-      work_slot_q <= '0;
-      work_next_q <= '0;
-      work_later_q <= '1;
-      grant_selected_q <= 1'b0;
-      grant_slot_q <= '0;
-      grant_next_q <= '0;
-      grant_buffer_q <= '0;
-      buffer_later_q <= '1;
-      buffer_zero_q <= '0;
-      grant_q <= '0;
-      pred_clear_q <= '1;
-      handed_q <= '0;
-      for (int slot = 0; slot < SLOTS; slot++) begin
-        predecessors_q[slot] <= '0;
-        buffer_index_q[slot] <= '0;
-        way_q[slot] <= '0;
-      end
-      for (int index = 0; index < Buffers; index++) buffer_q[index] <= '0;
-    end else begin
-      parked_q <= parked_next;
-      if (!work_selected_q && work_found && free_buffer) begin
-        work_selected_q <= 1'b1;
-        work_slot_q <= work_pick;
-        work_buffer_q <= free_buffer_index;
-      end
-      if (work_selected_q && parked_q[work_slot_q]) work_selected_q <= 1'b0;
-      if (accept_work) begin
+  if (FAST_TAG_LAUNCH) begin : gen_fast_state
+    wire direct_d_select = accept_request && !work_selected_q && !work_found && free_buffer &&
+        !incoming_prefetch && accepted_clear_if_hold;
+
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        parked_q <= '0;
+        nofill_q <= '0;
+        work_buffer_q <= '0;
         work_selected_q <= 1'b0;
-        work_next_q <= work_position == SlotBits'(WorkPositions - 1) ? '0 : work_position + 1'b1;
-        for (int position = 0; position < WorkPositions; position++)
-        work_later_q[position] <= work_position == SlotBits'(WorkPositions - 1) ||
-            position > int'(work_position);
-        buffer_index_q[work_slot_q] <= BufferBits'(work_buffer_q);
-      end
-      // An engine's result goes to its slot's buffer, always an engine's.
-      for (int index = 0; index < RESULT_SLOTS; index++) begin
-        if (accept_result && buffer_index_q[result_slot] == BufferBits'(index)) begin
-          buffer_q[index] <= {
-            result.opcode, result.q, result.tid, result.addr, 256'b0, result.error
-          };
-          buffer_zero_q[index] <= result.error || result.opcode == coherence_pkg::GrantAck;
+        work_slot_q <= '0;
+        work_next_q <= '0;
+        work_later_q <= '1;
+        grant_selected_q <= 1'b0;
+        grant_slot_q <= '0;
+        grant_next_q <= '0;
+        grant_buffer_q <= '0;
+        buffer_later_q <= '1;
+        buffer_zero_q <= '0;
+        grant_q <= '0;
+        pred_clear_q <= '1;
+        handed_q <= '0;
+        for (int slot = 0; slot < SLOTS; slot++) begin
+          predecessors_q[slot] <= '0;
+          buffer_index_q[slot] <= '0;
+          way_q[slot] <= '0;
+        end
+        for (int index = 0; index < Buffers; index++) buffer_q[index] <= '0;
+      end else begin
+        parked_q <= parked_next;
+        if (!work_selected_q && (work_found || direct_d_select) && free_buffer) begin
+          work_selected_q <= 1'b1;
+          work_slot_q <= work_found ? work_pick : free_slot_index;
+          work_buffer_q <= free_buffer_index;
+        end
+        if (work_selected_q && parked_q[work_slot_q]) work_selected_q <= 1'b0;
+        if (accept_work) begin
+          work_selected_q <= 1'b0;
+          work_next_q <= work_position == SlotBits'(WorkPositions - 1) ? '0 : work_position + 1'b1;
+          for (int position = 0; position < WorkPositions; position++)
+          work_later_q[position] <= work_position == SlotBits'(WorkPositions - 1) ||
+              position > int'(work_position);
+          buffer_index_q[work_slot_q] <= BufferBits'(work_buffer_q);
+        end
+        // An engine's result goes to its slot's buffer, always an engine's.
+        for (int index = 0; index < RESULT_SLOTS; index++) begin
+          if (accept_result && buffer_index_q[result_slot] == BufferBits'(index)) begin
+            buffer_q[index] <= {
+              result.opcode, result.q, result.tid, result.addr, 256'b0, result.error
+            };
+            buffer_zero_q[index] <= result.error || result.opcode == coherence_pkg::GrantAck;
+          end
+        end
+        if (accept_forward) begin
+          buffer_q[ForwardBuffer] <= forward_result;
+          // A Zicbom request's forwarded GrantAck carries no data.
+          buffer_zero_q[ForwardBuffer] <= forward_result.opcode == coherence_pkg::GrantAck;
+        end
+        if (!grant_selected_q && !grant_found && accept_result) begin
+          grant_selected_q <= 1'b1;
+          grant_slot_q <= result_slot;
+          grant_buffer_q <= buffer_index_q[result_slot];
+          grant_q <= result;
+          grant_q.data <= result.error || result.opcode == coherence_pkg::GrantAck ?
+              256'b0 : result.data;
+        end
+        if (!grant_selected_q && grant_found) begin
+          grant_selected_q <= 1'b1;
+          grant_slot_q <= grant_pick;
+          grant_buffer_q <= o_image_index;
+          grant_q <= grant_payload;
+          grant_q.data <= grant_zero ? 256'b0 : i_image_data;
+        end
+        if (accept_grant) begin
+          grant_selected_q <= 1'b0;
+          grant_next_q <= grant_buffer_q == BufferBits'(Buffers - 1) ? '0 : grant_buffer_q + 1'b1;
+          for (int index = 0; index < Buffers; index++)
+          buffer_later_q[index] <= grant_buffer_q == BufferBits'(Buffers - 1) ||
+              index > int'(grant_buffer_q);
+        end
+        handed_q <= handed_hold & ~release_fire;
+        for (int slot = 0; slot < SLOTS; slot++) begin
+          predecessors_q[slot] <= predecessors_hold[slot] & ~release_fire;
+          if (accept_request && free_slot_index == SlotBits'(slot))
+            nofill_q[slot] <= incoming_prefetch && |(live & ~slot_prefetch & incoming_blocks);
+          else if (accept_request && !incoming_prefetch && incoming_blocks[slot] && live[slot] &&
+                   slot_prefetch[slot])
+            nofill_q[slot] <= 1'b1;
+          pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
+              (i_u_ready ? accepted_clear_if_release : accepted_clear_if_hold) :
+              (i_u_ready ? clear_if_release[slot] : clear_if_hold[slot]);
+          if (i_pin_valid && i_pin_tid == 6'(slot)) way_q[slot] <= i_pin_way;
+          if (forwarded[slot]) begin
+            buffer_index_q[slot] <= BufferBits'(ForwardBuffer);
+            way_q[slot] <= i_forward_way;
+          end
         end
       end
-      if (accept_forward) begin
-        buffer_q[ForwardBuffer] <= forward_result;
-        // A Zicbom request's forwarded GrantAck carries no data.
-        buffer_zero_q[ForwardBuffer] <= forward_result.opcode == coherence_pkg::GrantAck;
-      end
-      if (!grant_selected_q && !grant_found && accept_result) begin
-        grant_selected_q <= 1'b1;
-        grant_slot_q <= result_slot;
-        grant_buffer_q <= buffer_index_q[result_slot];
-        grant_q <= result;
-        grant_q.data <= result.error || result.opcode == coherence_pkg::GrantAck ?
-            256'b0 : result.data;
-      end
-      if (!grant_selected_q && grant_found) begin
-        grant_selected_q <= 1'b1;
-        grant_slot_q <= grant_pick;
-        grant_buffer_q <= o_image_index;
-        grant_q <= grant_payload;
-        grant_q.data <= grant_zero ? 256'b0 : i_image_data;
-      end
-      if (accept_grant) begin
+    end
+  end else begin : gen_base_state
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        parked_q <= '0;
+        nofill_q <= '0;
+        work_buffer_q <= '0;
+        work_selected_q <= 1'b0;
+        work_slot_q <= '0;
+        work_next_q <= '0;
+        work_later_q <= '1;
         grant_selected_q <= 1'b0;
-        grant_next_q <= grant_buffer_q == BufferBits'(Buffers - 1) ? '0 : grant_buffer_q + 1'b1;
-        for (int index = 0; index < Buffers; index++)
-        buffer_later_q[index] <= grant_buffer_q == BufferBits'(Buffers - 1) ||
-            index > int'(grant_buffer_q);
-      end
-      handed_q <= handed_hold & ~release_fire;
-      for (int slot = 0; slot < SLOTS; slot++) begin
-        predecessors_q[slot] <= predecessors_hold[slot] & ~release_fire;
-        if (accept_request && free_slot_index == SlotBits'(slot))
-          nofill_q[slot] <= incoming_prefetch && |(live & ~slot_prefetch & incoming_blocks);
-        else if (accept_request && !incoming_prefetch && incoming_blocks[slot] && live[slot] &&
-                 slot_prefetch[slot])
-          nofill_q[slot] <= 1'b1;
-        pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
-            (i_u_ready ? accepted_clear_if_release : accepted_clear_if_hold) :
-            (i_u_ready ? clear_if_release[slot] : clear_if_hold[slot]);
-        if (i_pin_valid && i_pin_tid == 6'(slot)) way_q[slot] <= i_pin_way;
-        if (forwarded[slot]) begin
-          buffer_index_q[slot] <= BufferBits'(ForwardBuffer);
-          way_q[slot] <= i_forward_way;
+        grant_slot_q <= '0;
+        grant_next_q <= '0;
+        grant_buffer_q <= '0;
+        buffer_later_q <= '1;
+        buffer_zero_q <= '0;
+        grant_q <= '0;
+        pred_clear_q <= '1;
+        handed_q <= '0;
+        for (int slot = 0; slot < SLOTS; slot++) begin
+          predecessors_q[slot] <= '0;
+          buffer_index_q[slot] <= '0;
+          way_q[slot] <= '0;
+        end
+        for (int index = 0; index < Buffers; index++) buffer_q[index] <= '0;
+      end else begin
+        parked_q <= parked_next;
+        if (!work_selected_q && work_found && free_buffer) begin
+          work_selected_q <= 1'b1;
+          work_slot_q <= work_pick;
+          work_buffer_q <= free_buffer_index;
+        end
+        if (work_selected_q && parked_q[work_slot_q]) work_selected_q <= 1'b0;
+        if (accept_work) begin
+          work_selected_q <= 1'b0;
+          work_next_q <= work_position == SlotBits'(WorkPositions - 1) ? '0 : work_position + 1'b1;
+          for (int position = 0; position < WorkPositions; position++)
+          work_later_q[position] <= work_position == SlotBits'(WorkPositions - 1) ||
+              position > int'(work_position);
+          buffer_index_q[work_slot_q] <= BufferBits'(work_buffer_q);
+        end
+        // An engine's result goes to its slot's buffer, always an engine's.
+        for (int index = 0; index < RESULT_SLOTS; index++) begin
+          if (accept_result && buffer_index_q[result_slot] == BufferBits'(index)) begin
+            buffer_q[index] <= {
+              result.opcode, result.q, result.tid, result.addr, 256'b0, result.error
+            };
+            buffer_zero_q[index] <= result.error || result.opcode == coherence_pkg::GrantAck;
+          end
+        end
+        if (accept_forward) begin
+          buffer_q[ForwardBuffer] <= forward_result;
+          // A Zicbom request's forwarded GrantAck carries no data.
+          buffer_zero_q[ForwardBuffer] <= forward_result.opcode == coherence_pkg::GrantAck;
+        end
+        if (!grant_selected_q && !grant_found && accept_result) begin
+          grant_selected_q <= 1'b1;
+          grant_slot_q <= result_slot;
+          grant_buffer_q <= buffer_index_q[result_slot];
+          grant_q <= result;
+          grant_q.data <= result.error || result.opcode == coherence_pkg::GrantAck ?
+              256'b0 : result.data;
+        end
+        if (!grant_selected_q && grant_found) begin
+          grant_selected_q <= 1'b1;
+          grant_slot_q <= grant_pick;
+          grant_buffer_q <= o_image_index;
+          grant_q <= grant_payload;
+          grant_q.data <= grant_zero ? 256'b0 : i_image_data;
+        end
+        if (accept_grant) begin
+          grant_selected_q <= 1'b0;
+          grant_next_q <= grant_buffer_q == BufferBits'(Buffers - 1) ? '0 : grant_buffer_q + 1'b1;
+          for (int index = 0; index < Buffers; index++)
+          buffer_later_q[index] <= grant_buffer_q == BufferBits'(Buffers - 1) ||
+              index > int'(grant_buffer_q);
+        end
+        handed_q <= handed_hold & ~release_fire;
+        for (int slot = 0; slot < SLOTS; slot++) begin
+          predecessors_q[slot] <= predecessors_hold[slot] & ~release_fire;
+          if (accept_request && free_slot_index == SlotBits'(slot))
+            nofill_q[slot] <= incoming_prefetch && |(live & ~slot_prefetch & incoming_blocks);
+          else if (accept_request && !incoming_prefetch && incoming_blocks[slot] && live[slot] &&
+                   slot_prefetch[slot])
+            nofill_q[slot] <= 1'b1;
+          pred_clear_q[slot] <= accept_request && free_slot_index == SlotBits'(slot) ?
+              (i_u_ready ? accepted_clear_if_release : accepted_clear_if_hold) :
+              (i_u_ready ? clear_if_release[slot] : clear_if_hold[slot]);
+          if (i_pin_valid && i_pin_tid == 6'(slot)) way_q[slot] <= i_pin_way;
+          if (forwarded[slot]) begin
+            buffer_index_q[slot] <= BufferBits'(ForwardBuffer);
+            way_q[slot] <= i_forward_way;
+          end
         end
       end
     end
@@ -1098,8 +1247,16 @@ module coherence_home_completions #(
         assert (int'(work_buffer_q) < RESULT_SLOTS);
       end
       assert (work_selected_slots_q == (work_selected_q ? SLOTS'(1) << work_slot_q : '0));
-      if (work_selected_q)
+      if (work_selected_q) begin
         assert (work_parked_q == (ParkGroups'(parked_q[work_slot_q]) << (work_slot_q >> 1)));
+        if (FAST_TAG_LAUNCH) begin
+          assert (predecessors_q[work_slot_q] == 0);
+          assert (o_work_addr == work_address[work_slot_q]);
+          assert (o_work_error == wake_error_q[work_slot_q]);
+          assert (o_work_prefetch == slot_prefetch[work_slot_q]);
+          assert (o_work_cmo == coherence_pkg::is_cmo(request_opcode(work[work_slot_q])));
+        end
+      end
       // A forward names one parked GetS, LoadReserved, GetM or Zicbom
       // request that holds no buffer, pin or result and has no other event
       // on the edge; the slot
@@ -1395,6 +1552,17 @@ module coherence_home_completions #(
     always_ff @(posedge i_clk)
       if (f_past_valid && !i_rst && !$past(i_rst))
         cover (accept_grant && PrefetchSlot[grant_slot_q]);
+  end
+  if (FAST_TAG_LAUNCH) begin : gen_fast_tag_cover
+    wire f_direct_d_select = accept_request && !work_selected_q && !work_found && free_buffer &&
+        !incoming_prefetch && accepted_clear_if_hold;
+    // An unblocked demand selects directly on its admission edge, and a
+    // blocked or prefetch admission leaves direct selection clear.
+    always_ff @(posedge i_clk)
+      if (f_past_valid && !i_rst && !$past(i_rst)) begin
+        cover (f_direct_d_select);
+        cover (accept_request && !f_direct_d_select);
+      end
   end
 `endif
 `endif

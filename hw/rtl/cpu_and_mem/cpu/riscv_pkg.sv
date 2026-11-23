@@ -2729,12 +2729,18 @@ package riscv_pkg;
   localparam int unsigned SqDepth = 8;  // Store queue entries
 
   // Checkpoint parameters
-  localparam int unsigned NumCheckpoints = 8;  // For branch speculation recovery
-  localparam int unsigned CheckpointIdWidth = $clog2(NumCheckpoints);  // 3 bits
+  // Branch speculation recovery checkpoints. The count need not be a power of
+  // two: IDs run 0 to NumCheckpoints - 1, and the RAT allocates only those.
+  localparam int unsigned NumCheckpoints = 12;
+  localparam int unsigned CheckpointIdWidth = $clog2(NumCheckpoints);  // 4 bits
   // A mispredicted JALR (indirect jump, indirect call or return) recovers
   // when it resolves, like a conditional branch. Clear to recover JALRs at
   // commit.
   localparam bit EarlyJalrRecovery = 1'b1;
+  // A mispredicted JAL (a BTB miss, or a BTB hit with a stale target) launches
+  // the early recovery from allocation, through a one-cycle staging register,
+  // instead of waiting for commit. Clear to recover JALs at commit.
+  localparam bit EarlyJalRecovery = 1'b1;
 
   // Register file sizes
   localparam int unsigned NumIntRegs = 32;  // x0-x31

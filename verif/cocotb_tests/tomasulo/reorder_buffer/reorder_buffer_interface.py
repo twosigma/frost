@@ -250,8 +250,8 @@ def unpack_rob_perf_events(val: int) -> dict[str, bool]:
 
 
 # reorder_buffer_commit_t contains four XLEN fields and one FLEN result; all
-# flags, tags, CSR metadata, and register identifiers occupy another 64 bits.
-COMMIT_WIDTH = 64 + FLEN + (4 * XLEN)
+# flags, tags, CSR metadata, and register identifiers occupy another 65 bits.
+COMMIT_WIDTH = 65 + FLEN + (4 * XLEN)
 assert sum(width for _, width in COMMIT_FIELDS) == COMMIT_WIDTH
 
 _COMMIT_OFFSETS: dict[str, tuple[int, int]] = {}

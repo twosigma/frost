@@ -34,8 +34,8 @@ from utils.packed_structs import (
 
 CLOCK_PERIOD_NS = 10
 ROB_TAG_WIDTH = 5
-CHECKPOINT_ID_WIDTH = 3
-NUM_CHECKPOINTS = 8
+CHECKPOINT_ID_WIDTH = 4
+NUM_CHECKPOINTS = 12
 
 
 def _pack_commit(fields: Mapping[str, int | bool]) -> int:

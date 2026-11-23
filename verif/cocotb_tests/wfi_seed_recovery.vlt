@@ -14,3 +14,4 @@
 
 `verilator_config
 forceable -module "cpu_top" -var "i_disable_branch_prediction"
+forceable -module "cpu_ooo" -var "jal_launch"

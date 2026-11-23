@@ -274,7 +274,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (34, instructions + 15514) if vector_directed else (15, instructions)
+    expected = (36, instructions + 19121) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -302,6 +302,8 @@ def test_vector_directed_replay(
         ("vector_fp_single.S", 1446, 1068),
         ("vector_whole_reg.S", 826, 662),
         ("vector_fp_widen.S", 1519, 1149),
+        ("vector_permutes.S", 1876, 714),
+        ("vector_reductions.S", 1731, 796),
     ):
         trace = trace_dir / filename
         assert trace.is_file() == vector_directed
@@ -2819,6 +2821,488 @@ def test_vector_fp_widen_trace_covers_forms() -> None:
         "wide_src_overlap",
         "fwfma_vs2_overlap",
         "fwfma_vs1_overlap",
+        "vill",
+    }
+    assert ctrl_count == 1
+
+
+def test_vector_permutes_trace_covers_forms() -> None:
+    """Check all 17 permute encodings, widths, modes, corners and traps."""
+    trace = VERIF_DIR / "testrig" / "vector_permutes.S"
+    text = trace.read_text()
+    blocks = TRACE_WORD.split(text)[1:]
+    assert blocks
+
+    opivv, opmvv, opivi, opivx, opfvf, opmvx = 0, 2, 3, 4, 5, 6
+    retired_forms: set[tuple[str, int, int, int | None]] = set()
+    sews_by_group: dict[str, set[int]] = {}
+    ei16_sews: set[int] = set()
+    masking_by_group: dict[str, set[bool]] = {}
+    regimes_by_group: dict[str, set[str]] = {}
+    policies_seen: set[int] = set()
+    lmuls_seen: set[int] = set()
+    uimm5_high_ops: set[tuple[int, int]] = set()
+    inplace_ops: set[str] = set()
+    ei16_self_e16 = False
+    compress_v0_mask = False
+    fflags_zero_checked = False
+    trap_kinds: set[str] = set()
+    traps_seen = 0
+    ctrl_count = 0
+
+    vtype = 0
+    vill = False
+    avl_mode = "imm"
+    vl_imm = 0
+
+    for block in blocks:
+        word_match = re.match(r"^\.4byte (0x[0-9a-f]{8})\b", block)
+        assert word_match is not None
+        word = int(word_match.group(1), 16)
+        opcode = word & 0x7F
+        f3 = (word >> 12) & 0x7
+
+        if word == 0x42B0_2557:
+            ctrl_count += 1
+
+        if opcode == 0x73 and f3 == 2:
+            csr = (word >> 20) & 0xFFF
+            if csr == 0x001 and re.search(r'(?m)^\.assert rd_wdata == 0x0 "', block):
+                fflags_zero_checked = True
+            continue
+
+        if opcode != 0x57:
+            continue
+
+        if f3 == 7:
+            if (word >> 30) == 0b11:
+                vtype = (word >> 20) & 0x3FF
+                vl_imm = (word >> 15) & 0x1F
+                avl_mode = "imm"
+            else:
+                vtype = (word >> 20) & 0x7FF
+                rs1 = (word >> 15) & 0x1F
+                rd = (word >> 7) & 0x1F
+                avl_mode = "vlmax" if rs1 == 0 and rd != 0 else "reg"
+            sew_code = (vtype >> 3) & 7
+            lmul_code = vtype & 7
+            vill = (
+                sew_code > 3
+                or lmul_code == 4
+                or (lmul_code in (5, 6, 7) and (lmul_code - 8) < (sew_code - 3))
+            )
+            continue
+
+        f6 = (word >> 26) & 0x3F
+        vm = bool((word >> 25) & 1)
+        vs2 = (word >> 20) & 0x1F
+        vs1 = (word >> 15) & 0x1F
+        vd = (word >> 7) & 0x1F
+        sew = 8 << ((vtype >> 3) & 7)
+        lmul = vtype & 7
+
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            traps_seen += 1
+            if vill and f6 == 0x0E and f3 == opivi:
+                trap_kinds.add("slide_vill")
+            elif vill and f6 == 0x27 and f3 == opivi:
+                trap_kinds.add("vmvr_vill")
+            elif f6 == 0x0E and f3 == opivx and vd == vs2:
+                trap_kinds.add("vslideup_overlap")
+            elif f6 == 0x0E and f3 == opmvx and vd == vs2:
+                trap_kinds.add("vslide1up_overlap")
+            elif f6 == 0x0E and f3 == opfvf and sew == 8:
+                trap_kinds.add("vfslide1_e8")
+            elif f6 == 0x0E and f3 == opfvf and vd == vs2:
+                trap_kinds.add("vfslide1up_overlap")
+            elif f6 == 0x0C and f3 == opivv and vd == vs2:
+                trap_kinds.add("vrgather_vd_vs2")
+            elif f6 == 0x0C and f3 == opivv and vd == vs1:
+                trap_kinds.add("vrgather_vd_vs1")
+            elif f6 == 0x0E and f3 == opivv and sew == 8 and lmul == 3:
+                trap_kinds.add("ei16_emul16")
+            elif f6 == 0x0E and f3 == opivv and sew == 32 and vs2 == vs1:
+                trap_kinds.add("ei16_src_overlap")
+            elif (
+                f6 == 0x0E and f3 == opivv and sew == 32 and lmul == 1 and vs1 == vd + 1
+            ):
+                trap_kinds.add("ei16_vd_vs1")
+            elif f6 == 0x0E and f3 == opivv and sew == 8 and lmul == 0 and (vs1 & 1):
+                trap_kinds.add("ei16_misaligned_vs1")
+            elif f6 == 0x17 and f3 == opmvv and not vm:
+                trap_kinds.add("compress_vm0")
+            elif f6 == 0x17 and f3 == opmvv and vd == vs2:
+                trap_kinds.add("compress_vd_vs2")
+            elif f6 == 0x17 and f3 == opmvv and vd == vs1:
+                trap_kinds.add("compress_vd_vs1")
+            elif f6 == 0x17 and f3 == opmvv and vs2 == vs1:
+                trap_kinds.add("compress_vs2_vs1")
+            elif f6 == 0x27 and f3 == opivi and not vm:
+                trap_kinds.add("vmvr_vm0")
+            elif f6 == 0x27 and f3 == opivi and vs1 == 2:
+                trap_kinds.add("vmvr_reserved_nr")
+            elif f6 == 0x27 and f3 == opivi and vs1 == 1 and (vd & 1):
+                trap_kinds.add("vmvr_misaligned_vd")
+            elif f6 == 0x27 and f3 == opivi and vs1 == 3 and (vs2 & 3):
+                trap_kinds.add("vmvr_misaligned_vs2")
+            elif f6 == 0x0F and f3 == opivi and not vm and vd == 0:
+                trap_kinds.add("masked_v0_dst")
+            elif f6 == 0x0C and f3 == opivi and not vm and vs2 == 0:
+                trap_kinds.add("masked_v0_vs2")
+            continue
+
+        # Only count explicitly asserted permute test instructions (ignore readback vslidedown helpers)
+        if not re.search(r"(?m)^\.assert trap == 0\b", block):
+            continue
+
+        group = ""
+        sub: int | None = None
+        if f6 in (0x0E, 0x0F) and f3 in (opivx, opivi):
+            group = "slide"
+        elif f6 in (0x0E, 0x0F) and f3 == opmvx:
+            group = "slide1_int"
+        elif f6 in (0x0E, 0x0F) and f3 == opfvf:
+            group = "slide1_fp"
+        elif (f6 == 0x0C and f3 in (opivv, opivx, opivi)) or (
+            f6 == 0x0E and f3 == opivv
+        ):
+            group = "gather"
+        elif f6 == 0x17 and f3 == opmvv:
+            group = "compress"
+        elif f6 == 0x27 and f3 == opivi:
+            group = "whole_move"
+            sub = vs1
+        else:
+            continue
+
+        retired_forms.add((group, f6, f3, sub))
+        sews_by_group.setdefault(group, set()).add(sew)
+        if f6 == 0x0E and f3 == opivv:
+            ei16_sews.add(sew)
+            if sew == 16 and vs2 == vs1:
+                ei16_self_e16 = True
+        masking_by_group.setdefault(group, set()).add(vm)
+        policies_seen.add(vtype & 0xC0)
+        lmuls_seen.add(lmul)
+
+        if avl_mode == "vlmax":
+            regimes_by_group.setdefault(group, set()).add("vlmax")
+        elif vl_imm == 0:
+            regimes_by_group.setdefault(group, set()).add("zero")
+        elif all(vl_imm < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+            regimes_by_group.setdefault(group, set()).add("below_vlmax")
+
+        if f3 == opivi and f6 in (0x0C, 0x0E, 0x0F) and vs1 >= 16:
+            uimm5_high_ops.add((f6, vs1))
+        if vd == vs2:
+            if f6 == 0x0F and f3 in (opivx, opivi):
+                inplace_ops.add("vslidedown")
+            elif f6 == 0x0F and f3 == opmvx:
+                inplace_ops.add("vslide1down")
+            elif f6 == 0x0F and f3 == opfvf:
+                inplace_ops.add("vfslide1down")
+            elif f6 == 0x27 and f3 == opivi:
+                inplace_ops.add("vmvr")
+        if group == "compress" and vs1 == 0:
+            compress_v0_mask = True
+
+    expected_forms: set[tuple[str, int, int, int | None]] = {
+        ("slide", 0x0E, opivx, None),
+        ("slide", 0x0E, opivi, None),
+        ("slide", 0x0F, opivx, None),
+        ("slide", 0x0F, opivi, None),
+        ("slide1_int", 0x0E, opmvx, None),
+        ("slide1_int", 0x0F, opmvx, None),
+        ("slide1_fp", 0x0E, opfvf, None),
+        ("slide1_fp", 0x0F, opfvf, None),
+        ("gather", 0x0C, opivv, None),
+        ("gather", 0x0C, opivx, None),
+        ("gather", 0x0C, opivi, None),
+        ("gather", 0x0E, opivv, None),
+        ("compress", 0x17, opmvv, None),
+        ("whole_move", 0x27, opivi, 0),
+        ("whole_move", 0x27, opivi, 1),
+        ("whole_move", 0x27, opivi, 3),
+        ("whole_move", 0x27, opivi, 7),
+    }
+    assert len(expected_forms) == 17
+    assert retired_forms == expected_forms
+
+    for group in ("slide", "slide1_int", "gather", "compress", "whole_move"):
+        assert sews_by_group[group] == {8, 16, 32, 64}
+    assert sews_by_group["slide1_fp"] == {32, 64}
+    assert ei16_sews == {8, 16, 32, 64}
+
+    for group in ("slide", "slide1_int", "slide1_fp", "gather"):
+        assert masking_by_group[group] == {True, False}
+    for group in ("compress", "whole_move"):
+        assert masking_by_group[group] == {True}
+
+    for group in (
+        "slide",
+        "slide1_int",
+        "slide1_fp",
+        "gather",
+        "compress",
+        "whole_move",
+    ):
+        assert {"below_vlmax", "vlmax", "zero"} <= regimes_by_group[group]
+
+    assert {0x00, 0xC0} <= policies_seen  # tu, mu and ta, ma
+    assert {0, 1, 2, 5, 6, 7} <= lmuls_seen  # m1, m2, m4, mf8, mf4, mf2
+    assert {
+        (0x0E, 16),
+        (0x0F, 16),
+        (0x0F, 31),
+        (0x0C, 16),
+        (0x0C, 31),
+    } <= uimm5_high_ops
+    assert inplace_ops == {"vslidedown", "vslide1down", "vfslide1down", "vmvr"}
+    assert ei16_self_e16
+    assert compress_v0_mask
+    assert fflags_zero_checked
+    assert traps_seen == 22
+    assert trap_kinds == {
+        "vslideup_overlap",
+        "vslide1up_overlap",
+        "vfslide1up_overlap",
+        "vrgather_vd_vs2",
+        "vrgather_vd_vs1",
+        "ei16_emul16",
+        "ei16_src_overlap",
+        "ei16_vd_vs1",
+        "ei16_misaligned_vs1",
+        "compress_vd_vs2",
+        "compress_vd_vs1",
+        "compress_vs2_vs1",
+        "compress_vm0",
+        "vmvr_misaligned_vd",
+        "vmvr_misaligned_vs2",
+        "vmvr_reserved_nr",
+        "vmvr_vm0",
+        "masked_v0_dst",
+        "masked_v0_vs2",
+        "vfslide1_e8",
+        "slide_vill",
+        "vmvr_vill",
+    }
+    assert ctrl_count == 1
+
+
+def test_vector_reductions_trace_covers_forms() -> None:
+    """Check all 16 base-V reduction encodings, widths, frm modes, corners and traps."""
+    trace = VERIF_DIR / "testrig" / "vector_reductions.S"
+    text = trace.read_text()
+    blocks = TRACE_WORD.split(text)[1:]
+    assert blocks
+
+    opivv, opfvv, opmvv = 0, 1, 2
+    int_red_f6 = set(range(8))
+    wint_red_f6 = {0x30, 0x31}
+    fp_red_f6 = {0x01, 0x03, 0x05, 0x07}
+    wfp_red_f6 = {0x31, 0x33}
+    fp_sum_ops = {(0x01, opfvv), (0x03, opfvv), (0x31, opfvv), (0x33, opfvv)}
+
+    retired_forms: set[tuple[str, int, int]] = set()
+    sews_by_group: dict[str, set[int]] = {}
+    masking_by_group: dict[str, set[bool]] = {}
+    regimes_by_group: dict[str, set[str]] = {}
+    frm_by_op: dict[tuple[int, int], set[int]] = {}
+    frm_readbacks_checked: set[int] = set()
+    fflags_checked: set[int] = set()
+    policies_seen: set[int] = set()
+    lmuls_seen: set[int] = set()
+    legal_overlaps: set[str] = set()
+    widen_m8_groups: set[str] = set()
+    trap_kinds: set[str] = set()
+    traps_seen = 0
+    ctrl_count = 0
+
+    vtype = 0
+    vill = False
+    avl_mode = "imm"
+    vl_imm = 0
+    frm = 0
+    pending_frm_readback: int | None = None
+
+    for block in blocks:
+        word_match = re.match(r"^\.4byte (0x[0-9a-f]{8})\b", block)
+        assert word_match is not None
+        word = int(word_match.group(1), 16)
+        opcode = word & 0x7F
+        f3 = (word >> 12) & 0x7
+
+        if word == 0x4320_2557:
+            ctrl_count += 1
+
+        if pending_frm_readback is not None:
+            assert opcode == 0x73 and f3 == 2 and ((word >> 20) & 0xFFF) == 0x002
+            m = re.search(r'(?m)^\.assert rd_wdata == (0x[0-9a-f]+) "', block)
+            assert m is not None and int(m.group(1), 16) == pending_frm_readback
+            frm_readbacks_checked.add(pending_frm_readback)
+            pending_frm_readback = None
+            continue
+
+        if opcode == 0x73 and f3 in (1, 2, 3, 5, 6, 7):
+            csr = (word >> 20) & 0xFFF
+            uimm = (word >> 15) & 0x1F
+            assert csr != 0x301  # No misa access
+            assert not (csr == 0x008 and (f3 in (1, 5) or uimm != 0))
+            if csr == 0x002 and f3 == 5:
+                frm = uimm & 7
+                pending_frm_readback = frm
+            elif csr == 0x001 and f3 == 2:
+                m = re.search(r'(?m)^\.assert rd_wdata == (0x[0-9a-f]+) "', block)
+                if m is not None:
+                    fflags_checked.add(int(m.group(1), 16))
+            continue
+
+        if opcode != 0x57:
+            continue
+
+        if f3 == 7:
+            if (word >> 30) == 0b11:
+                vtype = (word >> 20) & 0x3FF
+                vl_imm = (word >> 15) & 0x1F
+                avl_mode = "imm"
+            else:
+                vtype = (word >> 20) & 0x7FF
+                rs1 = (word >> 15) & 0x1F
+                rd = (word >> 7) & 0x1F
+                avl_mode = "vlmax" if rs1 == 0 and rd != 0 else "reg"
+            sew_code = (vtype >> 3) & 7
+            lmul_code = vtype & 7
+            vill = (
+                sew_code > 3
+                or lmul_code == 4
+                or (lmul_code in (5, 6, 7) and (lmul_code - 8) < (sew_code - 3))
+            )
+            continue
+
+        f6 = (word >> 26) & 0x3F
+        vm = bool((word >> 25) & 1)
+        vs2 = (word >> 20) & 0x1F
+        vs1 = (word >> 15) & 0x1F
+        vd = (word >> 7) & 0x1F
+        sew = 8 << ((vtype >> 3) & 7)
+        lmul = vtype & 7
+
+        group = ""
+        if f3 == opmvv and f6 in int_red_f6:
+            group = "int_red"
+        elif f3 == opivv and f6 in wint_red_f6:
+            group = "wint_red"
+        elif f3 == opfvv and f6 in fp_red_f6:
+            group = "fp_red"
+        elif f3 == opfvv and f6 in wfp_red_f6:
+            group = "wfp_red"
+        else:
+            continue
+
+        if re.search(r"(?m)^\.assert trap == 1\b", block):
+            traps_seen += 1
+            if vill:
+                trap_kinds.add("vill")
+            elif frm == 5 and group == "fp_red":
+                trap_kinds.add("reserved_frm")
+            elif group == "wint_red" and sew == 64:
+                trap_kinds.add("vwredsumu_e64" if f6 == 0x30 else "vwredsum_e64")
+            elif group == "wfp_red" and sew == 64:
+                trap_kinds.add("vfwredusum_e64" if f6 == 0x31 else "vfwredosum_e64")
+            elif group == "fp_red" and sew == 8:
+                trap_kinds.add("vfredosum_e8")
+            elif group == "wfp_red" and sew == 8:
+                trap_kinds.add("vfwredosum_e8")
+            elif group == "wint_red" and vs1 == vs2:
+                trap_kinds.add("vwred_src_overlap")
+            elif group == "wfp_red" and vs1 == vs2:
+                trap_kinds.add("vfwred_src_overlap")
+            elif group == "int_red" and not vm and vs2 == 0:
+                trap_kinds.add("int_masked_vs2_v0")
+            elif group == "int_red" and not vm and vs1 == 0:
+                trap_kinds.add("int_masked_vs1_v0")
+            elif group == "fp_red" and not vm and vs2 == 0:
+                trap_kinds.add("fp_masked_vs2_v0")
+            elif group == "fp_red" and not vm and vs1 == 0:
+                trap_kinds.add("fp_masked_vs1_v0")
+            elif group == "int_red" and lmul == 1 and (vs2 & 1):
+                trap_kinds.add("misaligned_vs2_m2")
+            continue
+
+        assert re.search(r"(?m)^\.assert trap == 0\b", block)
+        assert not vill
+        retired_forms.add((group, f6, f3))
+        sews_by_group.setdefault(group, set()).add(sew)
+        masking_by_group.setdefault(group, set()).add(vm)
+        policies_seen.add(vtype & 0xC0)
+        lmuls_seen.add(lmul)
+
+        if (f6, f3) in fp_sum_ops:
+            frm_by_op.setdefault((f6, f3), set()).add(frm)
+        if avl_mode == "vlmax":
+            regimes_by_group.setdefault(group, set()).add("vlmax")
+        elif vl_imm == 0:
+            regimes_by_group.setdefault(group, set()).add("zero")
+        elif all(vl_imm < _vlmax(v, sew, lmul) for v in vector.VECTOR_LENGTHS):
+            regimes_by_group.setdefault(group, set()).add("below_vlmax")
+
+        if vd == vs2 == vs1:
+            legal_overlaps.add(f"{group}_self")
+        if not vm and vd == 0:
+            legal_overlaps.add(f"{group}_masked_v0")
+        if lmul == 3 and group in ("wint_red", "wfp_red") and (vd & 1):
+            widen_m8_groups.add(group)
+
+    expected_forms: set[tuple[str, int, int]] = (
+        {("int_red", f6, opmvv) for f6 in int_red_f6}
+        | {("wint_red", f6, opivv) for f6 in wint_red_f6}
+        | {("fp_red", f6, opfvv) for f6 in fp_red_f6}
+        | {("wfp_red", f6, opfvv) for f6 in wfp_red_f6}
+    )
+    assert len(expected_forms) == 16
+    assert retired_forms == expected_forms
+
+    assert sews_by_group["int_red"] == {8, 16, 32, 64}
+    assert sews_by_group["wint_red"] == {8, 16, 32}
+    assert sews_by_group["fp_red"] == {32, 64}
+    assert sews_by_group["wfp_red"] == {32}
+
+    for group in ("int_red", "wint_red", "fp_red", "wfp_red"):
+        assert masking_by_group[group] == {True, False}
+        assert {"below_vlmax", "vlmax", "zero"} <= regimes_by_group[group]
+
+    for op_key in fp_sum_ops:
+        assert frm_by_op[op_key] == {0, 1, 2, 3, 4}, (op_key, frm_by_op[op_key])
+    assert pending_frm_readback is None
+    assert frm_readbacks_checked == {0, 1, 2, 3, 4, 5}
+    assert {0x00, 0x01, 0x05, 0x10} <= fflags_checked
+    assert {0x00, 0xC0} <= policies_seen
+    assert {0, 1, 3, 5, 6, 7} <= lmuls_seen
+    assert {
+        "int_red_self",
+        "fp_red_self",
+        "int_red_masked_v0",
+        "wint_red_masked_v0",
+        "fp_red_masked_v0",
+        "wfp_red_masked_v0",
+    } <= legal_overlaps
+    assert widen_m8_groups == {"wint_red", "wfp_red"}
+    assert traps_seen == 15
+    assert trap_kinds == {
+        "vwredsumu_e64",
+        "vwredsum_e64",
+        "vfwredusum_e64",
+        "vfwredosum_e64",
+        "vfredosum_e8",
+        "vfwredosum_e8",
+        "vwred_src_overlap",
+        "vfwred_src_overlap",
+        "int_masked_vs2_v0",
+        "int_masked_vs1_v0",
+        "fp_masked_vs2_v0",
+        "fp_masked_vs1_v0",
+        "misaligned_vs2_m2",
+        "reserved_frm",
         "vill",
     }
     assert ctrl_count == 1

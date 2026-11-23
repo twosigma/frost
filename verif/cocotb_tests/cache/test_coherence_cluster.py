@@ -1047,3 +1047,116 @@ async def single_cycle_reset_during_traffic(dut: Any) -> None:
         await b.tick(30)
         assert await b.read(target + 0x80, slot=delay % 8) == 0
     assert live_in_reset
+
+
+@cocotb.test()
+async def l1d_miss_l2_hit_round_trip_latency(dut: Any) -> None:
+    """Measure L1D-miss to L2-hit round-trip cycles with HOME_FAST_TAG_LAUNCH off and on."""
+    b = Cluster(dut)
+    await b.reset()
+    fast = bool(int(dut.HOME_FAST_TAG_LAUNCH.value))
+    links = int(dut.LINK_STAGES.value)
+    misses = len(dut.hart_d_valid)
+    base = 0x80002000
+    model = bytearray((i * 19 + 3) & 255 for i in range(b.line))
+    b.memory[base] = int.from_bytes(model, "little")
+
+    # Warm the 64-byte L2 line by reading its lower 32-byte sector. The upper
+    # 32-byte sector (base + 32) is resident in L2 and absent from L1D.
+    expected_lo = int.from_bytes(model[0:8], "little")
+    expected_hi = int.from_bytes(model[32:40], "little")
+    assert await b.read(base, slot=0) == expected_lo
+    # Drain release U and let the home return fully idle.
+    await b.tick(30)
+    # coherence_home_array phase_t: Init=0, InitDrain=1, Idle=2.
+    assert int(dut.home.array.phase_q.value) == 2
+    assert int(dut.home.completions.work_selected_q.value) == 0
+    reads_before = len(b.memory_reads)
+    l2_hits_before = b.perf["l2"][1]
+    l2_misses_before = b.perf["l2"][2]
+
+    # Issue a directed read to the upper sector: L1D miss, L2 hit.
+    target = base + 32 if b.line == 64 else base
+    expected = expected_hi if b.line == 64 else expected_lo
+    if b.line == 32:
+        # Evict from L1D via line maintenance so target misses L1D and hits L2.
+        await b.set(i_maint_valid=1, i_maint_line=1, i_maint_address=target)
+        await b.tick()
+        await b.set(i_maint_valid=0)
+        await b.wait("o_maint_done")
+        await b.tick(20)
+
+    start_cycle = b.cycle
+    d_accept_cycle = None
+    tag_fire_cycle = None
+    grant_cycle = None
+    direct_d_seen = False
+    direct_tag_seen = False
+
+    await b.set(
+        i_address=target,
+        i_read_id=1,
+        i_read_kind=0,
+        i_read_size=3,
+        i_read_valid=1,
+    )
+    await b.tick()
+    await b.set(i_read_valid=0)
+    if not fast:
+        assert not hasattr(dut.home.completions, "gen_fast_state")
+    for _ in range(200):
+        if fast and int(dut.home.completions.gen_fast_state.direct_d_select.value):
+            direct_d_seen = True
+        if int(dut.home.direct_tag_valid.value):
+            direct_tag_seen = True
+        if (
+            d_accept_cycle is None
+            and int(dut.home.i_d_valid.value)
+            and int(dut.home.o_d_ready.value)
+        ):
+            d_accept_cycle = b.cycle
+        if tag_fire_cycle is None and int(dut.home.array.request_fire.value):
+            tag_fire_cycle = b.cycle
+        if grant_cycle is None and int(dut.home.o_g_valid.value):
+            grant_cycle = b.cycle
+        if b.get("o_read_valid"):
+            break
+        await b.tick()
+    else:
+        raise AssertionError("L1D-miss/L2-hit read did not return")
+
+    resp_cycle = b.cycle
+    assert b.get("o_read_id") == 1 and not b.get("o_read_error")
+    assert b.get("o_read_data") == expected
+    await b.set(i_read_ready=1)
+    await b.tick()
+    await b.set(i_read_ready=0)
+    await b.tick(10)
+
+    # Confirm it was a true L2 hit (zero memory reads, +1 L2 hit, +0 L2 miss).
+    assert len(b.memory_reads) == reads_before
+    assert b.perf["l2"][1] == l2_hits_before + 1
+    assert b.perf["l2"][2] == l2_misses_before
+    assert d_accept_cycle is not None
+    assert tag_fire_cycle is not None
+    assert grant_cycle is not None
+
+    round_trip = resp_cycle - start_cycle
+    home_d_to_tag = tag_fire_cycle - d_accept_cycle
+    home_d_to_grant = grant_cycle - d_accept_cycle
+    dut._log.info(
+        f"cluster L1D-miss/L2-hit fast={int(fast)} links={links} misses={misses} "
+        f"round_trip={round_trip} home_d_to_tag={home_d_to_tag} "
+        f"home_d_to_grant={home_d_to_grant}"
+    )
+    assert direct_d_seen == fast
+    assert direct_tag_seen == fast
+    assert home_d_to_tag == (1 if fast else 3)
+    assert home_d_to_grant == (11 if fast else 13)
+    if links == 0 and misses == 1:
+        # Endpoint 0 answers after L1D installation: 29 cycles off, 27 on (-2).
+        assert round_trip == (27 if fast else 29)
+    elif links == 0 and misses >= 2:
+        # Nonzero load endpoints answer on the grant's first lookup cycle:
+        # 24 cycles off, 22 on (-2).
+        assert round_trip == (22 if fast else 24)

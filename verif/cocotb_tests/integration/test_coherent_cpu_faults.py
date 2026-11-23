@@ -415,7 +415,12 @@ async def parked_hart_serves_dirty_dma(dut: Any) -> None:
             if debug:
                 assert int(dut.o_dbg_parked.value)
             else:
-                assert int(dut.hart.cpu_inst.wfi_waiting_q.value)
+                # The WFI holds the ROB head and does not retire. wfi_waiting_q
+                # drops for a cycle after a younger partial flush, such as the
+                # early recovery of the JAL behind the WFI (EarlyJalRecovery).
+                cpu = dut.hart.cpu_inst
+                assert int(cpu.rob_head_is_wfi.value) and int(cpu.head_valid.value)
+                assert not int(cpu.rob_commit_valid_raw.value)
                 assert not int(dut.o_debug_mode.value)
 
         l1d = dut.hart.gen_coherent_tier.hart_cache.l1d

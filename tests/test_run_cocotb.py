@@ -2467,8 +2467,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="wfi_seed_recovery",
         nic_mac_clocks=False,
         description=(
-            "With prediction disabled, a direct JAL exposes its fall-through WFI "
-            "at the ROB head during recovery. Each run checks that the interrupt "
+            "With prediction disabled and the JAL's allocation-time recovery held "
+            "off, a direct JAL exposes its fall-through WFI at the ROB head during "
+            "commit recovery. Each run checks that the interrupt "
             "resume PC holds the JAL target until it retires. A timeout reports "
             "if the JAL and fall-through WFI never queued behind the waiting WFI."
         ),
@@ -4447,6 +4448,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="One hart, DMA, pending stores, recalls, and atomic ownership",
     ),
+    "coherence_cluster_fast_tag": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GHOME_FAST_TAG_LAUNCH=1"),
+        python_test_module="cocotb_tests.cache.test_coherence_cluster",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="One hart, DMA, pending stores, recalls, and atomic ownership "
+        "with direct tag launch in the home",
+    ),
     "coherence_line_client": CocotbRunConfig(
         verilator_extra_args=("--assert",),
         python_test_module="cocotb_tests.cache.test_coherence_line_client",
@@ -4650,6 +4658,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         "forwarded results, and prefetch slots",
         verilator_extra_args=("--assert", "-GCACHE_BYTES=1024"),
     ),
+    "coherence_home_completions_fast_tag": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home_completions",
+        hdl_toplevel_module="coherence_home_completions",
+        description="Independent results, completion pins, same-sector predecessors, "
+        "forwarded results, prefetch slots, and direct D selection",
+        verilator_extra_args=("--assert", "-GCACHE_BYTES=1024", "-GFAST_TAG_LAUNCH=1"),
+    ),
     "coherence_array_reset_bram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
         hdl_toplevel_module="coherence_array",
@@ -4849,6 +4864,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=(
             "--assert",
             "-GCACHE_BYTES=1024",
+        ),
+    ),
+    "coherence_home_fast_tag": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_home",
+        hdl_toplevel_module="coherence_home",
+        description=(
+            "Coherent home with direct D selection and direct tag launch into an idle array"
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=1024",
+            "-GFAST_TAG_LAUNCH=1",
         ),
     ),
     "coherence_home_rowread": CocotbRunConfig(
@@ -5528,6 +5555,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL2_CACHE_BYTES=4096",
             "-GL2_PREFETCH=0",
             "-DFROST_PMA_LEGACY_DEVICE_STORES=0",
+        ),
+    ),
+    "cpu_top_early_jal_ras_flush": CocotbRunConfig(
+        python_test_module="cocotb_tests.integration.test_cpu_top_early_jal_ras_flush",
+        hdl_toplevel_module="cpu_top",
+        description=(
+            "Full-flush return-stack restore with EarlyJalrRecovery cleared "
+            "and EarlyJalRecovery set"
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "+define+FROST_TEST_EARLY_JALR_OFF",
+            "-GSIM_FAST_MAINT=1",
+            "-GL1_CACHE_BYTES=2048",
+            "-GL1I_CACHE_BYTES=2048",
+            "-GL2_CACHE_BYTES=4096",
+            "-GL2_PREFETCH=0",
         ),
     ),
     "load_queue_writethrough": CocotbRunConfig(

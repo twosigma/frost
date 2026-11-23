@@ -1044,7 +1044,7 @@ jobs:
       ${{ !cancelled() && needs.build-docker.result == 'success' &&
       needs.gate.outputs.full == 'true' &&
       (github.event_name == 'push' || github.event_name == 'pull_request') }}
-    timeout-minutes: 65
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
@@ -1078,7 +1078,7 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run make -C tests clean
           ./scripts/frost.py --image frost-dev:latest run \
-            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 45m \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 50m \
             python3 tests/test_testrig.py --vector 12 --vector-length 20 \
               --vector-source-widths --vector-directed --seed 42 --vlen "${{ matrix.vlen }}" \
               --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
@@ -1086,7 +1086,7 @@ jobs:
 
       - name: Check detection of an incorrect vector result
         if: matrix.vlen == 128
-        timeout-minutes: 40
+        timeout-minutes: 45
         run: |
           check_vector_result() {
             local selector=$1 trace=$2 record=$3 mismatch=$4
@@ -1142,6 +1142,10 @@ jobs:
             'order=45 insn=0x42c02557 rd=x10' '0x135724689acebdf1 != 0x135724689acebdf0'
           check_vector_result fp-widen vector_fp_widen \
             'order=22 insn=0x42a02557 rd=x10' '0x400e000000000000 != 0x400e000000000001'
+          check_vector_result permutes vector_permutes \
+            'order=23 insn=0x42b02557 rd=x10' '0x2468ace0 != 0x2468ace1'
+          check_vector_result reductions vector_reductions \
+            'order=30 insn=0x43202557 rd=x10' '0x1234a00a != 0x1234a00b'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
@@ -1467,8 +1471,13 @@ jobs:
             timeout_minutes: 330
           # Home task limits total 334 minutes plus twenty minutes for image setup.
           - shard: Coherence home
-            pytest_filter: coherence_home_coh_home_
+            pytest_filter: coherence_home_coh_home_ and not fast
             timeout_minutes: 355
+          # Direct-tag-launch home task limits total 120 minutes plus twenty
+          # minutes for image setup.
+          - shard: Coherence home fast
+            pytest_filter: coherence_home_coh_home_ and fast
+            timeout_minutes: 140
           - shard: Coherence store lookup banks
             pytest_filter: coherence_array_progress or coherence_store_bank
             timeout_minutes: 152

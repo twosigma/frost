@@ -59,7 +59,8 @@
  * the indices, tags, matches, provider direction and alternate direction. A
  * non-return JALR can save the indirect predictor's lookup (indices, tags,
  * matches). Every entry saves both prediction histories, including returns
- * that have no indirect predictor lookup.
+ * that have no indirect predictor lookup. A JAL takes an entry that keeps only
+ * its histories, for its early recovery from allocation, and never trains.
  * Dispatch gives the instruction the same index from a pointer of its own
  * and records it by ROB tag. Early recovery reads both histories from that
  * entry. Retirement trains the tagged predictor or an eligible JALR's
@@ -75,7 +76,10 @@ module tage_history #(
     parameter int unsigned FTQ_IDX_BITS = riscv_pkg::TageFtqIdxBits,
     parameter int unsigned DIR_BITS = riscv_pkg::TageDirHistBits,
     parameter int unsigned TAGE_TABLES = riscv_pkg::TageTables,
-    parameter int unsigned TAGE_INDEX_BITS = riscv_pkg::TageIndexBits
+    parameter int unsigned TAGE_INDEX_BITS = riscv_pkg::TageIndexBits,
+    // JALs take history-only entries for their early recovery from
+    // allocation (riscv_pkg::EarlyJalRecovery).
+    parameter bit JAL_ENTRIES = riscv_pkg::EarlyJalRecovery
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -120,7 +124,7 @@ module tage_history #(
     input logic                                        i_early_active,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_tag,
     input logic                                        i_early_taken,
-    // Its direction-history bit: the outcome, or a JALR's target bit 2.
+    // Its direction-history bit: the outcome, or a jump's target bit 2.
     input logic                                        i_early_dir_bit,
     // A flush of every in-flight instruction: a trap, xRET, or FENCE-class
     // flush, or a misprediction recovered at commit.
@@ -132,6 +136,7 @@ module tage_history #(
     input logic [1:0][riscv_pkg::ReorderBufferTagWidth-1:0] i_alloc_tag,
     input logic [1:0]                                       i_alloc_cond_branch,
     input logic [1:0]                                       i_alloc_jalr,
+    input logic [1:0]                                       i_alloc_jal,
     input logic [1:0]                                       i_alloc_q,
 
     // Registered commit bus, per slot.
@@ -143,6 +148,7 @@ module tage_history #(
     input logic [1:0]                                       i_commit_mispredicted,
     input logic [1:0][                       PATH_BITS-1:0] i_commit_target_bits,
     input logic [1:0]                                       i_commit_jalr,
+    input logic [1:0]                                       i_commit_jal,
     input logic [1:0]                                       i_commit_cf,
     input logic [1:0][         riscv_pkg::PhysAddrBits-2:0] i_commit_target,
 
@@ -272,18 +278,24 @@ module tage_history #(
   end
 
   logic [1:0] pd_itt_valid;
+  logic [1:0] pd_q_jal;
   logic pd_entry_pending;
   logic pd_branch_slot;
   riscv_pkg::tage_lookup_t pd_branch_lookup;
   ftq_entry_t pd_entry;
-  assign pd_itt_valid = pd_slot_valid_q & i_pd_q_itt_eligible;
+  assign pd_itt_valid = pd_slot_valid_q & i_pd_q_itt_eligible & ~pd_q_jal;
+  // A real JAL is a registered jump that is not a JALR (at most one per
+  // packet, never with a conditional branch or a JALR).
+  assign pd_q_jal = JAL_ENTRIES ? (i_pd_q_cf & ~i_pd_q_cond_branch & ~i_pd_q_jalr) : 2'b00;
   assign pd_entry_pending = pd_accept_q &&
-      (i_pd_q_cond_branch[0] || i_pd_q_cond_branch[1] || i_pd_q_jalr[0] || i_pd_q_jalr[1]);
-  assign pd_branch_slot = !(i_pd_q_cond_branch[0] || i_pd_q_jalr[0]);
+      (i_pd_q_cond_branch[0] || i_pd_q_cond_branch[1] || i_pd_q_jalr[0] || i_pd_q_jalr[1] ||
+       pd_q_jal[0] || pd_q_jal[1]);
+  assign pd_branch_slot = !(i_pd_q_cond_branch[0] || i_pd_q_jalr[0] || pd_q_jal[0]);
   assign pd_branch_lookup = pd_branch_slot ? pd_lookup_2_q : pd_lookup_q;
   always_comb begin
     pd_entry = '0;
-    pd_entry.lookup_valid = pd_slot_valid_q[pd_branch_slot];
+    // A JAL's entry holds only its histories: it never trains.
+    pd_entry.lookup_valid = pd_slot_valid_q[pd_branch_slot] && !pd_q_jal[pd_branch_slot];
     pd_entry.bank = pd_slot_bank_q[pd_branch_slot];
     pd_entry.lookup = pd_branch_lookup;
     pd_entry.alt_taken = pd_branch_lookup.alt_tagged ? pd_branch_lookup.alt_tagged_taken :
@@ -331,13 +343,15 @@ module tage_history #(
   // keeps the dispatch decision out of this logic; the first read of a tag,
   // its early recovery, comes two or more cycles after dispatch.
   logic [FTQ_IDX_BITS-1:0] ftq_dispatch_ptr;
+  logic [1:0] alloc_jal;
+  assign alloc_jal = JAL_ENTRIES ? i_alloc_jal : 2'b00;
   logic [1:0] alloc_cond_branch_q;
   logic [1:0][riscv_pkg::ReorderBufferTagWidth-1:0] alloc_tag_q;
   logic alloc_branch;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] alloc_branch_tag;
   always_ff @(posedge i_clk) begin
-    // A JALR takes an entry like a conditional branch.
-    alloc_cond_branch_q <= i_alloc_cond_branch | i_alloc_jalr;
+    // A JALR or a JAL takes an entry like a conditional branch.
+    alloc_cond_branch_q <= i_alloc_cond_branch | i_alloc_jalr | alloc_jal;
     alloc_tag_q         <= i_alloc_tag;
   end
   assign alloc_branch = (i_alloc_q[0] && alloc_cond_branch_q[0]) ||
@@ -355,20 +369,33 @@ module tage_history #(
       assert (!(i_commit_valid[0] && alloc_branch_tag == i_commit_tag[0]) &&
               !(i_commit_valid[1] && alloc_branch_tag == i_commit_tag[1]));
     end
+    // PD and dispatch each see at most one entry owner (conditional branch,
+    // JALR or JAL) per packet, so both pointers advance by at most one.
+    if (reset_seen_q && !i_rst) begin
+      if (pd_accept_q)
+        p_pd_one_entry_owner :
+        assert ($countones({i_pd_q_cond_branch, i_pd_q_jalr, pd_q_jal}) <= 1);
+      p_alloc_one_entry_owner : assert ($countones(alloc_cond_branch_q & i_alloc_q) <= 1);
+    end
   end
 `endif
 
-  // The youngest retired branch's entry and every older one are free.
+  // The youngest retired entry owner's entry and every older one are free.
+  // Branches and JALRs train (commit_branch); a JAL only frees its entry.
   logic [1:0] commit_branch;
+  logic [1:0] commit_entry;
+  logic [1:0] commit_jal;
   logic [1:0][FTQ_IDX_BITS-1:0] commit_ftq_idx;
   assign commit_branch[0]  = i_commit_valid[0] && (i_commit_cond_branch[0] || i_commit_jalr[0]);
   assign commit_branch[1]  = i_commit_valid[1] && (i_commit_cond_branch[1] || i_commit_jalr[1]);
+  assign commit_jal        = JAL_ENTRIES ? (i_commit_valid & i_commit_jal) : 2'b00;
+  assign commit_entry      = commit_branch | commit_jal;
   assign commit_ftq_idx[0] = ftq_idx_by_tag[i_commit_tag[0]];
   assign commit_ftq_idx[1] = ftq_idx_by_tag[i_commit_tag[1]];
   always_ff @(posedge i_clk) begin
     if (i_rst) ftq_commit_ptr <= '0;
-    else if (commit_branch[1]) ftq_commit_ptr <= commit_ftq_idx[1] + 1'b1;
-    else if (commit_branch[0]) ftq_commit_ptr <= commit_ftq_idx[0] + 1'b1;
+    else if (commit_entry[1]) ftq_commit_ptr <= commit_ftq_idx[1] + 1'b1;
+    else if (commit_entry[0]) ftq_commit_ptr <= commit_ftq_idx[0] + 1'b1;
   end
 
   // A rewind also flushes the packet or dispatch whose advance is pending,

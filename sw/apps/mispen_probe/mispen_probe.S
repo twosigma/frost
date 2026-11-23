@@ -18,9 +18,10 @@
 #   CALL  indirect call (jalr ra) through a computed target
 #   RET   return whose link register the callee moves past the call site
 #   BTB   direct jumps that miss both BTBs (eight jumps on one set)
-# CONDL, JRL, CALLL and RETL are the same kernels with two multiplies of an
-# independent chain before every branch: older work holds the reorder buffer
-# head while the branch resolves, so a recovery at commit waits for it.
+# CONDL, JRL, CALLL, RETL and BTBL are the same kernels with two multiplies of
+# an independent chain before every branch or jump: older work holds the
+# reorder buffer head while the branch resolves, so a recovery at commit waits
+# for it.
 # COND, JR, CALL and RET run one instruction stream twice: with the outcome
 # mask zero (P, predictable) and all ones (R, a xorshift bit per branch, so
 # about half the branches mispredict). BTB runs eight jumps on eight distinct
@@ -190,6 +191,9 @@ _start:
     MEASURE msg_btb_w, 0, kern_btb_spread
     MEASURE msg_btb_p, 0, kern_btb_spread
     MEASURE msg_btb_r, 0, kern_btb_alias
+    MEASURE msg_btbl_w, 0, kern_btbl_spread
+    MEASURE msg_btbl_p, 0, kern_btbl_spread
+    MEASURE msg_btbl_r, 0, kern_btbl_alias
 
     la      a0, msg_pass_marker
     jal     ra, print_string
@@ -296,6 +300,30 @@ btb_a_done:
     bnez    s1, 1b
     ret
 
+    .balign 64
+kern_btbl_spread:
+    li      s1, BTB_ITERATIONS
+    li      a3, 3
+    li      a5, 1
+1:
+    j       btbl_b0
+btbl_b_done:
+    addi    s1, s1, -1
+    bnez    s1, 1b
+    ret
+
+    .balign 64
+kern_btbl_alias:
+    li      s1, BTB_ITERATIONS
+    li      a3, 3
+    li      a5, 1
+1:
+    j       btbl_a0
+btbl_a_done:
+    addi    s1, s1, -1
+    bnez    s1, 1b
+    ret
+
 # report helpers
 print_string:
     mv      t5, a0
@@ -360,6 +388,34 @@ btb_b\p:
     BTB_PAGE 7, btb_a_done, btb_b_done
     .fill   16, 4, 0x00000013
 
+# BTBL kernels: the same layout with two multiplies of the a3 chain before
+# every jump (the jump at offset 0x180 of each page, or at 0x600 + 0x40 * p;
+# each label is the first multiply), so the jump allocates behind unfinished
+# older work.
+    .macro BTBL_PAGE p, next_a, next_b
+    .balignl 4096, 0x00000013
+    .fill   (0x180 - 8) / 4, 4, 0x00000013
+btbl_a\p:
+    mul     a3, a3, a5
+    mul     a3, a3, a5
+    j       \next_a
+    .fill   (0x480 + 0x40 * \p - 12) / 4, 4, 0x00000013
+btbl_b\p:
+    mul     a3, a3, a5
+    mul     a3, a3, a5
+    j       \next_b
+    .endm
+
+    BTBL_PAGE 0, btbl_a1, btbl_b1
+    BTBL_PAGE 1, btbl_a2, btbl_b2
+    BTBL_PAGE 2, btbl_a3, btbl_b3
+    BTBL_PAGE 3, btbl_a4, btbl_b4
+    BTBL_PAGE 4, btbl_a5, btbl_b5
+    BTBL_PAGE 5, btbl_a6, btbl_b6
+    BTBL_PAGE 6, btbl_a7, btbl_b7
+    BTBL_PAGE 7, btbl_a_done, btbl_b_done
+    .fill   16, 4, 0x00000013
+
     .section .rodata
 msg_header:
     .string "=== Misprediction penalty probe ===\n"
@@ -417,6 +473,12 @@ msg_btb_p:
     .string "MISPEN BTB P"
 msg_btb_r:
     .string "MISPEN BTB R"
+msg_btbl_w:
+    .string "MISPEN BTBL W"
+msg_btbl_p:
+    .string "MISPEN BTBL P"
+msg_btbl_r:
+    .string "MISPEN BTBL R"
 msg_mp:
     .string " mispredicts="
 msg_cycles:
