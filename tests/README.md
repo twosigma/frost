@@ -1854,8 +1854,12 @@ full-offset assertion. `test_probe_launch_mutations.py` runs four registered
 formal negative controls against `load_queue:bmc_probe_launch` (removing
 `!probe_zero_hold`, clearing `twin_wait_q` on flush) and
 `coherence_store_boundary` (delaying the SQ forwarding match by one cycle, and
-removing the `push_prev_q` push-match term from `coherent_sector_hold`). The
-standalone `aplic_msi_mutations.py` diagnostic
+removing the `push_prev_q` push-match term from `coherent_sector_hold`).
+`test_lq_port1_amo_mutations.py` runs four registered formal negative controls
+against `load_queue:prove_port1_amo`: dropping `older_amo_block_d` from
+`issue_block_q` (testing both SQ-forward and L0-hit collisions and unmodified
+induction rejection) and clearing the allocation-time `older_amo_dep_d` rebuild.
+The standalone `aplic_msi_mutations.py` diagnostic
 checks the baseline and isolated mutants with both cocotb and formal.
 Tests that relocate a checkout proof use `sby_config.stage_proof` to copy the
 proof's `[files]` inputs in checkout-relative layout before applying edits.
