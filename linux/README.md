@@ -169,18 +169,16 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 ## Advertised ISA
 
-The X3 device tree advertises V with Zvbb, Zvbc, Zve32f, Zve32x, Zve64d,
-Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn, Zvknc, Zvkned, Zvkng,
-Zvknha, Zvknhb, Zvkt, and the Zvl32b, Zvl64b, Zvl128b and Zvl256b length
-guarantees. The opt-in VCU118 vector device tree (`--vector` on
+The X3 device tree and the opt-in VCU118 vector device tree (`--vector` on
 `frost_boot_image.py` and `load_software.py`, and
-`boards/vcu118/dts/frost_vcu118_vector.dts`) advertises V with Zve32x, Zve32f,
-Zve64x, Zve64f and Zve64d, and the Zvl32b, Zvl64b, Zvl128b and Zvl256b length
-guarantees. Those builds set `misa.V` and have `VLEN=256` and `ELEN=64`.
-These entries describe the vector capabilities for Linux ISA discovery.
-The default VCU118 device tree describes its scalar configuration. Both the
-default and `--vector` VCU118 device trees omit `svpbmt` because the VCU118's
-2 GiB DDR map has no uncached alias.
+`boards/vcu118/dts/frost_vcu118_vector.dts`) advertise V with Zvbb, Zvbc,
+Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn,
+Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, and the Zvl32b, Zvl64b, Zvl128b
+and Zvl256b length guarantees. Those builds set `misa.V` and have `VLEN=256`
+and `ELEN=64`. These entries describe the vector capabilities for Linux ISA
+discovery. The default VCU118 device tree describes its scalar configuration.
+Both the default and `--vector` VCU118 device trees omit `svpbmt` because the
+VCU118's 2 GiB DDR map has no uncached alias.
 
 The generated DTB declares the
 [implemented extensions and profile properties](../README.md#supported-risc-v-extensions),

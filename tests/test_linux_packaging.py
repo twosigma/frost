@@ -631,8 +631,36 @@ def test_vector_device_tree_matches_board(board: str, tmp_path: Path) -> None:
 
 
 def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:
-    """Opt-in VCU118 vector trees advertise V at 162.5 MHz while defaults stay scalar."""
+    """Opt-in VCU118 vector trees advertise V and the implemented Zv extensions."""
     packer = _load_module(SBI_PACKER)
+
+    assert packer.VCU118_VECTOR_ISA_EXTENSIONS == tuple(
+        ext for ext in packer.X3_ISA_EXTENSIONS if ext != "svpbmt"
+    )
+    unimplemented_zv = {
+        "zvks",
+        "zvksc",
+        "zvksed",
+        "zvksg",
+        "zvksh",
+        "zvfbfmin",
+        "zvfbfwma",
+    }
+
+    def assert_vcu118_vector_isa(isa_str: str, ext_tokens: tuple[str, ...]) -> None:
+        assert isa_str == packer.VCU118_VECTOR_ISA_STRING
+        assert ext_tokens == packer.VCU118_VECTOR_ISA_EXTENSIONS
+        assert "v" in ext_tokens
+        assert "svpbmt" not in ext_tokens
+        assert "_svpbmt" not in isa_str
+        zv_slice = tuple(ext for ext in ext_tokens if ext.startswith("zv"))
+        assert zv_slice == packer.X3_VECTOR_EXTENSIONS
+        assert len(zv_slice) == 22
+        zv_binding = [ext for ext in zv_slice if not ext.startswith("zvl")]
+        assert zv_binding == sorted(zv_binding)
+        assert ext_tokens[ext_tokens.index("zkt") + 1] == "zvbb"
+        assert ext_tokens[ext_tokens.index("smaia") - 1] == "zvl256b"
+        assert not (unimplemented_zv & set(ext_tokens))
 
     # 1. Generated DTB for VCU118 --vector vs default scalar.
     vec_dts = packer.gen_dts(
@@ -663,10 +691,7 @@ def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:
         .stdout.strip()
         .split()
     )
-    assert isa == packer.VCU118_VECTOR_ISA_STRING
-    assert exts == packer.VCU118_VECTOR_ISA_EXTENSIONS
-    assert "svpbmt" not in exts
-    assert "_svpbmt" not in isa
+    assert_vcu118_vector_isa(isa, exts)
     for node, prop in (
         ("/cpus", "timebase-frequency"),
         ("/soc@0/serial@40001000", "clock-frequency"),
@@ -742,10 +767,7 @@ def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:
         .stdout.strip()
         .split()
     )
-    assert flash_isa == packer.VCU118_VECTOR_ISA_STRING
-    assert flash_exts == packer.VCU118_VECTOR_ISA_EXTENSIONS
-    assert "svpbmt" not in flash_exts
-    assert "_svpbmt" not in flash_isa
+    assert_vcu118_vector_isa(flash_isa, flash_exts)
     for node, prop in (
         ("/cpus", "timebase-frequency"),
         ("/soc@0/serial@40001000", "clock-frequency"),
@@ -822,9 +844,9 @@ def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:
 def test_advertised_isa_lists_agree() -> None:
     """Board DTs agree with the packer, and docs match the advertised ISAs.
 
-    X3 also advertises V, its Zve and Zvl subsets, and its implemented Zv
-    extensions, which README.md lists. Also checks that the predecode Python
-    twin serializes the three Svinval words.
+    X3 and the opt-in VCU118 vector build also advertise V, its Zve and Zvl
+    subsets, and the implemented Zv extensions, which README.md lists. Also
+    checks that the predecode Python twin serializes the three Svinval words.
     """
     packer = _load_module(SBI_PACKER)
     assert packer.ISA_BASE == "rv64i"
@@ -833,6 +855,9 @@ def test_advertised_isa_lists_agree() -> None:
     assert len(packer.VCU118_ISA_EXTENSIONS) == len(set(packer.VCU118_ISA_EXTENSIONS))
     assert len(packer.VCU118_VECTOR_ISA_EXTENSIONS) == len(
         set(packer.VCU118_VECTOR_ISA_EXTENSIONS)
+    )
+    assert packer.VCU118_VECTOR_ISA_EXTENSIONS == tuple(
+        ext for ext in packer.X3_ISA_EXTENSIONS if ext != "svpbmt"
     )
     assert "svpbmt" in packer.ISA_EXTENSIONS and "svpbmt" in packer.X3_ISA_EXTENSIONS
     assert "svpbmt" not in packer.VCU118_ISA_EXTENSIONS
@@ -991,6 +1016,11 @@ def test_advertised_isa_lists_agree() -> None:
     ):
         assert zv_ext in linux_isa_section
         assert zv_ext.lower() in x3_advertised
+        assert zv_ext.lower() in packer.VCU118_VECTOR_ISA_EXTENSIONS
+    vcu118_readme = (REPO_ROOT / "boards" / "vcu118" / "README.md").read_text()
+    for zv_token in packer.X3_VECTOR_EXTENSIONS:
+        assert zv_token.capitalize() in vcu118_readme
+        assert zv_token.capitalize() in linux_isa_section
 
     roadmap = (REPO_ROOT / "ROADMAP.md").read_text()
     rva23_section = roadmap.split("## RVA23 profile and the vector extension\n", 1)[
