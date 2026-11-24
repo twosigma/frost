@@ -3221,8 +3221,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=(
             "+define+FROST_RVFI_DII",
             "-DFROST_WIDE_DDR_TEST",
-            # The RVFI-DII recorder sees no misaligned-access engine retirement.
-            "-GMISALIGNED_HW=0",
             "-GL1_CACHE_BYTES=4096",
             "-GL1I_CACHE_BYTES=4096",
             "-GL2_CACHE_BYTES=16384",

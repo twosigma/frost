@@ -44,12 +44,19 @@
   not match.
 
   Retirement records. Each cycle's events, in program order: a slot-1
-  commit, a slot-2 commit, an xRET take, an exception take. Each consumes the
-  next stream word. A memory-order replay or an interrupt consumes none
-  (interrupts are tied off in this build, and one counts as an error). Store
-  data comes from the store queue's in-order memory writes, matched to the
-  stores the SQ accepted at commit; AMO data from the atomic unit's write; a
-  CSR read value from commit_actions' delayed write-back.
+  commit, a slot-2 commit, an xRET take, an exception take, or a
+  misaligned-access engine completion. Each consumes the next stream word. A
+  memory-order replay, a misaligned-access engine assist start, or an
+  interrupt consumes none (interrupts are tied off in this build, and one
+  counts as an error). On a misaligned-access engine assist start, the
+  next-cycle redirect targets the fall-through PC, so the layout advances by
+  one stream word ahead of the engine's completion; if the engine later
+  faults, the exception take consumes that word and its redirect resets the
+  layout to the trap handler. Store data comes from the store queue's in-order
+  memory writes, matched to the stores the SQ accepted at commit; AMO data
+  from the atomic unit's write; a misaligned store's address, mask and data
+  from the misaligned-access engine's captured access; a CSR read value from
+  commit_actions' delayed write-back.
 
   Device window. Loads and stores that FROST's PMA sends to the device
   quadrant use a RAM here instead of the devices, so the reference model can
@@ -130,6 +137,21 @@ module frost_rvfi_dii #(
     input logic                              [XLEN-1:0] i_amo_write_addr,
     input logic                              [    63:0] i_amo_write_data,
     input logic                                         i_amo_write_is_dword,
+    // Misaligned-access engine assist start, completion, write-back, and
+    // captured access state.
+    input logic                                         i_ma_assist_start = 1'b0,
+    input logic                                         i_ma_done = 1'b0,
+    input logic                                         i_ma_store = 1'b0,
+    input logic                                         i_ma_wb_valid = 1'b0,
+    input logic                                         i_ma_wb_fp = 1'b0,
+    input logic                              [     4:0] i_ma_wb_rd = '0,
+    input logic                              [XLEN-1:0] i_ma_wb_data = '0,
+    input logic                              [XLEN-1:0] i_ma_va = '0,
+    input riscv_pkg::mem_size_e                         i_ma_size = riscv_pkg::MEM_SIZE_BYTE,
+    input logic                                         i_ma_translate = 1'b0,
+    input logic                              [XLEN-1:0] i_ma_lower_pa = '0,
+    input logic                              [XLEN-1:0] i_ma_upper_pa = '0,
+    input logic                              [XLEN-1:0] i_ma_store_data = '0,
 
     // Device-quadrant RAM: a load's dword address with its capture pulse,
     // and a store's beat.
@@ -181,7 +203,8 @@ module frost_rvfi_dii #(
   // write-back without a pending CSR, 4 AMO retired without a write, 5 a
   // fetch redirect from a prediction arm, 6 a retirement in an early-recovery
   // cycle, 7 two control events in one cycle, 8 a misprediction redirect not
-  // loaded into the fetch PC, 9 a PD redirect from a PC outside the layout.
+  // loaded into the fetch PC, 9 a PD redirect from a PC outside the layout,
+  // 10 misaligned-access assist sequence violation.
   logic [31:0] error_flags;
   // A PD redirect whose branch PC is not a laid-out word (error bit 9).
   logic pd_branch_outside_layout;
@@ -322,15 +345,25 @@ module frost_rvfi_dii #(
   // ===========================================================================
   // Events
   // ===========================================================================
-  logic event_commit, event_commit_2, event_exception;
+  logic event_commit, event_commit_2, event_exception, event_ma_done;
   assign event_commit = i_commit_valid;
   assign event_commit_2 = i_commit_2_valid;
-  // A Debug Mode entry or park, or a memory-order replay, writes no trap CSR
-  // and consumes no stream word.
+  // A Debug Mode entry or park, a memory-order replay, or a misaligned-access
+  // assist start writes no trap CSR and consumes no stream word.
   assign event_exception = i_trap_taken && !i_trap_no_csr && !i_trap_to_d && !i_trap_cause[XLEN-1];
+  assign event_ma_done = i_ma_done;
   int unsigned events_this_cycle;
   assign events_this_cycle = int'(event_commit) + int'(event_commit_2) + int'(i_xret_taken) +
-      int'(event_exception);
+      int'(event_exception) + int'(event_ma_done);
+
+  function automatic int unsigned mem_size_bytes(input riscv_pkg::mem_size_e size);
+    unique case (size)
+      riscv_pkg::MEM_SIZE_HALF:   mem_size_bytes = 2;
+      riscv_pkg::MEM_SIZE_WORD:   mem_size_bytes = 4;
+      riscv_pkg::MEM_SIZE_DOUBLE: mem_size_bytes = 8;
+      default:                    mem_size_bytes = 1;
+    endcase
+  endfunction
 
   function automatic logic [XLEN-1:0] retired_next_pc(
       input riscv_pkg::reorder_buffer_commit_t commit);
@@ -355,6 +388,61 @@ module frost_rvfi_dii #(
       r.csr_pending = commit.is_csr;
     end
     commit_record = r;
+  endfunction
+
+  // Misaligned-access engine state captured at assist start.
+  logic ma_active_q;
+  logic ma_assist_redirect_q;
+  logic [XLEN-1:0] ma_pc_q;
+  logic [XLEN-1:0] ma_next_pc_q;
+
+  function automatic rvfi_record_t ma_done_record(input int unsigned index, input logic [1:0] priv);
+    rvfi_record_t r;
+    r = '0;
+    r.valid = 1'b1;
+    r.pc_rdata = ma_pc_q;
+    r.pc_wdata = ma_next_pc_q;
+    r.insn = (index < MaxInsns) ? dii_insn[index] : 32'h0;
+    r.mode = priv;
+    if (i_ma_wb_valid && !i_ma_wb_fp && (i_ma_wb_rd != 5'd0)) begin
+      r.rd_addr  = 8'(i_ma_wb_rd);
+      r.rd_wdata = i_ma_wb_data;
+    end
+    if (i_ma_store) begin
+      int unsigned nbytes;
+      int unsigned lo_bytes;
+      int unsigned hi_bytes;
+      logic cross_page;
+      logic [8:0] mask_wide;
+      logic [7:0] mask;
+      logic [63:0] value;
+      nbytes = mem_size_bytes(i_ma_size);
+      // Match Sail's RVFI-DII store reporting: a translated store crossing a
+      // 4 KiB page boundary splits at the boundary, so its final RVFI record
+      // carries the upper page's physical base, byte count, and high bytes;
+      // every other store carries its starting physical address, full byte
+      // mask, and right-aligned data.
+      cross_page = i_ma_translate && (({1'b0, i_ma_va[11:0]} + 13'(nbytes)) > 13'd4096);
+      if (cross_page) begin
+        lo_bytes = 4096 - int'(i_ma_va[11:0]);
+        hi_bytes = nbytes - lo_bytes;
+        mask_wide = (9'd1 << hi_bytes) - 9'd1;
+        mask = mask_wide[7:0];
+        value = i_ma_store_data >> (8 * lo_bytes);
+        r.mem_addr = i_ma_upper_pa;
+      end else begin
+        mask_wide = (9'd1 << nbytes) - 9'd1;
+        mask = mask_wide[7:0];
+        value = i_ma_store_data;
+        r.mem_addr = i_ma_lower_pa;
+      end
+      for (int b = 0; b < 8; b++) begin
+        if (!mask[b]) value[b*8+:8] = 8'h00;
+      end
+      r.mem_wmask = mask;
+      r.mem_wdata = value;
+    end
+    ma_done_record = r;
   endfunction
 
   // Indices of the previous cycle's commits, for the SQ's commit acceptance.
@@ -387,6 +475,10 @@ module frost_rvfi_dii #(
       idle_cycles <= 0;
       prev_commit_index <= 0;
       prev_commit_2_index <= 0;
+      ma_active_q <= 1'b0;
+      ma_assist_redirect_q <= 1'b0;
+      ma_pc_q <= '0;
+      ma_next_pc_q <= '0;
       for (int unsigned i = 0; i < MaxEvents; i++) rvfi_record[i] <= '0;
     end else begin
       int unsigned n;
@@ -459,9 +551,32 @@ module frost_rvfi_dii #(
         end
         n++;
       end
+      if (event_ma_done) begin
+        if (n < event_target && n < MaxEvents) rvfi_record[n] <= ma_done_record(n, i_priv);
+        n++;
+      end
+      if (i_ma_assist_start) begin
+        if (ma_active_q) error_flags[10] <= 1'b1;
+        ma_active_q <= 1'b1;
+        ma_assist_redirect_q <= 1'b1;
+        ma_pc_q <= i_trap_pc;
+        ma_next_pc_q <= i_trap_target;
+      end else begin
+        if (ma_assist_redirect_q) begin
+          if (!(i_pc_update_en && i_npc_sel[1])) error_flags[10] <= 1'b1;
+          ma_assist_redirect_q <= 1'b0;
+        end
+        if (event_ma_done) begin
+          if (!ma_active_q) error_flags[10] <= 1'b1;
+          ma_active_q <= 1'b0;
+        end else if (event_exception && ma_active_q) begin
+          ma_active_q <= 1'b0;
+        end
+      end
       if (i_trap_taken && i_trap_cause[XLEN-1]) error_flags[0] <= 1'b1;
       if (event_target > MaxEvents) error_flags[1] <= 1'b1;
-      if (int'(i_xret_taken) + int'(event_exception) + int'(event_commit) > 1)
+      if (int'(i_xret_taken) + int'(event_exception) + int'(event_commit) +
+          int'(event_ma_done) + int'(i_ma_assist_start) > 1)
         error_flags[7] <= 1'b1;
       event_count <= n;
 
@@ -525,7 +640,7 @@ module frost_rvfi_dii #(
           hung <= 1'b1;
           done <= 1'b1;
         end else if ((store_checked_count >= event_target) && (store_queue.size() == 0) &&
-                     !csr_pending && !i_csr_wb_pending) begin
+                     !csr_pending && !i_csr_wb_pending && !ma_active_q) begin
           done <= 1'b1;
         end
       end
@@ -551,7 +666,7 @@ module frost_rvfi_dii #(
       consumed = event_count + events_this_cycle;
       if (i_npc_sel[1]) begin
         layout_pc <= i_trap_redirect_pc;
-        layout_index <= consumed;
+        layout_index <= ma_assist_redirect_q ? (consumed + 1) : consumed;
       end else if (i_npc_sel[2]) begin
         layout_pc <= i_fence_redirect_pc;
         layout_index <= consumed;
