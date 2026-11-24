@@ -4284,11 +4284,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Speculative fills, load replay, attached signed and unsigned extraction, vector holds, flush recovery and LR cuts",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
     ),
+    "coherent_stream_order_probe_launch": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_stream_order",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Speculative fills, load replay, vector holds, flush recovery and LR cuts with PROBE_LAUNCH=1",
+        verilator_extra_args=(
+            "--assert",
+            "-GDIRECT_CACHE_READS=1",
+            "-GCACHE_MISSES=8",
+            "-GLQ_PROBE_LAUNCH=1",
+        ),
+    ),
     "hitpath_probe_order": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_hitpath_probe_order",
         hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
         description="Same-address load order across an invalidating probe and the L1D hit path",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
+    ),
+    "hitpath_probe_order_probe_launch": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_hitpath_probe_order",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Same-address load order across an invalidating probe and the L1D hit path with PROBE_LAUNCH=1",
+        verilator_extra_args=(
+            "--assert",
+            "-GDIRECT_CACHE_READS=1",
+            "-GCACHE_MISSES=8",
+            "-GLQ_PROBE_LAUNCH=1",
+        ),
     ),
     "coherent_cut_fabric": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut_fabric",
@@ -4691,6 +4713,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GSIM_FAST_MAINT=1",
         ),
         extra_env=(("FROST_TEST_ARRAY_FAST", "1"), ("FROST_TEST_ARRAY_ULTRA", "1")),
+    ),
+    "coherence_array_nru_hit_port": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_nru_port",
+        hdl_toplevel_module="coherence_array",
+        description="Per-way NRU hit-port touches beside controller no-op writes",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GBIMODAL_INSERT=1",
+            "-GHIT_PORT=1",
+            "-GULTRA=0",
+            "-GSIM_FAST_MAINT=1",
+        ),
     ),
     "coherence_home_array_reset_bram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
@@ -6296,7 +6331,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_dmmu",
         hdl_toplevel_module="dmmu",
         description=(
-            "Sv39 data translation, last-page bypass, fault priority, and recovery"
+            "Sv39 data translation, resident-entry bypass, fault priority, and recovery"
         ),
     ),
     "dmmu_1g": CocotbRunConfig(

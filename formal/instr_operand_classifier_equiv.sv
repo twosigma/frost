@@ -154,7 +154,7 @@ module instr_operand_classifier_equiv #(
       riscv_pkg::FCVT_S_H, riscv_pkg::FCVT_H_S, riscv_pkg::FCVT_D_H, riscv_pkg::FCVT_H_D,
       riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X, riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X,
       riscv_pkg::FMV_X_H, riscv_pkg::FMV_H_X,
-      riscv_pkg::FLI_S, riscv_pkg::FLI_D, riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S,
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D, riscv_pkg::FLI_H, riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S,
       riscv_pkg::FMINM_D, riscv_pkg::FMAXM_D, riscv_pkg::FROUND_S, riscv_pkg::FROUNDNX_S,
       riscv_pkg::FROUND_D, riscv_pkg::FROUNDNX_D, riscv_pkg::FCVTMOD_W_D,
       riscv_pkg::FLEQ_S, riscv_pkg::FLTQ_S, riscv_pkg::FLEQ_D, riscv_pkg::FLTQ_D,
@@ -241,7 +241,7 @@ module instr_operand_classifier_equiv #(
       riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X,
       riscv_pkg::FCVT_S_H, riscv_pkg::FCVT_H_S, riscv_pkg::FCVT_D_H, riscv_pkg::FCVT_H_D,
       riscv_pkg::FMV_X_H, riscv_pkg::FMV_H_X,
-      riscv_pkg::FLI_S, riscv_pkg::FLI_D, riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S,
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D, riscv_pkg::FLI_H, riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S,
       riscv_pkg::FMINM_D, riscv_pkg::FMAXM_D, riscv_pkg::FROUND_S, riscv_pkg::FROUNDNX_S,
       riscv_pkg::FROUND_D, riscv_pkg::FROUNDNX_D, riscv_pkg::FCVTMOD_W_D,
       riscv_pkg::FLEQ_S, riscv_pkg::FLTQ_S, riscv_pkg::FLEQ_D, riscv_pkg::FLTQ_D:
@@ -265,7 +265,7 @@ module instr_operand_classifier_equiv #(
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
       riscv_pkg::FCVT_S_H, riscv_pkg::FCVT_H_S, riscv_pkg::FCVT_D_H, riscv_pkg::FCVT_H_D,
       riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X, riscv_pkg::FMV_H_X,
-      riscv_pkg::FLI_S, riscv_pkg::FLI_D, riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S,
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D, riscv_pkg::FLI_H, riscv_pkg::FMINM_S, riscv_pkg::FMAXM_S,
       riscv_pkg::FMINM_D, riscv_pkg::FMAXM_D, riscv_pkg::FROUND_S, riscv_pkg::FROUNDNX_S,
       riscv_pkg::FROUND_D, riscv_pkg::FROUNDNX_D:
       has_fp_dest_pre = 1'b1;
@@ -402,6 +402,7 @@ module instr_operand_classifier_equiv #(
       op_for_pre_decode != riscv_pkg::CSR_IMM &&
       op_for_pre_decode != riscv_pkg::FLI_S &&
       op_for_pre_decode != riscv_pkg::FLI_D &&
+      op_for_pre_decode != riscv_pkg::FLI_H &&
       op_for_pre_decode != riscv_pkg::ILLEGAL &&
       op_for_pre_decode != riscv_pkg::FETCH_FAULT &&
       op_for_pre_decode != riscv_pkg::VSETIVLI &&

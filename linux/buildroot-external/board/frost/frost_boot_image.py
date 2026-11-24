@@ -106,8 +106,9 @@ ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_
 # X3 implements V with ELEN 64, VLEN 256 and its vector sub-extensions
 # (Zvfhmin, Zvfh, Zvbb/Zvkb, Zvbc, Zvkned, Zvknha, Zvknhb, Zvkg, Zvkt and the
 # NIST aggregates Zvkn, Zvknc and Zvkng), and its 1 GiB DDR map carries an
-# uncached alias for Svpbmt. VCU118 is scalar and its 2 GiB DDR map has no
-# uncached alias, so the VCU118 device tree omits svpbmt.
+# uncached alias for Svpbmt. Default VCU118 builds are scalar; opt-in VCU118
+# --vector builds enable V with ELEN 64 and VLEN 256. Both VCU118 builds share
+# the 2 GiB DDR map with no uncached alias, so VCU118 device trees omit svpbmt.
 X3_VECTOR_EXTENSIONS = (
     "zvbb", "zvbc",
     "zve32f", "zve32x", "zve64d", "zve64f", "zve64x",
@@ -126,6 +127,19 @@ X3_ISA_EXTENSIONS = (
 X3_ISA_STRING = "rv64imafdcv_" + "_".join(X3_ISA_EXTENSIONS[7:])
 VCU118_ISA_EXTENSIONS = tuple(ext for ext in ISA_EXTENSIONS if ext != "svpbmt")
 VCU118_ISA_STRING = "rv64imafdc_" + "_".join(VCU118_ISA_EXTENSIONS[6:])
+# Keep the opt-in VCU118 vector extension list separate from X3_VECTOR_EXTENSIONS on purpose.
+VCU118_VECTOR_EXTENSIONS = (
+    "zve32x", "zve32f", "zve64x", "zve64f", "zve64d",
+    "zvl32b", "zvl64b", "zvl128b", "zvl256b",
+)  # fmt: skip
+VCU118_VECTOR_ISA_EXTENSIONS = (
+    *VCU118_ISA_EXTENSIONS[:6],
+    "v",
+    *VCU118_ISA_EXTENSIONS[6 : VCU118_ISA_EXTENSIONS.index("smaia")],
+    *VCU118_VECTOR_EXTENSIONS,
+    *VCU118_ISA_EXTENSIONS[VCU118_ISA_EXTENSIONS.index("smaia") :],
+)
+VCU118_VECTOR_ISA_STRING = "rv64imafdcv_" + "_".join(VCU118_VECTOR_ISA_EXTENSIONS[7:])
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
@@ -300,14 +314,23 @@ def gen_dts(
     mac: str = NIC_MAC_ADDRESS,
     mem_size: int = MEM_SIZE,
     board: str = "x3",
+    vector: bool | None = None,
 ) -> str:
     """Return the FROST device tree source for the OpenSBI + Sv39 boot.
 
     mac is the NIC's local-mac-address as DT bytes ("02 11 22 33 44 55");
-    mem_size is the size of the memory node at DDR_BASE.
+    mem_size is the size of the memory node at DDR_BASE; vector overrides
+    whether the CPU node advertises V (default: True for x3, False for vcu118).
     """
-    isa_extensions = X3_ISA_EXTENSIONS if board == "x3" else VCU118_ISA_EXTENSIONS
-    isa_string = X3_ISA_STRING if board == "x3" else VCU118_ISA_STRING
+    has_vector = (board == "x3") if vector is None else vector
+    if board == "x3":
+        isa_extensions = X3_ISA_EXTENSIONS if has_vector else ISA_EXTENSIONS
+        isa_string = X3_ISA_STRING if has_vector else ISA_STRING
+    else:
+        isa_extensions = (
+            VCU118_VECTOR_ISA_EXTENSIONS if has_vector else VCU118_ISA_EXTENSIONS
+        )
+        isa_string = VCU118_VECTOR_ISA_STRING if has_vector else VCU118_ISA_STRING
     ext_list = ",\n\t\t\t\t".join(
         ", ".join(f'"{e}"' for e in isa_extensions[i : i + 6])
         for i in range(0, len(isa_extensions), 6)
@@ -811,6 +834,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         f"(default: 0x{MEM_SIZE:x}, the simulation DDR model's size)",
     )
     parser.add_argument("--board", choices=("x3", "vcu118"), default="x3")
+    parser.add_argument(
+        "--vector",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="advertise the V extension in the generated device tree "
+        "(default: on for x3, off for vcu118)",
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "--dtb",
@@ -863,6 +893,7 @@ def main(argv: list[str] | None = None) -> int:
                 mac=args.mac or NIC_MAC_ADDRESS,
                 mem_size=args.mem_size,
                 board=args.board,
+                vector=args.vector,
             ),
             out_dir,
             args.dtc,

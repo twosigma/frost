@@ -4,6 +4,9 @@ cover_four cover lifecycle load four
 bmc_intervening bmc regular intervening
 bmc_load_same bmc regular load same ordinary
 bmc_load_other bmc regular load other ordinary
+bmc_load_same_probe_launch bmc regular load same ordinary probe_launch
+bmc_probe_kept_other bmc regular load other ordinary probe_launch read_first
+bmc_probe_kept_same bmc regular load same ordinary probe_launch read_first
 bmc_amo_same bmc regular amo same amo_partition amo_flow
 bmc_amo_same_owner bmc regular amo same amo_partition amo_owner
 bmc_amo_same_fatal bmc amo same amo_partition amo_fatal
@@ -23,6 +26,8 @@ cover_old cover lifecycle old
 cover_edges_same cover boundaries delayed load same ordinary
 cover_edges_same_combined cover boundaries load same ordinary
 cover_edges_other cover boundaries load other ordinary
+cover_probe_kept_other cover probe_kept load other ordinary probe_launch read_first
+cover_probe_kept_same cover probe_kept load same ordinary probe_launch read_first
 
 [options]
 bmc: mode bmc
@@ -42,6 +47,8 @@ cover_four: timeout 7200
 intervening: timeout 19800
 bmc_amo_same: timeout 3300
 bmc_amo_other: timeout 4800
+bmc_probe_kept_same: timeout 3600
+bmc_probe_kept_other: timeout 6000
 # The SC handoff BMC takes about 45 minutes; CI runners take up to about 2.2
 # times as long.
 bmc_sc: timeout 6000
@@ -97,6 +104,9 @@ sticky: read -formal -sv -noautowire -D LOCAL_ATOMIC_DEPENDENCY -D FATAL_STICKY_
 lifecycle: chparam -set COVER_MODE 1 coherence_store_boundary_formal
 homepath: chparam -set COVER_AMO_HOME 1 coherence_store_boundary_formal
 boundaries: chparam -set COVER_BOUNDARIES 1 coherence_store_boundary_formal
+probe_launch: chparam -set PROBE_LAUNCH 1 coherence_store_boundary_formal
+read_first: chparam -set PROBE_READ_FIRST 1 coherence_store_boundary_formal
+probe_kept: chparam -set COVER_PROBE_KEPT 1 coherence_store_boundary_formal
 delayed: chparam -set DELAY_SECOND_STORE 1 coherence_store_boundary_formal
 same: chparam -set SECTOR_CASE 0 coherence_store_boundary_formal
 other: chparam -set SECTOR_CASE 1 coherence_store_boundary_formal
@@ -115,18 +125,18 @@ load: chformal -cover -remove c:*p_amo_* c:*p_sc_* c:*p_old_*
 amo: chformal -cover -remove c:*p_load_* c:*p_sc_* c:*p_old_*
 sc: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_old_*
 old: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_sc_*
-amo_partition: select -assert-count 17 t:$check r:FLAVOR=assert %i
+amo_partition: select -assert-count 19 t:$check r:FLAVOR=assert %i
 amo_flow: chformal -assert -remove c:p_no_buffered_atomic c:p_no_buffered_guard c:p_no_fatal
-amo_flow: select -assert-count 14 t:$check r:FLAVOR=assert %i
-other_flow: select -assert-count 17 t:$check r:FLAVOR=assert %i
+amo_flow: select -assert-count 16 t:$check r:FLAVOR=assert %i
+other_flow: select -assert-count 19 t:$check r:FLAVOR=assert %i
 other_flow: chformal -assert -remove c:p_no_fatal
-other_flow: select -assert-count 16 t:$check r:FLAVOR=assert %i
+other_flow: select -assert-count 18 t:$check r:FLAVOR=assert %i
 amo_owner: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_buffered_atomic c:p_no_buffered_guard %u %d
 amo_owner: select -assert-count 2 t:$check r:FLAVOR=assert %i
 amo_fatal: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_fatal %d
 amo_fatal: select -assert-count 1 t:$check r:FLAVOR=assert %i
 amo_fatal: select -assert-count 1 c:p_no_fatal
-sticky: select -assert-count 18 t:$check r:FLAVOR=assert %i
+sticky: select -assert-count 20 t:$check r:FLAVOR=assert %i
 sticky: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_fatal_sticky %d
 sticky: select -assert-count 1 t:$check r:FLAVOR=assert %i
 sticky: select -assert-count 1 c:p_fatal_sticky

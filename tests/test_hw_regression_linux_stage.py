@@ -6193,3 +6193,109 @@ def test_run_uart_stage_reads_console_for_60s_after_isa_case_fail_and_records_ou
     assert "Oops: delayed post-failure trace" in combined_stdout
     assert "AFTER_60S_WINDOW_NOT_READ" not in combined_stdout
     assert not any("frost_nettest" in cmd for cmd in typed)
+
+
+def test_vcu118_vector_regression_options(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--vector enables VCU118 vector stages and forwards --vector to loader and sweep."""
+    scalar_stages = hw.regression_stages("vcu118")
+    vector_stages = hw.regression_stages("vcu118", vector=True)
+    assert not (set(scalar_stages) & hw.VECTOR_UNIT_APPS)
+    assert hw.VECTOR_UNIT_APPS <= set(vector_stages)
+    assert "vec_state_test" in scalar_stages
+    assert "vec_state_test" in vector_stages
+    assert hw.resolve_isa_vlenb(REPO_ROOT, "vcu118", None) == 32
+
+    assert hw.stage_loader_extra("hello_world", [], board="vcu118", vector=True) == [
+        "--vector"
+    ]
+    assert hw.stage_loader_extra("hello_world", [], board="vcu118", vector=False) == [
+        "--no-vector"
+    ]
+    assert hw.stage_loader_extra("hello_world", [], board="x3", vector=True) == []
+
+    # CoreMark score calculation uses 162.5 MHz on VCU118 --vector.
+    monkeypatch.delenv("FROST_CPU_CLK_HZ", raising=False)
+    stage_vec = hw.build_stage("coremark", "vcu118", 1.0, vector=True)
+    ok, note = stage_vec.judge("Total 64-bit ticks : 1625000000\n<<PASS>>\n")
+    assert ok and "1080.00" in note
+    stage_scalar = hw.build_stage("coremark", "vcu118", 1.0, vector=False)
+    ok_s, note_s = stage_scalar.judge("Total 64-bit ticks : 2000000000\n<<PASS>>\n")
+    assert ok_s and "1080.00" in note_s
+
+    # CLI forwards --vector to UART stages and sweep_coremark_pro.
+    seen_uart: dict[str, list[str]] = {}
+    seen_sweep: list[list[str]] = []
+    monkeypatch.setattr(hw, "serial_holders", lambda _serial: [])
+    monkeypatch.setattr(hw, "configure_serial", lambda _serial: 99)
+    monkeypatch.setattr(hw.os, "close", lambda _fd: None)
+
+    def fake_uart(
+        _repo: Path,
+        _fd: int,
+        _board: str,
+        stage: Any,
+        _timeout: float,
+        loader_extra: list[str],
+        _target: str,
+        _loader_env: Any = None,
+    ) -> dict[str, Any]:
+        seen_uart[stage.app] = list(loader_extra)
+        return {"stage": stage.app, "status": "PASS", "elapsed": 0.1, "note": "ok"}
+
+    def fake_sweep(
+        _repo: Path,
+        _board: str,
+        _serial: str,
+        _target: str,
+        _timeout: float,
+        loader_extra: list[str],
+        _tolerance: float,
+        *,
+        vector: bool | None = None,
+    ) -> dict[str, Any]:
+        assert vector is True
+        seen_sweep.append(list(loader_extra))
+        return {"stage": hw.SWEEP_STAGE, "status": "PASS", "elapsed": 0.1, "note": "ok"}
+
+    monkeypatch.setattr(hw, "run_uart_stage", fake_uart)
+    monkeypatch.setattr(hw, "run_sweep_stage", fake_sweep)
+    monkeypatch.setattr(
+        hw.sys,
+        "argv",
+        [
+            "runner",
+            "--board",
+            "vcu118",
+            "--vector",
+            "vec_arith_test",
+            "coremark_pro",
+        ],
+    )
+    assert hw.main() == 0
+    assert seen_uart == {"vec_arith_test": ["--vector"]}
+    assert seen_sweep == [["--vector"]]
+
+    # Reject x3 --no-vector and duplicate --vector in --loader-extra.
+    for bad_argv, expected_err in (
+        (
+            ["--board", "x3", "--no-vector", "hello_world"],
+            "--no-vector is only supported for vcu118",
+        ),
+        (
+            [
+                "--board",
+                "vcu118",
+                "--vector",
+                "--loader-extra=--vector",
+                "hello_world",
+            ],
+            "cannot also be passed through --loader-extra",
+        ),
+    ):
+        monkeypatch.setattr(hw.sys, "argv", ["runner", *bad_argv])
+        with pytest.raises(SystemExit) as stopped:
+            hw.main()
+        assert stopped.value.code == 2
+        assert expected_err in capsys.readouterr().err

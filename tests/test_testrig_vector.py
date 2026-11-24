@@ -275,7 +275,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (39, instructions + 24916) if vector_directed else (15, instructions)
+    expected = (40, instructions + 25036) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -287,6 +287,7 @@ def test_vector_directed_replay(
         ("vector_state_results.S", 72, 59),
         ("vector_fractional_lmul.S", 54, 62),
         ("vector_fp_results_flags.S", 74, 51),
+        ("vector_fli_h.S", 120, 174),
         ("vector_fma.S", 186, 146),
         ("vector_fp_compare.S", 206, 264),
         ("vector_fp_convert.S", 210, 209),

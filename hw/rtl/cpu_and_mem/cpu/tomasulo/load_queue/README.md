@@ -32,7 +32,7 @@ extracts and sign-extends bytes, halfwords and words from a 64-bit beat.
 | `PREISSUE_CANDIDATES`, `PREISSUE_SEL_WIDTH` | 0, 2; 1, 3 in the core | Select one of 2^`PREISSUE_SEL_WIDTH` look-ahead matches and register it (early load wakeup) |
 | `PREISSUE_READY_PICK`, `PREISSUE_RS_DEPTH` | 0, 8; 1, 8 in the core | Compare RS entry tags first, then select a match using each candidate's ready vector |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, 1 GiB | Cached (DDR) region |
-| `PROBE_LAUNCH` | 0 | An ordinary cached load reads memory in its probe cycle ([Launch during the probe](#launch-during-the-probe)) |
+| `PROBE_LAUNCH` | 0; 1 in the core when `CACHED_TIER_EN` is set | An ordinary cached load reads memory in its probe cycle ([Launch during the probe](#launch-during-the-probe)) |
 
 FROST passes a 512-entry L0 when Normal read caching is enabled; the raw LQ
 and strict CPU profile retain the 128-entry default. Cache depth does not
@@ -99,7 +99,9 @@ which arrives early in the cycle. In the core
 (`PREISSUE_READY_PICK=1`) the LQ compares its tags against every MEM_RS entry
 tag, and each candidate's ready vector picks the compare result of that
 candidate's winner (entry 0 when nothing is ready). Under translation it
-compares `i_pre_issue_direct_tag` instead.
+compares `i_pre_issue_direct_tag` instead. The DMMU can announce a load before
+its lookup settles. The registered match takes effect only when the load's
+address-update packet arrives.
 
 [`lq_issue_selector.sv`](lq_issue_selector.sv) scans in ring order from
 `head_idx` and finds, in parallel: the first entry holding a result, which
@@ -277,8 +279,8 @@ With `PROBE_LAUNCH=1`, an ordinary load to the cached tier that misses the L0
 launches its read in the cycle it probes the SQ, one cycle before the
 verdict. Device loads, LRs, AMOs, misaligned or faulting loads and loads
 outside the cached tier launch only after the verdict. Whether the staged
-load may launch this way (`probe_launch_ok_q`) is registered when it is
-staged, so the probe cycle's launch adds only the probe's own live terms
+load may launch this way (`probe_launch_ok`) is formed from the already-registered
+stage class, so the probe cycle's launch adds only the probe's own live terms
 beside the phase-2 launch, and the L0 hit meets the memory port last.
 The launch takes a cached slot marked `cs_spec` for the next cycle, the
 verdict cycle:
@@ -300,10 +302,15 @@ dropped on that edge and the load stays unissued.
 The verdict covers every older store the read might not see. The probe reads
 the SQ in the cycle whose edge launches the read, and a store stays in the SQ
 until its cached write completes, after the L1D took it into its store
-buffer. A store that left the SQ earlier was pushed into the L1D at least a
-cycle before the launch, and the same-sector hold of that cycle covers it, as
-for any launch. A store in the SQ during the probe that overlaps the load
-makes the verdict forward or block.
+buffer. In `cpu_ooo`, buffered cached `store_ack` (`i_cached_write_inflight &&
+i_cached_write_done`) is decoupled from `i_mem_bus_busy` and router
+`write_port_busy` so an unrelated cached load can launch on the `store_ack`
+cycle (atomic writes continue to hold `i_cached_write_inflight` without
+`i_cached_write_done`). A store that pushed into the L1D on the prior cycle is
+covered on that `store_ack` cycle by the registered `push_prev_q` branch of
+`coherent_sector_hold`; a store pushed earlier is covered by the holder-address
+match, as for any launch. A store in the SQ during the probe that overlaps the
+load makes the verdict forward or block.
 
 The L1D also requires that no load reach it for a block whose cbo.zero waits
 for its second record: the cbo.zero's push records only its lower sector, and
@@ -781,10 +788,21 @@ and a store update that takes the RAM port from a fill at another index.
 Formally, `load_queue` checks queue invariants from reset, and its
 `bmc_probe_launch` and `cover_probe_launch` tasks repeat that with
 `PROBE_LAUNCH=1`: a dropped response reaches neither the LQ data, the CDB
-stage nor the L0, each verdict keeps or drops the read as above, and covers
-reach a launch followed by a forward, a keep, a block and relaunch, a
-replaced stage, a response in the verdict cycle, and a store accepted on the
-launch edge.
+stage nor the L0, each verdict keeps or drops the read as above,
+`p_probe_block_inval_no_launch` and `p_probe_zero_twin_no_launch` pin the
+global `cbo.zero` pending-twin and block-invalidation hold, with sole-blocker
+covers for the pending twin, post-flush hold, block invalidation, and
+release-then-launch; the independent check of the L1D contract remains
+`p_zero_pending_twin_no_read_req` in `coherence_l1d.sv`. Covers also reach a
+launch followed by a forward, a keep, a block and relaunch, a replaced stage, a
+response in the verdict cycle, and a store accepted on the launch edge.
+`coherent_cpu` repeats all five unbounded `coh_lq_*` prove tasks with
+`PROBE_LAUNCH=1`. `coherence_store_boundary` checks composed SQ, router, L1D,
+and LQ ordering with `PROBE_LAUNCH=1` and decoupled `store_ack`
+(`bmc_load_same_probe_launch`, `bmc_probe_kept_other`, `bmc_probe_kept_same`,
+and `cover_probe_kept_{other,same}`), and `tests/test_probe_launch_mutations.py`
+registers four negative controls covering the twin hold, flush persistence,
+one-cycle-late SQ probe, and `push_prev_q` sector hold.
 `load_queue_amo_compute` the AMO datapath with no reset or admission
 assumptions, `lq_l0_cache` the L0, and the small `lq_*` targets each prove one
 optimized structure equal to its reference form.

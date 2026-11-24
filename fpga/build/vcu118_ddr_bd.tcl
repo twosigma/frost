@@ -24,7 +24,14 @@ proc create_vcu118_ddr_bd {} {
   if {[info exists ::env(FROST_CPU_CLK_DIV)] && $::env(FROST_CPU_CLK_DIV) ni {"" 1}} {
     error "VCU118 uses a fixed CPU clock; FROST_CPU_CLK_DIV must be 1"
   }
-  set cpu_clk_hz 200000000
+  set frost_vector 0
+  if {[info exists ::env(FROST_VECTOR)] && $::env(FROST_VECTOR) ne ""} {
+    set frost_vector $::env(FROST_VECTOR)
+  }
+  if {$frost_vector ni {0 1}} {
+    error "FROST_VECTOR must be 0 or 1 (got '$frost_vector')"
+  }
+  set cpu_clk_hz [expr {$frost_vector eq "1" ? 162500000 : 200000000}]
   set cpu_clk [create_bd_port -dir I -type clk -freq_hz $cpu_clk_hz cpu_clk]
   set jtag_clk [create_bd_port -dir I -type clk -freq_hz [expr {$cpu_clk_hz / 4}] jtag_clk]
 

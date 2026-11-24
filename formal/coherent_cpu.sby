@@ -12,6 +12,11 @@ coh_lq_forward_prove lq forward
 coh_lq_forward_normal_prove lq forward normal
 coh_lq_busy_prove lq forward normal busy
 coh_lq_normal_fill_prove lq normal
+coh_lq_cut_probe_launch_prove lq probe_launch
+coh_lq_forward_probe_launch_prove lq forward probe_launch
+coh_lq_forward_normal_probe_launch_prove lq forward normal probe_launch
+coh_lq_busy_probe_launch_prove lq forward normal busy probe_launch
+coh_lq_normal_fill_probe_launch_prove lq normal probe_launch
 coh_lq_selector_prove selector
 coh_lq_selector4_prove selector selector4
 coh_lq_selector16_prove selector selector16
@@ -42,6 +47,7 @@ lq: read -formal -sv -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF -D F_LQ_RE
 forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
 normal: chparam -set CACHE_NORMAL_MEMORY 1 -set CACHE_UNCACHED_DATA 0 -set MEM_RESPONSE_ERRORS 1 load_queue
 busy: chparam -set PREPARE_LOAD_WHILE_BUSY 0 load_queue
+probe_launch: chparam -set PROBE_LAUNCH 1 load_queue
 lq: hierarchy -top load_queue
 lq: script free_undefined.ys
 lq: prep -flatten -top load_queue

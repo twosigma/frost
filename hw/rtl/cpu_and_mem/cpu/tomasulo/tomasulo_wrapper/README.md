@@ -55,7 +55,7 @@ adapter wiring.
 | `INT_RS_DEPTH` | 16 (`riscv_pkg::IntRsDepth`) | INT_RS entries: a power of two from 2 to 32, the ROB depth. It changes only INT_RS and the width of its occupancy count; port 1's window stays at eight entries, or the whole station if smaller |
 | `EARLY_LOAD_WAKEUP` | 1 (`riscv_pkg::EarlyLoadWakeup`) | [Early load wakeup](#early-load-wakeup) |
 | `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: stage a load while the memory port is busy; the wrapper may separately permit unrelated L0 hits during buffered Normal stores and older Normal reads |
-| `LQ_PROBE_LAUNCH` | 0 | LQ `PROBE_LAUNCH`: an ordinary cached load reads memory during its store-queue probe ([load queue](../load_queue/README.md#launch-during-the-probe)) |
+| `LQ_PROBE_LAUNCH` | 0; 1 in `cpu_ooo` when `CACHED_TIER_EN` is set | LQ `PROBE_LAUNCH`: an ordinary cached load reads memory during its store-queue probe ([load queue](../load_queue/README.md#launch-during-the-probe)) |
 | `CACHE_NORMAL_MEMORY` | 0 | Optional Normal read-cache/write-through policy; FROST enables it, excluding the debug data page |
 | `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 entries; FROST passes 512 with Normal read caching |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, `0x4000_0000` | Cached (DDR) region, for LQ and SQ tier tagging |

@@ -24,6 +24,7 @@ module tomasulo_coherent_cut_test_harness #(
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
+    parameter bit LQ_PROBE_LAUNCH = 1'b0,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
     parameter bit ROB_SHARED_LINK_BANK = 1'b0,
     parameter int unsigned PERF_COUNTERS = 1,
@@ -414,6 +415,7 @@ module tomasulo_coherent_cut_test_harness #(
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
+      .LQ_PROBE_LAUNCH(LQ_PROBE_LAUNCH),
       .INT_RS_DEPTH(INT_RS_DEPTH),
       .ROB_SHARED_LINK_BANK(ROB_SHARED_LINK_BANK),
       .PERF_COUNTERS(PERF_COUNTERS)

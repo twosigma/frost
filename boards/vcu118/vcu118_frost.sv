@@ -30,7 +30,10 @@ module vcu118_frost #(
     // The VCU118 L2 is 4 MiB, with the shared four-way geometry.
     parameter int unsigned L2_CACHE_BYTES = 4 * 1024 * 1024,
     // Complete plain misaligned loads and stores in cached DDR.
-    parameter bit MISALIGNED_HW = 1'b1
+    parameter bit MISALIGNED_HW = 1'b1,
+    // Optional vector unit (VLEN 256) and misa.V advertisement.
+    parameter bit VECTOR = 1'b0,
+    parameter bit VECTOR_ADVERTISE = 1'b0
 ) (
     // Differential system clock SYSCLK1_300 (G31 / F31, Bank 47 in SLR1)
     input logic sysclk1_300_p,
@@ -291,6 +294,9 @@ module vcu118_frost #(
       .L2_CACHE_BYTES    (L2_CACHE_BYTES),
       .PERF_COUNTERS     (PERF_COUNTERS),
       .MISALIGNED_HW     (MISALIGNED_HW && (ENABLE_CACHED_TIER != 0)),
+      .VECTOR            (VECTOR),
+      .VLEN              (256),
+      .VECTOR_ADVERTISE  (VECTOR_ADVERTISE),
       .RAW_LOOPBACK      (0),
       .ENABLE_1G_ETH     (1)
   ) u_frost_subsystem (

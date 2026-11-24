@@ -621,10 +621,202 @@ def test_vector_device_tree_matches_board(board: str, tmp_path: Path) -> None:
         assert re.search(r"\.VECTOR_ADVERTISE\(1'b1\)", top)
         assert re.search(r"\.VLEN\(256\)", top)
     else:
-        assert not re.search(r"\.VECTOR\s*\(", top)
-        assert not re.search(r"\.VECTOR_ADVERTISE\s*\(", top)
+        assert re.search(r"\bparameter\s+bit\s+VECTOR\s*=\s*1'b0\b", top)
+        assert re.search(r"\bparameter\s+bit\s+VECTOR_ADVERTISE\s*=\s*1'b0\b", top)
+        assert re.search(r"\.VECTOR\s*\(\s*VECTOR\s*\)", top)
+        assert re.search(r"\.VECTOR_ADVERTISE\s*\(\s*VECTOR_ADVERTISE\s*\)", top)
+        assert re.search(r"\.VLEN\s*\(\s*256\s*\)", top)
     subsystem = (REPO_ROOT / "boards/xilinx_frost_subsystem.sv").read_text()
     assert ".VECTOR_ADVERTISE(VECTOR_ADVERTISE)" in subsystem
+
+
+def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:
+    """Opt-in VCU118 vector trees advertise V at 162.5 MHz while defaults stay scalar."""
+    packer = _load_module(SBI_PACKER)
+
+    # 1. Generated DTB for VCU118 --vector vs default scalar.
+    vec_dts = packer.gen_dts(
+        clk_hz=162_500_000,
+        initrd_range=None,
+        bootargs="",
+        model="t",
+        board="vcu118",
+        vector=True,
+    )
+    vec_dir = tmp_path / "gen_vec"
+    vec_dir.mkdir()
+    packer.compile_dtb(vec_dts, vec_dir, "dtc")
+    dtb = vec_dir / "frost.dtb"
+    isa = subprocess.run(
+        ["fdtget", "-t", "s", str(dtb), "/cpus/cpu@0", "riscv,isa"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    exts = tuple(
+        subprocess.run(
+            ["fdtget", "-t", "s", str(dtb), "/cpus/cpu@0", "riscv,isa-extensions"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.strip()
+        .split()
+    )
+    assert isa == packer.VCU118_VECTOR_ISA_STRING
+    assert exts == packer.VCU118_VECTOR_ISA_EXTENSIONS
+    assert "svpbmt" not in exts
+    assert "_svpbmt" not in isa
+    for node, prop in (
+        ("/cpus", "timebase-frequency"),
+        ("/soc@0/serial@40001000", "clock-frequency"),
+        ("/soc@0/ethernet@40030000", "clock-frequency"),
+        ("/soc@0/ethernet@40022000", "clock-frequency"),
+    ):
+        val = subprocess.run(
+            ["fdtget", "-t", "u", str(dtb), node, prop],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert int(val) == 162_500_000
+
+    # Packer CLI --vector / --no-vector parsing.
+    assert (
+        packer.parse_args(
+            ["--firmware", "fw", "--payload", "img", "--board", "vcu118"]
+        ).vector
+        is None
+    )
+    assert (
+        packer.parse_args(
+            ["--firmware", "fw", "--payload", "img", "--board", "vcu118", "--vector"]
+        ).vector
+        is True
+    )
+    assert (
+        packer.parse_args(
+            ["--firmware", "fw", "--payload", "img", "--board", "vcu118", "--no-vector"]
+        ).vector
+        is False
+    )
+
+    # 2. Flash/TFTP DTS for opt-in VCU118 vector build.
+    vec_flash_dts = (
+        REPO_ROOT / "boards/vcu118/dts/frost_vcu118_vector.dts"
+    ).read_text()
+    vec_flash_dtb = tmp_path / "frost_vector.dtb"
+    subprocess.run(
+        [
+            "dtc",
+            "-I",
+            "dts",
+            "-O",
+            "dtb",
+            "-o",
+            str(vec_flash_dtb),
+            str(REPO_ROOT / "boards/vcu118/dts/frost_vcu118_vector.dts"),
+        ],
+        check=True,
+    )
+    flash_isa = subprocess.run(
+        ["fdtget", "-t", "s", str(vec_flash_dtb), "/cpus/cpu@0", "riscv,isa"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    flash_exts = tuple(
+        subprocess.run(
+            [
+                "fdtget",
+                "-t",
+                "s",
+                str(vec_flash_dtb),
+                "/cpus/cpu@0",
+                "riscv,isa-extensions",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.strip()
+        .split()
+    )
+    assert flash_isa == packer.VCU118_VECTOR_ISA_STRING
+    assert flash_exts == packer.VCU118_VECTOR_ISA_EXTENSIONS
+    assert "svpbmt" not in flash_exts
+    assert "_svpbmt" not in flash_isa
+    for node, prop in (
+        ("/cpus", "timebase-frequency"),
+        ("/soc@0/serial@40001000", "clock-frequency"),
+        ("/soc@0/ethernet@40030000", "clock-frequency"),
+        ("/soc@0/ethernet@40022000", "clock-frequency"),
+        ("/soc@0/spi@40023000", "clock-frequency"),
+    ):
+        val = subprocess.run(
+            ["fdtget", "-t", "u", str(vec_flash_dtb), node, prop],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert int(val) == 162_500_000
+    assert "200000000" not in vec_flash_dts
+
+    # 3. sw/apps/linux_boot/Makefile forwards FROST_LINUX_VECTOR to frost_boot_image.py.
+    fake_image = tmp_path / "fake_image"
+    fake_initrd = tmp_path / "fake_initrd"
+    fake_fw = tmp_path / "fake_fw"
+    for stub in (fake_image, fake_initrd, fake_fw):
+        stub.touch()
+    for setting, expected_flag in (
+        (None, None),
+        ("0", "--no-vector"),
+        ("1", "--vector"),
+        ("2", "ERROR"),
+    ):
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("FROST_LINUX_VECTOR", "FROST_LINUX_BOARD")
+        }
+        env["FROST_LINUX_BOARD"] = "vcu118"
+        if setting is not None:
+            env["FROST_LINUX_VECTOR"] = setting
+        result = subprocess.run(
+            [
+                "make",
+                "-s",
+                "-n",
+                "-B",
+                "-o",
+                str(fake_image),
+                "-o",
+                str(fake_initrd),
+                "-o",
+                str(fake_fw),
+                "-f",
+                str(APPS / "linux_boot" / "Makefile"),
+                f"FROST_LINUX_KERNEL={fake_image}",
+                f"FROST_LINUX_INITRD={fake_initrd}",
+                f"FW_JUMP={fake_fw}",
+                "sw_ddr.mem",
+            ],
+            cwd=APPS / "linux_boot",
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if expected_flag == "ERROR":
+            assert result.returncode != 0
+            assert "FROST_LINUX_VECTOR must be 0 or 1" in result.stderr
+        else:
+            assert result.returncode == 0, result.stderr
+            if expected_flag is None:
+                assert "--vector" not in result.stdout
+                assert "--no-vector" not in result.stdout
+            else:
+                assert expected_flag in result.stdout
 
 
 def test_advertised_isa_lists_agree() -> None:
@@ -639,13 +831,18 @@ def test_advertised_isa_lists_agree() -> None:
     assert len(packer.ISA_EXTENSIONS) == len(set(packer.ISA_EXTENSIONS))
     assert len(packer.X3_ISA_EXTENSIONS) == len(set(packer.X3_ISA_EXTENSIONS))
     assert len(packer.VCU118_ISA_EXTENSIONS) == len(set(packer.VCU118_ISA_EXTENSIONS))
+    assert len(packer.VCU118_VECTOR_ISA_EXTENSIONS) == len(
+        set(packer.VCU118_VECTOR_ISA_EXTENSIONS)
+    )
     assert "svpbmt" in packer.ISA_EXTENSIONS and "svpbmt" in packer.X3_ISA_EXTENSIONS
     assert "svpbmt" not in packer.VCU118_ISA_EXTENSIONS
+    assert "svpbmt" not in packer.VCU118_VECTOR_ISA_EXTENSIONS
 
     for isa_str, isa_exts in (
         (packer.ISA_STRING, packer.ISA_EXTENSIONS),
         (packer.X3_ISA_STRING, packer.X3_ISA_EXTENSIONS),
         (packer.VCU118_ISA_STRING, packer.VCU118_ISA_EXTENSIONS),
+        (packer.VCU118_VECTOR_ISA_STRING, packer.VCU118_VECTOR_ISA_EXTENSIONS),
     ):
         head, *multi_tokens = isa_str.split("_")
         assert head.startswith("rv64")
@@ -673,19 +870,37 @@ def test_advertised_isa_lists_agree() -> None:
             "vcu118",
             (REPO_ROOT / "boards" / "vcu118" / "dts" / "frost_vcu118.dts").read_text(),
         ),
+        (
+            "vcu118-vector-gen",
+            packer.gen_dts(
+                clk_hz=162_500_000,
+                initrd_range=None,
+                bootargs="",
+                model="t",
+                board="vcu118",
+                vector=True,
+            ),
+        ),
+        (
+            "vcu118-vector",
+            (
+                REPO_ROOT / "boards" / "vcu118" / "dts" / "frost_vcu118_vector.dts"
+            ).read_text(),
+        ),
     ):
         base = re.search(r'riscv,isa-base = "([^"]+)";', dts)
         isa = re.search(r'riscv,isa = "([^"]+)";', dts)
         ext_prop = re.search(r"riscv,isa-extensions = (.*?);", dts, re.S)
         mmu_prop = re.search(r'mmu-type = "([^"]+)";', dts)
-        expected_isa = (
-            packer.X3_ISA_STRING if dts_label == "x3" else packer.VCU118_ISA_STRING
-        )
-        expected_extensions = (
-            packer.X3_ISA_EXTENSIONS
-            if dts_label == "x3"
-            else packer.VCU118_ISA_EXTENSIONS
-        )
+        if dts_label == "x3":
+            expected_isa = packer.X3_ISA_STRING
+            expected_extensions = packer.X3_ISA_EXTENSIONS
+        elif dts_label.startswith("vcu118-vector"):
+            expected_isa = packer.VCU118_VECTOR_ISA_STRING
+            expected_extensions = packer.VCU118_VECTOR_ISA_EXTENSIONS
+        else:
+            expected_isa = packer.VCU118_ISA_STRING
+            expected_extensions = packer.VCU118_ISA_EXTENSIONS
         assert base is not None and base[1] == packer.ISA_BASE, dts_label
         assert isa is not None and isa[1] == expected_isa, dts_label
         assert ext_prop is not None, dts_label
