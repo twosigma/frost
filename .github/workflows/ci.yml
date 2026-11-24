@@ -1335,7 +1335,7 @@ jobs:
             pytest_filter: >-
               ((coherence_ or coherent_) and not
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
-              coherence_store_home or coherence_link or coherent_local_atomic or coh_hart_maint_prove or
+              coherence_store_home or coherence_link or coherence_sc_wa or coherent_local_atomic or coh_hart_maint_prove or
               coh_hart_maint_owned_prove or coh_hart_maint_free_ or coherence_array_equiv or coherence_array_progress or
               coherence_store_bank or
               coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
@@ -1368,7 +1368,7 @@ jobs:
           # the pressure BMC's two cases have their own job.
           - shard: Coherence links
             pytest_filter: >-
-              coherence_link or
+              coherence_link or coherence_sc_wa or
               (coherence_store_home_link and not coherence_store_home_link_bmc_pressure)
             timeout_minutes: 200
           - shard: Coherence links pressure

@@ -1,0 +1,81 @@
+[tasks]
+sc_wa_s0_prove proof s0_proof
+sc_wa_s1_prove proof staged_proof
+sc_wa_s2_prove proof staged_proof
+sc_wa_s3_prove proof staged_proof
+sc_wa_s0_cover covers
+sc_wa_s1_cover covers
+sc_wa_s2_cover covers
+sc_wa_s3_cover covers
+
+[options]
+proof: mode prove
+proof: depth 2
+covers: mode cover
+covers: depth 200
+covers: vcd_sim on
+timeout 600
+
+[engines]
+proof: smtbmc boolector
+covers: btor btormc
+
+[script]
+sc_wa_s0_prove: read_slang --top coherence_sc_wa_formal --single-unit -DSYNTHESIS -DSNAPSHOT_OWNER_PROOF -GLINK_STAGES=0 -GL1D_MISSES=1 -GCOVER_MODE=0 cache_perf_pkg.sv coherence_pkg.sv coherence_read_stream.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_d_arbiter.sv coherence_link.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_sc_wa_formal.sv
+sc_wa_s1_prove: read_slang --top coherence_sc_wa_formal --single-unit -DSYNTHESIS -DSNAPSHOT_OWNER_PROOF -GLINK_STAGES=1 -GL1D_MISSES=1 -GCOVER_MODE=0 cache_perf_pkg.sv coherence_pkg.sv coherence_read_stream.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_d_arbiter.sv coherence_link.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_sc_wa_formal.sv
+sc_wa_s2_prove: read_slang --top coherence_sc_wa_formal --single-unit -DSYNTHESIS -DSNAPSHOT_OWNER_PROOF -GLINK_STAGES=2 -GL1D_MISSES=1 -GCOVER_MODE=0 cache_perf_pkg.sv coherence_pkg.sv coherence_read_stream.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_d_arbiter.sv coherence_link.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_sc_wa_formal.sv
+sc_wa_s3_prove: read_slang --top coherence_sc_wa_formal --single-unit -DSYNTHESIS -DSNAPSHOT_OWNER_PROOF -GLINK_STAGES=3 -GL1D_MISSES=1 -GCOVER_MODE=0 cache_perf_pkg.sv coherence_pkg.sv coherence_read_stream.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_d_arbiter.sv coherence_link.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_sc_wa_formal.sv
+sc_wa_s0_cover: read_slang --top coherence_sc_wa_formal --single-unit -DSYNTHESIS -DSNAPSHOT_OWNER_PROOF -GLINK_STAGES=0 -GL1D_MISSES=1 -GCOVER_MODE=1 cache_perf_pkg.sv coherence_pkg.sv coherence_read_stream.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_d_arbiter.sv coherence_link.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_sc_wa_formal.sv
+sc_wa_s1_cover: read_slang --top coherence_sc_wa_formal --single-unit -DSYNTHESIS -DSNAPSHOT_OWNER_PROOF -GLINK_STAGES=1 -GL1D_MISSES=1 -GCOVER_MODE=1 cache_perf_pkg.sv coherence_pkg.sv coherence_read_stream.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_d_arbiter.sv coherence_link.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_sc_wa_formal.sv
+sc_wa_s2_cover: read_slang --top coherence_sc_wa_formal --single-unit -DSYNTHESIS -DSNAPSHOT_OWNER_PROOF -GLINK_STAGES=2 -GL1D_MISSES=1 -GCOVER_MODE=1 cache_perf_pkg.sv coherence_pkg.sv coherence_read_stream.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_d_arbiter.sv coherence_link.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_sc_wa_formal.sv
+sc_wa_s3_cover: read_slang --top coherence_sc_wa_formal --single-unit -DSYNTHESIS -DSNAPSHOT_OWNER_PROOF -GLINK_STAGES=3 -GL1D_MISSES=1 -GCOVER_MODE=1 cache_perf_pkg.sv coherence_pkg.sv coherence_read_stream.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_d_arbiter.sv coherence_link.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_sc_wa_formal.sv
+hierarchy -top coherence_sc_wa_formal
+script free_undefined.ys
+prep -flatten -top coherence_sc_wa_formal
+~covers: chformal -cover -remove
+covers: chformal -assert -remove
+setattr -unset keep
+opt_clean -purge
+memory_map -keepdc
+opt -keepdc
+covers: techmap
+covers: opt -fast -keepdc
+covers: abc
+covers: opt -keepdc -mux_bool -fine
+covers: setundef -undriven -anyseq
+setundef -anyseq
+opt_clean -purge
+select -assert-none t:$check r:FLAVOR=assume %i
+s0_proof: select -assert-count 128 t:$check r:FLAVOR=assert %i
+staged_proof: select -assert-count 137 t:$check r:FLAVOR=assert %i
+covers: select -assert-count 8 t:$check r:FLAVOR=cover %i
+select -clear
+check -assert
+
+[files]
+coherence_sc_wa_formal.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_read_stream.sv
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_home_endpoint.sv
+../hw/rtl/lib/cache/coherence_put_endpoint.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
+../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
+../hw/rtl/lib/cache/coherence_read_select.sv
+../hw/rtl/lib/cache/coherence_read_payload.sv
+../hw/rtl/lib/cache/coherence_store_buffer.sv
+../hw/rtl/lib/cache/coherence_array.sv
+../hw/rtl/lib/cache/coherence_l1d.sv
+../hw/rtl/lib/cache/coherence_work_select.sv
+../hw/rtl/lib/cache/coherence_home_completions.sv
+../hw/rtl/lib/cache/coherence_home_engine.sv
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/coherence_link.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_types.svh
+free_undefined.ys

@@ -66,6 +66,14 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home_twin", "home_twin_small"): 600,
     ("coherence_home_twin", "home_twin_four"): 600,
     ("coherence_home_twin", "home_twin_addr40"): 600,
+    ("coherence_sc_wa", "sc_wa_s0_prove"): 600,
+    ("coherence_sc_wa", "sc_wa_s1_prove"): 600,
+    ("coherence_sc_wa", "sc_wa_s2_prove"): 600,
+    ("coherence_sc_wa", "sc_wa_s3_prove"): 600,
+    ("coherence_sc_wa", "sc_wa_s0_cover"): 600,
+    ("coherence_sc_wa", "sc_wa_s1_cover"): 600,
+    ("coherence_sc_wa", "sc_wa_s2_cover"): 600,
+    ("coherence_sc_wa", "sc_wa_s3_cover"): 600,
     ("coherence_home", "coh_home_control_prove"): 1800,
     ("coherence_home", "coh_home_control64_prove"): 1800,
     ("coherence_home", "coh_home_control_partition_prove"): 1800,
@@ -206,6 +214,20 @@ FORMAL_TARGETS = [
             "link_mirror2_prove",
             "link_credit1_cover",
             "link_mirror1_cover",
+        ),
+    ),
+    FormalTarget(
+        "coherence_sc_wa.sby",
+        "Composed L1D, home engine, completions, arbiters and links prove SC GrantM writeback exclusion.",
+        tasks=(
+            "sc_wa_s0_prove",
+            "sc_wa_s1_prove",
+            "sc_wa_s2_prove",
+            "sc_wa_s3_prove",
+            "sc_wa_s0_cover",
+            "sc_wa_s1_cover",
+            "sc_wa_s2_cover",
+            "sc_wa_s3_cover",
         ),
     ),
     FormalTarget(
@@ -2320,6 +2342,38 @@ SBY_TASKS = [
     (
         "link_mirror2_prove",
         "Mirrored link, two stages: each acceptance completes one sender handshake.",
+    ),
+    (
+        "sc_wa_s0_prove",
+        "Composed L1D, home and links (0 stages): SC GrantM has no same-sector wb_live slot.",
+    ),
+    (
+        "sc_wa_s1_prove",
+        "Composed L1D, home and links (1 stage): SC GrantM has no same-sector wb_live slot.",
+    ),
+    (
+        "sc_wa_s2_prove",
+        "Composed L1D, home and links (2 stages): SC GrantM has no same-sector wb_live slot.",
+    ),
+    (
+        "sc_wa_s3_prove",
+        "Composed L1D, home and links (3 stages): SC GrantM has no same-sector wb_live slot.",
+    ),
+    (
+        "sc_wa_s0_cover",
+        "Composed L1D, home and links (0 stages): cover SC GrantM/GrantFail, PutM WA and ProbeSnapshot.",
+    ),
+    (
+        "sc_wa_s1_cover",
+        "Composed L1D, home and links (1 stage): cover SC GrantM/GrantFail, PutM WA and ProbeSnapshot.",
+    ),
+    (
+        "sc_wa_s2_cover",
+        "Composed L1D, home and links (2 stages): cover SC GrantM/GrantFail, PutM WA and ProbeSnapshot.",
+    ),
+    (
+        "sc_wa_s3_cover",
+        "Composed L1D, home and links (3 stages): cover SC GrantM/GrantFail, PutM WA and ProbeSnapshot.",
     ),
     ("link_credit1_cover", "A credit link delivers four messages."),
     ("link_mirror1_cover", "A mirrored link completes four handshakes."),
@@ -4599,6 +4653,11 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             for sector in ("same", "other")
             for prefix, suffix in (("bmc", "fatal"), ("prove", "fatal_sticky"))
         ],
+        "coherence_sc_wa": [
+            f"sc_wa_s{stages}_{kind}"
+            for kind in ("prove", "cover")
+            for stages in (0, 1, 2, 3)
+        ],
         "coherence_l1d": [
             f"coh_l1d_local{geometry}{part}_prove"
             for geometry in ("", "_multi", "_ways")
@@ -5136,6 +5195,15 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         {
             "coh_read_capture_prove coh_read_capture_stream_prove coh_idle_select_prove coh_idle_select_stream_prove coh_idle_phase_prove coh_idle_phase_stream_prove coh_read_kind_prove coh_array_reply_prove coh_array_reply4_prove coh_array_reply_uram_prove coh_array_reply4_uram_prove": [
                 "memory_map"
+            ],
+        },
+    ),
+    "coherence_sc_wa": (
+        "cover-only compaction: abc reads constant x bits as 0 and opt -fine merges equal multiplexer output bits with constant x; all four prove tasks stay in DONT_CARE_SAFE",
+        {
+            "sc_wa_s0_cover sc_wa_s1_cover sc_wa_s2_cover sc_wa_s3_cover": [
+                "abc",
+                "opt -keepdc -mux_bool -fine",
             ],
         },
     ),
@@ -8987,6 +9055,60 @@ def test_script_and_dialect_bypass_cases_refused(
     path = tmp_path / f"{case_id}.sby"
     path.write_text(sby_text)
     assert sby_undefined_opening_gaps(path), case_id
+
+
+def test_coherence_sc_wa_contract() -> None:
+    """Pin the composed SC GrantM writeback-exclusion proofs and covers."""
+    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_sc_wa")
+    assert target.tasks == (
+        "sc_wa_s0_prove",
+        "sc_wa_s1_prove",
+        "sc_wa_s2_prove",
+        "sc_wa_s3_prove",
+        "sc_wa_s0_cover",
+        "sc_wa_s1_cover",
+        "sc_wa_s2_cover",
+        "sc_wa_s3_cover",
+    )
+    for stages in (0, 1, 2, 3):
+        prove_task = f"sc_wa_s{stages}_prove"
+        prove_cfg = formal_task_config(target.name, prove_task)
+        prove_opts = dict(line.split(None, 1) for line in prove_cfg["[options]"])
+        assert prove_opts == {"mode": "prove", "depth": "2", "timeout": "600"}
+        assert formal_task_timeout_s(target.name, prove_task) == 600
+        assert prove_cfg["[engines]"] == ["smtbmc boolector"]
+        prove_script = prove_cfg["[script]"]
+        assert any(
+            f"-GLINK_STAGES={stages}" in line and "-GCOVER_MODE=0" in line
+            for line in prove_script
+        )
+        assert "select -assert-none t:$check r:FLAVOR=assume %i" in prove_script
+        expected_asserts = 128 if stages == 0 else 137
+        assert (
+            f"select -assert-count {expected_asserts} t:$check r:FLAVOR=assert %i"
+            in prove_script
+        )
+        assert "techmap" not in prove_script
+        assert "abc" not in prove_script
+
+        cover_task = f"sc_wa_s{stages}_cover"
+        cover_cfg = formal_task_config(target.name, cover_task)
+        cover_opts = dict(line.split(None, 1) for line in cover_cfg["[options]"])
+        assert cover_opts == {
+            "mode": "cover",
+            "depth": "200",
+            "vcd_sim": "on",
+            "timeout": "600",
+        }
+        assert formal_task_timeout_s(target.name, cover_task) == 600
+        assert cover_cfg["[engines]"] == ["btor btormc"]
+        cover_script = cover_cfg["[script]"]
+        assert any(
+            f"-GLINK_STAGES={stages}" in line and "-GCOVER_MODE=1" in line
+            for line in cover_script
+        )
+        assert "select -assert-none t:$check r:FLAVOR=assume %i" in cover_script
+        assert "select -assert-count 8 t:$check r:FLAVOR=cover %i" in cover_script
 
 
 def test_store_home_cover_budgets() -> None:
