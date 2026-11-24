@@ -303,7 +303,6 @@ def test_sail_executes_fp_ext_and_zcb_batches(tmp_path: Path) -> None:
                                     expect_trap = any(
                                         k in desc
                                         for k in (
-                                            "misaligned",
                                             "reserved",
                                             "rm != rtz",
                                             "illegal ",

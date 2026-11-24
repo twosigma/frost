@@ -1715,8 +1715,8 @@ class Generator:
                     fault_kind = "store_page_fault"
                     expected_cause = 15
         else:
-            # Mapped misaligned access on a valid Sv39 page: misaligned trap (4/6).
-            va = VA_POOL_BASE + rng.choice((1, 2, 3, 5, 6, 7))
+            # Mapped misaligned access on a valid Sv39 device page: misaligned trap (4/6).
+            va = VA_MMIO_PAGE + rng.choice((1, 2, 3, 5, 6, 7))
             insns += load_u64(TMP_A, va)
             is_load = rng.random() < 0.5
             insns.append(
