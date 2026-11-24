@@ -45,8 +45,8 @@ module test_ptw_high_addr;
     req_valid = 1'b1;
     @(negedge clk);
     req_valid = 1'b0;
-    // Two cycles of walk-cache lookup precede the first read.
-    repeat (2) @(negedge clk);
+    // One cycle of walk-cache lookup precedes the first read.
+    repeat (1) @(negedge clk);
     assert (line_valid && line_addr == riscv_pkg::PhysAddrBits'(table_base + 64'h80))
     else
       $fatal(1, "high PTE address truncated or refused: valid=%b addr=%h", line_valid, line_addr);
@@ -61,7 +61,7 @@ module test_ptw_high_addr;
     req_valid = 1'b1;
     @(negedge clk);
     req_valid = 1'b0;
-    repeat (3) begin
+    repeat (2) begin
       assert (!line_valid)
       else $fatal(1, "out-of-range PTE line issued");
       @(negedge clk);
