@@ -380,8 +380,11 @@ module l2tlb #(
   // ---------------------------------------------------------------------------
   // Control
   // ---------------------------------------------------------------------------
-  assign spec_hit_req = (state_q == S_IDLE) && i_req_valid && o_req_ready &&
-                        spec_valid_q && (i_req_vpn == vpn_q) && (i_asid == asid_q);
+  (* keep = "true" *) logic spec_match;
+  assign spec_match = spec_valid_q && (i_req_vpn == vpn_q) && (i_asid == asid_q);
+  (* keep = "true" *) logic any_hit_all;
+  assign any_hit_all  = sp_any_hit || any_hit;
+  assign spec_hit_req = (state_q == S_IDLE) && i_req_valid && o_req_ready && spec_match;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -410,38 +413,39 @@ module l2tlb #(
 
       case (state_q)
         S_IDLE: begin
+          // Capture the idle lookup metadata unconditionally so the request
+          // valid path does not gate these registers' clock enables. On a
+          // matching speculative request i_spec_valid is clear and i_req_vpn
+          // and i_asid already match vpn_q, set_q, and asid_q.
+          vpn_q <= i_spec_valid ? i_spec_vpn : i_req_vpn;
+          asid_q <= i_asid;
+          set_q <= i_spec_valid ? i_spec_vpn[SetBits-1:0] : i_req_vpn[SetBits-1:0];
+          victim_q <= victim;
+          sp_victim_q <= sp_victim;
           if (i_req_valid && o_req_ready) begin
             if (spec_hit_req) begin
-              if (sp_any_hit || any_hit) begin
+              if (any_hit_all) begin
                 hit_resp_valid_q <= 1'b1;
                 state_q <= S_IDLE;
               end else begin
-                victim_q <= victim;
-                sp_victim_q <= sp_victim;
                 state_q <= i_ptw_req_ready ? S_WAIT : S_FWD;
               end
             end else begin
-              vpn_q   <= i_req_vpn;
-              asid_q  <= i_asid;
-              set_q   <= i_req_vpn[SetBits-1:0];
               state_q <= S_CMP;
             end
           end else if (i_spec_valid && o_req_ready) begin
-            vpn_q        <= i_spec_vpn;
-            asid_q       <= i_asid;
-            set_q        <= i_spec_vpn[SetBits-1:0];
             spec_valid_q <= 1'b1;
           end
         end
         S_CMP: begin
-          if (sp_any_hit || any_hit) begin
+          // Latch replacement slots unconditionally in S_CMP; they are
+          // consumed only when a miss enters S_WAIT.
+          victim_q <= victim;
+          sp_victim_q <= sp_victim;
+          if (any_hit_all) begin
             hit_resp_valid_q <= 1'b1;
             state_q <= S_IDLE;
           end else begin
-            // A miss asks the walker in this same cycle and latches its
-            // replacement slots for the fill when the walk returns.
-            victim_q <= victim;
-            sp_victim_q <= sp_victim;
             state_q <= i_ptw_req_ready ? S_WAIT : S_FWD;
           end
         end
@@ -492,7 +496,7 @@ module l2tlb #(
   assign o_req_ready = (state_q == S_IDLE) && !i_discard && !i_flush.en && !flush_busy;
 
   assign o_ptw_req_valid = (state_q == S_FWD) ||
-                           (((state_q == S_CMP) || spec_hit_req) && !any_hit && !sp_any_hit);
+                           (((state_q == S_CMP) || spec_hit_req) && !any_hit_all);
   assign o_ptw_req_vpn = vpn_q;
 
   // The walker's response passes straight through; a hit answers from its register.

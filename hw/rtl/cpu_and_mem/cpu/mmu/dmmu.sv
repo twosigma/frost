@@ -294,17 +294,43 @@ module dmmu (
   assign s1c_ridx = s1_q.va[12+S1cIdxBits-1:12];
   assign s1c_rtag = s1_q.va[38:12+S1cIdxBits];
 
-  s1c_entry_t s1c_rd0, s1c_rd1, s1c_sel;
-  assign s1c_rd0 = s1c_ram0[s1c_ridx];
-  assign s1c_rd1 = s1c_ram1[s1c_ridx];
+  (* keep = "true" *) logic [S1cEntryBits-1:0] s1c_raw0, s1c_raw1;
+  assign s1c_raw0 = s1c_ram0[s1c_ridx];
+  assign s1c_raw1 = s1c_ram1[s1c_ridx];
 
-  logic s1c_hit0, s1c_hit1, s1c_hit;
-  assign s1c_hit0 = s1c_valid_q[0][s1c_ridx] && (s1c_rd0.tag == s1c_rtag) &&
-      (s1c_rd0.g || (s1c_rd0.asid == i_asid));
-  assign s1c_hit1 = s1c_valid_q[1][s1c_ridx] && (s1c_rd1.tag == s1c_rtag) &&
-      (s1c_rd1.g || (s1c_rd1.asid == i_asid));
-  assign s1c_hit = s1c_hit0 || s1c_hit1;
-  assign s1c_sel = s1c_hit0 ? s1c_rd0 : s1c_rd1;
+  s1c_entry_t s1c_rd0, s1c_rd1;
+  assign s1c_rd0 = s1c_raw0;
+  assign s1c_rd1 = s1c_raw1;
+
+  // Compare each way's 20-bit tag and 9-bit ASID in 3-bit kept chunks in
+  // parallel with per-way PMA and permission checks, so neither way lookup
+  // nor walk-request generation serializes through a way payload mux.
+  (* keep = "true" *) logic [S1cWays-1:0][9:0] s1c_cmp_chunk;
+  (* keep = "true" *) logic [S1cWays-1:0] s1c_tag_lo_eq;
+  (* keep = "true" *) logic [S1cWays-1:0] s1c_asid_ok;
+  (* keep = "true" *) logic [S1cWays-1:0] s1c_way_hit;
+  (* keep = "true" *) logic s1c_hit;
+  for (genvar w = 0; w < S1cWays; w++) begin : gen_s1c_cmp
+    s1c_entry_t w_rd;
+    assign w_rd = (w == 0) ? s1c_rd0 : s1c_rd1;
+    for (genvar c = 0; c < 6; c++) begin : gen_tag_chunk
+      assign s1c_cmp_chunk[w][c] = w_rd.tag[3*c+:3] == s1c_rtag[3*c+:3];
+    end
+    assign s1c_cmp_chunk[w][6] = w_rd.tag[19:18] == s1c_rtag[19:18];
+    for (genvar c = 0; c < 3; c++) begin : gen_asid_chunk
+      assign s1c_cmp_chunk[w][7+c] = w_rd.asid[3*c+:3] == i_asid[3*c+:3];
+    end
+    assign s1c_tag_lo_eq[w] = &s1c_cmp_chunk[w][5:0];
+    assign s1c_asid_ok[w] = w_rd.g || (&s1c_cmp_chunk[w][9:7]);
+    assign s1c_way_hit[w] = s1c_valid_q[w][s1c_ridx] && s1c_cmp_chunk[w][6] &&
+        s1c_tag_lo_eq[w] && s1c_asid_ok[w];
+  end
+  assign s1c_hit = |s1c_way_hit;
+
+  s1c_entry_t s1c_sel;
+  assign s1c_sel = s1c_way_hit[0] ? s1c_rd0 : s1c_rd1;
+  (* keep = "true" *) logic [PpnBits-1:0] s1c_ppn;
+  assign s1c_ppn = s1c_way_hit[0] ? s1c_rd0.ppn : s1c_rd1.ppn;
 
   // Resolve TLB, S1 cache, and walk leaves in parallel, for timing. A DTLB
   // hit wins over the S1 cache, which wins over a simultaneous walk response.
@@ -328,22 +354,53 @@ module dmmu (
 
   logic [riscv_pkg::XLEN-1:0] tlb_pa, s1c_pa, walk_pa;
   assign tlb_pa  = riscv_pkg::XLEN'({tlb_ppn[0], s1_q.va[11:0]});
-  assign s1c_pa  = riscv_pkg::XLEN'({s1c_sel.ppn, s1_q.va[11:0]});
+  assign s1c_pa  = riscv_pkg::XLEN'({s1c_ppn, s1_q.va[11:0]});
   assign walk_pa = riscv_pkg::XLEN'({walk_ppn, s1_q.va[11:0]});
-  // S1 cache and walk leaf device and atomic page checks, with the Svpbmt
-  // field: NC or IO over memory without an alias (low BRAM) is a device page
-  // without AMOs.
-  logic s1c_unc, s1c_device_page, s1c_atomic_page, s1c_perm_ok;
-  assign s1c_unc = s1c_sel.pbmt != riscv_pkg::PbmtPma;
-  assign s1c_device_page = riscv_pkg::pma_device_ok(
-      s1c_pa
-  ) || (s1c_unc && (riscv_pkg::pma_atomic_ok(
-      s1c_pa
-  ) || riscv_pkg::pma_pbmt_alias_ok(
-      s1c_pa
-  )));
-  assign s1c_atomic_page = !s1c_unc && riscv_pkg::pma_atomic_ok(s1c_pa);
-  assign s1c_perm_ok = leaf_perm_ok(s1c_sel.r, s1c_sel.w, s1c_sel.x, s1c_sel.u, s1c_sel.d);
+
+  // PMA permits BRAM and cached DDR for all access types, plus device windows
+  // for non-atomic loads and stores. DTLB hits use per-entry checks; S1 cache
+  // hits check both ways in parallel with tag comparison; walk responses are
+  // checked here.
+  function automatic logic leaf_pma_ok(input logic atomic_page, input logic device_page);
+    leaf_pma_ok = atomic_page || (device_page && !s1_q.atomic);
+  endfunction
+
+  logic [S1cWays-1:0] s1c_way_unc;
+  logic [S1cWays-1:0] s1c_way_device;
+  logic [S1cWays-1:0] s1c_way_atomic;
+  logic [S1cWays-1:0] s1c_way_perm_ok;
+  (* keep = "true" *) logic [S1cWays-1:0] s1c_way_clean;
+  (* keep = "true" *) logic [S1cWays-1:0] s1c_way_mmio;
+  (* keep = "true" *) logic [S1cWays-1:0][1:0] s1c_way_fault;
+  for (genvar w = 0; w < S1cWays; w++) begin : gen_s1c_verdict
+    s1c_entry_t w_rd;
+    assign w_rd = (w == 0) ? s1c_rd0 : s1c_rd1;
+    logic [riscv_pkg::XLEN-1:0] w_pa;
+    assign w_pa = riscv_pkg::XLEN'({w_rd.ppn, 12'h000});
+    assign s1c_way_unc[w] = w_rd.pbmt != riscv_pkg::PbmtPma;
+    assign s1c_way_device[w] = riscv_pkg::pma_device_ok(
+        w_pa
+    ) || (s1c_way_unc[w] && (riscv_pkg::pma_atomic_ok(
+        w_pa
+    ) || riscv_pkg::pma_pbmt_alias_ok(
+        w_pa
+    )));
+    assign s1c_way_atomic[w] = !s1c_way_unc[w] && riscv_pkg::pma_atomic_ok(w_pa);
+    assign s1c_way_perm_ok[w] = leaf_perm_ok(w_rd.r, w_rd.w, w_rd.x, w_rd.u, w_rd.d);
+    assign s1c_way_clean[w] = s1c_way_perm_ok[w] && !w_rd.hi_nonzero && leaf_pma_ok(
+        s1c_way_atomic[w], s1c_way_device[w]
+    );
+    assign s1c_way_mmio[w] = s1c_way_perm_ok[w] && !w_rd.hi_nonzero && !s1_q.atomic &&
+        s1c_way_device[w];
+    assign s1c_way_fault[w] = !s1c_way_perm_ok[w] ? riscv_pkg::DFAULT_PAGE :
+        ((w_rd.hi_nonzero || !leaf_pma_ok(
+        s1c_way_atomic[w], s1c_way_device[w]
+    )) ? riscv_pkg::DFAULT_ACCESS : riscv_pkg::DFAULT_NONE);
+  end
+
+  logic s1c_unc, s1c_clean;
+  assign s1c_unc   = s1c_way_hit[0] ? s1c_way_unc[0] : s1c_way_unc[1];
+  assign s1c_clean = s1c_way_hit[0] ? s1c_way_clean[0] : s1c_way_clean[1];
 
   logic walk_unc, walk_device_page, walk_atomic_page;
   assign walk_unc = i_walk_resp.pbmt != riscv_pkg::PbmtPma;
@@ -356,14 +413,10 @@ module dmmu (
   )));
   assign walk_atomic_page = !walk_unc && riscv_pkg::pma_atomic_ok(walk_pa);
 
-  // PMA permits BRAM and cached DDR for all access types, plus device windows
-  // for non-atomic loads and stores. DTLB hits use per-entry checks; S1 cache
-  // hits and walk responses are checked here.
-  function automatic logic leaf_pma_ok(input logic atomic_page, input logic device_page);
-    leaf_pma_ok = atomic_page || (device_page && !s1_q.atomic);
-  endfunction
-
   riscv_pkg::data_fault_kind_e tlb_fault, s1c_fault, walk_fault;
+  assign s1c_fault = riscv_pkg::data_fault_kind_e'(
+      s1c_way_hit[0] ? s1c_way_fault[0] : s1c_way_fault[1]
+  );
   always_comb begin
     tlb_fault = riscv_pkg::DFAULT_NONE;
     if (!tlb_perm_ok[0]) begin
@@ -371,13 +424,6 @@ module dmmu (
     end else if (tlb_hi_nonzero[0] ||
                  !(tlb_atomic_page[0] || (tlb_device_page[0] && !s1_q.atomic))) begin
       tlb_fault = riscv_pkg::DFAULT_ACCESS;
-    end
-
-    s1c_fault = riscv_pkg::DFAULT_NONE;
-    if (!s1c_perm_ok) begin
-      s1c_fault = riscv_pkg::DFAULT_PAGE;
-    end else if (s1c_sel.hi_nonzero || !leaf_pma_ok(s1c_atomic_page, s1c_device_page)) begin
-      s1c_fault = riscv_pkg::DFAULT_ACCESS;
     end
 
     walk_fault = i_walk_resp.fault_kind;
@@ -410,7 +456,7 @@ module dmmu (
   (* keep = "true" *) logic tlb_is_mmio, walk_is_mmio;
   logic s1c_is_mmio;
   assign tlb_is_mmio = tlb_perm_ok[0] && !tlb_hi_nonzero[0] && !s1_q.atomic && tlb_device_page[0];
-  assign s1c_is_mmio = s1c_perm_ok && !s1c_sel.hi_nonzero && !s1_q.atomic && s1c_device_page;
+  assign s1c_is_mmio = s1c_way_hit[0] ? s1c_way_mmio[0] : s1c_way_mmio[1];
   assign walk_is_mmio = (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && leaf_perm_ok(
       i_walk_resp.perm_r,
       i_walk_resp.perm_w,
@@ -479,12 +525,12 @@ module dmmu (
   // retain VA for xtval. Store VA, PPN, and the select separately in S2, for
   // timing.
   logic resolve_pa;
-  logic [PpnBits-1:0] resolve_ppn;
+  (* keep = "true" *) logic [PpnBits-1:0] resolve_ppn;
   assign resolve_pa = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical &&
       (tlb_hit[0] ? (tlb_fault == riscv_pkg::DFAULT_NONE) :
-       s1c_hit    ? (s1c_fault == riscv_pkg::DFAULT_NONE) :
+       s1c_hit    ? s1c_clean :
                     (walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE)));
-  assign resolve_ppn = tlb_hit[0] ? tlb_ppn[0] : (s1c_hit ? s1c_sel.ppn : walk_ppn);
+  assign resolve_ppn = tlb_hit[0] ? tlb_ppn[0] : (s1c_hit ? s1c_ppn : walk_ppn);
 
   // ---------------------------------------------------------------------------
   // Pipe advance
@@ -508,6 +554,7 @@ module dmmu (
   logic [Entries-1:0][1:0] entry_level;
   logic [Entries-1:0][PpnBits-1:0] entry_ppn;
   logic tlb_install;
+  logic s1c_promo_valid_q;
   logic dtlb_install_valid;
 
   // Live incoming op qualification for bypass
@@ -574,11 +621,11 @@ module dmmu (
   };
   logic bypass_mmio, iss_can_bypass;
   assign bypass_mmio = !iss_in.atomic && (|(issue_winner & entry_device));
-  // A fill (from a walk or an S1-cache promotion) may evict the winner or
-  // install a higher-priority overlapping leaf. Issue goes through S1 on that
-  // edge and sees the installed state.
+  // A fill (from a walk or a queued S1-cache promotion) may evict the winner
+  // or install a higher-priority overlapping leaf. Issue goes through S1 on
+  // that edge and sees the installed state.
   assign iss_can_bypass = i_iss_valid && i_active && !i_flush_all && !iss_killed &&
-      !i_tlb_invalidate && !i_tlb_flush.en && !dtlb_install_valid &&
+      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install && !s1c_promo_valid_q &&
       !s0_valid_q && (!s1_valid_q || s1_killed) &&
       !(i_trap_misaligned && iss_misaligned) && !iss_noncanonical &&
       (|(issue_winner & entry_clean));
@@ -742,17 +789,20 @@ module dmmu (
   assign s2_leaf_applies = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical;
   assign s2_fault_next   = s2_leaf_applies && tlb_hit[0] ? s2_leaf_fault : s2_fault_without_leaf;
 
-  // The DTLB selects the clean data-access verdict with the matching entry.
-  // Select that verdict directly instead of rebuilding its permission and
-  // page-attribute checks after selection.
-  (* keep = "true" *) wire s2_pa_leaf_selected;
+  // The DTLB and S1 cache each compute clean data-access verdicts in parallel
+  // with VPN matching. Select the pre-evaluated verdict directly instead of
+  // rebuilding permission and PMA checks after selection.
+  (* keep = "true" *) logic s2_pa_leaf_selected;
   assign s2_pa_leaf_selected = s2_leaf_applies && !s1_killed && tlb_hit[0];
-  // verilog_format: off
-  (* keep = "true" *) wire s2_pa_without_leaf;
+  (* keep = "true" *) logic s2_pa_walk_ok;
+  assign s2_pa_walk_ok = s1_killed || !s1_valid_q ||
+      (!(i_trap_misaligned && s1_misaligned) && !s1_noncanonical &&
+       (!walk_resp_for_s1 || (walk_fault == riscv_pkg::DFAULT_NONE)));
+  (* keep = "true" *) logic s2_pa_without_leaf;
   assign s2_pa_without_leaf =
-      s1_killed || (s2_fault_without_leaf == riscv_pkg::DFAULT_NONE);
-  // verilog_format: on
-  wire s2_pa_next = s2_pa_leaf_selected ? tlb_clean_hit[0] : s2_pa_without_leaf;
+      (s2_leaf_applies && !s1_killed && s1c_hit) ? s1c_clean : s2_pa_walk_ok;
+  logic s2_pa_next;
+  assign s2_pa_next = s2_pa_leaf_selected ? tlb_clean_hit[0] : s2_pa_without_leaf;
 
   // S2's VA takes S1's VA when S1 advances, else the issue address, which is
   // the base-plus-offset sum. s1_move settles after
@@ -1002,11 +1052,12 @@ module dmmu (
 
   // One-cycle deferred promotion of an S1 cache hit back into the 16-entry
   // DTLB so a returning working set regains cycle-0 issue bypass without
-  // adding a combinational feedback path through DTLB port 0.
+  // adding a combinational feedback path through DTLB port 0. Only
+  // s1c_promo_valid_q qualifies the payload, so the payload registers load
+  // unconditionally.
   logic s1c_promo_capture;
   assign s1c_promo_capture = i_active && s2_leaf_applies && !s1_killed && !tlb_hit[0] && s1c_hit &&
       !tlb_install && !i_tlb_invalidate && !i_tlb_flush.en;
-  logic s1c_promo_valid_q;
   logic [riscv_pkg::AsidBits-1:0] s1c_promo_asid_q;
   riscv_pkg::ptw_resp_t s1c_promo_resp_q;
   always_ff @(posedge i_clk) begin
@@ -1015,23 +1066,21 @@ module dmmu (
     end else begin
       s1c_promo_valid_q <= s1c_promo_capture;
     end
-    if (s1c_promo_capture) begin
-      s1c_promo_asid_q <= i_asid;
-      s1c_promo_resp_q <= '0;
-      s1c_promo_resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
-      s1c_promo_resp_q.vpn <= s1_q.va[38:12];
-      s1c_promo_resp_q.ppn <= {
-        {(riscv_pkg::PtePpnBits - PpnBits - 1) {1'b0}}, s1c_sel.hi_nonzero, s1c_sel.ppn
-      };
-      s1c_promo_resp_q.level <= 2'd0;
-      s1c_promo_resp_q.pbmt <= s1c_sel.pbmt;
-      s1c_promo_resp_q.perm_r <= s1c_sel.r;
-      s1c_promo_resp_q.perm_w <= s1c_sel.w;
-      s1c_promo_resp_q.perm_x <= s1c_sel.x;
-      s1c_promo_resp_q.perm_u <= s1c_sel.u;
-      s1c_promo_resp_q.perm_d <= s1c_sel.d;
-      s1c_promo_resp_q.perm_g <= s1c_sel.g;
-    end
+    s1c_promo_asid_q <= i_asid;
+    s1c_promo_resp_q <= '0;
+    s1c_promo_resp_q.fault_kind <= riscv_pkg::DFAULT_NONE;
+    s1c_promo_resp_q.vpn <= s1_q.va[38:12];
+    s1c_promo_resp_q.ppn <= {
+      {(riscv_pkg::PtePpnBits - PpnBits - 1) {1'b0}}, s1c_sel.hi_nonzero, s1c_sel.ppn
+    };
+    s1c_promo_resp_q.level <= 2'd0;
+    s1c_promo_resp_q.pbmt <= s1c_sel.pbmt;
+    s1c_promo_resp_q.perm_r <= s1c_sel.r;
+    s1c_promo_resp_q.perm_w <= s1c_sel.w;
+    s1c_promo_resp_q.perm_x <= s1c_sel.x;
+    s1c_promo_resp_q.perm_u <= s1c_sel.u;
+    s1c_promo_resp_q.perm_d <= s1c_sel.d;
+    s1c_promo_resp_q.perm_g <= s1c_sel.g;
   end
 
   logic s1c_promo_fire;
@@ -1206,7 +1255,7 @@ module dmmu (
   end
   assign f_pa = riscv_pkg::XLEN'({f_ppn, f_va[11:0]});
   assign f_take = i_iss_valid && i_active && !iss_killed && !i_flush_all &&
-      !i_tlb_invalidate && !i_tlb_flush.en && !dtlb_install_valid &&
+      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install && !s1c_promo_valid_q &&
       !s0_valid_q && (!s1_valid_q || s1_killed) &&
       riscv_pkg::sv39_va_canonical(
       f_va
