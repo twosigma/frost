@@ -181,8 +181,8 @@ module coherent_hart_cache #(
 `endif
   // D and C ports: the L1D's endpoints first, then two IF slots, two PTW
   // slots and the Zicbom requester. G and U route by port class (3: Zicbom).
-  localparam int unsigned Ports = L1D_MISSES + 5;
-  localparam int unsigned IfPort = L1D_MISSES;
+  localparam int unsigned Ports   = L1D_MISSES + 5;
+  localparam int unsigned IfPort  = L1D_MISSES;
   localparam int unsigned PtwPort = L1D_MISSES + 2;
   localparam int unsigned CmoPort = L1D_MISSES + 4;
   logic cmo_idle;
