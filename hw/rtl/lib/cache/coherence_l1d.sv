@@ -4865,7 +4865,8 @@ module coherence_l1d #(
   end
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst && active) begin
-      p_answer_once : assert (((rd_complete | f_answer_bypass) & ~(rd_valid_q & ~rd_ready_q)) == '0);
+      p_answer_once :
+      assert (((rd_complete | f_answer_bypass) & ~(rd_valid_q & ~rd_ready_q)) == '0);
       p_answer_single_source : assert (f_answer_multi == '0);
       // The hit path's answer is ordered at its stage-2 array read, which
       // starts only outside probe service, so a probe may arrive before the

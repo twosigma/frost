@@ -282,9 +282,7 @@ module coherence_home_control_harness #(
   };
   wire [UltraDataLatency:0] f_ultra_stage_valid = home.array.read_valid_q & ~home.array.read_open_q;
   wire [2:0][2:0] f_ultra_stage_token = {
-    home.array.read_token_q[6],
-    home.array.read_token_q[5],
-    home.array.read_token_q[4]
+    home.array.read_token_q[6], home.array.read_token_q[5], home.array.read_token_q[4]
   };
   wire [1:0][3:0] f_ultra_spec_wait = {home.f_spec_wait_q[1], home.f_spec_wait_q[0]};
   wire [2:0][1:0] f_ultra_comp_buf = {

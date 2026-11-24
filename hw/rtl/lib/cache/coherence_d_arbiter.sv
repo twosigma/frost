@@ -63,7 +63,7 @@ module coherence_d_arbiter #(
   // and its own group's lower ports; the pick and its payload are one-hot.
   assign later = i_valid & later_q;
   for (genvar group_index = 0; group_index < Groups; group_index++) begin : gen_group
-    localparam int unsigned Base  = group_index * GroupBits;
+    localparam int unsigned Base = group_index * GroupBits;
     localparam int unsigned Width = PORTS - Base < GroupBits ? PORTS - Base : GroupBits;
     assign later_groups[group_index] = |later[Base+:Width];
     assign valid_groups[group_index] = |i_valid[Base+:Width];
@@ -71,7 +71,7 @@ module coherence_d_arbiter #(
         |(i_valid[Base+:Width] & selected_ports_q[Base+:Width]);
   end
   for (genvar port_idx = 0; port_idx < PORTS; port_idx++) begin : gen_first
-    localparam int unsigned Group  = port_idx / GroupBits;
+    localparam int unsigned Group = port_idx / GroupBits;
     localparam int unsigned Offset = port_idx % GroupBits;
     logic later_below, valid_below;
     always_comb begin
@@ -161,7 +161,8 @@ module coherence_d_arbiter #(
       assert (o_payload == i_payload[selected_port_q]);
     if (sim_reset_seen_q && !i_rst) begin
       assert (selected_ports_q == (selected_q ? PORTS'(1) << selected_port_q : PORTS'(0)));
-      p_valid_select : assert (o_valid == (bypass_active ? found :
+      p_valid_select :
+      assert (o_valid == (bypass_active ? found :
           (selected_q && (HOLD_VALID || i_valid[selected_port_q]))));
       for (int port_idx = 0; port_idx < PORTS; port_idx++)
       assert (later_q[port_idx] == (port_idx >= int'(next_q)));
