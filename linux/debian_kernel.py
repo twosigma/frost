@@ -82,19 +82,21 @@ def run_logged(command: list[str], env: dict[str, str] | None = None) -> None:
 # Pin every package to one Debian snapshot and source version. The board's NFS
 # root must have this release installed; see docs/debian_nfsroot.md,
 # "Hardware regression".
-SNAPSHOT = "20261016T133910Z"
-SNAPSHOT_BASE = f"https://snapshot.debian.org/archive/debian-security/{SNAPSHOT}/pool/updates/main/l/linux"
+SNAPSHOT = "20261118T203058Z"
+SNAPSHOT_BASE = (
+    f"https://snapshot.debian.org/archive/debian/{SNAPSHOT}/pool/main/l/linux"
+)
 # Debian's source version, the .deb filename's middle field.
-SOURCE_VERSION = "6.12.113-1"
+SOURCE_VERSION = "7.3.4-1~bpo13+1"
 # uname -r of the packaged kernel: the vermagic release the module must match,
 # the /lib/modules directory name, and the release in the boot banner.
-KERNEL_RELEASE = "6.12.113+deb13-riscv64"
+KERNEL_RELEASE = "7.3.4+deb13-riscv64"
 # The trailing space rejects longer releases with the same prefix, such as
-# 6.12.113+deb13-riscv64-debug.
+# 7.3.4+deb13-riscv64-debug.
 KERNEL_BANNER = f"Linux version {KERNEL_RELEASE} "
 # The linux-headers/linux-kbuild trees are named after the ABI, the release
 # without the architecture suffix.
-KERNEL_ABI = "6.12.113+deb13"
+KERNEL_ABI = "7.3.4+deb13"
 
 
 @dataclass(frozen=True)
@@ -119,14 +121,23 @@ class DebianPackage:
         return f"{SNAPSHOT_BASE}/{urllib.parse.quote(self.filename)}"
 
 
-# The kernel itself. Only two files are kept: the flat Image FROST packs and,
-# for reference, the configuration it was built with.
+# Debian 7.3 splits the kernel image and metadata out of the linux-image
+# metapackage: linux-binary carries the uncompressed flat RISC-V Image (under
+# usr/lib/modules/<release>/vmlinuz despite the filename) and linux-base
+# carries the kernel configuration.
 KERNEL_PACKAGE = DebianPackage(
-    name=f"linux-image-{KERNEL_RELEASE}",
+    name=f"linux-binary-{KERNEL_RELEASE}",
     arch="riscv64",
-    size=112_406_252,
-    sha256="afd136c8fae9d6140c275da25b12ed84ceaa34d4acec2fd56bc1094cd4420d23",
-    members=(f"boot/vmlinux-{KERNEL_RELEASE}", f"boot/config-{KERNEL_RELEASE}"),
+    size=9_840_336,
+    sha256="19baeba7fae2adc9e56f478ad36bb6b52c4b7094944baae8f54a791a5f682b95",
+    members=(f"usr/lib/modules/{KERNEL_RELEASE}/vmlinuz",),
+)
+KERNEL_BASE_PACKAGE = DebianPackage(
+    name=f"linux-base-{KERNEL_RELEASE}",
+    arch="riscv64",
+    size=1_131_616,
+    sha256="24252a148269a01a5aa9ba9ff748325a0556a78fa2103b5ef5863c10070f86fd",
+    members=(f"usr/lib/modules/{KERNEL_RELEASE}/config",),
 )
 
 # The common headers supply the Makefile; architecture headers add .config,
@@ -139,15 +150,15 @@ HEADER_PACKAGES = (
     DebianPackage(
         name=f"linux-headers-{KERNEL_ABI}-common",
         arch="all",
-        size=11_326_108,
-        sha256="fa8f7b1eaa63d5c87141c9244131b5ae56f92272ee2971dfe22a81442a15ae5d",
+        size=11_206_644,
+        sha256="886647d4a7b05d2aedd22f8e16917c5b75e97e8946966d6bac48962c40b19a06",
         members=(f"usr/src/linux-headers-{KERNEL_ABI}-common/",),
     ),
     DebianPackage(
         name=f"linux-headers-{KERNEL_RELEASE}",
         arch="riscv64",
-        size=2_978_460,
-        sha256="9a32f903ad347a7f9629f5e0f8e709e8f9010fc0dd0d7cce5769f91bf096bb6c",
+        size=1_562_692,
+        sha256="a3ab93406e1d0185f10ab319bc7df3c1e27d947ad435fe519119f3765a6b8aa1",
         members=(
             f"usr/src/linux-headers-{KERNEL_RELEASE}/.config",
             f"usr/src/linux-headers-{KERNEL_RELEASE}/.kernelvariables",
@@ -162,13 +173,13 @@ HEADER_PACKAGES = (
     DebianPackage(
         name=f"linux-kbuild-{KERNEL_ABI}",
         arch="amd64",
-        size=1_899_400,
-        sha256="f7a65a8f794fc2cd70e35749e212da654bc5157ea525f7bf67412f417cd5d0c9",
+        size=1_444_904,
+        sha256="248cce12d48862f7d38ca51efdb759c031192543d144f18bd36a5df37f156244",
         members=(f"usr/lib/linux-kbuild-{KERNEL_ABI}/",),
     ),
 )
 
-PACKAGES = (KERNEL_PACKAGE, *HEADER_PACKAGES)
+PACKAGES = (KERNEL_PACKAGE, KERNEL_BASE_PACKAGE, *HEADER_PACKAGES)
 
 # --- Cache layout -----------------------------------------------------------
 # Inside the checkout, like Buildroot's linux/dl and linux/ccache, so the
@@ -176,7 +187,7 @@ PACKAGES = (KERNEL_PACKAGE, *HEADER_PACKAGES)
 DEFAULT_CACHE = REPO_ROOT / "linux" / "debian-kernel"
 CACHE_ENV = "FROST_DEBIAN_KERNEL_CACHE"
 # Bump when extraction, fixups, or cache layout change to invalidate reuse.
-EXTRACT_VERSION = 2
+EXTRACT_VERSION = 3
 # Digest characters used in directory names.
 KEY_LENGTH = 16
 
@@ -320,7 +331,7 @@ def sysroot(cache: Path | str | None = None) -> Path:
 
 def kernel_image(cache: Path | str | None = None) -> Path:
     """Return the path of the flat kernel ``Image`` inside the cache."""
-    return sysroot(cache) / "boot" / f"vmlinux-{KERNEL_RELEASE}"
+    return sysroot(cache) / "usr" / "lib" / "modules" / KERNEL_RELEASE / "vmlinuz"
 
 
 def kernel_build_dir(cache: Path | str | None = None) -> Path:
@@ -339,11 +350,12 @@ MANIFEST_NAME = ".frost-manifest"
 
 def required_files(root: Path) -> dict[str, Path]:
     """Return the paths a complete extraction must hold, keyed by a short name."""
+    modules = root / "usr" / "lib" / "modules" / KERNEL_RELEASE
     headers = root / "usr" / "src" / f"linux-headers-{KERNEL_RELEASE}"
     kbuild = root / "usr" / "lib" / f"linux-kbuild-{KERNEL_ABI}"
     return {
-        "image": root / "boot" / f"vmlinux-{KERNEL_RELEASE}",
-        "config": root / "boot" / f"config-{KERNEL_RELEASE}",
+        "image": modules / "vmlinuz",
+        "config": modules / "config",
         "headers-makefile": headers / "Makefile",
         "headers-config": headers / ".config",
         "symvers": headers / "Module.symvers",
@@ -472,14 +484,16 @@ def extract(package: DebianPackage, deb: Path, destination: Path) -> int:
 def fix_headers_tree(root: Path) -> None:
     """Make the extracted headers tree buildable outside /usr/src.
 
-    Debian's architecture Makefile includes the common tree by absolute path,
-    which only resolves when the packages are installed. Rewrite it relative to
-    itself; the tree's ``scripts`` and ``tools`` symlinks into linux-kbuild are
-    already relative and resolve inside the extracted sysroot.
+    Debian's architecture Makefile names both ``KBUILD_OUTPUT`` and the common
+    tree by absolute paths under ``/usr/src``, which only resolve when the
+    packages are installed. Rewrite both relative to the Makefile; the tree's
+    ``scripts`` and ``tools`` symlinks into linux-kbuild are already relative
+    and resolve inside the extracted sysroot.
     """
     arch_makefile = (
         root / "usr" / "src" / f"linux-headers-{KERNEL_RELEASE}" / "Makefile"
     )
+    kbuild_output = f"KBUILD_OUTPUT=/usr/src/linux-headers-{KERNEL_RELEASE}"
     absolute = f"/usr/src/linux-headers-{KERNEL_ABI}-common/Makefile"
     text = arch_makefile.read_text()
     if absolute not in text:
@@ -487,14 +501,20 @@ def fix_headers_tree(root: Path) -> None:
             f"{arch_makefile}: expected an include of {absolute}; the packaging "
             "changed, so re-check this fixup against the new layout"
         )
+    if kbuild_output not in text:
+        raise RuntimeError(
+            f"{arch_makefile}: expected {kbuild_output}; the packaging "
+            "changed, so re-check this fixup against that layout"
+        )
     relative = (
         "$(dir $(lastword $(MAKEFILE_LIST)))"
         f"../linux-headers-{KERNEL_ABI}-common/Makefile"
     )
     arch_makefile.write_text(
-        "# Rewritten by linux/debian_kernel.py: Debian's own line includes the\n"
-        "# common tree by absolute path, which only resolves once the packages\n"
+        "# Rewritten by linux/debian_kernel.py: Debian's own lines name\n"
+        "# /usr/src by absolute path, which only resolves once the packages\n"
         "# are installed under /usr/src.\n"
+        "KBUILD_OUTPUT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))\n"
         f"include {relative}\n"
     )
     # The wrappers from toolchain_bin() answer only to DEBIAN_CROSS_COMPILE, so
@@ -514,16 +534,18 @@ REQUIRED_IRQCHIP_CONFIG = (
     "CONFIG_RISCV_APLIC_MSI",
     "CONFIG_RISCV_IMSIC",
 )
+REQUIRED_ISA_CONFIG = ("CONFIG_RISCV_ISA_SUPM",)
+REQUIRED_KERNEL_CONFIG = (*REQUIRED_IRQCHIP_CONFIG, *REQUIRED_ISA_CONFIG)
 
 
 def check_interrupt_config(root: Path) -> None:
-    """Require built-in drivers for the interrupt topology in FROST's DT."""
+    """Require built-in drivers and ISA support expected by FROST's DT."""
     config = required_files(root)["config"]
     settings = set(config.read_text().splitlines())
-    missing = [name for name in REQUIRED_IRQCHIP_CONFIG if f"{name}=y" not in settings]
+    missing = [name for name in REQUIRED_KERNEL_CONFIG if f"{name}=y" not in settings]
     if missing:
         raise RuntimeError(
-            f"{config}: missing built-in interrupt drivers: {', '.join(missing)}"
+            f"{config}: missing required built-in kernel options: {', '.join(missing)}"
         )
 
 
@@ -725,13 +747,25 @@ def kernel_symbol_crcs(path: Path) -> dict[str, int]:
     return crcs
 
 
+def kernel_uses_modversions(cache: Path | str | None = None) -> bool:
+    """Return True when the pinned kernel enables CONFIG_MODVERSIONS."""
+    files = required_files(sysroot(cache))
+    for key in ("config", "headers-config"):
+        path = files[key]
+        if path.is_file():
+            return "CONFIG_MODVERSIONS=y" in path.read_text().splitlines()
+    return False
+
+
 def verify_module(
     module: Path, cache: Path | str | None, objcopy: str, name: str = MODULE_NAME
 ) -> None:
-    """Require the module's name, the pinned release and matching symbol CRCs.
+    """Require the module's name, the pinned release, and matching ABI metadata.
 
-    Linux ignores vermagic's release field when symbol CRCs are present, so
-    check the release explicitly. CRCs check compatibility with exported symbols.
+    When CONFIG_MODVERSIONS is enabled, Linux ignores vermagic's release field,
+    so check both the release and symbol CRCs against Module.symvers. When
+    CONFIG_MODVERSIONS is disabled (Debian 7.3), reject modversions modules and
+    require an exact vermagic release match.
     """
     fields = module_info(module, objcopy)
     if fields.get("name") != [name]:
@@ -743,21 +777,27 @@ def verify_module(
             f"{module}: vermagic {magic!r} is not {KERNEL_RELEASE}'s; it was "
             "built against another kernel's headers"
         )
-    if "modversions" not in tokens:
+    if kernel_uses_modversions(cache):
+        if "modversions" not in tokens:
+            raise RuntimeError(
+                f"{module}: vermagic {magic!r} has no modversions; the pin sets "
+                "CONFIG_MODVERSIONS"
+            )
+        exported = kernel_symbol_crcs(symvers(cache))
+        wrong = {
+            sym: crc
+            for sym, crc in module_symbol_crcs(module, objcopy).items()
+            if exported.get(sym) != (crc & 0xFFFFFFFF)
+        }
+        if wrong:
+            raise RuntimeError(
+                f"{module}: {len(wrong)} symbol CRCs do not match "
+                f"{symvers(cache)}: {sorted(wrong)[:5]}"
+            )
+    elif "modversions" in tokens:
         raise RuntimeError(
-            f"{module}: vermagic {magic!r} has no modversions; the pin sets "
-            "CONFIG_MODVERSIONS"
-        )
-    exported = kernel_symbol_crcs(symvers(cache))
-    wrong = {
-        name: crc
-        for name, crc in module_symbol_crcs(module, objcopy).items()
-        if exported.get(name) != (crc & 0xFFFFFFFF)
-    }
-    if wrong:
-        raise RuntimeError(
-            f"{module}: {len(wrong)} symbol CRCs do not match "
-            f"{symvers(cache)}: {sorted(wrong)[:5]}"
+            f"{module}: vermagic {magic!r} carries modversions; the pinned "
+            "kernel disables CONFIG_MODVERSIONS"
         )
 
 
@@ -889,15 +929,14 @@ def cpio_members(archive: bytes) -> Iterator[tuple[str, int, bytes]]:
 def init_script(driver: Driver, release: str = KERNEL_RELEASE) -> str:
     """Return the startup script that loads one driver's module.
 
-    Check ``uname -r`` before loading: CONFIG_MODVERSIONS permits compatible
-    symbol CRCs even when vermagic's release differs.
+    Check ``uname -r`` before loading so the pass token always identifies the
+    pinned release, including on kernels that enable CONFIG_MODVERSIONS.
     """
     return f"""#!/bin/sh
 # Generated by linux/debian_kernel.py: load {driver.description}, which is a
-# module because Debian's kernel has none built in. The release test is not
-# redundant with the insmod: with CONFIG_MODVERSIONS the kernel ignores
-# vermagic's release field, so this module would load into any ABI-compatible
-# kernel. The gates require the token below, so they require the release too.
+# module because Debian's kernel has none built in. Check uname -r before
+# insmod so the pass token always identifies the pinned release even when a
+# kernel enables CONFIG_MODVERSIONS and ignores vermagic's release field.
 MODULE=/lib/modules/{release}/{driver.name}.ko
 EXPECT={release}
 case "$1" in
