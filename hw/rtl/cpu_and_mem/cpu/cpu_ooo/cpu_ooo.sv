@@ -706,7 +706,9 @@ module cpu_ooo #(
   assign dbg_post_flush_holdoff_q = post_flush_holdoff_q;
   assign dbg_csr_in_flight = csr_in_flight;
   assign dbg_pipeline_stall = pipeline_ctrl.stall;
-  assign o_pipeline_stall = pipeline_ctrl.stall;
+  // Decoupled IF manages its own fetch backpressure via the parcel queue so
+  // providers can prefetch ahead during backend stalls without release lag.
+  assign o_pipeline_stall = 1'b0;
   assign dbg_pipeline_stall_registered = pipeline_ctrl.stall_registered;
   assign dbg_dispatch_stall = dispatch_stall;
   assign dbg_front_end_cf_serialize_stall = front_end_cf_serialize_stall;

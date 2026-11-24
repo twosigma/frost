@@ -126,8 +126,8 @@ module fetch_pc_decoupled #(
     npc_cond[4]  = i_pd_redirect;
     npc_cond[5]  = i_f1_resteer;
     npc_cond[6]  = !(i_f0_launch || i_f1_collapsed_accept);
-    npc_cond[7]  = i_f0_launch && i_span_btb_fire;
-    npc_cond[8]  = i_f0_launch && i_btb_taken;
+    npc_cond[7]  = (i_f0_launch || i_f1_collapsed_accept) && i_span_btb_fire;
+    npc_cond[8]  = (i_f0_launch || i_f1_collapsed_accept) && i_btb_taken;
     npc_cond[13] = 1'b1;
 
     for (int unsigned k = 0; k < NPcArms; k++) npc_val[k] = pc_q;
@@ -202,7 +202,8 @@ module fetch_pc_decoupled #(
   assign o_pc_even_dir_idx = pc_even_dir_idx_q;
   assign o_next_pc         = next_pc;
   assign o_pc_update_en    = pc_update_en;
-  assign o_f0_self_loop    = i_f0_launch && (npc_sel[7] || npc_sel[8]) && (next_pc == pc_q);
+  assign o_f0_self_loop    = (i_f0_launch || i_f1_collapsed_accept) &&
+                             (npc_sel[7] || npc_sel[8]) && (next_pc == pc_q);
   assign o_npc_sel         = npc_sel;
   always_comb begin
     for (int unsigned k = 0; k < NPcArms; k++) o_npc_val[k] = npc_val[k];
