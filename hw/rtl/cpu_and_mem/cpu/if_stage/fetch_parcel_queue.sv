@@ -278,17 +278,26 @@ module fetch_parcel_queue #(
   // ===========================================================================
   // Formal Model (formal/fetch_parcel_queue.sby)
   // ===========================================================================
-  // Reference FIFO of parcels and reference FIFO of window metadata, checked
-  // against the banked FF/dist-RAM implementation across arbitrary pushes,
-  // pops, bypasses, and flushes.
+  // Track an arbitrary watched parcel slot and an arbitrary watched window
+  // metadata slot with (* anyconst *) indices against the banked FF/dist-RAM
+  // implementation across arbitrary pushes, pops, bypasses, and flushes.
   logic f_past_valid = 1'b0;
-  logic [PARCEL_WIDTH-1:0] f_parcel_mem[DEPTH];
-  logic f_last_mem[DEPTH];
+  logic [PtrBits-1:0] f_watch_idx;
+  logic [MetaPtrBits-1:0] f_watch_midx;
+  always_ff @(posedge i_clk) begin
+    f_watch_idx  <= f_watch_idx;
+    f_watch_midx <= f_watch_midx;
+  end
+
+  logic f_watch_valid_q;
+  logic [PARCEL_WIDTH-1:0] f_watch_parcel_q;
+  logic f_watch_last_q;
   logic [PtrBits-1:0] f_head_q;
   logic [PtrBits-1:0] f_tail_q;
   logic [CountBits-1:0] f_count_q;
 
-  logic [META_WIDTH-1:0] f_meta_mem[META_DEPTH];
+  logic f_mwatch_valid_q;
+  logic [META_WIDTH-1:0] f_mwatch_meta_q;
   logic [MetaPtrBits-1:0] f_mhead_q;
   logic [MetaPtrBits-1:0] f_mtail_q;
   logic [MetaCountBits-1:0] f_mcount_q;
@@ -312,23 +321,47 @@ module fetch_parcel_queue #(
     end
   end
 
+  logic f_watch_popped;
+  logic f_mwatch_popped;
+  assign f_watch_popped = f_watch_valid_q &&
+      (CountBits'(PtrBits'(f_watch_idx - f_head_q)) < CountBits'(pop_cnt_eff));
+  assign f_mwatch_popped = f_mwatch_valid_q &&
+      (MetaCountBits'(MetaPtrBits'(f_watch_midx - f_mhead_q)) < MetaCountBits'(meta_freed));
+
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush) begin
-      f_head_q   <= '0;
-      f_tail_q   <= '0;
-      f_count_q  <= '0;
-      f_mhead_q  <= '0;
-      f_mtail_q  <= '0;
-      f_mcount_q <= '0;
+      f_head_q         <= '0;
+      f_tail_q         <= '0;
+      f_count_q        <= '0;
+      f_watch_valid_q  <= 1'b0;
+      f_watch_parcel_q <= '0;
+      f_watch_last_q   <= 1'b0;
+      f_mhead_q        <= '0;
+      f_mtail_q        <= '0;
+      f_mcount_q       <= '0;
+      f_mwatch_valid_q <= 1'b0;
+      f_mwatch_meta_q  <= '0;
     end else begin
+      if (f_watch_popped) f_watch_valid_q <= 1'b0;
+      if (f_mwatch_popped) f_mwatch_valid_q <= 1'b0;
       if (i_push_valid) begin
         for (int k = 0; k < 4; k++) begin
-          if (3'(k) < i_push_count) begin
-            f_parcel_mem[PtrBits'(f_tail_q + PtrBits'(k))] <= i_push_parcels[k];
-            f_last_mem[PtrBits'(f_tail_q + PtrBits'(k))]   <= (3'(k) == (i_push_count - 3'd1));
+          if ((3'(k) < i_push_count) && (PtrBits'(f_tail_q + PtrBits'(k)) == f_watch_idx)) begin
+            // If this pushed parcel is bypassed and popped in the same cycle,
+            // it does not remain resident in the ring.
+            if ((f_count_q + CountBits'(k)) >= CountBits'(pop_cnt_eff)) begin
+              f_watch_valid_q  <= 1'b1;
+              f_watch_parcel_q <= i_push_parcels[k];
+              f_watch_last_q   <= (3'(k) == (i_push_count - 3'd1));
+            end
           end
         end
-        f_meta_mem[f_mtail_q] <= i_push_meta;
+        if (f_mtail_q == f_watch_midx) begin
+          if ((f_mcount_q + MetaCountBits'(1)) > MetaCountBits'(meta_freed)) begin
+            f_mwatch_valid_q <= 1'b1;
+            f_mwatch_meta_q  <= i_push_meta;
+          end
+        end
       end
       f_head_q   <= f_head_q + PtrBits'(pop_cnt_eff);
       f_tail_q   <= f_tail_q + PtrBits'(push_cnt_eff);
@@ -350,7 +383,26 @@ module fetch_parcel_queue #(
       p_f_meta_even_idx :
       assert (meta_head_even_idx_q ==
               (meta_head_q[MetaPtrBits-1:1] + MetaBankBits'(meta_head_q[0])));
-      for (int b = 0; b < 4; b++) begin
+      if (f_mcount_q >= MetaCountBits'(1)) begin
+        if (f_mhead_q == f_watch_midx) begin
+          p_f_meta0_ring : assert (f_mwatch_valid_q && (o_meta0 == f_mwatch_meta_q));
+        end
+      end else if (meta_push_eff) begin
+        p_f_meta0_bypass : assert (o_meta0 == i_push_meta);
+      end
+      if (f_mcount_q >= MetaCountBits'(2)) begin
+        if (MetaPtrBits'(f_mhead_q + MetaPtrBits'(1)) == f_watch_midx) begin
+          p_f_meta1_ring : assert (f_mwatch_valid_q && (o_meta1 == f_mwatch_meta_q));
+        end
+      end else if (meta_push_eff) begin
+        p_f_meta1_bypass : assert (o_meta1 == i_push_meta);
+      end
+    end
+  end
+
+  for (genvar b = 0; b < 4; b++) begin : gen_f_row_check
+    always_comb begin
+      if (f_past_valid && !i_rst) begin
         p_f_rd_row :
         assert (rd_row_q[b] ==
                 (head_q[PtrBits-1:2] + ((2'(b) < head_q[1:0]) ? RowBits'(1) : '0)));
@@ -358,28 +410,24 @@ module fetch_parcel_queue #(
         assert (wr_row_q[b] ==
                 (tail_q[PtrBits-1:2] + ((2'(b) < tail_q[1:0]) ? RowBits'(1) : '0)));
       end
-      for (int k = 0; k < 4; k++) begin
-        if (o_avail_ge[k]) begin
-          if (CountBits'(k) < f_count_q) begin
+    end
+  end
+
+  for (genvar k = 0; k < 4; k++) begin : gen_f_view_check
+    always_comb begin
+      if (f_past_valid && !i_rst && o_avail_ge[k]) begin
+        if (CountBits'(k) < f_count_q) begin
+          if (PtrBits'(f_head_q + PtrBits'(k)) == f_watch_idx) begin
             p_f_view_ring_exact :
-            assert (o_view_parcels[k] == f_parcel_mem[PtrBits'(f_head_q + PtrBits'(k))] &&
-                    o_view_last[k] == f_last_mem[PtrBits'(f_head_q + PtrBits'(k))]);
-          end else begin
-            p_f_view_bypass_exact :
-            assert (o_view_parcels[k] == i_push_parcels[2'(k) - f_count_q[1:0]] &&
-                    o_view_last[k] == (3'(2'(k) - f_count_q[1:0]) == (i_push_count - 3'd1)));
+            assert (f_watch_valid_q &&
+                    o_view_parcels[k] == f_watch_parcel_q &&
+                    o_view_last[k] == f_watch_last_q);
           end
+        end else begin
+          p_f_view_bypass_exact :
+          assert (o_view_parcels[k] == i_push_parcels[2'(k) - f_count_q[1:0]] &&
+                  o_view_last[k] == (3'(2'(k) - f_count_q[1:0]) == (i_push_count - 3'd1)));
         end
-      end
-      if (f_mcount_q >= MetaCountBits'(1)) begin
-        p_f_meta0_ring : assert (o_meta0 == f_meta_mem[f_mhead_q]);
-      end else if (meta_push_eff) begin
-        p_f_meta0_bypass : assert (o_meta0 == i_push_meta);
-      end
-      if (f_mcount_q >= MetaCountBits'(2)) begin
-        p_f_meta1_ring : assert (o_meta1 == f_meta_mem[MetaPtrBits'(f_mhead_q + MetaPtrBits'(1))]);
-      end else if (meta_push_eff) begin
-        p_f_meta1_bypass : assert (o_meta1 == i_push_meta);
       end
     end
   end

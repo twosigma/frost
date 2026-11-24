@@ -214,6 +214,7 @@ module if_stage #(
   typedef struct packed {
     logic valid;
     logic [XLEN-1:0] pc;
+    logic fault0;
     logic span_tail;
     logic btb_taken;
     logic btb_is_span;
@@ -849,7 +850,9 @@ module if_stage #(
   assign hw_rvc_extra[2] = sb_w1[riscv_pkg::ImemSbRvcExtraLoLsb+:23];
   assign hw_rvc_extra[3] = sb_w1[riscv_pkg::ImemSbRvcExtraHiLsb+:23];
 
-  assign hw_fault      = {i_instr_fault1, i_instr_fault1, i_instr_fault0, i_instr_fault0};
+  logic f1_fault0_eff;
+  assign f1_fault0_eff = i_instr_fault0 || (f1_req_q.valid ? f1_req_q.fault0 : fetch_fault0_live);
+  assign hw_fault      = {i_instr_fault1, i_instr_fault1, f1_fault0_eff, f1_fault0_eff};
   assign hw_fault_page = {
     i_instr_fault1_page, i_instr_fault1_page, i_instr_fault0_page, i_instr_fault0_page
   };
@@ -903,24 +906,25 @@ module if_stage #(
   logic f1_false_btb;
 
   assign f1_btb_pos = f1_src_btb_pos;
-  assign f1_btb_fault = i_instr_fault0 ||
+  assign f1_btb_fault = f1_fault0_eff ||
       (i_instr_fault1 && (f1_btb_pos[1] || (f1_btb_pos == 2'd1 && !hw_comp[1])));
   assign f1_btb_ok = valid_start[f1_btb_pos] && (hw_comp[f1_btb_pos] == f1_src_btb_comp) &&
       hw_is_control[f1_btb_pos] && !f1_btb_fault;
 
   assign f1_valid_btb_taken = ((f1_accept && !f1_req_q.span_tail) ||
-      (f1_collapsed_accept && !span_btb_pending_q.valid)) && f1_src_btb_taken && f1_btb_ok;
+      (f1_collapsed_accept && !span_btb_pending_q.valid)) && f1_src_btb_taken && f1_btb_ok &&
+      !(f1_src_btb_is_span && f0_span_fault_veto);
   assign f1_false_btb       = f1_accept && !f1_req_q.span_tail && f1_req_q.btb_taken && !f1_btb_ok;
   assign f1_cancel_span     = f1_false_btb && f1_req_q.btb_is_span;
   assign f1_false_btb_resteer = f1_false_btb && !f1_req_q.btb_is_span;
-  assign f1_span_tail_fault = f1_accept && f1_req_q.span_tail && i_instr_fault0;
+  assign f1_span_tail_fault = f1_accept && f1_req_q.span_tail && f1_fault0_eff;
 
   assign f1_collapsed_btb_steer = f1_collapsed_accept && !span_btb_pending_q.valid &&
       f0_btb_steer_now && f1_btb_ok;
   assign f1_collapsed_btb_span = f1_collapsed_accept && !span_btb_pending_q.valid &&
       f0_btb_valid && btb_is_span && f1_btb_ok;
   assign f1_collapsed_span_fire = f1_collapsed_accept && span_btb_pending_q.valid &&
-      !i_instr_fault0;
+      !i_instr_fault0 && !fetch_fault0_live;
 
   assign f1_resteer = f1_tag_resteer || f1_false_btb_resteer;
   assign f1_resteer_target = f1_tag_resteer ?
@@ -1079,7 +1083,7 @@ module if_stage #(
       f1_resteer_nopred_q      <= 1'b0;
     end else if (f1_resteer) begin
       f1_req_q.valid           <= 1'b0;
-      span_btb_pending_q.valid <= 1'b0;
+      span_btb_pending_q.valid <= f1_tag_resteer && f1_req_q.span_tail;
       f1_pred_fresh_q          <= 1'b0;
       collapsed_armed_q        <= 1'b0;
       f1_resteer_nopred_q      <= f1_tag_resteer;
@@ -1089,6 +1093,7 @@ module if_stage #(
     end else if (f0_launch) begin
       f1_req_q.valid        <= 1'b1;
       f1_req_q.pc           <= pc;
+      f1_req_q.fault0       <= fetch_fault0_live;
       f1_req_q.span_tail    <= f0_span_btb_fire;
       f1_req_q.btb_taken    <= f0_btb_valid;
       f1_req_q.btb_is_span  <= f0_btb_valid && btb_is_span;
@@ -1137,7 +1142,7 @@ module if_stage #(
         f1_req_q.valid  <= 1'b0;
         f1_pred_fresh_q <= 1'b0;
         f1_carry_hi_q   <= f1_next_carry_hi;
-        if (f1_cancel_span) span_btb_pending_q.valid <= 1'b0;
+        if (f1_cancel_span || f0_span_fault_veto) span_btb_pending_q.valid <= 1'b0;
       end else if (f1_req_q.valid && !i_instr_valid) begin
         if (f1_pred_fresh_q) begin
           f1_pred_hold_q  <= f1_pred_live;
@@ -1590,7 +1595,7 @@ module if_stage #(
   };
 
 `ifdef FROST_DEBUG_FETCH_ILA
-  // Fetch debug probes (build.py --debug-ila): mark_debug copies for the debug
+  // Fetch debug probes (optional debug probe tap): mark_debug copies for the debug
   // core; nothing here feeds the design.
   (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pc;
   (* mark_debug = "true" *) logic dbg_ila_if_instr_valid;
@@ -1706,6 +1711,262 @@ module if_stage #(
                  o_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]));
       end
     end
+  end
+`endif
+
+`ifdef IF_SLOT2_PRECOMPUTE_FORMAL
+  // Formal model (formal/if_slot2_precompute.sby): proves that IF's precomputed
+  // slot-2 TAGE/ITTAGE lookup selection, conditional-branch flag, target
+  // candidates, PC step, bubble/fault pairing, and per-size backing outputs
+  // match direct references across empty-bypass and queued packets.
+  logic f_slot2_past_valid = 1'b0;
+
+  always_ff @(posedge i_clk) begin
+    f_slot2_past_valid <= 1'b1;
+    if (!f_slot2_past_valid) assume (i_pipeline_ctrl.reset);
+  end
+
+  always_comb begin
+    if (f_slot2_past_valid && !i_pipeline_ctrl.reset) begin
+      f_if_slot1_itt_hit_exact :
+      assert (o_itt_hit[0] == (o_tage_slot_valid[0] && !o_from_if_to_pd.fetch_fault &&
+                               (s1_p.hw_in_win[1] ? s1_m.itt_hit[1] : s1_m.itt_hit[0])));
+      f_if_slot2_itt_hit_exact :
+      assert (o_itt_hit[1] == (o_tage_slot_valid[1] && !s2_fault &&
+                               (s2_p.hw_in_win[1] ? s2_m.itt_hit[1] : s2_m.itt_hit[0])));
+      f_if_slot1_itt_payload_exact :
+      assert ({o_itt_target[0], o_itt_slot_lookup} == (s1_p.hw_in_win[1] ?
+          {s1_m.itt_target[1], s1_m.itt_w1} : {s1_m.itt_target[0], s1_m.itt_w0}));
+      f_if_slot2_itt_payload_exact :
+      assert ({o_itt_target[1], o_itt_slot_lookup_2} == (s2_p.hw_in_win[1] ?
+          {s2_m.itt_target[1], s2_m.itt_w1} : {s2_m.itt_target[0], s2_m.itt_w0}));
+      f_if_slot2_tage_cov_exact :
+      assert (o_tage_slot_valid[1] == (s2_p.hw_in_win[1] ? s2_m.tage_cov[1] : s2_m.tage_cov[0]));
+      f_if_slot2_tage_lookup_exact :
+      assert (o_tage_slot_lookup_2 == (s2_p.hw_in_win[1] ? s2_m.tage_w1 : s2_m.tage_w0));
+      f_if_slot2_tage_valid_exact :
+      assert (o_from_if_to_pd_2.tage_valid ==
+              (o_tage_slot_valid[1] && (|o_tage_slot_lookup_2.hit) && !s2_fault));
+      f_if_slot2_tage_taken_exact :
+      assert (o_from_if_to_pd_2.tage_taken == o_tage_slot_lookup_2.taken);
+      f_if_slot2_is_cond_branch_exact :
+      assert (o_from_if_to_pd_2.is_cond_branch ==
+              ((o_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_BRANCH) &&
+               (o_from_if_to_pd_2.effective_instr[14:13] != 2'b01)));
+      if (!o_from_if_to_pd_2.sel_compressed) begin
+        f_if_slot2_pd_target_native_exact :
+        assert ({o_from_if_to_pd_2.pd_target_native_high_select[1],
+                 o_from_if_to_pd_2.pd_target_native_high_select[0],
+                 o_from_if_to_pd_2.pd_target_native_low} ==
+                {o_from_if_to_pd_2.effective_instr[31],
+                 (riscv_pkg::PdTargetSplit + 1)'(
+                     o_from_if_to_pd_2.program_counter[riscv_pkg::PdTargetSplit-1:0] +
+                     native_branch_imm_low(o_from_if_to_pd_2.effective_instr))});
+      end
+      f_if_slot2_pd_target_compressed_exact :
+      assert ({o_from_if_to_pd_2.pd_target_compressed_high_select[1],
+               o_from_if_to_pd_2.pd_target_compressed_high_select[0],
+               o_from_if_to_pd_2.pd_target_compressed_low} ==
+              {o_from_if_to_pd_2.raw_parcel[12],
+               (riscv_pkg::PdTargetSplit + 1)'(
+                   o_from_if_to_pd_2.program_counter[riscv_pkg::PdTargetSplit-1:0] +
+                   compressed_branch_imm_low(o_from_if_to_pd_2.raw_parcel))});
+      f_if_slot2_pc_step_exact :
+      assert (o_from_if_to_pd_2.program_counter ==
+              (o_from_if_to_pd.program_counter +
+               (o_from_if_to_pd.sel_compressed ? riscv_pkg::PcIncrementCompressed :
+                                                 riscv_pkg::PcIncrement32bit)));
+      f_if_slot1_nop_implies_slot2_nop :
+      assert (!o_from_if_to_pd.sel_nop || o_from_if_to_pd_2.sel_nop);
+      f_if_slot1_fault_implies_slot2_fault_or_nop :
+      assert (o_from_if_to_pd_2.sel_nop || !o_from_if_to_pd.fetch_fault ||
+              o_from_if_to_pd_2.fetch_fault);
+    end
+  end
+
+  // Unconditional check of slot-2 per-size backing selection (no reset qualifier).
+  always_comb begin
+    f_if_backing_slot2_by_size_exact :
+    assert ({o_backing_return[1], o_backing_target[1]} ==
+            {o_backing_slot2_return_by_size[o_from_if_to_pd.sel_compressed],
+             o_backing_slot2_target_by_size[o_from_if_to_pd.sel_compressed]});
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (f_slot2_past_valid && !i_pipeline_ctrl.reset) begin
+      cover (!o_from_if_to_pd_2.sel_nop && o_itt_hit[1]);
+      cover (!o_from_if_to_pd_2.sel_nop && o_from_if_to_pd.sel_compressed &&
+             o_from_if_to_pd_2.sel_compressed && o_from_if_to_pd_2.is_cond_branch &&
+             o_from_if_to_pd_2.tage_valid && o_from_if_to_pd_2.tage_taken);
+      cover (!o_from_if_to_pd_2.sel_nop && o_from_if_to_pd.sel_compressed &&
+             !o_from_if_to_pd_2.sel_compressed && o_from_if_to_pd_2.is_cond_branch &&
+             o_from_if_to_pd_2.tage_valid && !o_from_if_to_pd_2.tage_taken);
+      cover (!o_from_if_to_pd_2.sel_nop && !o_from_if_to_pd.sel_compressed &&
+             !o_from_if_to_pd_2.sel_compressed && o_from_if_to_pd_2.is_cond_branch &&
+             o_from_if_to_pd_2.tage_valid);
+      cover (!o_from_if_to_pd_2.sel_nop && s2_uses_meta1);
+      cover (!o_from_if_to_pd_2.sel_nop && i_pipeline_ctrl.stall);
+    end
+  end
+`endif
+
+`ifdef IF_FAULT_RAS_VETO_PROOF
+  // Formal model (formal/if_fault_ras_veto.sby): fetch-faulted IF packets never
+  // carry a predicted-taken flag, faulted F0 fetches never trigger live or
+  // spanning RAS ops, and spanning second-word faults restore RAS and cancel
+  // pending speculative F0 RAS ops.
+  logic f_fault_past_valid = 1'b0;
+  logic f_prev_fault0_q;
+  logic f_prev_span_tail_fault_q;
+  initial assume (i_pipeline_ctrl.reset);
+
+  always_comb begin
+    p_fault_packet_clears_slot1_taken :
+    assert (!o_from_if_to_pd.fetch_fault || !o_from_if_to_pd.btb_predicted_taken);
+    p_fault_packet_clears_slot2_taken :
+    assert (!o_from_if_to_pd_2.fetch_fault || !o_from_if_to_pd_2.btb_predicted_taken);
+    p_fault_f0_vetoes_span_btb : assert (!fetch_fault0_live || !f0_span_btb_fire);
+    p_fault_f0_clears_ras_op :
+    assert (!fetch_fault0_live || (!f0_ras_push && !f0_ras_pop));
+    p_span_tail_fault_restores_ras :
+    assert (!f1_span_tail_fault || any_redirect || i_from_ex_comb.ras_misprediction ||
+            f1_ras_restore);
+  end
+
+  always_ff @(posedge i_clk) begin
+    f_fault_past_valid <= 1'b1;
+    f_prev_fault0_q <= !i_pipeline_ctrl.reset && fetch_fault0_live;
+    f_prev_span_tail_fault_q <= !i_pipeline_ctrl.reset && f1_span_tail_fault;
+    if (f_fault_past_valid) begin
+      p_prev_fault0_clears_ras_q :
+      assert (!f_prev_fault0_q || (!f0_ras_push_q && !f0_ras_pop_q));
+      p_prev_span_tail_fault_clears_ras_q :
+      assert (!f_prev_span_tail_fault_q || (!f0_ras_push_q && !f0_ras_pop_q));
+      cover_span_fault_veto :
+      cover (!i_pipeline_ctrl.reset && f0_span_fault_veto && !f0_span_btb_fire &&
+             !f0_ras_push && !f0_ras_pop);
+      cover_span_tail_fault_restore :
+      cover (!i_pipeline_ctrl.reset && f1_span_tail_fault && f1_ras_restore);
+      cover_slot1_hi_fault_clears_taken :
+      cover (!i_pipeline_ctrl.reset && s1_valid && o_from_if_to_pd.fetch_fault &&
+             o_from_if_to_pd.fetch_fault_hi && !o_from_if_to_pd.btb_predicted_taken);
+      cover_slot2_fault_defers_to_slot1 :
+      cover (!i_pipeline_ctrl.reset && s1_valid && !s1_fault && s2_fault &&
+             o_from_if_to_pd_2.sel_nop);
+    end
+  end
+`endif
+
+`ifdef IF_SLOT2_VETO_REDUNDANT_PROOF
+  // Formal model (formal/if_fault_ras_veto.sby, prove_slot2_veto_redundant):
+  // intact decoupled if_stage never pairs a faulting instruction into slot 2
+  // and always forces o_from_if_to_pd_2.fetch_fault low.
+  logic f_veto_past_valid = 1'b0;
+  initial assume (i_pipeline_ctrl.reset);
+
+  always_ff @(posedge i_clk) begin
+    f_veto_past_valid <= 1'b1;
+    if (f_veto_past_valid) begin
+      p_slot2_never_faults : assert (!o_from_if_to_pd_2.fetch_fault);
+      p_slot2_valid_no_fault : assert (o_from_if_to_pd_2.sel_nop || (!s1_fault && !s2_fault));
+      p_slot2_btb_requires_valid :
+      assert (!o_from_if_to_pd_2.btb_predicted_taken || !o_from_if_to_pd_2.sel_nop);
+      p_slot2_fault_clears_btb :
+      assert (!s2_fault || !o_from_if_to_pd_2.btb_predicted_taken);
+      p_slot1_fault_kills_slot2 : assert (!s1_fault || o_from_if_to_pd_2.sel_nop);
+    end
+  end
+`endif
+
+`ifdef IF_WALK_PAST_PROOF
+  // Formal model (formal/if_prediction_walk_past.sby): checks interior-halfword
+  // false-BTB resteer, phantom suppression, and emitted PC continuity.
+  logic f_wp_past_valid = 1'b0;
+  logic f_wp_s1_real;
+  logic f_wp_s2_real;
+  assign f_wp_s1_real = !o_from_if_to_pd.sel_nop;
+  assign f_wp_s2_real = !o_from_if_to_pd_2.sel_nop;
+
+  always_comb begin
+    // An interior-halfword BTB hit (not on a valid instruction boundary) or a
+    // size/opcode/fault mismatch on an accepted F1 window must trigger
+    // f1_false_btb_resteer and suppress btb_taken on every pushed parcel.
+    if (f1_accept && f1_src_btb_taken && !f1_is_span_tail &&
+        (!valid_start[f1_src_btb_pos] ||
+         (hw_comp[f1_src_btb_pos] != f1_src_btb_comp) ||
+         !hw_is_control[f1_src_btb_pos] ||
+         hw_fault[f1_src_btb_pos])) begin
+      p_false_btb_triggers_resteer :
+      assert (f1_false_btb &&
+              (f1_req_q.btb_is_span ? f1_cancel_span : (f1_false_btb_resteer && f1_resteer)));
+      p_false_btb_suppresses_taken : assert (!f1_valid_btb_taken);
+    end
+    // When a false-BTB resteer fires, F0 must not launch a new window and must
+    // steer to f1_resteer_target on arm 5.
+    if (!any_redirect && f1_false_btb_resteer) begin
+      p_false_btb_blocks_f0_launch : assert (!f0_launch);
+      p_false_btb_selects_arm5 : assert (npc_sel[5]);
+    end
+    // Slot 2 never emits when slot 1 is a bubble, fault, or predicted-taken.
+    p_wp_slot2_order :
+    assert (!f_wp_s2_real || (f_wp_s1_real && !o_from_if_to_pd.fetch_fault &&
+                              !o_from_if_to_pd.btb_predicted_taken));
+    p_wp_slot2_pc_step :
+    assert (!f_wp_s2_real ||
+            (o_from_if_to_pd_2.program_counter ==
+             o_from_if_to_pd.program_counter +
+             (o_from_if_to_pd.sel_compressed ? riscv_pkg::PcIncrementCompressed :
+                                               riscv_pkg::PcIncrement32bit)));
+  end
+
+`ifdef IF_CONTINUITY_PROOF
+  logic f_wp_cont_valid_q = 1'b0;
+  logic [XLEN-1:0] f_wp_expected_pc_q = '0;
+  logic [XLEN-1:0] f_wp_s1_step;
+  logic [XLEN-1:0] f_wp_s2_step;
+  logic [XLEN-1:0] f_wp_bundle_next_pc;
+
+  assign f_wp_s1_step = o_from_if_to_pd.sel_compressed ? 64'd2 : 64'd4;
+  assign f_wp_s2_step = o_from_if_to_pd_2.sel_compressed ? 64'd2 : 64'd4;
+  assign f_wp_bundle_next_pc =
+      o_from_if_to_pd.btb_predicted_taken ? o_from_if_to_pd.btb_predicted_target :
+      (f_wp_s2_real && o_from_if_to_pd_2.btb_predicted_taken) ?
+      o_from_if_to_pd_2.btb_predicted_target :
+      (o_from_if_to_pd.program_counter + f_wp_s1_step + (f_wp_s2_real ? f_wp_s2_step : 64'd0));
+`endif
+
+  always_ff @(posedge i_clk) begin
+    f_wp_past_valid <= 1'b1;
+`ifdef IF_CONTINUITY_PROOF
+    if (i_pipeline_ctrl.reset || any_redirect) begin
+      f_wp_cont_valid_q <= 1'b0;
+    end else begin
+      if (f_wp_past_valid && f_wp_cont_valid_q && f_wp_s1_real) begin
+        p_formal_emitted_pc_continuity :
+        assert (o_from_if_to_pd.program_counter == f_wp_expected_pc_q);
+      end
+      if (!i_pipeline_ctrl.stall && f_wp_s1_real) begin
+        if (o_from_if_to_pd.fetch_fault) begin
+          f_wp_cont_valid_q <= 1'b0;
+        end else begin
+          f_wp_cont_valid_q  <= 1'b1;
+          f_wp_expected_pc_q <= f_wp_bundle_next_pc;
+        end
+      end
+    end
+`else
+    if (f_wp_past_valid && !i_pipeline_ctrl.reset) begin
+      cover_interior_halfword_false_btb :
+      cover (f1_accept && f1_src_btb_taken && !f1_is_span_tail &&
+             !valid_start[f1_src_btb_pos] && f1_false_btb_resteer);
+      cover_real_slot2_packet : cover (f_wp_s1_real && f_wp_s2_real);
+      cover_reserved_comp_then_itt :
+      cover (f_wp_s1_real && o_from_if_to_pd.sel_compressed &&
+             (o_from_if_to_pd.raw_parcel[1:0] == 2'b00) && o_itt_hit[0]);
+      cover_backing_region_cross :
+      cover (f_wp_s2_real && !s2_same_region && s2_p.backing_hit && !o_backing_hit[1]);
+    end
+`endif
   end
 `endif
 
