@@ -76,14 +76,17 @@ entry.
 | `cpu_and_mem/fetch_provider.sv` | Cached and uncached instruction fetch buffers |
 | `cpu_and_mem/dma_test_engine.sv`, `dma_test_engine_axi.sv` | Coherent DMA copy/fill engine, and its AXI4 master |
 | `cpu_and_mem/hang_triage.sv` | UART diagnostics for hardware hangs (`ENABLE_HANG_TRIAGE=1`; default 0) |
+| `cpu_and_mem/memory_error_unit.sv` | DDR ECC and bus-error reporting peripheral |
 | `cpu_and_mem/debug/` | JTAG transport and RISC-V debug module |
 | `cpu_and_mem/cpu/cpu_ooo/` | CPU integration and pipeline control |
 | [cpu_and_mem/cpu/tomasulo/](cpu_and_mem/cpu/tomasulo/README.md) | Dispatch, ROB, rename tables, queues, and functional-unit adapters |
-| `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | Front-end pipeline stages |
+| `cpu_and_mem/cpu/{if_stage,pd_stage,id_stage}/` | Front-end pipeline stages |
 | `cpu_and_mem/cpu/mmu/` | Sv39 TLBs and hardware page-table walker |
-| `cpu_and_mem/cpu/csr/`, `control/trap_unit.sv` | Privileged state, exceptions, and interrupts |
+| `cpu_and_mem/cpu/misaligned/` | Hardware misaligned-access engine (`ma_engine.sv`, `ma_pkg.sv`) |
+| `cpu_and_mem/cpu/csr/`, `cpu_and_mem/cpu/control/trap_unit.sv` | Privileged state, exceptions, and interrupts |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | Integer and FP register files |
 | `cpu_and_mem/cpu/ex_stage/` | ALU, multiply/divide, FPU, and branch execution |
+| `cpu_and_mem/cpu/vector/` | RV64V vector unit (control, legality, register file, execution units, VMT, and VMU) |
 | [lib/cache/](lib/cache/README.md) | Coherent L1 caches in `coherent_hart_cache.sv`, the shared L2 home in `coherence_home.sv`, DDR bridge, and simulation DDR model |
 | [lib/axi/](lib/axi/README.md) | AXI4 DMA interconnect, coherent ingress bridge, register slices and AXI4-Lite register bridge |
 | `lib/` | RAM, FIFO, and clock-domain-crossing primitives; `line_align.sv`, which moves an access between register order and a pair of cache lines |

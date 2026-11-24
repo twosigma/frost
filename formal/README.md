@@ -83,7 +83,8 @@ runner repeats a local solver search step for step in about 1.2 times its
 time, and runner speed varies by up to 1.8 times between runs.
 `coh_l1d_stream_cover` has 20 minutes at depth 80, including serialization
 of its four eight-endpoint witnesses.
-`line_client_link`'s four BMC tasks have 70 minutes.
+`line_client_link:line_link0_bmc` has 88 minutes, and `line_link1_bmc`,
+`line_link1_four_bmc`, and `line_link1_eight_bmc` have 70 minutes each.
 `coherence_array:coh_array_port_bmc` has 40 minutes and
 `coh_array4_port_bmc` has 100 minutes at depth 24. The L1D, store and
 hit-port allowances match in the SBY configurations and the runner.
@@ -158,18 +159,18 @@ state are those of the other tasks. The preparation script checks that
 both eight-bit byte constants remain and that the bounded models have
 no assumptions. No case assumes a result from another case.
 
-CI assigns the CSR profiling-on, CSR profiling-off and reorder-buffer tasks
-to separate jobs with 120-minute limits. These jobs also run selected
+CI assigns the CSR profiling-on, CSR profiling-off, and reorder-buffer tasks
+to separate jobs with 124-, 120-, and 125-minute limits. These jobs also run selected
 local-atomic tasks, and the CSR profiling-on job runs the L1D local ownership
 proofs. The hart maintenance proof, its ownership induction, the scripted
 and store-free eight-endpoint L1D stream control BMCs, and their independent
 unbounded payload proof share a job with a 335-minute limit.
 The free-input stream BMC with stores shares a 330-minute job with the
-four-way hit-port array BMC. The four-record boundary BMC and the
-intervening-load boundary BMC each have a 330-minute job of their own.
+four-way hit-port array BMC. The four-record boundary BMC has a 360-minute
+job of its own, and the intervening-load boundary BMC has a 350-minute job.
 
 The L1D control job runs `coh_l1d_bmc` alone with a 200-minute limit, and
-the L1D multi-endpoint job runs `coh_l1d_multi_bmc` alone with a 330-minute
+the L1D multi-endpoint job runs `coh_l1d_multi_bmc` alone with a 349-minute
 limit. The zero-line and full-line control jobs run `coh_l1d_zero_bmc` and
 `coh_l1d_full_bmc` alone with 200-minute limits, the zero-line and full-line
 multi-endpoint jobs run `coh_l1d_zero_multi_bmc` and `coh_l1d_full_multi_bmc`
@@ -205,9 +206,10 @@ and exactly one CI job per task.
 
 The 42-cycle scripted stream checks are also partitioned: `coh_l1d_stream_bmc`
 keeps every assertion except four wide payload identities and holds, which
-`coh_l1d_stream_hold_bmc` checks. Both retain the original scripted model,
-interface assumptions, depth 42 and 3,600-second limit, with no assumptions
-between groups. Fast tests enforce that match and complete property coverage.
+`coh_l1d_stream_hold_bmc` checks. Both keep the original scripted model,
+interface assumptions, and depth 42, with no assumptions between groups;
+`coh_l1d_stream_bmc` has a 5,100-second limit and `coh_l1d_stream_hold_bmc`
+has a 3,600-second limit. Fast tests enforce that match and complete property coverage.
 The hold task uses CaDiCaL in a parallel 75-minute job; the control task stays
 in the hart maintenance job with BMC3's default solver.
 
@@ -235,10 +237,10 @@ for that on a runner 1.8 times slower than a typical one. The store-home job run
 choices for each of four bounded schedules, plus four covers, within
 240 minutes. Each bounded case has a 15-minute allowance. Two
 coherent-array equivalence jobs run
-the `coherence_array_equiv` tasks, the five four-way tasks in one and the
-other eight in the other, each with a 120-minute limit. The Coherence job
+the `coherence_array_equiv` tasks: the five four-way tasks in a 150-minute
+job and the other eight in a 133-minute job. The Coherence job
 runs the other coherence tasks, including the hart maintenance covers
-and the reset-state lemma induction, with a 300-minute limit. The home
+and the reset-state lemma induction, with a 330-minute limit. The home
 tasks run in two jobs: the default home tasks in a 355-minute job and
 the `FAST_TAG_LAUNCH=1` home tasks in a 140-minute job.
 Ten jobs split the rest: Vector (the vector CSR
@@ -434,7 +436,7 @@ and `p_pd_slot2_cond_branch_predecode_exact` enabled.
 | --- | --- |
 | `branch_prediction_alias` | The slot-1/slot-2 alias output computed from the base PC equals the generic computation under the fetch stage's base+2/base+4 wiring. Only this output is compared |
 | `branch_prediction_disable` | The prediction-use gates for both slots (including `i_pending_prediction_blocks_slot1` on slot 1), slot 2's target select, and the metadata next state equal the reference equations, disabling prediction blocks both the live and the staged path, and the slot-2 targets' relations to the pending PC equal direct compares |
-| `btb_invalidate_hold` | Unbounded induction over `branch_prediction_controller` and `branch_predictor` (at `BTB_INDEX_BITS=2` with arbitrary over-approximating RAM reads) with arbitrary updates and lookups: `i_btb_invalidate` holds `btb_invalidate_active` high for four cycles, clears every slot-1 and slot-2 valid array and registered slot-2 valid flop, and forces all slot-1 and slot-2 lookups to miss even when updates arrive before or during every cycle of the hold; covers witness dropped updates on all four hold cycles and a post-hold update installing cleanly |
+| `btb_invalidate_hold` | Unbounded induction over `branch_prediction_controller` and `branch_predictor` (at `BTB_INDEX_BITS=2` with arbitrary over-approximating RAM reads) with arbitrary updates and lookups: `i_btb_invalidate` holds `btb_invalidate_active` high for four cycles, clears every slot-1 and slot-2 valid array and registered slot-2 valid flop, and forces all slot-1 and slot-2 lookups to miss even when updates arrive before or during every cycle of the hold; covers witness dropped updates on all four hold cycles and a post-hold update installing |
 | `slot2_prediction_capture` | A staged candidate and its payload share the first-stall capture edge and remain stable during the stall. Replay requests need a valid capture, consumption requires release, and reset or recovery cancels the capture. Assumes an initial reset; packet ownership is supplied by IF's replay input |
 | `backing_btb` | At 8 entries in two and four ways, with arbitrary lookups, packets, updates, refreshes and resets after an initial reset: each slot's hit, size, return type and target equal a lookup of a mirror of the sets at the slot's own PC, so both lookup images and the update array match every write, image 1 one set ahead; a slot 2 in the word after the last set and every read during reset or the sweep miss; a request in stage B holds its set's current value and one in stage C its current entries; a refresh changes only replacement state; and every cleared set holds each valid tag once. The `prove` tasks prove the training invariants for all reachable states, with training reading the mirror in place of the update array. The `size_select` tasks (one step, two and four ways, no reset qualifier) check that slot 2's hit, size, return type and target, formed for each size of slot 1 and selected by the packet's size, equal the single reduction over the ways at slot 2's halfword that they replace, and that each size's return type and target equal that reduction at that size, for every value of the tag, payload and request registers and every packet. A fetch redirect drops both the outstanding read and the held read. |
 | `branch_prediction_resolution` | A one-step combinational comparison checks that two arbitrary predictions of the same issued conditional branch or JALR produce the same ROB update identity, outcome and target. Each wrong direction or taken target requests recovery. Direct predictions use ID’s comparison against the PC-relative target. Covers reach both direction changes, a wrong indirect target, distinct unused targets on a correctly predicted fall-through, and both surviving and discarded issues under partial recovery. A trap, return or fence flush suppresses every issue. A checkpointed issue names a checkpoint below `NumCheckpoints`. |
@@ -469,7 +471,7 @@ and `p_pd_slot2_cond_branch_predecode_exact` enabled.
 | `pc_redirect_catchup_producer` | In the PC controller, the catch-up and default arms are both sequential, and catch-up never coincides with a pending-hold request; unbounded at XLEN 32, 64, and 66 |
 | `pc_redirect_catchup_consumer` | Given those producer properties, leaving the catch-up request out of the registered redirect detector does not change its output; unbounded |
 | `if_direction_payload` | Dropping the NOP term from the branch-direction payload select changes no non-NOP packet, including stall replay through the real `stall_capture_reg`. Assumes a flush on the first cycle |
-| `if_fault_ras_veto` | Fetch-faulted packets leaving `if_stage` in either slot never carry `btb_predicted_taken` or issue IF-originated return-address-stack operations (`ras_op_slot1`, `ras_op_slot2`, `ras_push`, `ras_pop`, and their registered `_q` copies when `pd_ras_operation` is inactive), across live, pending, and stall-replayed packets; covers reach both slots across live call and stall-replayed return faults. Leaves out PD-originated backing-BTB RAS operations (`pd_ras_operation`, driven by `pd_stage` for an older instruction already in PD) and cuts blackboxed submodule producers |
+| `if_fault_ras_veto` | Fetch-faulted packets leaving `if_stage` in either slot never carry `btb_predicted_taken` or issue IF-originated return-address-stack operations (`ras_op_slot1`, `ras_op_slot2`, `ras_push`, `ras_pop`, and their registered `_q` copies when `pd_ras_operation` is inactive), across live, pending, and stall-replayed packets; covers reach both slots across live call and stall-replayed return faults. Leaves out PD-originated backing-BTB RAS operations (`pd_ras_operation`, driven by `pd_stage` for an older instruction already in PD) and cuts blackboxed submodule producers. The `prove_slot2_veto_redundant` task keeps `branch_prediction_controller`, `pc_controller`, `c_ext_state`, `instruction_aligner`, `served_window_coverage`, `prediction_metadata_tracker`, `slot2_prediction_capture`, and `stall_capture_reg` intact (abstracting predictor tables and `immu`) and proves by unbounded induction from reset (`p_pc_reg_high_for_coverage_matches`, `p_live_disjoint`, `p_cap_disjoint`, `p_saved_disjoint`, `p_line3311_redundant`) that no live or stall-replayed non-NOP faulting slot-2 packet carries a taken prediction into the explicit `o_from_if_to_pd_2.fetch_fault` veto, establishing that the veto is redundant in intact `if_stage` |
 | `if_prediction_walk_past` | Bounded only (`bmc` depth 12, `continuity` depth 8, `cover` depth 10; no unbounded `prove` task) on the integrated `if_stage` with arbitrary instruction windows, lookup hits and pipeline controls after an initial reset: in `continuity` (bounded, depth 8, assuming no sequential `2^64` PC wraparound), without a redirect `pc_reg` moves only by the emitted bundle's size or to the target of an emitted predicted branch whose lookup PC matches that branch, and a real slot-1 packet's PC matches `pc_reg`; in `bmc` (bounded, depth 12), the fetch stage emits no real packet while the post-prediction holdoff holds `pc_reg` (excluding pending target-handoff cycles and self-targeting registered redirects), and emits bubbles in both slots whenever `pc_reg` has walked past a pending prediction; in `cover` (depth 10), covers reach odd, even, squashed, stalled, and post-stall-release squashed walk-past cycles, plus slot-2 redirects below `P` and at `P` behind a released native instruction at `P - 2`. A fault-free live slot 2 requires a non-control slot-1 parcel and matching control-flow and size sidebands. Covers exercise a live pair, a replayed pair, a native indirect jump with its younger slot suppressed, an indirect hit behind reserved `C.JR x0`, and a slot-2 indirect hit across the target-address region. |
 | `pc_holdoff_cofactor` | The three fetch-holdoff outputs equal their reference equations |
 | `pc_holdoff_tag` | A pending prediction's predecessor-PC tag equals its PC minus 2, and outside reset the prediction holdoffs equal their reference equations; unbounded at XLEN 32, 64, and 72, including wraparound. Assumes the pending bit starts clear |
@@ -614,20 +616,58 @@ assumes that dispatch comes with an allocation and uses that cycle's ROB tag,
 that a partial flush names a live ROB entry, and that address translation is
 off (the `tlb` and `ptw` targets and `vm_test` cover translation). INT_RS's
 issue-tag copies and the tags they copy have no reset: their initial values
-are assumed equal, and every later cycle asserts the equality (to depth 4;
-`rs_issue_tag_copies` proves it by induction from any initial state). At depth 4
-the proof does not reach ROB tag wraparound; simulation covers tag reuse.
-Nor does it reach an early load wakeup (a load takes at least four cycles
-from dispatch to its staged result), so `p_int_early_load_matches_mem`,
-`p_fp_early_load_matches_mem`, `p_early_load_accepted_or_recovering` and
-`p_early_load_really_broadcasts` are not exercised here. The wrapper is
-built with its default parameters, not the core's: `SPLIT_RS_DISPATCH`,
+are assumed equal, and every later cycle asserts the equality (to depth 4 in
+`bmc`, to depth 6 in `bmc_depth6`, and by induction from any initial state in
+`rs_issue_tag_copies`). Depth 4 (`bmc`, `fp_repair_bmc`) keeps the concrete
+ALU, integer multipliers, and FP engine/divider; depth 6 (`bmc_depth6`,
+`bmc_wakeup_depth6`, `fp_repair_bmc_depth6`) abstracts those leaf arithmetic
+units (`FP_SHIM_ABSTRACT_PROOF` plus freeing `alu`, `multiplier`,
+`dsp_tiled_multiplier_unsigned`, and `cl_multiplier` outputs with `anyseq`,
+since formal mode reads only their data results) and uses `abc bmc3 -c`. At
+depth 4 or 6 the proof does not reach ROB tag wraparound; simulation covers
+tag reuse. Depth 4 checks frames 0 through 3; depth 6 checks frames 4 and 5,
+reaching port-0 ALU2 redirect (`p_alu_held_result_presents_via_alu2`,
+`p_alu_redirect_port1_idle`, `p_alu_redirect_packet`), held-ALU-result commit
+stalls (`p_commit_waits_for_held_alu_result`,
+`p_commit_2_waits_for_held_alu_result`), and staged faulting loads in
+`mem_wakeup_merge`. `bmc_depth6` checks all 773 station and non-commit-bus
+wrapper assertions with the same 56 assumptions and free `i_fu_complete_*`
+ports. A non-faulting load reaches its staged result at frame 6, so
+`p_int_early_load_matches_mem`, `p_fp_early_load_matches_mem`,
+`p_early_load_accepted_or_recovering`, and `p_early_load_really_broadcasts`
+are not exercised at depth 4 or 6. The three commit-bus properties
+(`p_registered_native_fence_implies_flush`,
+`p_native_fence_copy_matches_non_translation_flush`, and
+`p_rename_wins_over_commit`) are proved to depth 10 in
+`tomasulo_wrapper_commit_bus`, a separate environment that supplies the ROB's
+one-class allocation and slot-2 rename contracts. `bmc_wakeup_depth6` checks
+all 44 `mem_wakeup_merge` assertions at depth 6 (including the four
+`duplicates_registered_lane` checks) with unused test-injection ports
+`i_fu_complete_0..7` tied to zero (matching `cpu_ooo`) and
+`TOMASULO_WRAPPER_LQ_SQ_DISJOINT` matching `instr_operand_classifier`'s
+mutually exclusive `needs_lq`/`needs_sq` outputs. Three registered cover tasks
+check non-vacuity of the abstract-FU and narrowed wakeup environments:
+`cover_depth6` (depth 6, matching `bmc_depth6`'s 56 assumptions) reaches
+port-0 ALU2 redirect, a done head waiting on a held ALU result, and wakeup
+merges at frames 4 and 5; `cover_wakeup_depth6` (depth 6, matching
+`bmc_wakeup_depth6`'s 57 assumptions and zeroed `i_fu_complete_0..7`) reaches
+simultaneous in-flight loads and stores, partial recovery and full flush with
+both queues occupied, memory wakeup merges at frames 4 and 5 (including a
+staged load alongside a registered CDB broadcast), and `FU_ALU` and `FU_ALU2`
+completions on the registered CDB; `cover_fu_depth6` (depth 8, same narrowed
+environment) reaches carry-less multiplier (`MUL_SEL_CL`), word multiplier
+(`MUL_SEL_SEXT_W`), and abstract `fp_shim` engine (`FU_FP_ADD`) completions on
+the CDB through their adapters (`fp_fma_pipe` and 64-bit `multiplier` require
+longer pipelines covered by `fp_forward_wake`, `fp_forward_route`, and
+`int_muldiv_shim`). The wrapper is built with
+its default parameters, not the core's: `SPLIT_RS_DISPATCH`,
 `ROB_SHARED_LINK_BANK`, `REGISTERED_SECTOR_MATCH`, `MEM_RESPONSE_ERRORS`,
 `CACHE_NORMAL_MEMORY`, `CMO_HOME` and `VECTOR` are 0 and `L0_CACHE_DEPTH` is
-128 (`fp_repair_bmc` sets `ENABLE_DISPATCH_DONE_REPAIR`).
-`fp_repair_bmc` enables the FP dispatch done repair, as the CPU does, and
-assumes the repair channels carry the pending FP instruction's source
-readiness and tags.
+128 (`fp_repair_bmc` and `fp_repair_bmc_depth6` set
+`ENABLE_DISPATCH_DONE_REPAIR`).
+`fp_repair_bmc` and `fp_repair_bmc_depth6` enable the FP dispatch done repair,
+as the CPU does, and assume the repair channels carry the pending FP
+instruction's source readiness and tags.
 `cover_alu_issue` holds the three ALU-issue covers (port 0's result passing
 through the ALU2 adapter, granted or held, and a done head waiting for the
 link the ALU adapter holds), and `cover` the others. With 12 checkpoints the
@@ -1170,7 +1210,7 @@ cycles, which clears arbitrary memory history.
    top-level `LogSeverity::Header` numbers, script-include banners and
    end-of-script completion in `model/design.headers` against the task's parsed
    command list so output from `log -stderr` or RTL `$display` can neither
-   satisfy nor break the cross-check; the 29 headerless forms (`select`,
+   satisfy nor break the cross-check; the 30 headerless forms (`select`,
    `setattr`, `connect`, `delete`, `chformal`, `chtype`, `rename`, `design`,
    `cd`, `log`, `verilog_defines` and `read -define`), `chparam` without
    derived AST elaboration, individual files inside `read_slang`, and pass

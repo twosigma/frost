@@ -1476,7 +1476,7 @@ benches. Their default sizes and storage are:
 |----------|------|------|-------------|------|------|------------|----------------------------|-----------------|-------------|
 | L1D | 128 KiB | 32 B | 4 x 1024 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 4 | 1 | 2 | 4 |
 | L1I | 16 KiB | 32 B | 4 x 128 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 2 | 1 | 2 (unused) | 0 |
-| L2 | 2 MiB | 64 B | 4 x 8192 | UltraRAM, a set's four ways in one 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 2 | 0 |
+| L2 | 2 MiB | 64 B | 4 x 8192 | UltraRAM, a set's four ways in one 72-bit row, 3-cycle read | UltraRAM | 4 | 1 (2 in `cpu_top`) | 2 | 0 |
 
 The ways are the hierarchy's `L1D_WAYS`, `L1I_WAYS`, and `L2_WAYS`
 parameters. `L1D_NUM_MSHR` sets its L1D miss slots. `L2_NUM_MSHR`,

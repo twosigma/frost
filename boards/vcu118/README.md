@@ -77,7 +77,9 @@ The CPU's memory error unit reports DDR AXI errors.
 
 Svpbmt NC and IO mappings of DDR raise an access fault on this 2 GiB map:
 its 32-bit physical address space has no room for an uncached DDR alias.
-Device mappings support NC and IO attributes.
+The VCU118 device tree and boot image therefore omit `svpbmt`, so OpenSBI
+leaves `menvcfg.PBMTE` clear and Linux does not emit PBMT page attributes.
+Bare-metal device mappings support NC and IO attributes.
 The `svpbmt_cmo_test` application requires the DDR aliases.
 
 The CPU performs plain misaligned loads and stores to cached DDR in hardware

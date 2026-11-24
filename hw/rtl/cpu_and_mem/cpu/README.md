@@ -28,7 +28,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry, and the no-CSR take that starts the misaligned-access engine |
 | `ex_stage/` | ALU, multiplier and divider, FPU, branch unit |
 | `wb_stage/` | Register file module used for the INT and FP files |
-| `vector/` | Vector unit datapath blocks (see [Vector state](#vector-state)) |
+| `vector/` | Vector unit control, legality, register file, execution units, VMT, and VMU (see [Vector state](#vector-state)) |
 | `riscv_pkg.sv` | Shared parameters, types, and predecode functions |
 
 `cpu_ooo/cpu_ooo.f` is the authoritative CPU source list.
@@ -45,7 +45,7 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `ooo_pipeline_control` | `pipeline_control/` | Front-end stalls, CSR and control-flow serialization, unresolved-branch tracking, post-flush holdoff, the registered trap and xRET redirect, prediction disable |
 | `frontend_validity_tracker` | `frontend_control/` | Marks which IF/PD/ID packets are real instructions and classifies unpredicted control flow ([README](cpu_ooo/frontend_control/README.md)) |
 | `decoded_bundle_queue` | `frontend_control/` | Queue of decoded two-instruction bundles between ID and dispatch, four deep by default ([README](cpu_ooo/frontend_control/README.md)) |
-| `ooo_register_files` | `register_files/` | INT and FP architectural register files, two write ports each for two-wide commit, and a bypass that forwards a same-cycle commit to dispatch; with `EXTRA_READ_PORT`, one more read port on each file for the misaligned-access engine |
+| `ooo_register_files` | `register_files/` | INT and FP architectural register files, two write ports each for two-wide commit, and a bypass that forwards a same-cycle commit to dispatch; with `EXTRA_READ_PORT` (set when `MISALIGNED_HW` or `VECTOR` is enabled), one more read port on each file for the misaligned-access engine and head-executed vector memory base reads |
 | `commit_actions` | `commit/` | Register writes at commit, the delayed CSR writeback, the misaligned-access engine's load result on port 0, the retire valid, and the instret increment |
 | `branch_resolution` | `branch_recovery/` | Resolves conditional branches and JALRs from INT_RS with `branch_jump_unit` and reports them to the ROB, ignoring a branch whose checkpoint was reused. A JAL resolves when the ROB allocates it |
 | `early_misprediction_recovery` | `branch_recovery/` | Redirects fetch and restores the RAT one cycle after a checkpointed conditional branch or enabled JALR resolves as mispredicted, or after a staged mispredicted JAL launches once older branches and JALRs resolve |
@@ -304,7 +304,7 @@ direction, taken or not, and each jump its predicted target's bit 2. PD forms th
 possible history bits for each slot before the fast prediction chooses between them.
 `tage_history` pushes a packet's bit when PD passes the packet to ID, from a
 register, so a lookup sees every packet PD passed up to two fetches before
-it. A not-taken branch now reaches the history, which is what loop exits and
+it. Not-taken branches enter the direction history, which is what loop exits and
 correlated branches need. Early recovery restores the instruction's PD-time
 direction history and shifts in the resolved conditional outcome or bit 2 of
 the resolved jump target. Each of the four folded table indices shifts in that
@@ -320,7 +320,7 @@ which the four tables recover (0.92).
 
 The indirect target predictor (`ittage_predictor`) follows ITTAGE. Three
 tables hash a JALR's word address with the newest 8, 24 and 64 bits of the
-tagged predictor's lookup history; each table is two 128-entry banks split by
+64-bit path history; each table is two 128-entry banks split by
 PC[2] and is looked up, registered and checked together with the tagged
 predictor, so the same coverage check applies. An entry holds a tag, the
 target's low bits. The upper bits come from the JALR's own PC, including
@@ -336,9 +336,10 @@ bit. At commit a
 correct target raises the provider's confidence; a wrong one lowers it or,
 at zero, replaces the target; and a mispredicted JALR allocates in the
 shortest table above its provider whose entry is not useful. If the training
-row belongs to another tag, both copies receive that row. Before this, a
-`switch` on a state variable (CoreMark-PRO core's state machine) mispredicted
-nearly every time, since the BTB keeps only the last target.
+row belongs to another tag, both copies receive that row. Because the BTB
+keeps only the last target, the indirect target predictor avoids repeated
+mispredictions on multi-target switches such as CoreMark-PRO core's state
+machine.
 
 When PD passes a conditional branch, a JALR, or (with `EarlyJalRecovery` set)
 a JAL to ID, its lookup (for a branch the indices, tags, which tables matched,
@@ -400,9 +401,9 @@ sits at a halfword of the word before the window IF then serves (in compressed
 code, `o_pc` 0x902 and then `pc_reg` 0x904), so the read is for the set before
 the packet's word. The second image holds the set after the read one, which is
 the packet word's set, so slot 1 and a slot 2 in the same word are served
-from it; before this the backing BTB never hit in that case, and in
-CoreMark-PRO core the JALs it should have caught were a third of the
-mispredictions left after the indirect target predictor. IF passes PD each
+from it; without this second image the backing BTB misses in that case (in
+CoreMark-PRO core the JALs it catches were a third of the
+mispredictions left after the indirect target predictor). IF passes PD each
 slot's hit, size, type and target, kept across stall replay like the packet.
 Slot 2's type and target also come for each size of slot 1, formed from the
 answering read's tags and the packet's PC alone. PD uses slot 1's size to form the slot-2
@@ -532,8 +533,10 @@ loads and AMOs). Register and immediate CSR accesses use two operations
 (`CSR_REG` and `CSR_IMM`); dispatch writes `funct3` into the ROB entry's
 `csr_op` field (clearing `csr_op[1:0]` when a set or clear form has `rs1` or
 `uimm` equal to zero), and `csr_file` reads `rob_commit.csr_op` at commit.
-Vector instructions use class operations (`VARITH`, `VARITH_X`, `VTOX`,
-`VLOAD`, `VSTORE`), with `vec_unit` keeping its own per-tag instruction copy
+Vector instructions use class operations (`VARITH`, `VARITH_X`, `VARITH_F`,
+`VARITH_C`, `VTOX`, `VTOF`, `VLOAD`, `VSTORE`) alongside `VSETVLI`,
+`VSETIVLI`, and `VSETVL`, with `vec_unit` keeping its own per-tag instruction
+copy
 written at allocation from `from_id_to_ex.instruction`. Scalar floating-point
 compute operations are the next candidates for folding, as they differ by
 `funct7` and `rs2`, which the floating-point reservation station can carry in
@@ -786,7 +789,7 @@ part's first byte. A store response error and a hart stop are terminal at
 once, with no further request. A hart stop also makes an idle engine busy
 until reset. The registered dispatch hold samples the stop on the same edge
 as the engine, so neither dispatch slot allocates in that terminal state.
-`lib/line_align.sv` moves the access between register order and the two
+`hw/rtl/lib/line_align.sv` moves the access between register order and the two
 sectors.
 
 A fatal stop holds issue, commit, the front end, interrupt entry, and debug
@@ -1310,7 +1313,7 @@ instruction and train into the BTB. While an unkilled prediction is pending,
 `pc_controller` blocks new slot-1 BTB predictions in only two cases: the entry
 is one `pc_reg` has walked past, or it is a crossing entry and `pc_reg` is at
 its predecessor `P-2`, even when a released predecessor drops the shared
-pending prediction disable. Every other pending entry no longer blocks slot 1.
+pending prediction disable. Every other pending entry does not block slot 1.
 If a 32-bit instruction at `P-2` is released there and slot 2 at `P+2`
 predicts taken, that
 slot-2 redirect retires the pending entry and kills its saved metadata on the
@@ -1529,8 +1532,13 @@ The fast-lookup training contract is pinned per mechanism:
   including spanning second-word faults, and
   `test_slot2_fault_suppresses_trained_call_and_replay_ras`, covering live,
   spanning, and stall-replayed slot-2 calls), `odd_halfword_pred_test`, and
-  live `p_prediction_pma_fault_cofactor_exact` in `if_stage`. The explicit
-  slot-2 veto stays as a defensive guard, and the directed test pins the
+  live `p_prediction_pma_fault_cofactor_exact` in `if_stage`. Because slot 2
+  has no pending-prediction path and `served_fault_any` disables
+  `prediction_common` on every served-window fault, the explicit
+  `o_from_if_to_pd_2.fetch_fault` veto in packet assembly is redundant in
+  intact `if_stage` (`if_fault_ras_veto:prove_slot2_veto_redundant`) and
+  serves as a defensive guard pinned with `branch_prediction_controller`
+  abstracted by `if_fault_ras_veto:prove`; the directed test pins the
   observable behavior of faulting slot-2 calls.
 - **Invalidation events and four-cycle hold**: `btb_invalidate_hold` formal
   proof, `branch_predictor` and `branch_prediction_controller` benches (hold

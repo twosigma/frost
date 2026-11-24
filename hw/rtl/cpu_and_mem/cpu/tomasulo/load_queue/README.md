@@ -567,7 +567,7 @@ therefore holds interrupts while an AMO occupies the ROB head
 (`trap_unit.i_amo_at_head`); exceptions stay enabled, because an AMO faults
 before it touches memory. A simulation check reports any full flush that
 reaches an active AMO write. A flush that arrives earlier, including in
-`AMO_COMPUTE`, cancels the AMO cleanly. `AMO_COMPUTE` has already freed the
+`AMO_COMPUTE`, cancels the AMO without writing memory. `AMO_COMPUTE` has already freed the
 response slot. A cached AMO holds either the L1D service engine or its home
 lock through write installation and ownership release. CPU protection also
 waits for retirement.

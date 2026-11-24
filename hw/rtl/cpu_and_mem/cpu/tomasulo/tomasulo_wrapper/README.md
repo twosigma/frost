@@ -19,7 +19,7 @@ FP station, and the early store-address path. The
 | [`load_queue`](../load_queue/README.md), [`store_queue`](../store_queue/README.md) | 1 each | |
 | [`dmmu`](../../mmu/dmmu.sv) | 1 | Sv39 data translation between MEM_RS issue and the LQ/SQ address updates, bypassed while translation is off. The page-table walker lives in `cpu_ooo`, reached through the `*_walk_*` ports. |
 | [`cdb_arbiter`](../cdb_arbiter/README.md) | 1 | Two lanes |
-| [`fu_cdb_adapter`](../fu_cdb_adapter/README.md) | 6 | One per CDB slot with a unit behind it |
+| [`fu_cdb_adapter`](../fu_cdb_adapter/README.md) | 7 (8 with `VECTOR=1`) | One per FU slot (ALU, ALU2, MUL, DIV, MEM, FP engine/div, FP pipe, plus vector-config on slot 5 when `VECTOR=1`) |
 | [FU shims](../fu_shims/README.md) | 4 | `int_alu_shim` ×2, `int_muldiv_shim` (feeds both the MUL and DIV slots), `fp_shim` |
 
 The MEM slot's adapter has no shim: its input is a mux of the registered store
@@ -247,10 +247,12 @@ hold, which arrives late in the cycle. Simulation checks that no entry retires
 while either ALU adapter holds its result, and that the mask matches the
 adapter; formal checks both for the ALU adapter.
 
-Test inputs `i_fu_complete_0` to `i_fu_complete_7` feed the same slots in any
-cycle the slot's adapter presents nothing (always, for slot 6, and for slot 5
-without the vector unit).
-`cpu_ooo` ties them to zero.
+Test inputs `i_fu_complete_0` to `i_fu_complete_7` also feed the arbiter slots.
+Slots 0 to 5 and 7 fall through to `i_fu_complete_*` only when that slot's
+adapter presents nothing (always for slot 5 when `VECTOR=0`). On slot 6,
+`i_fu_complete_6` takes priority over `u_fp_pipe_adapter`; `cpu_ooo` connects
+`i_fu_complete_6` to the vector unit's ROB-head completions and ties the other
+seven ports to zero.
 
 ## FP dispatch buffer
 
