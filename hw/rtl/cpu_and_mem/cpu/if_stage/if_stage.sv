@@ -467,7 +467,7 @@ module if_stage #(
       .i_fence_i_target(i_fence_i_target),
       .i_branch_taken(i_from_ex_comb.branch_taken),
       .i_branch_target(i_from_ex_comb.branch_target_address),
-      .i_pd_redirect(i_pd_redirect),
+      .i_pd_redirect(i_pd_redirect && !i_pipeline_ctrl.stall),
       .i_pd_redirect_target(i_pd_redirect_target),
       .i_f1_resteer(f1_resteer),
       .i_f1_resteer_target(f1_resteer_target),
@@ -539,17 +539,15 @@ module if_stage #(
   // ===========================================================================
   // Return Address Stack (speculative F0 push/pop, exact EX/PD/F1 restore)
   // ===========================================================================
-  assign pd_ras_restore = i_pd_redirect && !pd_ras_restore_done_q && !frontend_flush &&
+  assign pd_ras_restore = i_pd_redirect && !i_pipeline_ctrl.stall && !frontend_flush &&
       !i_trap_ctrl.trap_taken && !i_trap_ctrl.mret_taken && !i_fence_i_flush &&
       !i_from_ex_comb.branch_taken && !i_from_ex_comb.ras_misprediction;
 
+  // Keep pd_ras_restore_done_q cleared now that pd_ras_restore fires only on the
+  // unstalled cycle that releases the redirecting bundle from PD.
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || frontend_flush || i_trap_ctrl.trap_taken ||
-        i_trap_ctrl.mret_taken || i_fence_i_flush || i_from_ex_comb.branch_taken) begin
-      pd_ras_restore_done_q <= 1'b0;
-    end else begin
-      pd_ras_restore_done_q <= (pd_ras_restore || pd_ras_restore_done_q) && i_pipeline_ctrl.stall;
-    end
+    if (i_pipeline_ctrl.reset) pd_ras_restore_done_q <= 1'b0;
+    else pd_ras_restore_done_q <= 1'b0;
   end
 
   logic f1_ras_restore;
@@ -1592,7 +1590,7 @@ module if_stage #(
   };
 
 `ifdef FROST_DEBUG_FETCH_ILA
-  // Fetch ILA probes (build.py --debug-ila): mark_debug copies for the debug
+  // Fetch debug probes (build.py --debug-ila): mark_debug copies for the debug
   // core; nothing here feeds the design.
   (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pc;
   (* mark_debug = "true" *) logic dbg_ila_if_instr_valid;

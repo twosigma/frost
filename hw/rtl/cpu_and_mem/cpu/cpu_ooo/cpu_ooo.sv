@@ -2021,7 +2021,8 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       fetch_trap_hold_q <= 1'b0;
-    end else if (flush_pipeline) begin
+    end else if (flush_pipeline || trap_ctrl.trap_taken || trap_ctrl.mret_taken ||
+                 fence_i_flush || pd_redirect) begin
       fetch_trap_hold_q <= 1'b0;
     end else if (id_trap_hold_valid && (id_slot1_uncond_trap || id_slot2_uncond_trap)) begin
       fetch_trap_hold_q <= 1'b1;

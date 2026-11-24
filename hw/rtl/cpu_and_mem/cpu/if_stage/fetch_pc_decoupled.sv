@@ -28,7 +28,7 @@
  *   arm 3: execute misprediction recovery
  *   arm 4: PD redirect
  *   arm 5: F1 validation resteer (false BTB hit or served-word mismatch)
- *   arm 6: hold (no F0 launch and no collapsed accept)
+ *   arm 6: keep PC when neither F0 launch nor collapsed accept fires
  *   arm 7: spanning-branch BTB target completion
  *   arm 8: F0 fast-BTB taken prediction
  *   arm 13: sequential next 64-bit window ({o_pc[XLEN-1:2] + 2, 2'b00})
