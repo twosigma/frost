@@ -1595,11 +1595,11 @@ jobs:
           - shard: Coherence home
             pytest_filter: coherence_home_coh_home_ and not fast
             timeout_minutes: 355
-          # Direct-tag-launch home task limits total 120 minutes plus twenty
+          # Direct-tag-launch home task limits total 145 minutes plus twenty
           # minutes for image setup.
           - shard: Coherence home fast
             pytest_filter: coherence_home_coh_home_ and fast
-            timeout_minutes: 140
+            timeout_minutes: 165
           - shard: Coherence store lookup banks
             pytest_filter: coherence_array_progress or coherence_store_bank
             timeout_minutes: 152

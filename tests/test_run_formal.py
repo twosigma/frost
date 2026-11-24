@@ -70,6 +70,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home", "coh_home_control64_prove"): 1800,
     ("coherence_home", "coh_home_control_partition_prove"): 1800,
     ("coherence_home", "coh_home_control_ultra_prove"): 900,
+    ("coherence_home", "coh_home_control_ultra_fast_prove"): 900,
     ("coherence_home", "coh_home_control_fast_prove"): 1800,
     ("coherence_home", "coh_home_control64_fast_prove"): 1800,
     ("coherence_home", "coh_home_control_partition_fast_prove"): 1800,
@@ -91,6 +92,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("tomasulo_wrapper_commit_bus", "bmc"): 180,
     ("tomasulo_wrapper_commit_bus", "cover"): 360,
     ("coherence_home", "coh_home_cmo_cover"): 6000,
+    ("coherence_home", "coh_home_cmo_fast_cover"): 600,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
@@ -608,6 +610,7 @@ FORMAL_TARGETS = [
             "coh_home_control64_prove",
             "coh_home_control_partition_prove",
             "coh_home_control_ultra_prove",
+            "coh_home_control_ultra_fast_prove",
             "coh_home_control_fast_prove",
             "coh_home_control64_fast_prove",
             "coh_home_control_partition_fast_prove",
@@ -616,6 +619,7 @@ FORMAL_TARGETS = [
             "coh_home_control4_ultra_fast_bmc",
             "coh_home_fill_cover",
             "coh_home_cmo_cover",
+            "coh_home_cmo_fast_cover",
             "coh_home_wb_prove",
             "coh_home_victim_cover",
             "coh_home_error_cover",
@@ -3269,6 +3273,10 @@ SBY_TASKS = [
         "Composed home ownership and parallel-read delivery bounds with UltraRAM.",
     ),
     (
+        "coh_home_control_ultra_fast_prove",
+        "Composed UltraRAM home ownership and parallel-read bounds with direct tag launch.",
+    ),
+    (
         "coh_home_control_fast_prove",
         "Composed home ownership with direct D selection and direct tag launch.",
     ),
@@ -3300,6 +3308,10 @@ SBY_TASKS = [
     (
         "coh_home_cmo_cover",
         "Reach four Zicbom grant cases and replay their inputs on the undriven home.",
+    ),
+    (
+        "coh_home_cmo_fast_cover",
+        "Reach Zicbom grants and dirty fast-launch write-back with direct tag launch, replayed undriven.",
     ),
     (
         "coh_home_dispatch_cover",
@@ -7132,6 +7144,24 @@ def test_home_cmo_witness_driver_is_cover_only() -> None:
                     "6000",
                 )
                 assert commands == [["verilog_defines", "-D", driver]]
+            elif name == "coh_home_cmo_fast_cover":
+                assert "cmo_witness" in tags
+                assert task.options["mode"] == "cover"
+                assert (task.options["depth"], task.options["timeout"]) == (
+                    "40",
+                    "600",
+                )
+                assert len(commands) == 1 and commands[0][0] == "read_slang"
+                assert f"-D{driver}" in commands[0]
+                assert "-GFAST_TAG_LAUNCH=1" in commands[0]
+                assert [
+                    "select",
+                    "-assert-count",
+                    "5",
+                    "t:$check",
+                    "r:FLAVOR=cover",
+                    "%i",
+                ] in task.commands(sby.parent)
             else:
                 assert "cmo_witness" not in tags and not commands, name
 
@@ -7145,16 +7175,17 @@ def test_home_cmo_witness_driver_is_cover_only() -> None:
             )
 
 
+@pytest.mark.parametrize("task", ("coh_home_cmo_cover", "coh_home_cmo_fast_cover"))
 @pytest.mark.parametrize("capture_output", (False, True))
 @pytest.mark.parametrize(
     "case", ("pass", "solver failure", "artifact failure", "replay failure")
 )
 def test_home_cmo_replays_verified_run(
-    monkeypatch: pytest.MonkeyPatch, capture_output: bool, case: str
+    monkeypatch: pytest.MonkeyPatch, task: str, capture_output: bool, case: str
 ) -> None:
     """Only the verified guided run supplies witnesses and the remaining time."""
     target = next(t for t in FORMAL_TARGETS if t.name == "coherence_home")
-    task = "coh_home_cmo_cover"
+    expected_timeout = formal_task_timeout_s(target.name, task)
     runner = FormalRunner()
     events: list[str] = []
     guided_dir: Path | None = None
@@ -7164,7 +7195,7 @@ def test_home_cmo_replays_verified_run(
         if command[0] == "sby":
             assert "--yosys" in command and command[-1] == task
             guided_dir = Path(command[command.index("-d") + 1])
-            assert kwargs["timeout"] == 6000
+            assert kwargs["timeout"] == expected_timeout
             events.append("guided")
             return subprocess.CompletedProcess(
                 command, int(case == "solver failure"), "guided\n", ""
@@ -7177,7 +7208,9 @@ def test_home_cmo_replays_verified_run(
             "--replay-verified",
             str(guided_dir),
         ]
-        assert 0 < kwargs["timeout"] <= 6000 and kwargs["timeout"] == float(command[4])
+        assert 0 < kwargs["timeout"] <= expected_timeout and kwargs["timeout"] == float(
+            command[4]
+        )
         assert kwargs["capture_output"] is capture_output
         events.append("replay")
         return subprocess.CompletedProcess(
@@ -7206,6 +7239,29 @@ def test_home_cmo_replays_verified_run(
         if capture_output:
             assert result.stdout == "guided\nreplay\n"
     assert result.returncode == int(case != "pass")
+
+
+def test_home_cmo_replay_strips_slang_witness_driver() -> None:
+    """Remove only the slang witness define and require five covers for the fast cover."""
+    from coherence_home_cmo_replay import cover_goals, strip_witness_driver
+
+    script = (
+        "read_slang --top coherence_home_control_harness --single-unit "
+        "-DFORMAL -DCOHERENCE_HOME_CONTROL -DCOHERENCE_HOME_CMO_COVER "
+        "-DCOHERENCE_HOME_CMO_FAST_COVER -DCOHERENCE_HOME_CMO_WITNESS "
+        "-GFAST_TAG_LAUNCH=1 coherence_home_control_harness.sv\n"
+    )
+    stripped, goals = strip_witness_driver(script)
+    assert goals == 5
+    assert "-DCOHERENCE_HOME_CMO_WITNESS" not in stripped
+    assert "-DCOHERENCE_HOME_CMO_FAST_COVER" in stripped
+    assert "-GFAST_TAG_LAUNCH=1" in stripped
+    with pytest.raises(ValueError):
+        strip_witness_driver(stripped)
+    assert cover_goals(
+        "; yosys-smt2-cover 0 c_cmo_fast_dirty_grant\n"
+        "; yosys-smt2-cover 1 $14815 coherence_home.sv:3128.7-3129.34\n"
+    ) == {"c_cmo_fast_dirty_grant", "coherence_home.sv:3128.7-3129.34"}
 
 
 def test_home_cmo_replay_uses_only_complete_primary_inputs(tmp_path: Path) -> None:

@@ -70,7 +70,7 @@ module coherence_home_control_harness #(
 `ifdef COHERENCE_HOME_CMO_WITNESS
   `define FROST_CMO_OBSERVE(signal) signal
   logic witness_d_ready, witness_p_valid, witness_r_ready;
-  logic witness_g_valid, witness_c_ready, witness_mem_req;
+  logic witness_g_valid, witness_c_ready, witness_u_valid, witness_mem_req;
   logic [4:0] witness_mem_req_id;
   coh_p_t witness_p;
   coh_g_t witness_g;
@@ -84,6 +84,7 @@ module coherence_home_control_harness #(
   (* anyconst *) witness_case_t witness_case;
   logic witness_reset_seen = 1'b0;
   logic [1:0] witness_demands;
+  logic [1:0] witness_releases;
   logic witness_initial;
   coh_d_t witness_d;
   coh_r_t witness_r;
@@ -105,7 +106,7 @@ module coherence_home_control_harness #(
         DirtyFlush: witness_d.opcode = coherence_pkg::FlushBlock;
         default:    witness_d.opcode = coherence_pkg::CleanBlock;
       endcase
-      witness_d.q.port_class = 3;
+      witness_d.q.port_class = 2'd3;
       witness_d.q.id = 4'(coherence_pkg::CmoId);
     end
   end
@@ -116,6 +117,7 @@ module coherence_home_control_harness #(
     assume (i_rst == !witness_reset_seen);
     if (i_rst) begin
       witness_demands <= 0;
+      witness_releases <= 0;
       witness_r_valid <= 0;
       witness_c_valid <= 0;
       witness_mem_valid <= 0;
@@ -124,7 +126,9 @@ module coherence_home_control_harness #(
       witness_c <= '0;
     end else begin
       assume (!i_stop && !i_w_valid && i_wa_ready && i_u_ready && i_mem_ready && !i_mem_error);
-      assume (i_d_valid == (witness_demands < (witness_case == AbsentClean ? 1 : 2)));
+      assume (i_d_valid == (witness_demands == 0 ||
+          (witness_case != AbsentClean && witness_demands == 1 &&
+           (!FAST_TAG_LAUNCH || witness_releases != 0))));
       assume (i_d == witness_d);
       assume (i_p_ready == !witness_r_valid && i_r_valid == witness_r_valid);
       assume (i_r == witness_r);
@@ -132,6 +136,7 @@ module coherence_home_control_harness #(
       assume (i_c == witness_c);
       assume (i_mem_valid == witness_mem_valid && i_mem_id == witness_mem_id);
       if (i_d_valid && witness_d_ready) witness_demands <= witness_demands + 1'b1;
+      if (witness_u_valid && i_u_ready) witness_releases <= witness_releases + 1'b1;
       if (witness_p_valid && i_p_ready) begin
         witness_r_valid <= 1'b1;
         witness_r <= '0;
@@ -192,7 +197,7 @@ module coherence_home_control_harness #(
       .i_c_valid,
       .o_c_ready(`FROST_CMO_OBSERVE(witness_c_ready)),
       .i_c(completion),
-      .o_u_valid(),
+      .o_u_valid(`FROST_CMO_OBSERVE(witness_u_valid)),
       .i_u_ready,
       .o_u(),
       .o_prefetch_room(),
@@ -217,6 +222,50 @@ module coherence_home_control_harness #(
       .o_fatal_addr()
   );
   `undef FROST_CMO_OBSERVE
+
+`ifdef COHERENCE_HOME_CMO_FAST_COVER
+  // Track a CleanBlock or FlushBlock that enters through FAST_TAG_LAUNCH
+  // direct admission selection and direct tag launch without a parallel read,
+  // allocates fill 0 on a dirty block, writes it back, and reaches GrantAck.
+  localparam logic [3:0] CmoFillFree = 4'd0;
+  localparam logic [3:0] CmoFillCmoGrant = 4'd11;
+  logic f_cmo_direct_d_q;
+  logic f_cmo_direct_lookup_q;
+  logic f_cmo_fill0_fast_q;
+  wire f_cmo_direct_d_clean_or_flush = home.completions.gen_fast_state.direct_d_select &&
+      (demand.opcode == coherence_pkg::CleanBlock || demand.opcode == coherence_pkg::FlushBlock);
+  wire f_cmo_direct_tag_clean_or_flush = home.direct_tag_valid && home.work_cmo &&
+      !home.array_req_spec &&
+      (home.work.opcode == coherence_pkg::CleanBlock ||
+       home.work.opcode == coherence_pkg::FlushBlock);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      f_cmo_direct_d_q <= 1'b0;
+      f_cmo_direct_lookup_q <= 1'b0;
+      f_cmo_fill0_fast_q <= 1'b0;
+    end else begin
+      if (f_cmo_direct_d_clean_or_flush) f_cmo_direct_d_q <= 1'b1;
+      else if (home.completions.accept_work || !home.completions.work_selected_q)
+        f_cmo_direct_d_q <= 1'b0;
+
+      if (f_cmo_direct_tag_clean_or_flush && f_cmo_direct_d_q) f_cmo_direct_lookup_q <= 1'b1;
+      else if (home.run && ((home.tag_request_valid && home.tag_request_ready) ||
+                            home.direct_tag_valid || home.array_response))
+        f_cmo_direct_lookup_q <= 1'b0;
+
+      if (home.run && home.array_response && home.decision_fill && home.fill_free_index == '0)
+        f_cmo_fill0_fast_q <= f_cmo_direct_lookup_q;
+      else if (home.fill_phase_q[0] == CmoFillFree ||
+               (home.run && home.forward_accept && home.forward_pick[0]))
+        f_cmo_fill0_fast_q <= 1'b0;
+
+      c_cmo_fast_dirty_grant :
+      cover (home.run && home.forward_accept && home.forward_pick[0] &&
+             home.fill_phase_q[0] == CmoFillCmoGrant && home.fill_dirty_q[0] &&
+             !home.fill_cmo_inval_q[0] && f_cmo_fill0_fast_q);
+    end
+  end
+`endif
 
 `ifdef COHERENCE_HOME_ULTRA_PROOF
   // Inductive strengthening for the unbounded UltraRAM home control proof:

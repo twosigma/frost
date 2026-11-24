@@ -2,7 +2,8 @@
 coh_home_control_prove control ctl
 coh_home_control64_prove control ctl wide
 coh_home_control_partition_prove control ctl partition
-coh_home_control_ultra_prove control ultra_ctl
+coh_home_control_ultra_prove control ultra_ctl ultra_base slang_ctl
+coh_home_control_ultra_fast_prove control ultra_ctl ultra_fast slang_ctl
 coh_home_control_fast_prove control ctl fast
 coh_home_control64_fast_prove control ctl wide fast
 coh_home_control_partition_fast_prove control ctl partition fast
@@ -10,7 +11,8 @@ coh_home_control4_bmc bmc4 ctl four
 coh_home_control4_ultra_bmc bmc4 ctl four ultra
 coh_home_control4_ultra_fast_bmc bmc4 ctl four ultra fast
 coh_home_fill_cover control ctl fill_covers
-coh_home_cmo_cover control ctl cmo_covers cmo_witness
+coh_home_cmo_cover control ctl cmo_covers cmo_witness cmo_base
+coh_home_cmo_fast_cover control cmo_fast_ctl slang_ctl cmo_covers cmo_witness
 coh_home_wb_prove wb unit
 coh_home_victim_cover covers
 coh_home_error_cover covers error
@@ -41,6 +43,7 @@ dispatch_covers: depth 30
 cmo_covers: mode cover
 cmo_covers: depth 40
 cmo_covers: timeout 6000
+cmo_fast_ctl: timeout 600
 fast_covers: mode cover
 fast_covers: depth 30
 fast_covers: timeout 600
@@ -54,17 +57,17 @@ covers: smtbmc boolector
 fast_covers: smtbmc boolector
 
 [script]
-~ultra_ctl: read -formal -sv coherence_seat_select.sv coherence_work_select.sv
-~ultra_ctl: read -sv cache_perf_pkg.sv
+~slang_ctl: read -formal -sv coherence_seat_select.sv coherence_work_select.sv
+~slang_ctl: read -sv cache_perf_pkg.sv
 error: verilog_defines -D COHERENCE_HOME_COVER_ERROR
 pfcover: verilog_defines -D COHERENCE_HOME_PREFETCH_COVER
 fill_covers: verilog_defines -D COHERENCE_HOME_FILL_COVER
 dispatch_covers: verilog_defines -D COHERENCE_HOME_DISPATCH_COVER
-cmo_covers: verilog_defines -D COHERENCE_HOME_CMO_COVER
+cmo_base: verilog_defines -D COHERENCE_HOME_CMO_COVER
 fast_covers: verilog_defines -D COHERENCE_HOME_FAST_COVER
 # Drive the grant witnesses because the undirected cover search exceeds the task budget.
-cmo_witness: verilog_defines -D COHERENCE_HOME_CMO_WITNESS
-~ultra_ctl: read -sv coherence_pkg.sv
+cmo_base: verilog_defines -D COHERENCE_HOME_CMO_WITNESS
+~slang_ctl: read -sv coherence_pkg.sv
 ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_endpoint.sv
 wb: read -sv coherence_home_endpoint.sv
 covers: read -sv coherence_home_endpoint.sv
@@ -77,14 +80,16 @@ covers: read -sv coherence_home_completions.sv
 ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home.sv coherence_home_control_harness.sv
 wb: read -formal -sv -D SYNTHESIS -D COHERENCE_HOME_WB_PROOF coherence_home.sv
 covers: read -formal -sv -D COHERENCE_HOME_WB_PROOF -D COHERENCE_HOME_COVER coherence_home.sv coherence_home_harness.sv
-~ultra_ctl: read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+~slang_ctl: read -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
 ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_array.sv
 wb: read -sv coherence_home_array.sv
 covers: read -sv coherence_home_array.sv
 ctl: read -formal -sv -D COHERENCE_HOME_CONTROL coherence_home_engine.sv
 wb: read -sv coherence_home_engine.sv
 covers: read -sv coherence_home_engine.sv
-ultra_ctl: read_slang --top coherence_home_control_harness --single-unit --no-synthesis-define -DFORMAL -DCOHERENCE_HOME_CONTROL -DCOHERENCE_HOME_ULTRA_PROOF -GULTRA=1 -GPREFETCH_RESERVE=0 coherence_seat_select.sv coherence_work_select.sv cache_perf_pkg.sv coherence_pkg.sv coherence_home_endpoint.sv coherence_d_arbiter.sv coherence_home_completions.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv coherence_home_engine.sv coherence_home.sv coherence_home_control_harness.sv
+ultra_base: read_slang --top coherence_home_control_harness --single-unit --no-synthesis-define -DFORMAL -DCOHERENCE_HOME_CONTROL -DCOHERENCE_HOME_ULTRA_PROOF -GULTRA=1 -GPREFETCH_RESERVE=0 coherence_seat_select.sv coherence_work_select.sv cache_perf_pkg.sv coherence_pkg.sv coherence_home_endpoint.sv coherence_d_arbiter.sv coherence_home_completions.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv coherence_home_engine.sv coherence_home.sv coherence_home_control_harness.sv
+ultra_fast: read_slang --top coherence_home_control_harness --single-unit --no-synthesis-define -DFORMAL -DCOHERENCE_HOME_CONTROL -DCOHERENCE_HOME_ULTRA_PROOF -GULTRA=1 -GPREFETCH_RESERVE=0 -GFAST_TAG_LAUNCH=1 coherence_seat_select.sv coherence_work_select.sv cache_perf_pkg.sv coherence_pkg.sv coherence_home_endpoint.sv coherence_d_arbiter.sv coherence_home_completions.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv coherence_home_engine.sv coherence_home.sv coherence_home_control_harness.sv
+cmo_fast_ctl: read_slang --top coherence_home_control_harness --single-unit --no-synthesis-define -DFORMAL -DCOHERENCE_HOME_CONTROL -DCOHERENCE_HOME_CMO_COVER -DCOHERENCE_HOME_CMO_FAST_COVER -DCOHERENCE_HOME_CMO_WITNESS -GFAST_TAG_LAUNCH=1 coherence_seat_select.sv coherence_work_select.sv cache_perf_pkg.sv coherence_pkg.sv coherence_home_endpoint.sv coherence_d_arbiter.sv coherence_home_completions.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_home_array.sv coherence_home_engine.sv coherence_home.sv coherence_home_control_harness.sv
 unit: chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 -set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home
 wide: chparam -set LINE_BYTES 64 -set WAYS 1 coherence_home_control_harness
 four: chparam -set WAYS 4 -set FILLS 3 -set PREFETCH_RESERVE 1 coherence_home_control_harness
@@ -92,16 +97,18 @@ ultra: chparam -set ULTRA 1 -set PREFETCH_RESERVE 0 coherence_home_control_harne
 partition: chparam -set PREFETCH_SLOTS 1 coherence_home_control_harness
 fast: chparam -set FAST_TAG_LAUNCH 1 coherence_home_control_harness
 ctl: prep -flatten -top coherence_home_control_harness
-ultra_ctl: hierarchy -top coherence_home_control_harness
-ultra_ctl: script free_undefined.ys
-ultra_ctl: prep -flatten -top coherence_home_control_harness
+slang_ctl: hierarchy -top coherence_home_control_harness
+slang_ctl: script free_undefined.ys
+slang_ctl: prep -flatten -top coherence_home_control_harness
+cmo_fast_ctl: select -assert-count 5 t:$check r:FLAVOR=cover %i
+cmo_fast_ctl: select -clear
 unit: prep -flatten -top coherence_home
 error: chparam -set FAIL_B 1 coherence_home_harness
 covers: prep -flatten -top coherence_home_harness
-~ultra_ctl: memory_map
-~ultra_ctl: opt
-ultra_ctl: memory_map -keepdc
-ultra_ctl: opt -keepdc
+~slang_ctl: memory_map
+~slang_ctl: opt
+slang_ctl: memory_map -keepdc
+slang_ctl: opt -keepdc
 
 [files]
 ../hw/rtl/lib/cache/coherence_seat_select.sv
