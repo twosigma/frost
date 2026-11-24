@@ -16,7 +16,7 @@
 
 The reference resolves Sv39 leaves, the PMA map (the device windows take loads
 and stores but no atomics), and the architectural fault priorities in Python.
-Protocol checks cover one-cycle last-page hits, the two-stage fallback,
+Protocol checks cover one-cycle resident DTLB hits, the two-stage fallback,
 one-result-per-cycle hit throughput, LQ look-ahead, miss skid, and recovery
 without inspecting internal RTL.
 """
@@ -100,6 +100,7 @@ class Op:
     sum_: int = 0
     mxr: int = 0
     trap_misaligned: int = 1
+    offset: int = 0
 
 
 def _alias_ok(pa: int) -> bool:
@@ -173,7 +174,8 @@ async def _setup(dut: Any) -> None:
         "i_head_tag",
         "i_iss_valid",
         "i_iss_rob_tag",
-        "i_iss_va",
+        "i_iss_base",
+        "i_iss_offset",
         "i_iss_size",
         "i_iss_needs_sq",
         "i_iss_store_perms",
@@ -221,9 +223,14 @@ async def _install(dut: Any, leaf: Leaf) -> None:
     dut.i_walk_resp_valid.value = 0
 
 
+def _drive_address(dut: Any, op: Op) -> None:
+    dut.i_iss_base.value = (op.va - op.offset) & XLEN_MASK
+    dut.i_iss_offset.value = op.offset & XLEN_MASK
+
+
 def _issue(dut: Any, op: Op) -> None:
     dut.i_iss_valid.value = 1
-    dut.i_iss_va.value = op.va
+    _drive_address(dut, op)
     dut.i_iss_rob_tag.value = op.tag
     dut.i_iss_size.value = op.size
     dut.i_iss_needs_sq.value = op.needs_sq
@@ -242,7 +249,7 @@ def _issue(dut: Any, op: Op) -> None:
 def _present_payload(dut: Any, op: Op) -> None:
     """Drive op's issue payload with valid low, as a held MEM_RS may present."""
     dut.i_iss_valid.value = 0
-    dut.i_iss_va.value = op.va
+    _drive_address(dut, op)
     dut.i_iss_rob_tag.value = op.tag
     dut.i_iss_size.value = op.size
     dut.i_iss_needs_sq.value = op.needs_sq
@@ -391,21 +398,28 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
             replace(base_leaf, ppn=DDR_LIMIT >> 12),
         ),
     ]
-    for via_walk in (False, True):
+    for path in ("direct", "lookup", "walk"):
         for op, leaf in cases:
             leaf = replace(leaf, vpn=(op.va >> 12) & VPN_MASK)
             await _clear(dut)
-            if not via_walk:
+            if path != "walk":
                 await _install(dut, leaf)
+            # Keep a resident hit in S1 to exercise its resolution as well.
+            dut.i_tlb_invalidate.value = int(path == "lookup")
             _issue(dut, op)
             await _cycle(dut)
-            assert not int(dut.o_iss_out_valid.value), (
-                "result arrived before second edge"
-            )
+            dut.i_tlb_invalidate.value = 0
+            if int(dut.o_iss_out_valid.value):
+                assert path == "direct" and _expected(op, leaf)[1] == NONE
+                _check(dut, op, leaf)
+                dut.i_iss_valid.value = 0
+                await _cycle(dut)
+                assert not int(dut.o_iss_out_valid.value)
+                continue
             assert int(dut.o_pre_rob_tag.value) == op.tag
             assert int(dut.o_pre_needs_lq.value) == 1 - op.needs_sq
             dut.i_iss_valid.value = 0
-            if via_walk:
+            if path == "walk":
                 _response(dut, leaf)
             await Timer(1, unit="ns")
             assert not int(dut.o_walk_req_valid.value), (
@@ -425,7 +439,7 @@ async def test_pbmt_pages_take_the_mmio_path(dut: Any) -> None:
     The walker gives an NC or IO leaf over DDR the alias PPN; the DMMU must
     classify it MMIO (loads at the ROB head, no L0, stores after B), refuse
     AMO, LR and SC with an access fault, and return the alias PA, from a walk
-    response, from a DTLB hit and from the last-page buffer. An NC leaf over
+    response and from a resident DTLB entry. An NC leaf over
     low BRAM keeps its BRAM PA and is MMIO by its field. Superpages and Zicbom
     ops on them resolve the same way.
     """
@@ -472,12 +486,12 @@ async def test_pbmt_pages_take_the_mmio_path(dut: Any) -> None:
             dut.i_iss_valid.value = 0
             if via_walk:
                 _response(dut, page)
-            await _cycle(dut)
+            if not int(dut.o_iss_out_valid.value):
+                await _cycle(dut)
             _check(dut, op, page)
             dut.i_walk_resp_valid.value = 0
             await _cycle(dut)
-    # The last-page buffer keeps the MMIO class: back-to-back loads of an NC
-    # page after one resolution bypass S1 and still resolve as MMIO.
+    # Consecutive loads of a resident NC page bypass S1 and resolve as MMIO.
     for page in (nc, bram):
         page = replace(page, vpn=(load.va >> 12) & VPN_MASK)
         await _clear(dut)
@@ -487,10 +501,6 @@ async def test_pbmt_pages_take_the_mmio_path(dut: Any) -> None:
             _issue(dut, op)
             await _cycle(dut)
             dut.i_iss_valid.value = 0
-            for _ in range(3):
-                if int(dut.o_iss_out_valid.value):
-                    break
-                await _cycle(dut)
             _check(dut, op, page)
             await _cycle(dut)
 
@@ -537,8 +547,10 @@ async def test_tlb_hit_wins_over_matching_walk_response(dut: Any) -> None:
         for response_fault in (NONE, PAGE, ACCESS):
             await _clear(dut)
             await _install(dut, hit)
+            dut.i_tlb_invalidate.value = 1  # Exercise S1 hit versus walk arbitration.
             _issue(dut, op)
             await _cycle(dut)
+            dut.i_tlb_invalidate.value = 0
             dut.i_iss_valid.value = 0
             _response(dut, Leaf(vpn=hit.vpn, ppn=0x40000, fault=response_fault))
             await _cycle(dut)
@@ -547,11 +559,10 @@ async def test_tlb_hit_wins_over_matching_walk_response(dut: Any) -> None:
 
 @cocotb.test()
 async def test_hit_stream_has_no_bubbles(dut: Any) -> None:
-    """Mixed load/store/SC/AMO payloads retain two-edge latency at full rate."""
+    """Mixed load/store/SC/AMO payloads resolve on consecutive issue edges."""
     await _setup(dut)
     leaf = Leaf(vpn=0x400)
     await _install(dut, leaf)
-    previous: Op | None = None
     for index in range(40):
         op = Op(
             va=0x400000 + index * 8,
@@ -566,15 +577,8 @@ async def test_hit_stream_has_no_bubbles(dut: Any) -> None:
         await _cycle(dut)
         assert not int(dut.o_stall.value), "hit stream filled the skid"
         assert not int(dut.o_walk_req_valid.value), "hit stream asked walker"
-        if previous is None:
-            assert not int(dut.o_iss_out_valid.value)
-        else:
-            _check(dut, previous, leaf)
-        previous = op
+        _check(dut, op, leaf)
     dut.i_iss_valid.value = 0
-    await _cycle(dut)
-    assert previous is not None
-    _check(dut, previous, leaf)
     await _cycle(dut)
     assert not int(dut.o_iss_out_valid.value)
 
@@ -664,7 +668,6 @@ async def test_flush_drops_phantom_issue_and_tag_reuse(dut: Any) -> None:
             _issue(dut, correct)
             await _cycle(dut)
             dut.i_iss_valid.value = 0
-            await _cycle(dut)
             _check(dut, correct, leaf)
 
 
@@ -788,8 +791,10 @@ async def test_superpage_hit_over_matching_walk_fault(dut: Any) -> None:
             await _clear(dut)
             hit = Leaf(vpn=op.va >> 12, ppn=0x80000, level=level)
             await _install(dut, hit)
+            dut.i_tlb_invalidate.value = 1  # Exercise S1 hit versus walk arbitration.
             _issue(dut, op)
             await _cycle(dut)
+            dut.i_tlb_invalidate.value = 0
             dut.i_iss_valid.value = 0
             _response(dut, Leaf(vpn=op.va >> 12, fault=fault))
             await _cycle(dut)
@@ -800,108 +805,89 @@ async def test_superpage_hit_over_matching_walk_fault(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_last_page_bypass_single_cycle_latency(dut: Any) -> None:
-    """A load/store to the same page as the previous op hits in 1 cycle via bypass."""
+async def test_every_resident_entry_bypasses_and_replacement_takes_effect(
+    dut: Any,
+) -> None:
+    """All slots grant on the first edge, including carries and borrows into each VPN field."""
     await _setup(dut)
-    leaf = Leaf(vpn=0x400, ppn=0x80000)
-    await _install(dut, leaf)
-
-    # First op primes the last-page translation buffer (takes standard 2 cycles)
-    op0 = Op(va=0x400010, tag=1)
-    _issue(dut, op0)
-    await _cycle(dut)
-    assert not int(dut.o_iss_out_valid.value), (
-        "First op must take standard 2-stage path"
-    )
-    dut.i_iss_valid.value = 0
-    await _cycle(dut)
-    _check(dut, op0, leaf)
-
-    # Second op to the same page hits the last-page bypass in 1 cycle!
-    op1 = Op(va=0x400028, tag=2)
-    _issue(dut, op1)
-    await _cycle(dut)
-    # Right on the very next edge, op1 is valid at S2!
-    _check(dut, op1, leaf)
-
-    dut.i_iss_valid.value = 0
-    await _cycle(dut)
+    leaves = [Leaf(vpn=(i << 18) | (i << 9) | i, ppn=0x80000 + i) for i in range(16)]
+    for leaf in leaves:
+        await _install(dut, leaf)
+    for offset in (1, -1, 0x1FFF, -(1 << 22), (1 << 30) + 1):
+        for index in (15, *range(15)):
+            leaf = leaves[index]
+            op = Op(
+                va=leaf.vpn << 12,
+                tag=index,
+                offset=offset,
+                store=index % 2,
+                needs_sq=index % 2,
+            )
+            _issue(dut, op)
+            await _paired_cycle(dut)
+            _check(dut, op, leaf)
+    # Slot zero is replaced as its old mapping is issued. S1 must see the new fill.
+    incoming = replace(leaves[0], ppn=0x81000)
+    _response(dut, incoming)
+    op = Op(va=0, tag=5, offset=1)
+    _issue(dut, op)
+    await _paired_cycle(dut)
     assert not int(dut.o_iss_out_valid.value)
+    dut.i_walk_resp_valid.value = 0
+    dut.i_iss_valid.value = 0
+    await _paired_cycle(dut)
+    _check(dut, op, incoming)
 
 
 @cocotb.test()
-async def test_last_page_cross_page_takes_two_cycles(dut: Any) -> None:
-    """An access across page boundary does not bypass and takes standard 2 cycles."""
+async def test_uniform_user_superpage_bypasses_across_subpages(dut: Any) -> None:
+    """A user hit anywhere in a uniform leaf supplies that access's low PPN bits."""
     await _setup(dut)
-    leaf0 = Leaf(vpn=0x400, ppn=0x80000)
-    leaf1 = Leaf(vpn=0x500, ppn=0x81000)
-    await _install(dut, leaf0)
-    await _install(dut, leaf1)
-
-    # Prime page 0x400
-    op0 = Op(va=0x400010, tag=1)
-    _issue(dut, op0)
-    await _cycle(dut)
-    dut.i_iss_valid.value = 0
-    await _cycle(dut)
-    _check(dut, op0, leaf0)
-
-    # Access page 0x500: must NOT bypass
-    op1 = Op(va=0x500010, tag=2)
-    _issue(dut, op1)
-    await _cycle(dut)
-    assert not int(dut.o_iss_out_valid.value), "Cross-page access must not bypass"
-    dut.i_iss_valid.value = 0
-    await _cycle(dut)
-    _check(dut, op1, leaf1)
+    for level in (1, 2):
+        await _clear(dut)
+        dut.i_eff_priv_u.value = 1
+        leaf = Leaf(vpn=(1 << 26) | 0x42101, ppn=0x80000, level=level, u=1)
+        await _install(dut, leaf)
+        mask = (1 << (9 * level)) - 1
+        for subpage in (0, 1, mask):
+            vpn = (leaf.vpn & ~mask) | subpage
+            va = (XLEN_MASK ^ ((1 << 39) - 1)) | (vpn << 12) | 0x80
+            op = Op(va=va, priv_u=1, offset=-0x280)
+            _issue(dut, op)
+            await _paired_cycle(dut)
+            _check(dut, op, leaf)
+        dut.i_iss_valid.value = 0
 
 
 @cocotb.test()
-async def test_last_page_bypass_sfence_invalidation(dut: Any) -> None:
-    """SFENCE / TLB invalidation invalidates the last-page translation buffer."""
+async def test_mixed_or_denied_winner_precedes_clean_overlap(dut: Any) -> None:
+    """The lowest matching slot owns the access even when only the other slot is clean."""
     await _setup(dut)
-    leaf = Leaf(vpn=0x400, ppn=0x80000)
-    await _install(dut, leaf)
-
-    op0 = Op(va=0x400010, tag=1)
-    _issue(dut, op0)
-    await _cycle(dut)
-    dut.i_iss_valid.value = 0
-    await _cycle(dut)
-    _check(dut, op0, leaf)
-
-    # Invalidate TLB
-    dut.i_tlb_invalidate.value = 1
-    await _cycle(dut)
-    dut.i_tlb_invalidate.value = 0
-
-    # Re-install leaf in DTLB (since invalidate cleared DTLB)
-    await _install(dut, leaf)
-
-    # Op to 0x400 must NOT bypass because last-page buffer was invalidated
-    op1 = Op(va=0x400028, tag=2)
-    _issue(dut, op1)
-    await _cycle(dut)
-    assert not int(dut.o_iss_out_valid.value), "Must not bypass after TLB invalidate"
-    dut.i_iss_valid.value = 0
-    await _cycle(dut)
-    _check(dut, op1, leaf)
+    op = Op(va=0x400010)
+    for first in (Leaf(vpn=0x400, ppn=0, level=1), Leaf(vpn=0x400, r=0)):
+        await _clear(dut)
+        await _install(dut, first)
+        await _install(dut, Leaf(vpn=0x400))
+        _issue(dut, op)
+        await _paired_cycle(dut)
+        assert not int(dut.o_iss_out_valid.value)
+        dut.i_iss_valid.value = 0
+        await _paired_cycle(dut)
+        _check(dut, op, first)
 
 
 @cocotb.test()
-async def test_last_page_bypass_permission_mismatch_fault_precision(dut: Any) -> None:
+async def test_entry_bypass_permission_mismatch_fault_precision(dut: Any) -> None:
     """Store to read-only page does not bypass, preserving exact page fault."""
     await _setup(dut)
     # Read-only leaf (w=0)
     leaf = Leaf(vpn=0x400, ppn=0x80000, w=0)
     await _install(dut, leaf)
 
-    # Prime with load
     op0 = Op(va=0x400010, tag=1, store=0)
     _issue(dut, op0)
     await _cycle(dut)
     dut.i_iss_valid.value = 0
-    await _cycle(dut)
     _check(dut, op0, leaf)
 
     # Store to same page must not bypass and must fault
@@ -916,7 +902,7 @@ async def test_last_page_bypass_permission_mismatch_fault_precision(dut: Any) ->
 
 
 @cocotb.test()
-async def test_last_page_bypass_misaligned_trap_precision(dut: Any) -> None:
+async def test_entry_bypass_misaligned_trap_precision(dut: Any) -> None:
     """Misaligned access does not bypass, preserving exact misaligned fault."""
     await _setup(dut)
     leaf = Leaf(vpn=0x400, ppn=0x80000)
@@ -926,7 +912,6 @@ async def test_last_page_bypass_misaligned_trap_precision(dut: Any) -> None:
     _issue(dut, op0)
     await _cycle(dut)
     dut.i_iss_valid.value = 0
-    await _cycle(dut)
     _check(dut, op0, leaf)
 
     # Misaligned op (double at byte offset 1)
@@ -951,21 +936,22 @@ async def _paired_cycle(dut: Any) -> None:
         assert int(dut.o_iss_out_rob_tag.value) == pre_tag
 
 
-async def _prime_last_page(dut: Any, leaf: Leaf, op: Op) -> None:
-    """Resolve a clean leaf through S1 and check its registered result."""
+async def _install_and_check(dut: Any, leaf: Leaf, op: Op) -> None:
+    """Fill under the requested context and check the first direct result."""
+    dut.i_eff_priv_u.value = op.priv_u
+    dut.i_sum.value = op.sum_
+    dut.i_mxr.value = op.mxr
     await _install(dut, leaf)
     _issue(dut, op)
     await _paired_cycle(dut)
-    assert not int(dut.o_iss_out_valid.value)
     dut.i_iss_valid.value = 0
-    await _paired_cycle(dut)
     _check(dut, op, leaf)
     assert int(dut.o_iss_out_fault.value) == NONE
 
 
 @cocotb.test()
-async def test_last_page_bypass_partial_flush_resolution(dut: Any) -> None:
-    """A killed S1 hit or response leaves S2 available for an older bypass."""
+async def test_entry_bypass_partial_flush_resolution(dut: Any) -> None:
+    """A killed S1 hit releases S2. A simultaneous refill sends the older op through S1."""
     await _setup(dut)
     leaf_a = Leaf(vpn=0x400, ppn=0x80000)
     leaf_b = Leaf(vpn=0x500, ppn=0x81000)
@@ -973,9 +959,11 @@ async def test_last_page_bypass_partial_flush_resolution(dut: Any) -> None:
         await _clear(dut)
         if resident_b:
             await _install(dut, leaf_b)
-        await _prime_last_page(dut, leaf_a, Op(va=0x400010, tag=1))
+        await _install_and_check(dut, leaf_a, Op(va=0x400010, tag=1))
+        dut.i_tlb_invalidate.value = int(resident_b)  # Leave the younger hit in S1.
         _issue(dut, Op(va=0x500010, tag=5))
         await _paired_cycle(dut)
+        dut.i_tlb_invalidate.value = 0
         assert not int(dut.o_iss_out_valid.value)
         if not resident_b:
             _response(dut, leaf_b)
@@ -985,20 +973,23 @@ async def test_last_page_bypass_partial_flush_resolution(dut: Any) -> None:
         older = Op(va=0x400028, tag=1, data=0x123, amo_rs2=0x456)
         _issue(dut, older)
         await _paired_cycle(dut)
-        _check(dut, older, leaf_a)
         dut.i_iss_valid.value = 0
         dut.i_walk_resp_valid.value = 0
+        if not resident_b:
+            assert not int(dut.o_iss_out_valid.value)  # Concurrent fill.
+            await _paired_cycle(dut)
+        _check(dut, older, leaf_a)
         dut.i_flush_en.value = 0
         await _paired_cycle(dut)
         assert not int(dut.o_iss_out_valid.value)
 
 
 @cocotb.test()
-async def test_last_page_bypass_routing_and_lookahead(dut: Any) -> None:
+async def test_entry_bypass_routing_and_lookahead(dut: Any) -> None:
     """Consecutive load, store, SC, LR and AMO hits preserve tags and payloads."""
     await _setup(dut)
     leaf = Leaf(vpn=0x400, ppn=0x80000)
-    await _prime_last_page(dut, leaf, Op(va=0x400010, tag=1))
+    await _install_and_check(dut, leaf, Op(va=0x400010, tag=1))
     operations = (
         Op(va=0x400028, tag=2),
         Op(va=0x400030, tag=3, needs_sq=1, store=1, data=0x123456),
@@ -1019,8 +1010,8 @@ async def test_last_page_bypass_routing_and_lookahead(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_last_page_bypass_warm_permissions_and_addresses(dut: Any) -> None:
-    """Warm-buffer access checks preserve faults, physical pages and routing."""
+async def test_entry_bypass_warm_permissions_and_addresses(dut: Any) -> None:
+    """Resident entry checks preserve faults, physical pages and routing."""
     await _setup(dut)
     base_leaf = Leaf(vpn=0x400, ppn=0x80000)
     prime = Op(va=0x400010, tag=1)
@@ -1046,7 +1037,7 @@ async def test_last_page_bypass_warm_permissions_and_addresses(dut: Any) -> None
     )
     for leaf, first, second, bypass in cases:
         await _clear(dut)
-        await _prime_last_page(dut, leaf, first)
+        await _install_and_check(dut, leaf, first)
         _issue(dut, second)
         await _paired_cycle(dut)
         if not bypass:
@@ -1059,13 +1050,13 @@ async def test_last_page_bypass_warm_permissions_and_addresses(dut: Any) -> None
 
 
 @cocotb.test()
-async def test_last_page_bypass_lifetime_and_remap(dut: Any) -> None:
-    """Reset, full flush, disable and invalidation clear the fast translation."""
+async def test_entry_bypass_lifetime_and_remap(dut: Any) -> None:
+    """Recovery and disable preserve resident translations. Reset and remap use the new fill."""
     await _setup(dut)
     original = Leaf(vpn=0x400, ppn=0x80000)
     for event in ("reset", "flush", "disable", "remap"):
         await _clear(dut)
-        await _prime_last_page(dut, original, Op(va=0x400010, tag=1))
+        await _install_and_check(dut, original, Op(va=0x400010, tag=1))
         signal = {
             "reset": "i_rst_n",
             "flush": "i_flush_all",
@@ -1085,19 +1076,17 @@ async def test_last_page_bypass_lifetime_and_remap(dut: Any) -> None:
         op = Op(va=0x400028, tag=2)
         _issue(dut, op)
         await _paired_cycle(dut)
-        assert not int(dut.o_iss_out_valid.value)
         dut.i_iss_valid.value = 0
-        await _paired_cycle(dut)
         _check(dut, op, leaf)
 
 
 @cocotb.test()
-async def test_last_page_bypass_backpressure_and_issue_kill(dut: Any) -> None:
+async def test_entry_bypass_backpressure_and_issue_kill(dut: Any) -> None:
     """A warm hit waits behind S1/S0, and flushed issues produce no packet."""
     await _setup(dut)
     leaf_a = Leaf(vpn=0x400, ppn=0x80000)
     leaf_b = Leaf(vpn=0x500, ppn=0x81000)
-    await _prime_last_page(dut, leaf_a, Op(va=0x400010, tag=1))
+    await _install_and_check(dut, leaf_a, Op(va=0x400010, tag=1))
     first = Op(va=0x500010, tag=3)
     second = Op(va=0x400028, tag=4)
     _issue(dut, first)
@@ -1180,7 +1169,7 @@ async def _probe(dut: Any, asid: int, leaf: Leaf) -> bool:
     dut.i_iss_valid.value = 0
     if miss:
         _response(dut, leaf)
-    await _cycle(dut)
+        await _cycle(dut)
     _check(dut, op, leaf)
     dut.i_walk_resp_valid.value = 0
     await _cycle(dut)
@@ -1271,15 +1260,15 @@ async def test_asid_follows_the_pulse_by_one_cycle(dut: Any) -> None:
     after the satp write, and the DMMU's ASID (the registered translation
     state) changes one cycle after the pulse. An access issued with the pulse
     looks the DTLB up in the first cycle under the new ASID and must miss; the
-    pulse has already dropped the last-page buffer.
+    pulse prevents a direct hit on the old address space.
     """
     await _setup(dut)
     await _clear(dut)
     leaf_old = Leaf(vpn=0x400, ppn=0x80000)
     leaf_new = Leaf(vpn=0x400, ppn=0x81000)
     await _switch_asid(dut, 1)
-    # Install under ASID 1 and leave the page in the last-page buffer.
-    await _prime_last_page(dut, leaf_old, Op(va=0x400010, tag=1))
+    # Install under ASID 1 and check the direct result.
+    await _install_and_check(dut, leaf_old, Op(va=0x400010, tag=1))
     # The pulse, with the old ASID still applied, and an access issued beside
     # it. In the next cycle the access looks the DTLB up under the new ASID.
     op = Op(va=0x400028, tag=2)
@@ -1290,7 +1279,9 @@ async def test_asid_follows_the_pulse_by_one_cycle(dut: Any) -> None:
     dut.i_iss_valid.value = 0
     dut.i_asid.value = 2
     await Timer(1, unit="ns")
-    assert not int(dut.o_iss_out_valid.value), "the last-page buffer answered"
+    assert not int(dut.o_iss_out_valid.value), (
+        "the issue bypass answered under the old ASID"
+    )
     assert int(dut.o_walk_req_valid.value), "an ASID 1 entry answered under ASID 2"
     _response(dut, leaf_new)
     await _cycle(dut)

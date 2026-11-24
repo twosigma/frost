@@ -313,7 +313,10 @@ one RAM per tree bit, and a touch writes only the bits on its way's path. A
 controller hit writes from the registered way during data service or the
 reply, before another request or update can enter. A hit-port hit writes its
 way's NRU bit in its third cycle unless the controller writes that same way's
-NRU RAM in that cycle (touches to distinct ways proceed concurrently); in
+NRU RAM in that cycle (touches to distinct ways proceed concurrently, and the
+controller suppresses no-op `1 -> 1` NRU writes on hits and promoted or upgrade
+insertions when the lookup's NRU bit is already 1 so they leave the port free
+for hit-port touches); in
 tree pseudo-LRU configurations (`!(BIMODAL_INSERT && WAYS > 1)`), any
 controller replacement write in that cycle drops the hit-port touch. A
 lookup marked `i_req_no_touch` leaves replacement state unchanged on a hit; the

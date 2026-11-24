@@ -298,8 +298,8 @@ module csr_file #(
     // One-cycle translation-change pulse for any enabled committed satp
     // access, or an mstatus commit whose computed result changes MPRV (or
     // MPP while MPRV=1). It discards the walk in flight and the walk cache and
-    // drops the MMUs' transient results (last-page buffer, fetch result, fault
-    // memo); it leaves TLB entries alone, since they are ASID-tagged. SUM and
+    // suppresses direct data hits and clears the fetch result and fault
+    // memo. The TLBs retain their ASID-tagged entries. SUM and
     // MXR changes do not raise it: lookups apply them live. The ROB serializer
     // separately drains committed stores and flushes the pipeline.
     output logic o_csr_translation_flush_req,
@@ -2093,10 +2093,9 @@ module csr_file #(
   // MPRV, or to MPP while MPRV is set.
   //
   // SUM and MXR changes keep the TLBs and the walk in flight. They change
-  // permission checks only, and every lookup applies the live SUM and MXR to
-  // the raw R/W/X/U/D bits a TLB entry holds: the DTLB's per-entry verdicts,
-  // the data MMU's walk-response check, and the last-page buffer, which
-  // compares the SUM and MXR it captured. Walks return raw leaf permissions
+  // permissions only. S1 and the walk-response check use the live values.
+  // Direct data hits require a matching permission context and the DTLB
+  // refreshes its registered verdicts on the edge. Walks return raw permissions
   // and never read SUM or MXR, and fetch checks use neither. The ROB still
   // drains committed stores and flushes the pipeline after every mstatus or
   // sstatus write, so no operation translated under the old bits survives.
