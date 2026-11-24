@@ -34,7 +34,7 @@ conformance bugs fixed for
 | [`vector.py`](vector.py) | Random vector-instruction tests (see [The vector extension](#the-vector-extension)) |
 | [`vector_segments.py`](vector_segments.py) | Seeded deterministic generator for five segment memory matrix traces covering all 252 base-V segment encodings (`--vector-segments`) |
 | [`sail_frost.json`](sail_frost.json) | Sail settings that describe FROST |
-| `sail_frost_vlen128.json`, `sail_frost_vlen256.json`, `sail_frost_vlen512.json` | Overlays on `sail_frost.json` that turn on the vector unit at one vector length; they differ only in `V.vlen_exp` |
+| `sail_frost_vlen128.json`, `sail_frost_vlen256.json`, `sail_frost_vlen512.json` | Overlays on `sail_frost.json` that turn on the vector unit (`V`, `Zvfh`, `Zvfhmin`) at one vector length; they differ only in `V.vlen_exp` |
 | [`traces/`](traces/) | Saved counterexamples, replayed in CI |
 | [`sscofpmf/controls.S`](sscofpmf/controls.S) | Deterministic Sscofpmf delegation, controls and implemented HPM aliases, replayed with `--sscofpmf` in CI |
 
@@ -490,6 +490,15 @@ multiplication and division. It compares exact and rounded results, the canonica
 NaN and all five accrued exception flags. The masked add checks that the
 disabled signaling NaN leaves the flags clear and reads only the initialized,
 enabled result. [Base FP results and flags](vector_fp_results_flags.S)
+
+The Zfa half-precision constant trace checks all 32 `fli.h` encodings,
+NaN-boxed into the FP register with zero accrued flags, reserved `frm`
+independence, `mstatus.FS` dirtying from Clean, nonzero `funct3` trapping and
+`mstatus.FS` Off trapping. The vector Sail overlays enable `Zvfh` and
+`Zvfhmin` to match the `VECTOR=1` core; because Sail 0.16 gates `Zvfh` on
+`mstatus.VS != Off`, the trace keeps `VS` enabled alongside `FS` (the
+`vec_fp_test` program covers `fli.h` with `VS` Off on RTL and Spike).
+[Zfa FLI.H](vector_fli_h.S)
 
 The fused multiply-add trace checks the single-width vector-vector and
 vector-scalar forms in binary32 and binary64. A nonzero residual checks

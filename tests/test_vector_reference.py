@@ -53,12 +53,12 @@ PROGRAMS = (
 LENGTH_PAIRS = ((128, 128), (256, 256), (512, 512), (128, 256), (128, 512))
 
 SPIKE_EXTENSIONS = (
-    "zicsr_zifencei_zfh_zvfh_zvfhmin_zvbb_zvbc_zvkt_zvkg_zvkned_zvknhb_zvksed_zvksh"
+    "zicsr_zifencei_zfa_zfh_zvfh_zvfhmin_zvbb_zvbc_zvkt_zvkg_zvkned_zvknhb_zvksed_zvksh"
 )
 # Zvfh left out: vec_dot_fp then builds with -DVT_NO_ZVFH and checks half
 # precision through conversions only (Zvfhmin).
 ZVFHMIN_EXTENSIONS = (
-    "zicsr_zifencei_zfh_zvfhmin_zvbb_zvbc_zvkt_zvkg_zvkned_zvknhb_zvksed_zvksh"
+    "zicsr_zifencei_zfa_zfh_zvfhmin_zvbb_zvbc_zvkt_zvkg_zvkned_zvknhb_zvksed_zvksh"
 )
 
 SPIKE_TIMEOUT_SECONDS = 300

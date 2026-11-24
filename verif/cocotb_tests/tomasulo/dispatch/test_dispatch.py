@@ -2078,6 +2078,7 @@ async def test_extension_unused_sources_are_ready(dut: Any) -> None:
         ],
         ("FLI_S", "", False, RS_FP),
         ("FLI_D", "", False, RS_FP),
+        ("FLI_H", "", False, RS_FP),
         ("MOP", "", False, RS_INT),
     ]
     for slot2 in (False, True):

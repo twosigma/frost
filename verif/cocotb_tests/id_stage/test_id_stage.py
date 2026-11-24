@@ -1301,6 +1301,24 @@ async def test_extension_encodings_and_operands(dut: Any) -> None:
                     assert packet["rs_type"] == RS_FP, name
     dut.i_mstatus_fs_off.value = 0
 
+    # Zfa FLI.H (funct7 1111010, rs2 00001, funct3 000) requires VECTOR (Zvfh);
+    # with VECTOR=0 (this scalar bench) it is illegal, as is funct3 != 0.
+    for slot2 in (False, True):
+        for funct3 in (0, 1, 7):
+            word = _pack_r(
+                funct7=0x7A, rs2=1, rs1=16, funct3=funct3, rd=3, opcode=OPC_OP_FP
+            )
+            _drive_pd_packet(dut, {}, slot2=not slot2)
+            _drive_pd_packet(
+                dut, {"program_counter": BASE_PC, "instruction": word}, slot2=slot2
+            )
+            await _advance_cycle(dut)
+            packet = _read_id_packet(dut, slot2=slot2)
+            assert packet["is_illegal_instruction"] is True, (slot2, funct3)
+            assert packet["has_fp_dest"] is False, (slot2, funct3)
+            assert packet["has_int_dest"] is False, (slot2, funct3)
+            assert packet["rs_type"] == RS_INT, (slot2, funct3)
+
 
 @cocotb.test()
 async def test_cbo_mgmt_class_and_gates(dut: Any) -> None:
