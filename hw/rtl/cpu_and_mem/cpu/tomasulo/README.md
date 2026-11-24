@@ -4,10 +4,11 @@ This directory is the out-of-order half of the FROST CPU. The in-order front
 end fetches and decodes up to two instructions per cycle. The back end renames
 them, parks them in reservation stations (RS) until their operands are ready,
 executes them out of order, and retires them in program order from a 32-entry
-reorder buffer (ROB), so exceptions stay precise. The core implements RV64GCB
-plus Zicntr, Zihpm, Zicond, Zbc, Zbkb, Zbkc, Zihintpause, Zihintntl, Zimop, Zcb, Zcmop, Zawrs, Zicboz, Zicbom
-and Zicbop (see the
-[ISA table](../../../../../README.md#supported-risc-v-extensions)).
+reorder buffer (ROB), so exceptions stay precise. The core implements RV64GCBV
+plus Zicntr, Zihpm, Zicond, Zbc, Zbkb, Zbkc, Zfhmin, Zfa, Zihintpause,
+Zihintntl, Zimop, Zcb, Zcmop, Zawrs, Zicboz, Zicbom, Zicbop, and the
+supervisor extensions listed in the
+[ISA table](../../../../../README.md#supported-risc-v-extensions).
 
 Dispatch, rename, the common data bus (CDB), and commit are all two wide. Four
 reservation stations feed seven functional-unit (FU) slots, or eight with
@@ -199,11 +200,11 @@ result waits in its register only behind a store fault.
 
 | RS         | Depth | Instructions |
 |------------|-------|--------------|
-| `INT_RS`   | 16 (`INT_RS_DEPTH`) | ALU ops including LUI and AUIPC, shifts, Zba/Zbb/Zbs/Zbkb, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK, PAUSE (a NOP with no operands), and the illegal-instruction and fetch-fault markers |
-| `MUL_RS`   | 4     | MUL/MULW/MULH\*/CLMUL/CLMULH/CLMULR/DIV\*/REM\* |
-| `MEM_RS`   | 8     | All loads and stores (INT and FP), AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
-| `FP_RS`    | 6     | Every F and D compute instruction: FADD/FSUB, FMUL, FMA (3-source), FDIV, FSQRT, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
-| (none)     | n/a   | JAL, WFI, MRET, SRET, DRET, and with the vector unit `VTOX`, `VLOAD`, `VSTORE` and non-scalar `VARITH`: ROB only, no reservation-station operands |
+| `INT_RS`   | 16 (`INT_RS_DEPTH`) | ALU ops including LUI and AUIPC, shifts, Zba/Zbb/Zbs/Zbkb, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK, PAUSE (a NOP with no operands), Zimop, Zcmop, Zihintntl, Zawrs (`wrs.nto`/`wrs.sto`), Zicbop (`prefetch.*`), with `VECTOR=1` OP-V integer/mask/slide/OPFVV vector arithmetic (`VARITH` and `VARITH_X`), and the illegal-instruction and fetch-fault markers |
+| `MUL_RS`   | 4     | MUL/MULW/MULH\*/CLMUL/CLMULH/CLMULR/DIV\*/REM\*, and with `VECTOR=1` `vsetvli`, `vsetivli`, and `vsetvl` |
+| `MEM_RS`   | 8     | All loads and stores (INT and FP), AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA, `cbo.zero`, `cbo.clean`, `cbo.flush`, `cbo.inval`, `sinval.vma`, `sfence.w.inval`, and `sfence.inval.ir` |
+| `FP_RS`    | 6     | Every F, D, Zfhmin, and Zfa compute instruction: FADD/FSUB, FMUL, FMA (3-source), FDIV, FSQRT, FMIN/FMAX, FMINM/FMAXM, FEQ/FLT/FLE, FLEQ/FLTQ, FCVT\*, FCVTMOD.W.D, FROUND/FROUNDNX, FLI, FMV.{X.H,H.X,X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
+| (none)     | n/a   | JAL, WFI, MRET, SRET, DRET, and with `VECTOR=1` `VTOX`, `VTOF`, `VARITH_F`, `VARITH_C`, `VLOAD`, and `VSTORE`: ROB (and VMT for `VLOAD`/`VSTORE`) only, no reservation-station entry |
 
 `INT_RS_DEPTH` must be a power of two from 2 to 32. The INT RS's second issue
 port considers only the lowest eight entries (`riscv_pkg::IntRsIssue2Window`).
@@ -272,10 +273,11 @@ serializer, branch-update, or trap paths.
 The LQ has bypasses of its own. MEM_RS signals its next issue one cycle
 early, so the LQ registers the address-update match in advance and the entry
 is address-valid in the cycle MEM_RS issues. With translation on, the
-look-ahead tag comes from a surviving DMMU S1 operation, or from the live
-issue when S1 is empty or killed. Eligible last-page hits enter S2 directly;
-other operations pass through S1. The registered match makes an entry
-address-valid only with S2's address-update pulse. When the LQ's CDB staging
+look-ahead tag and load qualifier come from a surviving DMMU S1 operation,
+or from the live issue when S1 is empty or killed. The LQ can prepare the
+match before the DTLB lookup settles. A clean hit in any eligible entry
+enters S2 directly. Other operations pass through S1. Only S2's address-update
+pulse makes the matched entry address-valid. When the LQ's CDB staging
 register is free and no stored result is waiting for it, a load's data from
 memory, the L0 cache, or an SQ forward goes straight into the staging register
 instead of through the entry's data field. See the

@@ -148,6 +148,8 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
   logic [WayBits-1:0] visit_way_q;
   logic [WAYS-1:0] exclude_q;
   logic [PlruBits-1:0] plru_read, plru_q, plru_write;
+  logic [WAYS-1:0] nru_read, nru_q, select_nru, ctrl_nru_we, hp_nru_we;
+  logic nru_clear_q, invalid_free;
   logic [15:0] insert_lfsr_q;
   logic plru_we, plru_hit_q;
   logic [WAYS-1:0] tag_we;
@@ -223,6 +225,25 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
     path = value;
   endfunction
 
+  function automatic logic [WayBits-1:0] nru_victim(input logic [WAYS-1:0] state,
+                                                    input logic [WAYS-1:0] eligible);
+    logic [WayBits-1:0] fallback, chosen;
+    logic found_zero;
+    fallback   = '0;
+    chosen     = '0;
+    found_zero = 1'b0;
+    for (int way = WAYS - 1; way >= 0; way--) begin
+      if (eligible[way]) begin
+        fallback = WayBits'(way);
+        if (!state[way]) begin
+          chosen     = WayBits'(way);
+          found_zero = 1'b1;
+        end
+      end
+    end
+    nru_victim = found_zero ? chosen : fallback;
+  endfunction
+
   assign o_init_done = phase_q != Init;
   assign o_update_ready = phase_q == Idle;
   assign update_fire = i_update_valid && o_update_ready;
@@ -247,9 +268,12 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
   assign select_valid = phase_q == Tags && count_q == 1;
   assign select_plru = phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY) ?
       plru_read : plru_q;
+  assign select_nru = phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY) ? nru_read : nru_q;
+  wire insert_promote = (BIMODAL_INSERT && WAYS > 1) ?
+      (o_resp_hit || i_update_touch || insert_lfsr_q[6:0] == 7'd0) :
+      (!BIMODAL_INSERT || i_update_touch || insert_lfsr_q[4:0] == 0);
   assign plru_we = !i_rst && (phase_q == Init ||
-      (update_fire && i_update_insert &&
-       (!BIMODAL_INSERT || i_update_touch || insert_lfsr_q[4:0] == 0)) ||
+      (update_fire && i_update_insert && insert_promote) ||
       plru_hit_q);
   // Hit touches use the registered way during data service or the reply.
   // The metadata write finishes before another request or update can enter.
@@ -273,25 +297,63 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
   wire [WayBits-1:0] replacement_way = hp_touch_way;
   wire [SetBits-1:0] replacement_set = hp_touch_set;
 `endif
-  wire hp_touch_we = !i_rst && replacement_touch && !plru_we;
+  logic hp_touch_we;
   assign plru_way = plru_hit_q ? o_resp_way : plru_we ? i_update_way : replacement_way;
   wire [PlruBits-1:0] plru_path = path(plru_way);
   assign plru_bit_we = plru_we ? (phase_q == Init ? '1 : plru_path) : hp_touch_we ? plru_path : '0;
   assign plru_write  = phase_q == Init ? '0 : touch('0, plru_way);
-  for (genvar node = 0; node < PlruBits; node++) begin : gen_replacement
-    sdp_block_ram #(
-        .ADDR_WIDTH(SetBits),
-        .DATA_WIDTH(1),
-        .SUPPORT_BULK_CLEAR(SimFastInit)
-    ) replacement (
-        .i_clk(i_clk),
-        .i_write_enable(plru_bit_we[node]),
-        .i_bulk_clear(init_bulk_clear),
-        .i_write_address(phase_q == Init ? init_set_q : plru_we ? set_q : replacement_set),
-        .i_read_address(tag_raddr),
-        .i_write_data(plru_write[node]),
-        .o_read_data(plru_read[node])
-    );
+  if (BIMODAL_INSERT && WAYS > 1) begin : gen_nru_replacement
+    assign hp_touch_we = |hp_nru_we;
+    assign plru_read   = nru_read[PlruBits-1:0];
+    for (genvar way = 0; way < WAYS; way++) begin : gen_nru
+      logic way_we, way_wdata;
+      logic [SetBits-1:0] way_waddr;
+      assign ctrl_nru_we[way] = !i_rst && (phase_q == Init ||
+          (update_fire && i_update_insert &&
+           ((nru_clear_q && i_update_way != WayBits'(way)) ||
+            (i_update_way == WayBits'(way) && !(insert_promote && nru_q[way])))) ||
+          (plru_hit_q && o_resp_way == WayBits'(way)));
+      assign hp_nru_we[way] = !i_rst && replacement_touch &&
+          replacement_way == WayBits'(way) && !ctrl_nru_we[way];
+      assign way_we = ctrl_nru_we[way] || hp_nru_we[way];
+      assign way_waddr = phase_q == Init ? init_set_q : ctrl_nru_we[way] ? set_q : replacement_set;
+      assign way_wdata = phase_q == Init ? 1'b0 :
+          ctrl_nru_we[way] ? (plru_hit_q ? 1'b1 :
+              (i_update_way == WayBits'(way) ? insert_promote : 1'b0)) : 1'b1;
+      sdp_block_ram #(
+          .ADDR_WIDTH(SetBits),
+          .DATA_WIDTH(1),
+          .SUPPORT_BULK_CLEAR(SimFastInit)
+      ) replacement (
+          .i_clk(i_clk),
+          .i_write_enable(way_we),
+          .i_bulk_clear(init_bulk_clear),
+          .i_write_address(way_waddr),
+          .i_read_address(tag_raddr),
+          .i_write_data(way_wdata),
+          .o_read_data(nru_read[way])
+      );
+    end
+  end else begin : gen_plru_replacement
+    assign hp_touch_we = !i_rst && replacement_touch && !plru_we;
+    assign nru_read    = '0;
+    assign ctrl_nru_we = '0;
+    assign hp_nru_we   = '0;
+    for (genvar node = 0; node < PlruBits; node++) begin : gen_replacement
+      sdp_block_ram #(
+          .ADDR_WIDTH(SetBits),
+          .DATA_WIDTH(1),
+          .SUPPORT_BULK_CLEAR(SimFastInit)
+      ) replacement (
+          .i_clk(i_clk),
+          .i_write_enable(plru_bit_we[node]),
+          .i_bulk_clear(init_bulk_clear),
+          .i_write_address(phase_q == Init ? init_set_q : plru_we ? set_q : replacement_set),
+          .i_read_address(tag_raddr),
+          .i_write_data(plru_write[node]),
+          .o_read_data(plru_read[node])
+      );
+    end
   end
 
   if (ULTRA) begin : gen_tag_ultra
@@ -471,11 +533,16 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
   end
 
   always_comb begin
-    selected = victim(select_plru, ~exclude_q);
+    selected = (BIMODAL_INSERT && WAYS > 1) ? nru_victim(select_nru, ~exclude_q) :
+        victim(select_plru, ~exclude_q);
     hit = 1'b0;
     hit_modified = 1'b0;
+    invalid_free = 1'b0;
     for (int way = WAYS - 1; way >= 0; way--) begin
-      if (tag_rdata[way][TagBits+:2] == 0 && !exclude_q[way]) selected = WayBits'(way);
+      if (tag_rdata[way][TagBits+:2] == 0 && !exclude_q[way]) begin
+        selected = WayBits'(way);
+        invalid_free = 1'b1;
+      end
     end
     for (int way = 0; way < WAYS; way++) begin
       if (tag_rdata[way][TagBits+:2] != 0 && tag_rdata[way][TagBits-1:0] == tag_q) begin
@@ -506,6 +573,8 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
       visit_way_q <= '0;
       exclude_q <= '0;
       plru_q <= '0;
+      nru_q <= '0;
+      nru_clear_q <= 1'b0;
       plru_hit_q <= 1'b0;
       insert_lfsr_q <= 16'hACE1;
       o_resp_hit <= 1'b0;
@@ -520,13 +589,29 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
       data_valid_q <= 1'b0;
       resp_valid_q <= 1'b0;
     end else begin
-      plru_hit_q <= select_valid && hit && !visit_q && !no_touch_q;
+      plru_hit_q <= select_valid && hit && !visit_q && !no_touch_q &&
+          !(BIMODAL_INSERT && WAYS > 1 && select_nru[selected]);
       if (phase_q == Idle) init_done_q <= 1'b1;
       insert_lfsr_q <= {
         insert_lfsr_q[14:0],
         insert_lfsr_q[15] ^ insert_lfsr_q[13] ^ insert_lfsr_q[12] ^ insert_lfsr_q[10]
       };
-      if (phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY)) plru_q <= plru_read;
+      // Each insertion follows its own lookup with no intervening lookup (the
+      // same one-lookup-per-insert contract already assumed by set_q as the
+      // NRU write address), and hit-port touches only set bits to 1. Tracking
+      // controller writes in nru_q therefore keeps nru_q[way] == 1 a safe
+      // subset of the RAM state for suppressing no-op 1->1 writes.
+      if (phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY)) begin
+        plru_q <= plru_read;
+        nru_q  <= nru_read;
+      end else if (BIMODAL_INSERT && WAYS > 1) begin
+        if (plru_hit_q) nru_q[o_resp_way] <= 1'b1;
+        else if (update_fire && i_update_insert) begin
+          if (nru_clear_q) nru_q <= insert_promote ? (WAYS'(1) << i_update_way) : '0;
+          else nru_q[i_update_way] <= insert_promote;
+        end
+      end
+      if (update_fire && i_update_insert) nru_clear_q <= 1'b0;
       case (phase_q)
         Init: begin
           init_set_q <= init_set_q + 1'b1;
@@ -569,6 +654,7 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
             o_resp_way <= selected;
             o_resp_addr <= {tag_rdata[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
             o_resp_state <= tag_rdata[selected][TagBits+:2];
+            nru_clear_q <= !hit && !visit_q && !invalid_free && (&select_nru);
             data_valid_q <= select_bank_data;
             resp_valid_q <= !select_data || selected_early_reply;
             if (!select_data) begin
@@ -634,14 +720,26 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
 `ifdef FORMAL
 `ifdef F_COH_ARRAY_PLRU_PROOF
   logic [PlruBits-1:0] f_plru_state[Sets];
+  logic [WAYS-1:0] f_nru_state[Sets];
   logic [PlruBits-1:0] f_plru_read, f_hit_value_q;
+  logic [WAYS-1:0] f_nru_read;
   logic [SetBits-1:0] f_hit_set_q;
-  logic f_hit_seen_q;
-  initial for (int set_index = 0; set_index < Sets; set_index++) f_plru_state[set_index] = '0;
+  logic [WayBits-1:0] f_hit_way_q;
+  logic f_hit_seen_q, f_noop_hit_q;
+  logic [WAYS-1:0] f_ctrl_write_one;
+  assign f_ctrl_write_one = plru_hit_q ? (WAYS'(1) << o_resp_way) :
+      (update_fire && i_update_insert && insert_promote) ? (WAYS'(1) << i_update_way) : '0;
+  initial begin
+    for (int set_index = 0; set_index < Sets; set_index++) begin
+      f_plru_state[set_index] = '0;
+      f_nru_state[set_index]  = '0;
+    end
+  end
   // The reference writes a hit's replacement bits on the tag-selection edge.
-  // Each touch changes only the bits on its way's path of the current state.
-  // A hit-port touch writes in its own cycle when the array writes nothing,
-  // and a controller hit of the same set applies after it.
+  // Tree-PLRU touches change only the bits on the way's path; per-way NRU sets
+  // the hit way's bit and clears all ways on a full-set miss fill. A hit-port
+  // touch writes on its own edge whenever its target RAM is not written by the
+  // controller, and a controller hit of the same set applies after it.
   logic [PlruBits-1:0] f_after_port;
   always_comb begin
     f_after_port = f_plru_state[set_q];
@@ -649,11 +747,17 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
   end
   always_ff @(posedge i_clk) begin
     f_plru_read <= f_plru_state[tag_raddr];
+    f_nru_read  <= f_nru_state[tag_raddr];
     if (init_bulk_clear) begin
-      for (int set_index = 0; set_index < Sets; set_index++) f_plru_state[set_index] <= '0;
+      for (int set_index = 0; set_index < Sets; set_index++) begin
+        f_plru_state[set_index] <= '0;
+        f_nru_state[set_index]  <= '0;
+      end
     end else if (!i_rst) begin
-      if (phase_q == Init) f_plru_state[init_set_q] <= '0;
-      else begin
+      if (phase_q == Init) begin
+        f_plru_state[init_set_q] <= '0;
+        f_nru_state[init_set_q]  <= '0;
+      end else begin
         if (hp_touch_we)
           f_plru_state[hp_touch_set] <= touch(f_plru_state[hp_touch_set], hp_touch_way);
         if (update_fire && i_update_insert &&
@@ -661,36 +765,79 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
           f_plru_state[set_q] <= touch(f_plru_state[set_q], i_update_way);
         else if (select_valid && hit && !visit_q && !no_touch_q)
           f_plru_state[set_q] <= touch(f_after_port, selected);
+
+        for (int way = 0; way < WAYS; way++) begin
+          if (hp_nru_we[way]) f_nru_state[replacement_set][way] <= 1'b1;
+        end
+        if (update_fire && i_update_insert) begin
+          if (nru_clear_q) f_nru_state[set_q] <= insert_promote ? (WAYS'(1) << i_update_way) : '0;
+          else f_nru_state[set_q][i_update_way] <= insert_promote;
+        end else if (select_valid && hit && !visit_q && !no_touch_q) begin
+          f_nru_state[set_q][selected] <= 1'b1;
+        end
       end
     end
     if (i_rst) begin
       f_hit_seen_q  <= 1'b0;
+      f_noop_hit_q  <= 1'b0;
       f_hit_value_q <= '0;
       f_hit_set_q   <= '0;
+      f_hit_way_q   <= '0;
     end else begin
+      f_noop_hit_q <= select_valid && hit && !visit_q && !no_touch_q && select_nru[selected];
       if (select_valid && hit && !visit_q && !no_touch_q) begin
         f_hit_seen_q  <= 1'b1;
         f_hit_value_q <= touch(select_plru, selected);
         f_hit_set_q   <= set_q;
+        f_hit_way_q   <= selected;
       end
       if (phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY))
-        p_plru_lookup_value : assert (plru_read == f_plru_read);
+        p_plru_lookup_value :
+        assert ((BIMODAL_INSERT && WAYS > 1) ? (nru_read == f_nru_read) :
+                (plru_read == f_plru_read));
       if (plru_hit_q) begin
         p_plru_hit_exclusive : assert (!request_fire && !update_fire);
         p_plru_hit_write :
-        assert (plru_we && plru_bit_we == path(
+        assert ((BIMODAL_INSERT && WAYS > 1) ?
+            (ctrl_nru_we == (WAYS'(1) << o_resp_way) && set_q == f_hit_set_q &&
+             o_resp_way == f_hit_way_q) :
+            (plru_we && plru_bit_we == path(
             o_resp_way
-        ) && ((plru_write ^ f_hit_value_q) & plru_bit_we) == '0 && set_q == f_hit_set_q);
+        ) && ((plru_write ^ f_hit_value_q) & plru_bit_we) == '0 && set_q == f_hit_set_q));
+      end
+      if (phase_q != Init) begin
+        // In per-way NRU arrays, a controller write-1 never claims a way's NRU
+        // port when that way's NRU bit is already 1, so no-op 1->1 writes
+        // cannot drop a concurrent hit-port load touch; nru_q never claims a 1
+        // absent from f_nru_state.
+        p_plru_no_noop_write :
+        assert (!(BIMODAL_INSERT && WAYS > 1) ||
+            ((ctrl_nru_we & f_ctrl_write_one & nru_q) == '0 &&
+             (phase_q == Tags || (nru_q & ~f_nru_state[set_q]) == '0)));
       end
       c_plru_hit_reply : cover (plru_hit_q && o_resp_valid && i_resp_ready);
       c_plru_hit_data : cover (plru_hit_q && phase_q == Data);
       c_plru_following_lookup : cover (f_hit_seen_q && request_fire && tag_raddr == f_hit_set_q);
       c_plru_no_touch_hit : cover (select_valid && hit && !visit_q && no_touch_q);
       c_plru_insert_touch :
-      cover (update_fire && i_update_insert && i_update_touch && insert_lfsr_q[4:0] != 0);
+      cover (update_fire && i_update_insert && i_update_touch &&
+          ((BIMODAL_INSERT && WAYS > 1) ? (insert_lfsr_q[6:0] != 7'd0) :
+           (insert_lfsr_q[4:0] != 0)));
+      if (BIMODAL_INSERT && WAYS > 1) begin
+        c_plru_nru_clear : cover (update_fire && i_update_insert && nru_clear_q);
+      end
       if (HIT_PORT) begin
         c_plru_port_touch : cover (hp_touch_we && select_valid && hit && hp_touch_set == set_q);
-        c_plru_port_dropped : cover (hp_touch && plru_we);
+        c_plru_port_dropped :
+        cover (hp_touch && ((BIMODAL_INSERT && WAYS > 1) ? ctrl_nru_we[hp_touch_way] : plru_we));
+        if (BIMODAL_INSERT && WAYS > 1) begin
+          c_plru_port_concurrent :
+          cover (hp_touch_we && (plru_hit_q || (update_fire && i_update_insert)));
+          c_plru_port_beside_noop_hit : cover (f_noop_hit_q && hp_nru_we[o_resp_way]);
+          c_plru_port_beside_noop_upgrade :
+          cover (update_fire && i_update_insert && insert_promote &&
+              nru_q[i_update_way] && hp_nru_we[i_update_way]);
+        end
       end
     end
   end
@@ -818,7 +965,10 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
 `ifdef F_COH_ARRAY_PLRU_PROOF
       p_plru_pending_exact :
-      assert (plru_hit_q == $past(select_valid && hit && !visit_q && !no_touch_q));
+      assert (plru_hit_q == $past(
+          select_valid && hit && !visit_q && !no_touch_q &&
+          !(BIMODAL_INSERT && WAYS > 1 && select_nru[selected])
+      ));
 `endif
       if (!$past(phase_q == Data && count_q == 1))
         p_data_changes_only_after_read :

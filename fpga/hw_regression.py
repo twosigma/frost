@@ -487,7 +487,12 @@ COREMARK_TICKS_RE = re.compile(r"Total 64-bit ticks : (\d+)")
 
 
 def check_score(
-    board: str, key: str, measured: float, tolerance_pct: float
+    board: str,
+    key: str,
+    measured: float,
+    tolerance_pct: float,
+    *,
+    vector: bool | None = None,
 ) -> tuple[bool, str]:
     """Judge a measured score against BASELINE_SCORES[board][key].
 
@@ -495,7 +500,7 @@ def check_score(
     reports the measured value and passes; a recorded baseline fails the check
     when the measured score is more than tolerance_pct percent below it.
     """
-    if board_clock_freq(board)[1]:
+    if board_clock_freq(board, vector=vector)[1]:
         return True, (
             f"{key} score {measured:.2f} at the {CPU_CLK_ENV} clock override; "
             "baseline check skipped for a divided-clock image"
@@ -585,7 +590,13 @@ def next_stimulus(
     return text, hit + len(trigger)
 
 
-def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
+def build_stage(
+    app: str,
+    board: str,
+    tolerance_pct: float,
+    *,
+    vector: bool | None = None,
+) -> UartStage:
     """Build the UART rules for one app stage."""
     if board == "vcu118" and app == "bootrom":
 
@@ -674,10 +685,10 @@ def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
                 )
             score = (
                 board_config["coremark_iterations"]
-                * board_clock_freq(board)[0]
+                * board_clock_freq(board, vector=vector)[0]
                 / int(ticks_match.group(1))
             )
-            return check_score(board, "coremark", score, tolerance_pct)
+            return check_score(board, "coremark", score, tolerance_pct, vector=vector)
 
         return UartStage(
             app,
@@ -3507,6 +3518,8 @@ def run_sweep_stage(
     timeout_s: float,
     loader_extra: list[str],
     tolerance_pct: float,
+    *,
+    vector: bool | None = None,
 ) -> dict[str, Any]:
     """Run the -v0 CoreMark-PRO sweep and check its status and official mark.
 
@@ -3564,7 +3577,11 @@ def run_sweep_stage(
             "note": "sweep passed but printed no official CoreMark-PRO score",
         }
     ok, note = check_score(
-        board, "coremark_pro", float(score_match.group(1)), tolerance_pct
+        board,
+        "coremark_pro",
+        float(score_match.group(1)),
+        tolerance_pct,
+        vector=vector,
     )
     return {
         "stage": SWEEP_STAGE,
@@ -3605,9 +3622,13 @@ def stage_loader_extra(
     *,
     vlen: int | None = None,
     vec_advertise: bool | None = None,
+    board: str | None = None,
+    vector: bool | None = None,
 ) -> list[str]:
     """Return load_software.py extra arguments for one regression stage."""
     extra = list(loader_extra)
+    if board == "vcu118" and vector is not None:
+        extra.append("--vector" if vector else "--no-vector")
     if vlen is not None and stage_name in VEC_VLEN_APPS:
         extra.extend(["--vlen", str(vlen)])
     if vec_advertise is not None and stage_name in VEC_ADVERTISE_APPS:
@@ -3615,7 +3636,7 @@ def stage_loader_extra(
     return extra
 
 
-def regression_stages(board: str) -> list[str]:
+def regression_stages(board: str, *, vector: bool = False) -> list[str]:
     """Return the selected board's stages in order.
 
     Start with hello_world and the debug port where configured.
@@ -3625,7 +3646,7 @@ def regression_stages(board: str) -> list[str]:
     """
     phase1 = [
         app
-        for app in valid_apps_for_board(board)
+        for app in valid_apps_for_board(board, vector=vector)
         if app != LINUX_STAGE
         and app not in COREMARK_PRO_APP_NAMES
         and app not in DEBUGGER_DRIVEN_APPS
@@ -3794,6 +3815,16 @@ def _main() -> int:
         ),
     )
     parser.add_argument(
+        "--vector",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Target an opt-in VCU118 vector build (162500000 Hz CPU clock, "
+            "vector stages enabled, --vector forwarded to load_software.py; "
+            "default: on for x3, off for vcu118)"
+        ),
+    )
+    parser.add_argument(
         "stages",
         nargs="*",
         help=(
@@ -3814,6 +3845,16 @@ def _main() -> int:
     except ValueError as error:
         parser.error(str(error))
 
+    if board == "x3" and args.vector is False:
+        parser.error("--no-vector is only supported for vcu118")
+    if args.vector is not None and _loader_extra_has_option(
+        args.loader_extra, ("--vector", "--no-vector")
+    ):
+        parser.error(
+            "--vector/--no-vector cannot also be passed through --loader-extra"
+        )
+    vcu118_vector = board == "vcu118" and bool(args.vector)
+
     if args.vlen == 0 and args.vec_advertise:
         parser.error("--vec-advertise requires a nonzero --vlen")
     if args.vlen is not None and _loader_extra_has_option(
@@ -3828,7 +3869,7 @@ def _main() -> int:
             "--loader-extra"
         )
 
-    all_stages = regression_stages(board)
+    all_stages = regression_stages(board, vector=vcu118_vector)
 
     if args.stages:
         requested = set(args.stages)
@@ -3858,7 +3899,9 @@ def _main() -> int:
             )
     if args.vec_advertise and args.vlen is None and "vec_state_test" in selected:
         try:
-            board_vlen, _ = board_vector_config(board, project_root=args.repo)
+            board_vlen, _ = board_vector_config(
+                board, project_root=args.repo, vector=vcu118_vector
+            )
         except (OSError, ValueError) as error:
             parser.error(str(error))
         if board_vlen == 0:
@@ -3926,14 +3969,22 @@ def _main() -> int:
                 if serial_fd is not None:
                     os.close(serial_fd)
                     serial_fd = None
+                sweep_loader_extra = list(args.loader_extra)
+                sweep_kwargs: dict[str, Any] = {}
+                if board == "vcu118" and args.vector is not None:
+                    sweep_loader_extra.append(
+                        "--vector" if args.vector else "--no-vector"
+                    )
+                    sweep_kwargs["vector"] = args.vector
                 result = run_sweep_stage(
                     args.repo,
                     board,
                     serial,
                     target,
                     timeout,
-                    args.loader_extra,
+                    sweep_loader_extra,
                     args.score_tolerance,
+                    **sweep_kwargs,
                 )
             else:
                 if serial_fd is None:
@@ -3953,7 +4004,17 @@ def _main() -> int:
                     stage_timeout = args.linux_timeout
                     loader_env = linux_loader_env(linux_root)
                 else:
-                    stage = build_stage(stage_name, board, args.score_tolerance)
+                    stage_kwargs: dict[str, Any] = (
+                        {"vector": args.vector}
+                        if board == "vcu118" and args.vector is not None
+                        else {}
+                    )
+                    stage = build_stage(
+                        stage_name,
+                        board,
+                        args.score_tolerance,
+                        **stage_kwargs,
+                    )
                     stage_timeout = timeout
                     if board == "vcu118" and stage_name == "bootrom":
                         stage_timeout = max(timeout, BOOTROM_TIMEOUT_S)
@@ -3968,6 +4029,8 @@ def _main() -> int:
                         args.loader_extra,
                         vlen=args.vlen,
                         vec_advertise=args.vec_advertise,
+                        board=board,
+                        vector=args.vector,
                     ),
                     target,
                     loader_env,

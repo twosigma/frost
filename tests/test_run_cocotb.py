@@ -47,6 +47,7 @@ from ci_sim_models import (
     MAKEFILE_BUILD_VARIABLES,
     ddr_timing_args,
     select_model,
+    selective_visibility_enabled,
     settings,
 )
 
@@ -4283,11 +4284,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Speculative fills, load replay, attached signed and unsigned extraction, vector holds, flush recovery and LR cuts",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
     ),
+    "coherent_stream_order_probe_launch": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_stream_order",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Speculative fills, load replay, vector holds, flush recovery and LR cuts with PROBE_LAUNCH=1",
+        verilator_extra_args=(
+            "--assert",
+            "-GDIRECT_CACHE_READS=1",
+            "-GCACHE_MISSES=8",
+            "-GLQ_PROBE_LAUNCH=1",
+        ),
+    ),
     "hitpath_probe_order": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_hitpath_probe_order",
         hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
         description="Same-address load order across an invalidating probe and the L1D hit path",
         verilator_extra_args=("--assert", "-GDIRECT_CACHE_READS=1", "-GCACHE_MISSES=8"),
+    ),
+    "hitpath_probe_order_probe_launch": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_hitpath_probe_order",
+        hdl_toplevel_module="tomasulo_coherent_cut_test_harness",
+        description="Same-address load order across an invalidating probe and the L1D hit path with PROBE_LAUNCH=1",
+        verilator_extra_args=(
+            "--assert",
+            "-GDIRECT_CACHE_READS=1",
+            "-GCACHE_MISSES=8",
+            "-GLQ_PROBE_LAUNCH=1",
+        ),
     ),
     "coherent_cut_fabric": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_coherent_cut_fabric",
@@ -4690,6 +4713,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GSIM_FAST_MAINT=1",
         ),
         extra_env=(("FROST_TEST_ARRAY_FAST", "1"), ("FROST_TEST_ARRAY_ULTRA", "1")),
+    ),
+    "coherence_array_nru_hit_port": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_coherence_nru_port",
+        hdl_toplevel_module="coherence_array",
+        description="Per-way NRU hit-port touches beside controller no-op writes",
+        verilator_extra_args=(
+            "--assert",
+            "-GCACHE_BYTES=512",
+            "-GBIMODAL_INSERT=1",
+            "-GHIT_PORT=1",
+            "-GULTRA=0",
+            "-GSIM_FAST_MAINT=1",
+        ),
     ),
     "coherence_home_array_reset_bram_sweep": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_coherence_reset",
@@ -6295,7 +6331,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_dmmu",
         hdl_toplevel_module="dmmu",
         description=(
-            "Sv39 data translation, last-page bypass, fault priority, and recovery"
+            "Sv39 data translation, resident-entry bypass, fault priority, and recovery"
         ),
     ),
     "dmmu_1g": CocotbRunConfig(
@@ -6464,6 +6500,32 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_mops",
         hdl_toplevel_module="cpu_tb",
         description="MOP and NTL state in M/S/U modes, dependent consumers, and reserved mtval",
+    ),
+    # Negative probes invoked by tests/test_frost_signal_visibility.py to confirm
+    # that unlisted frost signals fail with a clear diagnostic and that RTL
+    # assertions fire in the selective-visibility build.
+    "frost_unlisted_signal_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_frost_visibility_probes",
+        hdl_toplevel_module="frost",
+        app_name="csr_test",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        extra_env=(("COCOTB_TEST_FILTER", "unlisted_signal_probe"),),
+        description="Negative probe: touch an unlisted internal frost signal",
+        include_in_pytest=False,
+    ),
+    "frost_deliberate_assertion_violation": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_frost_visibility_probes",
+        hdl_toplevel_module="frost",
+        app_name="csr_test",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        extra_env=(
+            ("COCOTB_TEST_FILTER", "deliberate_assertion_violation"),
+            ("COCOTB_PLUSARGS", "+frost_startup_assertion_control=nic_reset"),
+        ),
+        description="Negative probe: trip nic_engine assertion control under selective visibility",
+        include_in_pytest=False,
     ),
 }
 
@@ -7264,6 +7326,14 @@ class CocotbRunner:
 
         environment_variables["SIM"] = "verilator"
         environment_variables["ROOT"] = str(self.repository_root_directory)
+        environment_variables.setdefault("VERILATOR_NUMA_STRATEGY", "none")
+        environment_variables["FROST_SELECTIVE_VISIBILITY"] = (
+            "1"
+            if selective_visibility_enabled(
+                self.hdl_toplevel_module, environment_variables
+            )
+            else "0"
+        )
         # Append external arguments after registry defaults so sweeps can
         # override settings such as FETCH_VALID_FUZZ_SEED.
         environment_variables["FROST_VERILATOR_EXTRA_ARGS"] = (

@@ -30,7 +30,7 @@ module vcu118_clock #(
 
   initial begin
     case (CPU_CLK_HZ)
-      100_000_000, 200_000_000, 240_000_000, 250_000_000, 280_000_000: begin
+      100_000_000, 162_500_000, 200_000_000, 240_000_000, 250_000_000, 280_000_000: begin
       end
       default: $fatal(1, "vcu118_clock: unsupported CPU_CLK_HZ");
     endcase
@@ -69,19 +69,23 @@ module vcu118_clock #(
 
   localparam int unsigned DivclkDiv = (CPU_CLK_HZ == 280_000_000) ? 3 :
                                        (CPU_CLK_HZ == 250_000_000) ? 3 :
-                                       (CPU_CLK_HZ == 240_000_000) ? 1 : 1;
+                                       (CPU_CLK_HZ == 240_000_000) ? 1 :
+                                       (CPU_CLK_HZ == 162_500_000) ? 3 : 1;
   localparam real ClkfboutMult      = (CPU_CLK_HZ == 280_000_000) ? 14.000 :
                                        (CPU_CLK_HZ == 250_000_000) ? 10.000 :
                                        (CPU_CLK_HZ == 240_000_000) ? 4.000  :
-                                       (CPU_CLK_HZ == 200_000_000) ? 4.000  : 4.000;
+                                       (CPU_CLK_HZ == 200_000_000) ? 4.000  :
+                                       (CPU_CLK_HZ == 162_500_000) ? 13.000 : 4.000;
   localparam real Clkout0Div        = (CPU_CLK_HZ == 280_000_000) ? 5.000 :
                                        (CPU_CLK_HZ == 250_000_000) ? 4.000 :
                                        (CPU_CLK_HZ == 240_000_000) ? 5.000 :
-                                       (CPU_CLK_HZ == 200_000_000) ? 6.000 : 12.000;
+                                       (CPU_CLK_HZ == 200_000_000) ? 6.000 :
+                                       (CPU_CLK_HZ == 162_500_000) ? 8.000 : 12.000;
   localparam int unsigned Clkout1Div = (CPU_CLK_HZ == 280_000_000) ? 20 :
                                         (CPU_CLK_HZ == 250_000_000) ? 16 :
                                         (CPU_CLK_HZ == 240_000_000) ? 20 :
-                                        (CPU_CLK_HZ == 200_000_000) ? 24 : 48;
+                                        (CPU_CLK_HZ == 200_000_000) ? 24 :
+                                        (CPU_CLK_HZ == 162_500_000) ? 32 : 48;
 
   MMCME4_ADV #(
       .BANDWIDTH         ("OPTIMIZED"),

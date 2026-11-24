@@ -26,6 +26,14 @@ ROOT            ?= $(shell git rev-parse --show-toplevel 2>/dev/null || echo /wo
 WAVES           ?= 0
 SIM_BUILD       ?= sim_build
 
+# Generated HDL sources built into $(SIM_BUILD) by specific unit benches.
+# Coverage annotation regenerates every entry through the same Makefile rules.
+VCU118_CONE := $(SIM_BUILD)/vcu118_ddr_cone.sv
+EARLY_JALR_OFF_PKG := $(SIM_BUILD)/riscv_pkg.sv
+EARLY_JALR_OFF_CPU_F := $(SIM_BUILD)/cpu_ooo_early_jalr_off.f
+EARLY_JALR_OFF_TOP_F := $(SIM_BUILD)/cpu_top_early_jalr_off.f
+GENERATED_COVERAGE_SOURCES := $(VCU118_CONE) $(EARLY_JALR_OFF_PKG)
+
 export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
 
 # RTL sources by toplevel
@@ -615,7 +623,6 @@ VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),vcu118_frost)
 # Exercise the board itself. Cocotb drives the clock, CPU and DDR IP ports.
 # The omitted Ethernet and configuration primitives are outside this cone.
-VCU118_CONE := $(SIM_BUILD)/vcu118_ddr_cone.sv
 COMPILE_ARGS := -Wno-MODMISSING -Wno-WIDTHTRUNC \
     $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
     $(ROOT)/boards/vcu118/vcu118_ddr_init.sv \
@@ -667,9 +674,7 @@ COMPILE_ARGS := \
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),cpu_top)
 ifneq ($(findstring +define+FROST_TEST_EARLY_JALR_OFF,$(FROST_VERILATOR_EXTRA_ARGS)),)
-EARLY_JALR_OFF_PKG := $(SIM_BUILD)/riscv_pkg.sv
-EARLY_JALR_OFF_CPU_F := $(SIM_BUILD)/cpu_ooo_early_jalr_off.f
-EARLY_JALR_OFF_TOP_F := $(SIM_BUILD)/cpu_top_early_jalr_off.f
+EARLY_JALR_OFF := 1
 COMPILE_ARGS := -f $(EARLY_JALR_OFF_TOP_F)
 CUSTOM_COMPILE_DEPS += $(EARLY_JALR_OFF_PKG) $(EARLY_JALR_OFF_CPU_F) $(EARLY_JALR_OFF_TOP_F)
 VERILOG_SOURCES :=
@@ -740,10 +745,22 @@ export PYTHONPATH := $(ROOT)/verif:$(ROOT)/tests:$(PYTHONPATH)
 # the environment to share the host with other runs.
 NUMBER_OF_CPU_CORES ?= $(shell nproc)
 
-# Use one simulation thread to avoid multithreaded VPI overhead. Parallelize
-# C++ compilation with BUILD_ARGS, which cocotb passes to the make that
-# compiles the Verilated model, and HDL conversion with EXTRA_ARGS -j.
-export VERILATOR_THREADS := 1
+# Leave CPU affinity to the OS scheduler or caller-provided taskset mask.
+export VERILATOR_NUMA_STRATEGY ?= none
+
+# Verilator simulation thread count for selective-visibility frost builds,
+# capped at the available CPU count so a job never runs more worker threads
+# than its cores. Full-visibility and unit builds stay single-threaded.
+FROST_VERILATOR_THREADS ?= 1
+ifeq ($(FROST_VERILATOR_THREADS),1)
+REQUESTED_VERILATOR_THREADS := 1
+else
+REQUESTED_VERILATOR_THREADS := $(shell python3 -c 'import os, sys; s = sys.argv[1]; c = sys.argv[2]; pcc = getattr(os, "process_cpu_count", None); avail = (pcc() if pcc else len(os.sched_getaffinity(0))) or 1; print(min(int(s), max(1, int(c)), avail)) if s.isdigit() and int(s) >= 1 and c.isdigit() else print("INVALID")' "$(FROST_VERILATOR_THREADS)" "$(NUMBER_OF_CPU_CORES)")
+ifeq ($(REQUESTED_VERILATOR_THREADS),INVALID)
+$(error FROST_VERILATOR_THREADS must be a positive integer)
+endif
+endif
+EFFECTIVE_VERILATOR_THREADS := 1
 BUILD_ARGS += -j$(NUMBER_OF_CPU_CORES)
 
 # Extra Verilator arguments: parallel verilation and optional waveforms.
@@ -786,6 +803,41 @@ ifneq ($(strip $(FROST_COVERAGE_FILE)),)
 	SIM_ARGS += +verilator+coverage+file+$(FROST_COVERAGE_FILE)
 endif
 endif
+
+# System-build visibility, retirement trace, and multithreading controls.
+# Selective visibility exposes top-level ports and the signals listed in
+# hw/sim/frost_cocotb_visibility.vlt; coverage, hang-probe, and
+# FROST_FULL_VISIBILITY=1 builds expose every signal. Waveform runs (WAVES=1)
+# keep selective VPI visibility and stay single-threaded.
+FROST_FULL_VISIBILITY ?= 0
+ifneq ($(filter-out 0 1,$(FROST_FULL_VISIBILITY)),)
+$(error FROST_FULL_VISIBILITY must be 0 or 1)
+endif
+FROST_RETIRE_TRACE ?= 0
+ifneq ($(filter-out 0 1,$(FROST_RETIRE_TRACE)),)
+$(error FROST_RETIRE_TRACE must be 0 or 1)
+endif
+
+FROST_SELECTIVE_VISIBILITY := 0
+ifeq ($(TOPLEVEL),frost)
+ifeq ($(FROST_RETIRE_TRACE),0)
+	COMPILE_ARGS += +define+FROST_NO_RETIRE_TRACE
+endif
+ifeq ($(FROST_COVERAGE):$(FROST_FULL_VISIBILITY):$(strip $(FROST_HANG_PROBE)),0:0:)
+	FROST_VISIBILITY_CONFIG := $(ROOT)/hw/sim/frost_cocotb_visibility.vlt
+	# -fico-change-detect requires Verilator 5.052 or newer (checked after Makefile.sim sets CMD).
+	COMPILE_ARGS := $(FROST_VISIBILITY_CONFIG) $(COMPILE_ARGS) -fico-change-detect
+	CUSTOM_COMPILE_DEPS += $(FROST_VISIBILITY_CONFIG)
+	FROST_SELECTIVE_VISIBILITY := 1
+ifneq ($(WAVES),1)
+	EFFECTIVE_VERILATOR_THREADS := $(REQUESTED_VERILATOR_THREADS)
+endif
+ifneq ($(EFFECTIVE_VERILATOR_THREADS),1)
+	COMPILE_ARGS += --threads $(EFFECTIVE_VERILATOR_THREADS) -Wno-UNOPTTHREADS
+endif
+endif
+endif
+export FROST_SELECTIVE_VISIBILITY
 
 # Parameters of the frost toplevel only (the -G overrides below).
 # Low BRAM keeps its 256 KiB hardware size (the frost.sv MEM_SIZE_BYTES default).
@@ -850,6 +902,18 @@ ifneq ($(strip $(FROST_SIM_EXPORT)$(FROST_SIM_IMPORT)),)
 $(SIM_BUILD)/Vtop.mk: private CMD := python3 $(ROOT)/tests/ci_sim_models.py verilate $(CMD) '$(BUILD_ARGS)'
 endif
 
+# Makefile.verilator appends --public-flat-rw unconditionally; remove it when
+# frost_cocotb_visibility.vlt supplies the system bench visibility list, and
+# verify that Verilator supports -fico-change-detect (5.052 or newer).
+ifeq ($(FROST_SELECTIVE_VISIBILITY),1)
+ifeq ($(filter clean coverage-sources,$(MAKECMDGOALS)),)
+ifeq ($(shell $(VERILATOR_CMD) -E -fico-change-detect /dev/null >/dev/null 2>&1 && echo ok),)
+$(error Selective-visibility frost builds require Verilator 5.052 or newer for -fico-change-detect, but $(VERILATOR_CMD) reports $(VLT_VERSION); run through ./scripts/frost.py or set FROST_FULL_VISIBILITY=1)
+endif
+endif
+COMPILE_ARGS := $(filter-out --public-flat-rw,$(COMPILE_ARGS))
+endif
+
 ifeq ($(FROST_COVERAGE),1)
 # Verilator 5.054 and later expose branch coverage as a separate option.
 	EXTRA_ARGS += $(shell $(VERILATOR_CMD) --coverage-branch --version >/dev/null 2>&1 && echo --coverage-branch)
@@ -880,15 +944,12 @@ clean:: clean-local
 clean-local:
 	@rm -rf dump.vcd dump.fst sw.mem sw64.mem sw_ddr.mem results.xml sim_build
 
-ifneq ($(VCU118_CONE),)
 # Keep the physical board top and its port connections. Only shorten the
 # sweep, and use the production clock and subsystem interfaces as test ports.
 $(VCU118_CONE): $(ROOT)/boards/vcu118/vcu118_frost.sv $(ROOT)/boards/vcu118/vcu118_clock.sv $(ROOT)/boards/xilinx_frost_subsystem.sv | $(SIM_BUILD)
 	sed "s/\.REGION_BYTES(32'h8000_0000)/.REGION_BYTES(256)/" $< > $@
 	for src in $(wordlist 2,3,$^); do sed '/^);/q' $$src; echo endmodule; done >> $@
-endif
 
-ifneq ($(EARLY_JALR_OFF_TOP_F),)
 # Exercise EarlyJalrRecovery=0 with EarlyJalRecovery=1 on unmodified RTL sources.
 $(EARLY_JALR_OFF_PKG): $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv | $(SIM_BUILD)
 	sed "s/localparam bit EarlyJalrRecovery = 1'b1;/localparam bit EarlyJalrRecovery = 1'b0;/" $< > $@
@@ -900,7 +961,11 @@ $(EARLY_JALR_OFF_CPU_F): $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f | $(SI
 $(EARLY_JALR_OFF_TOP_F): $(ROOT)/hw/rtl/cpu_top/cpu_top.f | $(SIM_BUILD)
 	sed "s|\$$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f|$(EARLY_JALR_OFF_CPU_F)|" $< > $@
 	grep -q "$(EARLY_JALR_OFF_CPU_F)" $@
+ifeq ($(EARLY_JALR_OFF),1)
 ifneq ($(TOGGLE_CONFIG),)
 $(TOGGLE_CONFIG): $(EARLY_JALR_OFF_PKG) $(EARLY_JALR_OFF_CPU_F) $(EARLY_JALR_OFF_TOP_F)
 endif
 endif
+
+.PHONY: coverage-sources
+coverage-sources: $(GENERATED_COVERAGE_SOURCES)

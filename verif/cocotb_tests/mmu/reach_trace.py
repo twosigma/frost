@@ -138,7 +138,8 @@ async def capture(dut: Any, clock: Any, path: str) -> None:
                 )
                 emit(
                     "data_present",
-                    va=int(dmmu.i_iss_va.value),
+                    va=(int(dmmu.i_iss_base.value) + int(dmmu.i_iss_offset.value))
+                    & ((1 << 64) - 1),
                     bypass=bool(int(dmmu.iss_can_bypass.value)),
                     tag=tag,
                     killed=killed,

@@ -93,7 +93,8 @@ setundef -zero -init
 # with the CMO request. The kind and address faults pass at depth five because
 # the first valid request appears in frame five. Check that sixth frame.
 # Every task keeps all wrapper assumptions.
-select -assert-count 104 t:$check r:FLAVOR=assume %i
+# Includes 4 checkpoint-ID bounds per wrapper (save, free, free_2, restore).
+select -assert-count 112 t:$check r:FLAVOR=assume %i
 select -assert-count 175 t:$check r:FLAVOR=assert %i
 select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2
 select -set operands c:p_twin_operand_*

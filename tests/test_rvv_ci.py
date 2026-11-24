@@ -42,17 +42,21 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     """Run the seeded and directed suites with each job's vector length."""
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
     job = workflow["jobs"]["test-testrig-vector"]
-    assert job["timeout-minutes"] == 70, (
+    assert job["timeout-minutes"] == 80, (
         "Vector TestRIG job needs the registered budget"
     )
-    assert job["strategy"]["matrix"]["vlen"] == [128, 256, 512]
+    assert job["strategy"]["matrix"] == {
+        "vlen": [128, 256, 512],
+        "shard": ["core", "segment", "ext"],
+    }
     replay = next(
         step
         for step in job["steps"]
         if step.get("name") == "Compare seeded and directed vector traces"
     )
+    assert replay["if"] == "matrix.shard == 'core'"
     command = shlex.split(replay["run"].replace("\\\n", ""))
-    assert command[command.index("--kill-after=10s") + 1] == "50m", (
+    assert command[command.index("--kill-after=10s") + 1] == "55m", (
         "Vector TestRIG replay needs the registered budget"
     )
     arguments = command[command.index("tests/test_testrig.py") + 1 :]
@@ -62,15 +66,134 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     assert arguments[arguments.index("--response-timeout") + 1] == "600"
     assert "--vector-source-widths" in arguments
     assert "--vector-directed" in arguments
+    seg_replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Compare vector segment traces"
+    )
+    assert seg_replay["if"] == "matrix.shard == 'segment'"
+    seg_command = shlex.split(seg_replay["run"].replace("\\\n", ""))
+    assert seg_command[seg_command.index("--kill-after=10s") + 1] == "30m"
+    seg_args = seg_command[seg_command.index("tests/test_testrig.py") + 1 :]
+    assert "--vector-segments" in seg_args
+    assert seg_args[seg_args.index("--vlen") + 1] == "${{ matrix.vlen }}"
+    assert seg_args[seg_args.index("--startup-timeout") + 1] == "1200"
+    assert seg_args[seg_args.index("--response-timeout") + 1] == "600"
+    ext_replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Compare vector extension traces"
+    )
+    assert ext_replay["if"] == "matrix.shard == 'ext'"
+    ext_command = shlex.split(ext_replay["run"].replace("\\\n", ""))
+    assert ext_command[ext_command.index("--kill-after=10s") + 1] == "16m"
+    ext_args = ext_command[ext_command.index("tests/test_testrig.py") + 1 :]
+    assert "--vector-ext" in ext_args
+    assert ext_args[ext_args.index("--vlen") + 1] == "${{ matrix.vlen }}"
+    assert ext_args[ext_args.index("--startup-timeout") + 1] == "1200"
+    assert ext_args[ext_args.index("--response-timeout") + 1] == "600"
     control = next(
         step
         for step in job["steps"]
         if step.get("name") == "Check detection of an incorrect vector result"
     )
-    assert control["if"] == "matrix.vlen == 128"
-    assert control["timeout-minutes"] == 45, (
+    assert control["if"] == "matrix.vlen == 128 && matrix.shard == 'core'"
+    assert control["timeout-minutes"] == 50, (
         "Vector controls need the registered budget"
     )
+    seg_control = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Check detection of an incorrect segment result"
+    )
+    assert seg_control["if"] == "matrix.vlen == 128 && matrix.shard == 'segment'"
+    assert seg_control["timeout-minutes"] == 15
+    seg_calls = [
+        shlex.split(line)[1:]
+        for line in seg_control["run"].replace("\\\n", "").splitlines()
+        if line.startswith("check_segment_result ")
+    ]
+    assert seg_calls == [
+        [
+            "segment",
+            "vector_segment",
+            "order=45 insn=0x43e02557 rd=x10",
+            "0x19475b81 != 0x19475b80",
+            "--trace",
+            "verif/testrig/vector_segment.S",
+        ],
+        [
+            "segment-matrix",
+            "vector_segments",
+            "order=147 insn=0x43d02557 rd=x10",
+            "0x42eadaac != 0x42eadaad",
+            "--vector-segments",
+        ],
+    ]
+    assert job["steps"].index(seg_replay) < job["steps"].index(seg_control)
+    ext_control = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Check detection of an incorrect extension result"
+    )
+    assert ext_control["if"] == "matrix.vlen == 128 && matrix.shard == 'ext'"
+    assert ext_control["timeout-minutes"] == 11
+    ext_calls = [
+        shlex.split(line)[1:]
+        for line in ext_control["run"].replace("\\\n", "").splitlines()
+        if line.startswith("check_ext_result ")
+    ]
+    assert ext_calls == [
+        [
+            "zvfhmin",
+            "vector_zvfhmin",
+            "order=30 insn=0x42102557 rd=x10",
+            "0x3e00 != 0x3e01",
+        ],
+        [
+            "zvbb",
+            "vector_zvbb",
+            "order=24 insn=0x42202557 rd=x10",
+            "0xfffffffff00a1030 != 0xfffffffff00a1031",
+        ],
+        [
+            "zvbc-zvkned-zvkg",
+            "vector_zvbc_zvkned_zvkg",
+            "order=36 insn=0x42302557 rd=x10",
+            "0x40a0789828c810f0 != 0x40a0789828c810f1",
+        ],
+        [
+            "zvknhb",
+            "vector_zvknhb",
+            "order=56 insn=0x42402557 rd=x10",
+            "0xffffffff84c9dd79 != 0xffffffff84c9dd78",
+        ],
+        [
+            "zvfh-arith",
+            "vector_zvfh_arith_fma",
+            "order=25 insn=0x42502557 rd=x10",
+            "0x4100 != 0x4101",
+        ],
+        [
+            "zvfh-misc-red",
+            "vector_zvfh_cmp_misc_red",
+            "order=39 insn=0x42602557 rd=x10",
+            "0x3e00 != 0x3e01",
+        ],
+        [
+            "zvfh-widen",
+            "vector_zvfh_widen",
+            "order=26 insn=0x42702557 rd=x10",
+            "0x40200000 != 0x40200001",
+        ],
+        [
+            "zvfh-cvt",
+            "vector_zvfh_cvt",
+            "order=27 insn=0x42802557 rd=x10",
+            "0x3c01 != 0x3c00",
+        ],
+    ]
+    assert job["steps"].index(ext_replay) < job["steps"].index(ext_control)
     control_command = shlex.split(control["run"].replace("\\\n", ""))
     assert "timeout --kill-after=10s 600s" in control["run"], (
         "Vector result controls require the 600-second outer guard"
@@ -156,12 +279,6 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
             "0x31415926 != 0x31415927",
         ],
         [
-            "segment",
-            "vector_segment",
-            "order=45 insn=0x43e02557 rd=x10",
-            "0x19475b81 != 0x19475b80",
-        ],
-        [
             "fof",
             "vector_fof",
             "order=29 insn=0x43f02557 rd=x10",
@@ -208,6 +325,30 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
             "vector_reductions",
             "order=30 insn=0x43202557 rd=x10",
             "0x1234a00a != 0x1234a00b",
+        ],
+        [
+            "carry-borrow",
+            "vector_carry_borrow",
+            "order=48 insn=0x43302557 rd=x10",
+            "0x1234a00a != 0x1234a00b",
+        ],
+        [
+            "mask-ops",
+            "vector_mask_ops",
+            "order=27 insn=0x43502557 rd=x10",
+            "0xf884 != 0xf885",
+        ],
+        [
+            "int-mul-add",
+            "vector_int_mul_add",
+            "order=52 insn=0x43702557 rd=x10",
+            "0x10010010 != 0x10010011",
+        ],
+        [
+            "int-vx-merge",
+            "vector_int_vx_merge",
+            "order=18 insn=0x43402557 rd=x10",
+            "0x20020020 != 0x20020021",
         ],
     ]
 

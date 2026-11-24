@@ -173,8 +173,11 @@ these instruction-copy writes before completing.
 
 [`mmio.h`](lib/include/mmio.h) defines `volatile` accessors named after the
 native registers, `UART_TX` through `UART_TX_STATUS`. Use naturally aligned
-accesses. Misaligned loads and stores trap once a trap vector is installed (a
-nonzero `mtvec` base); before that, the hardware does not check alignment. See
+accesses. In `cpu_top` and the full SoC, alignment is always checked regardless
+of `mtvec`. With `MISALIGNED_HW=1` (the X3, VCU118, and default simulation
+setting), plain misaligned loads and stores to cached DDR complete in hardware;
+misaligned accesses to low BRAM, devices, and atomics raise address-misaligned
+traps. See
 the [RTL bus contract](../hw/rtl/README.md#data-tier-bus-contract) for access
 widths, ordering, and device-read side effects.
 
@@ -204,6 +207,9 @@ calls into `ctype.c`, `memory.c` and `sprintf.c` call into `string.c`, and
 | [stdlib.h](lib/include/stdlib.h), [limits.h](lib/include/limits.h) | Numeric conversion and LP64 integer limits |
 | [memory.h](lib/include/memory.h) | Arena allocator and a coalescing `malloc`/`free` heap in DDR |
 | [sprintf.h](lib/include/sprintf.h) | `sprintf`/`snprintf` without stdio; link with `EXTRA_LDFLAGS := -lgcc` |
+| [aplic.h](lib/include/aplic.h) | AIA APLIC domain, source, and MSI address configuration registers |
+| [cache_evict.h](lib/include/cache_evict.h) | Cache geometry constants and L1D/L1I/L2 set-eviction helpers for test programs |
+| [flash_boot.h](lib/include/flash_boot.h) | Shared flash-image header layout and offsets for the VCU118 boot stages |
 | [imsic.h](lib/include/imsic.h) | IMSIC indirect registers, claims and MSI stores for machine and supervisor files |
 | [timer.h](lib/include/timer.h), [csr.h](lib/include/csr.h) | Cycle timing, counters, and CSR access |
 | [trap.h](lib/include/trap.h) | Trap handlers, interrupt enables, `mtime`/`mtimecmp`, and software interrupts |
@@ -282,14 +288,17 @@ can be debugged and where each one first stops.
 | `ad_fault_test/` | Sv39 A/D faults: after a live PTE's A or D bit is cleared and fenced, the next access that needs the bit must page-fault (the walker never sets A or D) |
 | `amo_irq_torture/` | Timer interrupts swept across cached-DDR AMO bursts; counts every update to catch lost or duplicated ones |
 | `arch_test/` | riscv-arch-test cases, whose signatures the bench reads from low BRAM and compares with committed Spike references (Sail references for the misaligned load and store tests in the DDR tier); built per test with `TEST_SRC`; see the [architecture-test runner](../tests/README.md#test_arch_compliancepy) |
+| `bootrom/` | Stage-1 VCU118 SPI NOR flash boot ROM: initializes UART and SPI flash, validates and loads the FSBL into on-chip SRAM with CRC-32 verification, and jumps to it |
 | `branch_pred_test/` | Self-checking branch, loop, call, and indirect-jump cases in assembly |
 | `btb_mode_alias_test/` | One address holds a taken `beq` under Sv39 S-mode fetch and an `addi` under bare M-mode fetch, or the reverse: after S-mode training and a trap, or M-mode training and an `mret` or `sret`, the other mode's BTB entry must not redirect the `addi` |
-| `fast_btb_contract_test/` | Exercises the fast-BTB and backing-BTB contract end-to-end with per-case reach assertions: same-side M-mode trap/return and `mstatus` write survival, flushed interior-halfword walk-past, Sv39 `SFENCE.VMA` and `satp` BTB invalidation, and stale backing-BTB safety across `FENCE.I` |
+| `fast_btb_contract_test/` | Exercises the fast-BTB and backing-BTB contract in full-system simulation with per-case reach assertions: same-side M-mode trap/return and `mstatus` write survival, flushed interior-halfword walk-past, Sv39 `SFENCE.VMA` and `satp` BTB invalidation, and stale backing-BTB safety across `FENCE.I` |
 | `c_ext_test/` | Calls and returns through mixed 16- and 32-bit code, plus value checks of the RV64C-only encodings |
 | `cache_counter_target/` | Makes L2 write fills with DMA, prints the cache counters from its own snapshot, then sleeps in `wfi` without touching the caches until a UART byte starts a second run, which the JTAG reader (`fpga/debug/cache_counters.py`) measures; runs from low BRAM in either memory configuration |
+| `cached_store_burst_test/` | Cached-DDR store-burst and subword merging (`sd`, `sb`, `sh` followed by `ld`) with trap checking |
 | `call_stress/` | Repeated and nested calls and returns, built with compressed instructions |
 | `cbo_mgmt_test/` | Zicbom `cbo.clean`, `cbo.flush` and `cbo.inval`: data intact in cached DDR (filled and flushed first) and low BRAM, an inval in M mode dropping the store just before it, device windows a no-op, the CBCFE and CBIE gates in S and U with dirty data and both invalidate policies, CBIE's WARL readback, load-permission translation (read-only, D-clear and X-with-MXR pages execute), store page and access faults with `mtval` = `rs1`, and program order with loads, stores, DMA, LR/SC, AMOs and repeated flushes interrupted by a timer |
 | `cbo_zero_bench/` | Cycles to clear 64 KiB and 1 MiB of cold and warm cached DDR with an `sd` loop and with `cbo.zero`; prints one `FROST_CBO_BENCH` line per run |
+| `cbo_zero_pages/` | S-mode Sv39 Linux-style `clear_page` loops using 64-byte `cbo.zero` blocks from cached DDR across 1 GiB linear and 4 KiB page-table mappings |
 | `cbo_zero_test/` | Zicboz `cbo.zero`: the 64-byte block containing an unaligned `rs1` in cached DDR and low BRAM, neighbours untouched, younger loads and stores in program order, LR/SC reservation invalidation in both cached sectors with successful no-zero controls, the CBZE gate across adjacent environment-CSR writes and privilege returns, forbidden lower-privilege CSR accesses with exact fault PCs, and store access and page faults with `mtval` = `rs1` |
 | `cf_ext_test/` | Compressed double-precision FP loads and stores (Zcd) |
 | `clint_test/` | SiFive CLINT alias: writes reach the native timer registers, and a timer interrupt armed through the alias fires |
@@ -301,6 +310,7 @@ can be debugged and where each one first stops.
 | `ddr_bench/` | Memory-bound kernels on cold cached-DDR regions (sequential, strided, interleaved, interleaved within one cache set, random, dependent, copy, write), with cycles and cache-counter deltas per kernel; `DDR_BENCH_SHIFT` shrinks them for simulation |
 | `ddr_exec_test/` | Code in DDR: calls into BRAM, recursion, a body larger than the fetch buffer, cold and warm runs |
 | `ddr_heap_test/` | Multi-MiB `malloc` from the DDR heap, checked for address aliasing |
+| `ddr_hpm_refill_test/` | Full-SoC HPM refill events on cached DDR (`mhpmevent3=19` L1I refills, `mhpmevent6=20` L2 demand misses, `mhpmevent5=21` L2 prefetch misses) |
 | `ddr_mlp_test/` | Independent cold DDR loads must overlap their L1D misses, measured with the profiling counters; a pointer chase is the control. The default eviction window targets 4 KiB caches. `DDR_MLP_FULL_CACHE=1` uses conflicting sets for the 128 KiB L1D and configured L2 (`FROST_L2_CACHE_BYTES`, 2 MiB by default); the CLI-only `ddr_mlp_test_full_cache` bench selects this mode |
 | `ddr_smc_test/` | Self-modifying code in DDR: store, `fence.i`, then execute cold and warm |
 | `ddr_test/` | Cached-DDR loads and stores, byte strobes, evictions, the preloaded `.ddr_rodata` image, and AMOs |
@@ -317,6 +327,7 @@ can be debugged and where each one first stops.
 | `fpu_assembly_test/` | FP hazards: squashed FP loads and load-use stalls |
 | `exec_latency_probe/` | Straight-line dependent and independent MUL, MULW, FADD.D, FMUL.D and FMADD.D sequences with arithmetic checks and named ranges for cycle tracing; the explicit `exec_latency_probe` target runs finite normal inputs, and `exec_latency_short` selects zero, infinity, NaN and cancellation chains |
 | `fpu_test/` | Subnormals, fused multiply-add, rounding, and conversions |
+| `fsbl/` | Stage-2 VCU118 flash bootloader: polls DDR4 calibration and ECC scrub, checks DRAM, and loads OpenSBI, kernel, and device-tree payloads from SPI NOR flash into DRAM |
 | `freertos_demo/` | FreeRTOS V11.3.2 tasks passing data through a queue and sharing the UART under a mutex, while worker tasks increment one counter with `amoadd.w` and the 1 ms tick time-slices them; a tick inside a critical section must defer its task switch |
 | `vec_state_test/` | Vector state: with `VEC_VLEN` set, `mstatus.VS` reset to Off, vector CSR and memory accesses illegal while it is Off, `vlenb`, `vl` and `vtype` reset values, `vstart` width, `vxrm`/`vxsat`/`vcsr` aliasing, VS Dirty and SD on writes but not on reads, the `sstatus.VS` view, illegal writes to `vl`, `vtype` and `vlenb`, and `vill` / BRAM access-fault checks on vector memory forms; with `VEC_VLEN=0`, a core without the vector unit |
 | `vec_vsetvl_test/` | `vsetvli`, `vsetivli` and `vsetvl` across `VLEN` 128, 256 and 512: `rd`, `vl`, `vtype` and `vstart` against a reference model, `vl`-preserving forms, `VS` Dirty, and the `VS`-Off trap |
@@ -324,6 +335,7 @@ can be debugged and where each one first stops.
 | `vec_order_test/` | Vector stores followed by instruction fences, translation fences, and the SoC DMA START doorbell; concurrent DMA copies and vector loads/stores on shared and separate lines |
 | `vec_mem_test/` | Unit-stride, whole-register and mask vector loads and stores across `VLEN` 128, 256 and 512 in cached DDR: all widths and legal EMULs across sector, line and page boundaries, masking, `vstart`, tail undisturbed, zero-active pointers, `mstatus.VS`, head legality, ordering after older scalar stores, holds on younger overlapping scalar loads and stores, and fence/atomic waits, Zicbom/Zicboz, Sv39 `MPRV` faults and demand-paging resumption, speculative squashes, misaligned scalar interleaving, and timer interrupts |
 | `vec_crypto_exec_test/` | Known register images for AES encrypt and decrypt rounds, both AES key schedules, SHA-256 and SHA-512, GHASH, GMUL and carry-less multiply. Checks restart, precise illegal-instruction traps, group capacity, VS Off and FS independence at each vector length. Register images use cached DDR in both linker layouts. |
+| `vec_crypto_irq_test/` | Machine-timer interrupts swept one cycle at a time across vector crypto ROB-head service and post-retirement execution |
 | `vec_mem_reserved_forms_test/` | Exhaustive legality check over all 8,192 unit-stride-class (`mop = 00`) vector load and store encodings (all 32 `lumop`/`sumop`, 8 `nf`, both `mew`, four vector widths, both `vm`) against the 214 defined combinations, all 256 whole-register alignments across `v0..v31` under `vill = 1`, and state-preservation checks (`vstart`, `mstatus.VS`, memory and destination registers unchanged) for every reserved class beside legal transfers |
 | `vec_mem_source_eew_test/` | Vector loads and stores that would read one register at two element widths (a masked form's data or index group containing `v0`, an indexed store's data overlapping its index at a different EEW) raise illegal-instruction traps with memory and the destination unchanged; legal neighbors execute |
 | `vec_stride_test/` | Strided vector loads and stores across `VLEN` 128, 256 and 512: every element width and EMUL with positive, negative, zero, misaligned and page-sized strides, masks, `vstart` and tail elements, faults part-way through with `vstart`, `mtval` and resumption, scalar accesses on element addresses on both sides, pointer masking, illegal forms, and timer interrupts during long element runs |
@@ -346,6 +358,7 @@ can be debugged and where each one first stops.
 | `fs_off_test/` | F/D, Zfhmin and Zfa instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes, through `mstatus` or `sstatus`, that apply from the next instruction; FP dirty state and halfword store forwarding |
 | `full_line_test/` | Full-line cached-DDR stores without fill and overlapping store-queue writes: gapped, unaligned and partial memset and copy streams, stores squashed inside a gathered line by a mispredicted branch or a faulting load, ordering after overlapped stores (store-to-load forwarding, `fence`, `fence.i`, `cbo.clean`/`flush`/`inval`/`zero`, LR/SC), and DMA reads and writes racing the no-fill window |
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
+| `ifread_test/` | Cached-DDR instruction refills and translation-invalidating recovery under Sv39 |
 | `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a timer-ended `wfi`, and timer takes across a device load; 96 WFI deadlines and 48 device-load deadlines at four padding phases cover AXI latency, with each take's count equal to the instructions before `mepc` |
 | `irq_mie_window/` | A pending timer interrupt must be taken when a `csrsi`/`csrci` pair opens `mstatus.MIE` for one instruction |
 | `irq_take_hold_test/` | Machine timer interrupts taken within 500 cycles in loops of back-to-back device stores, and during an LR/SC increment loop on uncached BRAM (bram) or cached DDR (ddr) with every increment landing once |
@@ -367,17 +380,26 @@ can be debugged and where each one first stops.
 | `memerr_test/` | The memory error unit in simulation: DDR error responses injected by the model and ECC reports from the bench reach its counters, addresses, and APLIC interrupt; dependent conflict reads after FENCE.I evict the fatal-writeback line |
 | `memory_test/` | Arena allocator and `malloc`/`free`/`calloc`/`realloc`, including coalescing and overflow rejection |
 | `misaligned_test/` | Misaligned loads and stores in cached DDR checked byte by byte (all sizes, FP and compressed forms, across doubleword, sector, line and page boundaries), a load to and a store of `x0`, the `minstret` count, the address-misaligned trap in low BRAM, Sv39 page crossings and lower-, upper- and both-page faults through MPRV and in S and U modes (with non-adjacent physical frames, direct and delegated traps, `SUM`, `MXR` and global leaves in S and U modes), and accesses under timer interrupts at varying phases; needs `MISALIGNED_HW` |
+| `mmu_reach/` | Sv39 TLB capacity, page-walk depth, and address-space switch latency loops |
 | `mret_drain_deadlock/` | `mret` right after cached-DDR stores must wait for them to drain, then continue |
 | `mret_timer_resume_test/` | A timer pending as `mret` drops to U-mode must save the U-mode entry point in `mepc` |
 | `mtimer_stress/` | Frequent timer interrupts swept across 20,000 memory/ALU loop iterations and `mret`; a deadlock times out within the default 500,000-cycle simulation budget |
+| `nic_bench/` | Full-duplex NIC loopback throughput benchmark for external loopback cables or transceiver loopback modules |
 | `nic_dma_stress/` | Two rounds of 15 queued 1518- and 64-byte NIC loopback frames per mode, each overlapping a 4 KiB DMA copy, in plain and burst modes; requires DMA busy at the first RX completion, checks every frame byte and copied word, and requires zero MAC RX overflow |
 | `nic_echo/` | Interrupt-driven Ethernet echo; needs a link partner, which the simulation bench provides |
 | `nic_cmo_loopback/` | NIC loopback while the CPU cleans the same packet blocks, with frame data and descriptor checks |
 | `nic_loopback/` | NIC loopback, descriptor rings, interrupts, filtering, and reset during traffic |
+| `nic_rate/` | Simulation TX rate benchmark running the rate cases of `nic_sg_loopback` with cold buffers |
+| `nic_sg_loopback/` | Scatter-gather and offload NIC loopback test comparing every received byte over MAC or PMA loopback with fixed DDR rings |
 | `ns16550_irq_console_test/` | Console output written one byte per THRE interrupt, each claimed through the APLIC |
 | `ns16550_test/` | The 16550 UART registers: Linux 8250 initialization, register file, LSR.THRE and LSR.TEMT around a write, and transmit |
 | `odd_halfword_pred_test/` | Pinned-alignment odd-halfword 32-bit loop branches and `jal ra` calls predicted by slot 1, even jumps to 32-bit odd targets, cache-line- and Sv39-page-spanning calls (with the second page unmapped for an `xtval = P + 2` fault and RAS check, then mapped and retried), and overlapping 32-bit instructions across odd BTB entries |
 | `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls, SRST presence with shutdown unsupported, APLIC delegation and supervisor interrupt delivery; scalar VCU118 device tree, fixed layout, ignores `MEM_CONFIG` |
+| `pa_dma_test/` | Full-top 64-bit MMIO and coherent DMA to high DDR using the sparse wide-DDR simulation model (`FROST_WIDE_DDR_TEST`) |
+| `pa_nic_mmio_test/` | Wide NIC register MMIO ABI publication through the full FROST top |
+| `pa_nic_packet_test/` | Full-top high-DDR NIC descriptors, coherent NIC DMA, and MAC loopback using `FROST_WIDE_DDR_TEST` |
+| `pa_vm_fetch_test/` | Sv39 4 KiB instruction fetch backed by the final physical DDR page under `FROST_WIDE_DDR_TEST` |
+| `pa_width_test/` | CPU data-path access checks across configured DDR apertures from 1 GiB to 128 GiB (`FROST_DDR_CAPACITY_LOG2_BYTES`) |
 | `packet_parser/` | FIX message parser demo fed through the MMIO FIFOs; reports parse time in cycles |
 | `pause_test/` | `pause` (`0x0100000F`) retires without draining committed stores, while `fence r,0` and the other FENCE encodings next to it wait for the drain |
 | `pde_return_hazard/` | A return value computed from `s1` just before the epilogue restores `s1` (Linux `pde_subdir_find` shape) |
@@ -385,11 +407,15 @@ can be debugged and where each one first stops.
 | `imsic_csr_test/` | Smaia and Ssaia select legality, indirect registers, write-intent claims, virtual pending aliases, and major-interrupt priority |
 | `imsic_msi_test/` | MSI stores in both byte orders, ignored access sizes, translated accesses, delivery masks, thresholds, WFI and trap claims |
 | `imsic_aplic_coexist_test/` | UART and DMA direct delivery at reset and supervisor direct delivery alongside machine MSIs, locked MSI destinations and APLIC forwarding |
+| `imsic_collision_test/` | Burst of APLIC MSIs overlapping IMSIC claims and pending-bit clears, checking identity coalescing |
 | `aplic_test/` | APLIC direct delivery, both domains, delegation, level claims, thresholds, forced interrupts, machine interrupt entry, and 32-bit access enforcement |
 | `pm_test/` | Ssnpm pointer masking for U-mode: `senvcfg.PMM` reads back 00, 10 and 11 and keeps its value on the reserved 01; loads, stores, AMOs, LR/SC and `cbo.zero` through tagged pointers in U and through MPRV for PMLEN 7 and 16, under Sv39 (low and upper-half pages) and Bare, over DDR and BRAM; a store and a load through different tags forward and order; masked faults report the transformed address; signed instruction offsets cross the retained-field boundaries, split accesses check upper-page faults, timer interrupts surround mode changes and interrupt genuine U-mode store loops (simulation also requires an interrupt pending with stores queued at each PMLEN), delegated faults check `stval`, tagged permission faults check read-only and supervisor leaves, actual S-mode accesses stay unmasked, and tagged NC/IO mappings preserve data and report transformed atomic-fault addresses; S, M, MXR and fetch stay unmasked |
 | `pma_fault_test/` | Access faults for fetch, load, store, AMO, and LR outside the physical map (including fetch above the low BRAM code region and loads and stores in device-quadrant gaps) and for AMO, LR, and SC to device registers, with exact `mepc` and `mtval` |
 | `print_clock_speed/` | Prints the `FPGA_CPU_CLK_FREQ` it was built with |
+| `probe_zero_twin/` | Sweeps loads to the upper sector of a `cbo.zero` block while the L1D store buffer holds its pending twin record |
+| `ptw_bus_fault_test/` | Injects a DDR read error on level-1 and level-0 page tables and checks exact fault cause, VA, and recovery after repair |
 | `ptw_coherence_test/` | Sv39 walks must see page tables still dirty in the L1D, without `sfence.vma` |
+| `ptw_recovery_test/` | Taken branches and `sfence.vma` discarding speculative page-table walks across varied resolution cycles |
 | `raytrace/` | Ray tracer in 64-bit fixed-point arithmetic, the demonstration image's first program (a sunset scene with a glossy red and a glossy blue sphere, in `scene_sunset.inc`, 8 bits a color channel): streams a coarse pass and then each pixel row to the UART and checks the frame's CRC-32 against the value `host_reference.c` computes on the host; `RAYTRACE_SIZE=small` (24x12, the default) or `full` (76x44) |
 | `ras_repair_bench/` | Return address stack repair: a mispredicted branch whose wrong path returns and then calls, overwriting the entry the correct path's return needs; the flush-recovery cycles must match a control phase's (`PERF_COUNTERS=1`) |
 | `bpred_probe/` | Front-end prediction probe: mispredictions (`mhpmcounter4`) and cycles for a return or jump in the first fetch packet after a call's redirect, a slot-2 conditional branch, a jump through a table (indirect target predictor) and a branch correlated with the one before it; reports only (`BPRED_LIMITS` set in the source turns the counts into limits) |
@@ -430,6 +456,7 @@ can be debugged and where each one first stops.
 | `svpbmt_cmo_test/` | Zicbom through Svpbmt: `cbo.inval`, `cbo.clean` and `cbo.flush` executed through a cacheable, an NC and an IO mapping of a DDR line whose cacheable copy is dirty retire without a trap; clean and flush write the line to DDR before they complete (each CBO's window is checked against the DDR model) and keep the data in every view; inval writes nothing and every view then reads the DDR baseline, or flushes in a `CBO_INVAL_AS_FLUSH` build; an IO store followed by a CBO reaches the next cacheable load. Each opcode also precedes a load with no intervening fence across all nine pairs of PMA, NC and IO mappings |
 | `sysreset_test/` | Invalid keys, byte writes and neighbouring writes leave the core running; word and halfword reset requests each restart the program, reset `mscratch` and both halves of `mtimecmp`, and preserve its BRAM marker across reset; every image load clears the marker |
 | `tick_torture/` | CLINT timer re-arming, lost-tick detection, and `wfi` wakeup under DDR traffic |
+| `timer_replay_test/` | Timer interrupts overlapping coherent DMA load replay while committed stores drain |
 | `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run unless the head-load counter split adds up and the reserved counters read 0. Simulation allows 750,000 cycles for all 14 benchmarks and reports |
 | `tomasulo_test/` | RAW/WAR/WAW hazards, register renaming, and out-of-order execution, with order-independent results |
 | `trap_s2l_fwd/` | A counter a timer handler stores to cached DDR must be visible to later loads (Linux `handle_exception` pattern) |

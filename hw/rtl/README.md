@@ -19,8 +19,9 @@ compilation order.
 
 The [CPU and system architecture diagram](../../docs/diagrams/frost-architecture.svg)
 shows the datapath, translation, memory tiers, MMIO, and debug interfaces.
-The [component cache diagram](../../docs/diagrams/cache-hierarchy.svg) shows
-the line-cache hierarchy used by the component benches.
+The [cache hierarchy diagram](../../docs/diagrams/cache-hierarchy.svg) shows
+both the coherent CPU cache hierarchy and the line-cache hierarchy used by the
+component benches.
 
 `frost.sv` wraps `platform_top` with reset synchronization, UART clock
 crossings, and MMIO FIFOs. `platform_top` connects the reusable
@@ -75,14 +76,17 @@ entry.
 | `cpu_and_mem/fetch_provider.sv` | Cached and uncached instruction fetch buffers |
 | `cpu_and_mem/dma_test_engine.sv`, `dma_test_engine_axi.sv` | Coherent DMA copy/fill engine, and its AXI4 master |
 | `cpu_and_mem/hang_triage.sv` | UART diagnostics for hardware hangs (`ENABLE_HANG_TRIAGE=1`; default 0) |
+| `cpu_and_mem/memory_error_unit.sv` | DDR ECC and bus-error reporting peripheral |
 | `cpu_and_mem/debug/` | JTAG transport and RISC-V debug module |
 | `cpu_and_mem/cpu/cpu_ooo/` | CPU integration and pipeline control |
 | [cpu_and_mem/cpu/tomasulo/](cpu_and_mem/cpu/tomasulo/README.md) | Dispatch, ROB, rename tables, queues, and functional-unit adapters |
-| `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | Front-end pipeline stages |
+| `cpu_and_mem/cpu/{if_stage,pd_stage,id_stage}/` | Front-end pipeline stages |
 | `cpu_and_mem/cpu/mmu/` | Sv39 TLBs and hardware page-table walker |
-| `cpu_and_mem/cpu/csr/`, `control/trap_unit.sv` | Privileged state, exceptions, and interrupts |
+| `cpu_and_mem/cpu/misaligned/` | Hardware misaligned-access engine (`ma_engine.sv`, `ma_pkg.sv`) |
+| `cpu_and_mem/cpu/csr/`, `cpu_and_mem/cpu/control/trap_unit.sv` | Privileged state, exceptions, and interrupts |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | Integer and FP register files |
 | `cpu_and_mem/cpu/ex_stage/` | ALU, multiply/divide, FPU, and branch execution |
+| `cpu_and_mem/cpu/vector/` | RV64V vector unit (control, legality, register file, execution units, VMT, and VMU) |
 | [lib/cache/](lib/cache/README.md) | Coherent L1 caches in `coherent_hart_cache.sv`, the shared L2 home in `coherence_home.sv`, DDR bridge, and simulation DDR model |
 | [lib/axi/](lib/axi/README.md) | AXI4 DMA interconnect, coherent ingress bridge, register slices and AXI4-Lite register bridge |
 | `lib/` | RAM, FIFO, and clock-domain-crossing primitives; `line_align.sv`, which moves an access between register order and a pair of cache lines |
@@ -139,8 +143,9 @@ backpressure; see the [CPU interface](cpu_top/README.md).
 
 Instruction fetch and data accesses both reach the cached region. The
 hierarchy has a 128 KiB L1D, a 16 KiB L1I, and a shared 2 MiB L2. All three
-are 4-way set-associative with tree pseudo-LRU replacement (the L1D with
-bimodal insertion). The L1I is read-only. The L1D and L2 write back dirty
+are 4-way set-associative; the L1I and L2 use tree pseudo-LRU replacement,
+and the L1D uses 1-bit per-way NRU with 1/128 bimodal insertion. The L1I is
+read-only. The L1D and L2 write back dirty
 data; L1D stores acquire M before changing their sector. The L1s use 32-byte
 lines; the L2 uses 64-byte lines, each holding two of them, and moves whole
 lines to and from DDR as single 512-bit AXI transfers. With
@@ -502,7 +507,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `L1D_NUM_MSHR` | `8` | L1D request endpoints, 1 to 8: one for stores, LR and atomics, the rest for load misses in flight |
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
 | `frost.sv` | `VECTOR` / `VLEN` | `0` / `256` | 1 builds the vector state: `mstatus.VS` and the vector CSRs; `VLEN` is the vector register width, 128, 256 or 512 bits ([CPU README](cpu_and_mem/cpu/README.md#vector-state)) |
-| `frost.sv` | `VECTOR_ADVERTISE` | `0` | 1 requires `VECTOR=1` and sets `misa.V`; the X3 enables both with `VLEN=256`. Software enables the vector state through `mstatus.VS` |
+| `frost.sv` | `VECTOR_ADVERTISE` | `0` | 1 requires `VECTOR=1` and sets `misa.V`; X3 enables both with `VLEN=256`, and VCU118 enables both with `--vector`. Software enables the vector state through `mstatus.VS` |
 | `frost.sv` | `MISALIGNED_HW` | `0` | Enables hardware completion of plain misaligned loads and stores to cached DDR. Requires `ENABLE_CACHED_TIER`. The X3, VCU118 and simulation defaults enable it ([CPU README](cpu_and_mem/cpu/README.md#misaligned-accesses)) |
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
 | `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |

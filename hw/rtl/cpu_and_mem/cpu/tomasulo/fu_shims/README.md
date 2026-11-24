@@ -11,7 +11,7 @@ depends on how many operations its unit can have in flight.
 | Shim | RS | Units | Unit latency (cycles) | In flight |
 |------|----|-------|-----------------------|-----------|
 | `int_alu_shim` (two copies) | INT_RS | ALU | 0 (combinational) | n/a |
-| `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; radix-4 divider | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 2 to 35, word DIV/REM 2 to 19 | Up to 4 multiplies, 1 divide |
+| `int_muldiv_shim` | MUL_RS | Pipelined multiplier plus a 32-bit word multiplier and a 64-bit carry-less multiplier; radix-4 divider; optional `vec_cfg_unit` (`VECTOR=1`) | MUL 6, MULW and CLMUL/CLMULH/CLMULR 3, DIV/REM 2 to 35, word DIV/REM 2 to 19, `vset*` 1 | Up to 4 multiplies, 1 divide or `vset*` |
 | `fp_shim` | FP_RS | `fp_fma_pipe` (FADD, FSUB, FMUL, FMA), `fp_div_unit` (FDIV) and `fp_engine` (the rest) | 7 pipelined; 12 / 19 for FDIV; 2 to about 90 on the engine (see below) | Up to 16 across the pipeline and result FIFO, plus one on the engine or divider |
 
 The wrapper sets `int_muldiv_shim.DIRECT_MUL=1`. Each multiply result reaches
@@ -96,7 +96,7 @@ multiplies in the station issue past them, and every divide the station
 presents starts at once unless a flush in the same cycle squashes it. A
 station full of waiting divides does stop dispatch.
 
-With `VECTOR` set, the shim also runs `vsetvli`, `vsetivli` and `vsetvl`
+With `VECTOR` set (and vector register width `VLEN`, default 256), the shim also runs `vsetvli`, `vsetivli` and `vsetvl`
 through `vec_cfg_unit`: their result (`vl` for rd, plus the new `vtype` and
 VLMAX for the commit) is registered the cycle after issue and held until the
 vector-config adapter (CDB slot 5) takes it. They share the divide gate:

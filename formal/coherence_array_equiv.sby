@@ -1,16 +1,16 @@
 [tasks]
-coh_array_equiv_bmc bmc bram
-coh_array_equiv_data0_bmc bmc bram lane0
-coh_array_equiv_data31_bmc bmc bram lane31
-coh_array_equiv4_bmc bmc bram four
-coh_array_equiv4_data0_bmc bmc bram four lane0
-coh_array_equiv4_data17_bmc bmc bram four lane17
+coh_array_equiv_bmc bmc plain bram
+coh_array_equiv_data0_bmc bmc plain bram lane0
+coh_array_equiv_data31_bmc bmc plain bram lane31
+coh_array_equiv4_bmc bmc plain bram four
+coh_array_equiv4_data0_bmc bmc plain bram four lane0
+coh_array_equiv4_data17_bmc bmc plain bram four lane17
 coh_array_equiv4_bimodal_bmc bmc bram four bimodal
-coh_array_equiv_uram_bmc bmc uram
-coh_array_equiv_uram_data5_bmc bmc uram lane5
-coh_array_equiv4_uram_bmc bmc uram four foururam
-coh_array_equiv_port_bmc bmc bram port
-coh_array_equiv_port_data0_bmc bmc bram port lane0
+coh_array_equiv_uram_bmc bmc plain uram
+coh_array_equiv_uram_data5_bmc bmc plain uram lane5
+coh_array_equiv4_uram_bmc bmc plain uram four foururam
+coh_array_equiv_port_bmc bmc plain bram port
+coh_array_equiv_port_data0_bmc bmc plain bram port lane0
 coh_array_equiv_cover cover bram four lane0
 
 [options]
@@ -26,7 +26,8 @@ timeout 1800
 bmc: aigsmt boolector
 
 [engines]
-bmc: abc bmc3
+plain: abc bmc3
+bimodal: abc bmc3 -c
 cover: smtbmc boolector
 
 [script]

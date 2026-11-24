@@ -113,6 +113,8 @@ module coherence_array_reference #(
   logic [WayBits-1:0] visit_way_q;
   logic [WAYS-1:0] exclude_q;
   logic [PlruBits-1:0] plru_read, plru_q, plru_write;
+  logic [WAYS-1:0] nru_read, nru_q, select_nru, nru_write;
+  logic nru_clear_q, invalid_free, nru_we;
   logic [15:0] insert_lfsr_q;
   logic plru_we, plru_hit_q;
   logic [WAYS-1:0] tag_we;
@@ -171,6 +173,25 @@ module coherence_array_reference #(
     touch = value;
   endfunction
 
+  function automatic logic [WayBits-1:0] nru_victim(input logic [WAYS-1:0] state,
+                                                    input logic [WAYS-1:0] eligible);
+    logic [WayBits-1:0] fallback, chosen;
+    logic found_zero;
+    fallback   = '0;
+    chosen     = '0;
+    found_zero = 1'b0;
+    for (int way = WAYS - 1; way >= 0; way--) begin
+      if (eligible[way]) begin
+        fallback = WayBits'(way);
+        if (!state[way]) begin
+          chosen     = WayBits'(way);
+          found_zero = 1'b1;
+        end
+      end
+    end
+    nru_victim = found_zero ? chosen : fallback;
+  endfunction
+
   assign o_init_done = phase_q != Init;
   assign o_update_ready = phase_q == Idle;
   assign update_fire = i_update_valid && o_update_ready;
@@ -194,26 +215,53 @@ module coherence_array_reference #(
   assign select_valid = phase_q == Tags && count_q == 1;
   assign select_plru = phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY) ?
       plru_read : plru_q;
+  assign select_nru = phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY) ? nru_read : nru_q;
+  wire insert_promote = (BIMODAL_INSERT && WAYS > 1) ?
+      (o_resp_hit || i_update_touch || insert_lfsr_q[6:0] == 7'd0) :
+      (!BIMODAL_INSERT || i_update_touch || insert_lfsr_q[4:0] == 0);
   assign plru_we = !i_rst && (phase_q == Init ||
-      (update_fire && i_update_insert &&
-       (!BIMODAL_INSERT || i_update_touch || insert_lfsr_q[4:0] == 0)) ||
+      (update_fire && i_update_insert && insert_promote) ||
       plru_hit_q);
+  assign nru_we = !i_rst && (phase_q == Init || (update_fire && i_update_insert) || plru_hit_q);
   // Hit touches use the registered way during data service or the reply.
   // The metadata write finishes before another request or update can enter.
   assign plru_write = phase_q == Init ? '0 : touch(plru_q, plru_hit_q ? o_resp_way : i_update_way);
-  sdp_block_ram #(
-      .ADDR_WIDTH(SetBits),
-      .DATA_WIDTH(PlruBits),
-      .SUPPORT_BULK_CLEAR(SimFastInit)
-  ) replacement (
-      .i_clk(i_clk),
-      .i_write_enable(plru_we),
-      .i_bulk_clear(init_bulk_clear),
-      .i_write_address(phase_q == Init ? init_set_q : set_q),
-      .i_read_address(tag_raddr),
-      .i_write_data(plru_write),
-      .o_read_data(plru_read)
-  );
+  assign nru_write = phase_q == Init ? '0 :
+      plru_hit_q ? (nru_q | (WAYS'(1) << o_resp_way)) :
+      nru_clear_q ? (insert_promote ? (WAYS'(1) << i_update_way) : '0) :
+      ((nru_q & ~(WAYS'(1) << i_update_way)) |
+       (insert_promote ? (WAYS'(1) << i_update_way) : '0));
+  if (BIMODAL_INSERT && WAYS > 1) begin : gen_nru_replacement
+    assign plru_read = nru_read[PlruBits-1:0];
+    sdp_block_ram #(
+        .ADDR_WIDTH(SetBits),
+        .DATA_WIDTH(WAYS),
+        .SUPPORT_BULK_CLEAR(SimFastInit)
+    ) replacement (
+        .i_clk(i_clk),
+        .i_write_enable(nru_we),
+        .i_bulk_clear(init_bulk_clear),
+        .i_write_address(phase_q == Init ? init_set_q : set_q),
+        .i_read_address(tag_raddr),
+        .i_write_data(nru_write),
+        .o_read_data(nru_read)
+    );
+  end else begin : gen_plru_replacement
+    assign nru_read = '0;
+    sdp_block_ram #(
+        .ADDR_WIDTH(SetBits),
+        .DATA_WIDTH(PlruBits),
+        .SUPPORT_BULK_CLEAR(SimFastInit)
+    ) replacement (
+        .i_clk(i_clk),
+        .i_write_enable(plru_we),
+        .i_bulk_clear(init_bulk_clear),
+        .i_write_address(phase_q == Init ? init_set_q : set_q),
+        .i_read_address(tag_raddr),
+        .i_write_data(plru_write),
+        .o_read_data(plru_read)
+    );
+  end
 
   if (ULTRA) begin : gen_tag_ultra
     logic [WAYS*TagEntryBits-1:0] row;
@@ -283,11 +331,16 @@ module coherence_array_reference #(
   );
 
   always_comb begin
-    selected = victim(select_plru, ~exclude_q);
+    selected = (BIMODAL_INSERT && WAYS > 1) ? nru_victim(select_nru, ~exclude_q) :
+        victim(select_plru, ~exclude_q);
     hit = 1'b0;
     hit_modified = 1'b0;
+    invalid_free = 1'b0;
     for (int way = WAYS - 1; way >= 0; way--) begin
-      if (tag_rdata[way][TagBits+:2] == 0 && !exclude_q[way]) selected = WayBits'(way);
+      if (tag_rdata[way][TagBits+:2] == 0 && !exclude_q[way]) begin
+        selected = WayBits'(way);
+        invalid_free = 1'b1;
+      end
     end
     for (int way = 0; way < WAYS; way++) begin
       if (tag_rdata[way][TagBits+:2] != 0 && tag_rdata[way][TagBits-1:0] == tag_q) begin
@@ -316,6 +369,8 @@ module coherence_array_reference #(
       visit_way_q <= '0;
       exclude_q <= '0;
       plru_q <= '0;
+      nru_q <= '0;
+      nru_clear_q <= 1'b0;
       plru_hit_q <= 1'b0;
       insert_lfsr_q <= 16'hACE1;
       o_resp_hit <= 1'b0;
@@ -331,7 +386,13 @@ module coherence_array_reference #(
         insert_lfsr_q[14:0],
         insert_lfsr_q[15] ^ insert_lfsr_q[13] ^ insert_lfsr_q[12] ^ insert_lfsr_q[10]
       };
-      if (phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY)) plru_q <= plru_read;
+      if (phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY)) begin
+        plru_q <= plru_read;
+        nru_q  <= nru_read;
+      end else if (nru_we && phase_q != Init) begin
+        nru_q <= nru_write;
+      end
+      if (update_fire && i_update_insert) nru_clear_q <= 1'b0;
       case (phase_q)
         Init: begin
           init_set_q <= init_set_q + 1'b1;
@@ -373,6 +434,7 @@ module coherence_array_reference #(
             o_resp_way <= selected;
             o_resp_addr <= {tag_rdata[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
             o_resp_state <= tag_rdata[selected][TagBits+:2];
+            nru_clear_q <= !hit && !visit_q && !invalid_free && (&select_nru);
             data_valid_q <= select_data && !no_bank_q;
             if (!select_data) begin
               phase_q <= Reply;

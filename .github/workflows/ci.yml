@@ -299,6 +299,7 @@ jobs:
           MODELS: ${{ toJSON(matrix.models) }}
           FROST_DDR_MODEL_SEED: rvv-${{ github.run_id }}
           FROST_SKIP_SUBMODULE_INIT: "1"
+          FROST_VERILATOR_THREADS: "1"
         run: |
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
@@ -374,6 +375,7 @@ jobs:
             ${{ (startsWith(matrix.shard.name, 'Unit Tests') ||
               (github.event_name == 'workflow_dispatch' && inputs.toggle_coverage &&
               contains(matrix.shard.coverage, matrix.mem_config))) && '1' || '0' }}
+          FROST_VERILATOR_THREADS: "1"
           # Allow 40 minutes for start-up seeds and controls across all
           # simulator builds in each toggle program job.
           FROST_STARTUP_TIMEOUT_SEC: >-
@@ -513,6 +515,7 @@ jobs:
           # Cover the hardware reset sweep with the job's randomized start.
           SIM_FAST_MAINT: ${{ matrix.capacity_gib == 1 && matrix.shard.name == 'Bare access' && '0' || '1' }}
           FROST_COVERAGE: ${{ contains(matrix.shard.coverage, matrix.capacity_gib) && '1' || '0' }}
+          FROST_VERILATOR_THREADS: "1"
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           FROST_STARTUP_SWEEP: ${{ matrix.shard.name != 'Unit boundaries' && '1' || '0' }}
           FROST_STARTUP_SEED_BASE: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
@@ -665,10 +668,11 @@ jobs:
           FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           # Line and branch coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: ${{ matrix.coverage }}
+          FROST_VERILATOR_THREADS: "1"
           # Fail a hung test after 20 minutes, well before the job timeout.
           FROST_ARCH_SIM_TIMEOUT_SEC: "1200"
         run: |
-          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE -e FROST_ARCH_SIM_TIMEOUT_SEC \
+          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE -e FROST_VERILATOR_THREADS -e FROST_ARCH_SIM_TIMEOUT_SEC \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_arch_compliance.py --extensions ${{ matrix.extensions }} \
               --mem-config ${{ matrix.mem_config }} \
@@ -750,8 +754,9 @@ jobs:
           FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           # Line and branch coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: ${{ matrix.coverage }}
+          FROST_VERILATOR_THREADS: "1"
         run: |
-          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE \
+          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE -e FROST_VERILATOR_THREADS \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --suites ${{ matrix.suites }} \
               --mem-config ${{ matrix.mem_config }} --env ${{ matrix.env }}
@@ -823,8 +828,9 @@ jobs:
         env:
           FROST_DDR_MODEL_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
+          FROST_VERILATOR_THREADS: "1"
         run: |
-          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED \
+          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_VERILATOR_THREADS \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmarks }} \
               --mem-config ${{ matrix.mem_config }}
@@ -874,8 +880,9 @@ jobs:
           FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
           # Line and branch coverage and the cover points (tests/README.md#coverage).
           FROST_COVERAGE: ${{ matrix.coverage }}
+          FROST_VERILATOR_THREADS: "1"
         run: |
-          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE \
+          docker run --rm -e FROST_SIM_MODELS -e FROST_SIM_SCOPE -e FROST_DDR_MODEL_SEED -e FROST_RANDOM_START_SEED -e FROST_COVERAGE -e FROST_VERILATOR_THREADS \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_torture.py --all \
               --mem-config ${{ matrix.mem_config }} ${{ matrix.paged && '--paged' || '' }}
@@ -903,9 +910,11 @@ jobs:
   # scalar cryptography sequences, deterministic counter controls, and WFI traces.
   # Every shard then draws its own random sequences, 100 per template, from the
   # engine's templates, and its own random A-extension (verif/testrig/atomics.py),
-  # Sv39 MMU (verif/testrig/mmu.py), and CMO/Sstvala (verif/testrig/cmo.py)
-  # sequences, whose seeds the log prints. A mismatch is shrunk to a short
-  # counterexample in the uploaded artifact, which --trace replays.
+  # Sv39 MMU (verif/testrig/mmu.py), CMO/Sstvala (verif/testrig/cmo.py), scalar
+  # FP (verif/testrig/fp_ext.py), and Zcb/Zcmop/Zimop/Zihintntl
+  # (verif/testrig/compressed_mops.py) sequences, whose seeds the log prints. A
+  # mismatch is shrunk to a short counterexample in the uploaded artifact, which
+  # --trace replays.
   test-testrig:
     name: TestRIG (FROST vs Sail / ${{ matrix.shard }}/4)
     permissions:
@@ -932,6 +941,7 @@ jobs:
       FROST_RANDOM_START_SEED: ${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
       # Line and branch coverage and the cover points (tests/README.md#coverage).
       FROST_COVERAGE: ${{ matrix.coverage }}
+      FROST_VERILATOR_THREADS: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -986,6 +996,20 @@ jobs:
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --cmo 80 --continue-on-fail
 
+      - name: Compare FROST with Sail on random scalar FP sequences
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --fp-ext 60 --test-length 250 \
+              --continue-on-fail --log-dir tests/testrig_logs/fp-ext
+
+      - name: Compare FROST with Sail on random Zcb, Zcmop, Zimop, and Zihintntl sequences
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --zcb 50 --test-length 200 \
+              --continue-on-fail --log-dir tests/testrig_logs/zcb
+
       - name: Compare FROST with Sail on directed WFI traces
         if: ${{ !cancelled() && matrix.shard == 1 }}
         env:
@@ -1034,7 +1058,7 @@ jobs:
           overwrite: true
 
   test-testrig-vector:
-    name: TestRIG (FROST vs Sail / VLEN ${{ matrix.vlen }})
+    name: TestRIG (FROST vs Sail / VLEN ${{ matrix.vlen }} / ${{ matrix.shard }})
     permissions:
       contents: read
       actions: read
@@ -1044,16 +1068,18 @@ jobs:
       ${{ !cancelled() && needs.build-docker.result == 'success' &&
       needs.gate.outputs.full == 'true' &&
       (github.event_name == 'push' || github.event_name == 'pull_request') }}
-    timeout-minutes: 70
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:
         vlen: [128, 256, 512]
+        shard: [core, segment, ext]
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
       FROST_DDR_MODEL_SEED: testrig-vector
       FROST_RANDOM_START_SEED: testrig-vector
       COCOTB_RANDOM_SEED: "42"
+      FROST_VERILATOR_THREADS: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -1072,21 +1098,42 @@ jobs:
       - name: Fetch the simulators selected for this job
         uses: ./.github/actions/sim-models
         with:
-          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][matrix.vlen]) }}
+          selection: ${{ toJSON(fromJSON(needs.build-docker.outputs.sim_consumers)[github.job][format('{0}/{1}', matrix.vlen, matrix.shard)]) }}
 
       - name: Compare seeded and directed vector traces
+        if: matrix.shard == 'core'
         run: |
           ./scripts/frost.py --image frost-dev:latest run make -C tests clean
           ./scripts/frost.py --image frost-dev:latest run \
-            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 50m \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 55m \
             python3 tests/test_testrig.py --vector 12 --vector-length 20 \
               --vector-source-widths --vector-directed --seed 42 --vlen "${{ matrix.vlen }}" \
               --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
               --response-timeout 600 --no-shrink
 
+      - name: Compare vector segment traces
+        if: matrix.shard == 'segment'
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run make -C tests clean
+          ./scripts/frost.py --image frost-dev:latest run \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 30m \
+            python3 tests/test_testrig.py --vector-segments --vlen "${{ matrix.vlen }}" \
+              --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
+              --response-timeout 600 --no-shrink
+
+      - name: Compare vector extension traces
+        if: matrix.shard == 'ext'
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run make -C tests clean
+          ./scripts/frost.py --image frost-dev:latest run \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 16m \
+            python3 tests/test_testrig.py --vector-ext --vlen "${{ matrix.vlen }}" \
+              --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
+              --response-timeout 600 --no-shrink
+
       - name: Check detection of an incorrect vector result
-        if: matrix.vlen == 128
-        timeout-minutes: 45
+        if: matrix.vlen == 128 && matrix.shard == 'core'
+        timeout-minutes: 50
         run: |
           check_vector_result() {
             local selector=$1 trace=$2 record=$3 mismatch=$4
@@ -1128,8 +1175,6 @@ jobs:
             'order=158 insn=0x43b02557 rd=x10' '0x24681356 != 0x24681357'
           check_vector_result indexed vector_indexed \
             'order=217 insn=0x43c02557 rd=x10' '0x31415926 != 0x31415927'
-          check_vector_result segment vector_segment \
-            'order=45 insn=0x43e02557 rd=x10' '0x19475b81 != 0x19475b80'
           check_vector_result fof vector_fof \
             'order=29 insn=0x43f02557 rd=x10' '0x13572468 != 0x13572469'
           check_vector_result int-widen-narrow vector_int_widen_narrow \
@@ -1146,12 +1191,89 @@ jobs:
             'order=23 insn=0x42b02557 rd=x10' '0x2468ace0 != 0x2468ace1'
           check_vector_result reductions vector_reductions \
             'order=30 insn=0x43202557 rd=x10' '0x1234a00a != 0x1234a00b'
+          check_vector_result carry-borrow vector_carry_borrow \
+            'order=48 insn=0x43302557 rd=x10' '0x1234a00a != 0x1234a00b'
+          check_vector_result mask-ops vector_mask_ops \
+            'order=27 insn=0x43502557 rd=x10' '0xf884 != 0xf885'
+          check_vector_result int-mul-add vector_int_mul_add \
+            'order=52 insn=0x43702557 rd=x10' '0x10010010 != 0x10010011'
+          check_vector_result int-vx-merge vector_int_vx_merge \
+            'order=18 insn=0x43402557 rd=x10' '0x20020020 != 0x20020021'
+
+      - name: Check detection of an incorrect segment result
+        if: matrix.vlen == 128 && matrix.shard == 'segment'
+        timeout-minutes: 15
+        run: |
+          check_segment_result() {
+            local selector=$1 name=$2 record=$3 mismatch=$4
+            shift 4
+            local logs="tests/testrig_logs/vector-result-control/$name" status=0
+            FROST_TESTRIG_VECTOR_RESULT_CONTROL="$selector" \
+              ./scripts/frost.py --image frost-dev:latest run \
+              env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 600s \
+              python3 tests/test_testrig.py "$@" \
+                --vlen 128 --ddr-capacity-log2-bytes 30 --startup-timeout 360 --response-timeout 180 \
+                --no-shrink --verbosity 2 --log-dir "$logs" \
+                --save-dir "tests/testrig_failures/vector-result-control/$name" || status=$?
+            test "$status" -eq 1
+            test "$(grep -Fc 'Vector result control: ' "$logs/frost.log")" -eq 1
+            grep -Fq "Vector result control: $record" "$logs/frost.log"
+            grep -Fq 'TESTS=1 PASS=1 FAIL=0' "$logs/frost.log"
+            grep -Fq "mismatch in field rd_wdata: $mismatch" "$logs/engine.log"
+            echo "TestRIG reported the injected vector result mismatch in $name."
+          }
+
+          check_segment_result segment vector_segment \
+            'order=45 insn=0x43e02557 rd=x10' '0x19475b81 != 0x19475b80' \
+            --trace verif/testrig/vector_segment.S
+          check_segment_result segment-matrix vector_segments \
+            'order=147 insn=0x43d02557 rd=x10' '0x42eadaac != 0x42eadaad' \
+            --vector-segments
+
+      - name: Check detection of an incorrect extension result
+        if: matrix.vlen == 128 && matrix.shard == 'ext'
+        timeout-minutes: 11
+        run: |
+          check_ext_result() {
+            local selector=$1 trace=$2 record=$3 mismatch=$4
+            local logs="tests/testrig_logs/vector-result-control/$trace" status=0
+            FROST_TESTRIG_VECTOR_RESULT_CONTROL="$selector" \
+              ./scripts/frost.py --image frost-dev:latest run \
+              env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 600s \
+              python3 tests/test_testrig.py --trace "verif/testrig/$trace.S" \
+                --vlen 128 --ddr-capacity-log2-bytes 30 --startup-timeout 360 --response-timeout 180 \
+                --no-shrink --verbosity 2 --log-dir "$logs" \
+                --save-dir "tests/testrig_failures/vector-result-control/$trace" || status=$?
+            test "$status" -eq 1
+            test "$(grep -Fc 'Vector result control: ' "$logs/frost.log")" -eq 1
+            grep -Fq "Vector result control: $record" "$logs/frost.log"
+            grep -Fq 'TESTS=1 PASS=1 FAIL=0' "$logs/frost.log"
+            grep -Fq "mismatch in field rd_wdata: $mismatch" "$logs/engine.log"
+            echo "TestRIG reported the injected vector result mismatch in $trace."
+          }
+
+          check_ext_result zvfhmin vector_zvfhmin \
+            'order=30 insn=0x42102557 rd=x10' '0x3e00 != 0x3e01'
+          check_ext_result zvbb vector_zvbb \
+            'order=24 insn=0x42202557 rd=x10' '0xfffffffff00a1030 != 0xfffffffff00a1031'
+          check_ext_result zvbc-zvkned-zvkg vector_zvbc_zvkned_zvkg \
+            'order=36 insn=0x42302557 rd=x10' '0x40a0789828c810f0 != 0x40a0789828c810f1'
+          check_ext_result zvknhb vector_zvknhb \
+            'order=56 insn=0x42402557 rd=x10' '0xffffffff84c9dd79 != 0xffffffff84c9dd78'
+          check_ext_result zvfh-arith vector_zvfh_arith_fma \
+            'order=25 insn=0x42502557 rd=x10' '0x4100 != 0x4101'
+          check_ext_result zvfh-misc-red vector_zvfh_cmp_misc_red \
+            'order=39 insn=0x42602557 rd=x10' '0x3e00 != 0x3e01'
+          check_ext_result zvfh-widen vector_zvfh_widen \
+            'order=26 insn=0x42702557 rd=x10' '0x40200000 != 0x40200001'
+          check_ext_result zvfh-cvt vector_zvfh_cvt \
+            'order=27 insn=0x42802557 rd=x10' '0x3c01 != 0x3c00'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: testrig-vector-results-${{ matrix.vlen }}
+          name: testrig-vector-results-${{ matrix.vlen }}-${{ matrix.shard }}
           retention-days: 7
           if-no-files-found: ignore
           path: |
@@ -1206,7 +1328,7 @@ jobs:
       - name: Merge and report
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
-            make -C tests TOPLEVEL=vcu118_frost sim_build/vcu118_ddr_cone.sv
+            make -C tests coverage-sources
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/coverage_report.py report coverage-jobs \
               --output-dir coverage-report --annotate --require-ci-artifacts \
@@ -1660,8 +1782,18 @@ jobs:
             pytest_filter: >-
               coherence_store_boundary and not
               (coherence_store_boundary_bmc_four or
-              coherence_store_boundary_bmc_intervening or amo)
+              coherence_store_boundary_bmc_intervening or amo or probe)
             timeout_minutes: 330
+          # Composed probe-launch and C2b store_ack boundary checks: other-sector
+          # BMC (100 min) and cover (40 min) in one shard; same-sector BMCs
+          # (60 + 40 min), cover (40 min) and mutation controls in a second shard.
+          - shard: Store boundary probe launch other
+            pytest_filter: coherence_store_boundary and probe and other
+            timeout_minutes: 160
+          - shard: Store boundary probe launch same
+            pytest_filter: >-
+              (coherence_store_boundary and probe and same) or test_probe_launch_mutations
+            timeout_minutes: 180
           # The eight-endpoint L1D stream BMC with arbitrary inputs and
           # stores runs to depth 32, and the four-way hit-port array BMC,
           # about 50 minutes, shares its job.
@@ -1717,7 +1849,7 @@ jobs:
             pytest_filter: >-
               load_queue_ and not load_queue_amo and not
               (coherence_ or coherent_ or _twin)
-            timeout_minutes: 130
+            timeout_minutes: 135
           # The load queue's helper blocks, its AMO datapath and the range
           # holds at its address-update port.
           - shard: Load queue blocks
@@ -1768,7 +1900,7 @@ jobs:
               rat_checkpoint_restore or home_seat_next_equiv or
               fp_forward_wake or test_fp_forward_wake_mutations or fp_launch_squash or
               fp_shim or fp_engine_op_class or vec_head_mmu or vec_hold_rows or
-              tage_copy_convergence or rob_retire_successor)
+              tage_copy_convergence or rob_retire_successor or test_probe_launch_mutations)
             timeout_minutes: 124
     # A task whose key has a pass marker is skipped; one in twenty of those
     # is proved again as a canary. The markers are cached per job: a main run
@@ -1831,6 +1963,7 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run pytest tests/test_run_formal.py \
             tests/test_pa_bridge_mutation.py tests/test_predictor_mutations.py tests/test_fp_forward_wake_mutations.py \
+            tests/test_probe_launch_mutations.py \
             -m formal -k "$PYTEST_FILTER" --collect-only -q > ci-reuse-collected.txt \
             && status=0 || status=$?
           python3 tests/ci_reuse.py formal-record --dir "$FROST_REUSE_DIR" \
@@ -1842,6 +1975,7 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run pytest tests/test_run_formal.py \
             tests/test_pa_bridge_mutation.py tests/test_predictor_mutations.py tests/test_fp_forward_wake_mutations.py \
+            tests/test_probe_launch_mutations.py \
             -m formal -k "$PYTEST_FILTER" -v --durations=0
 
       - name: Summarize proved and reused tasks
@@ -1967,6 +2101,7 @@ jobs:
       - name: Compare live cocotb hello_world and check native simulator
         env:
           FROST_SKIP_SUBMODULE_INIT: "1"
+          FROST_VERILATOR_THREADS: "1"
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_native_sim.py --ci
