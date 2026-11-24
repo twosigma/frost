@@ -896,6 +896,7 @@ module cpu_ooo #(
   logic itt_train_bank;
   logic [riscv_pkg::PhysAddrBits-2:0] itt_train_target;
   logic itt_train_mispredicted;
+  logic fetch_trap_hold_q;
 
   if_stage #(
       .XLEN(XLEN),
@@ -971,6 +972,7 @@ module cpu_ooo #(
       .i_fence_i_target(fence_i_target_pc),
       .i_btb_invalidate(btb_invalidate),
       .i_disable_branch_prediction(disable_branch_prediction_ooo),
+      .i_fetch_trap_hold(fetch_trap_hold_q),
       // Bimodal direction-predictor training (conditional branches only, see
       // dir_update_* below).
       .i_dir_update_valid(dir_update_valid),
@@ -1997,6 +1999,34 @@ module cpu_ooo #(
   assign dbg_if_valid_q = if_valid_q;
   assign dbg_pd_valid_q = pd_valid_q;
   assign dbg_id_valid   = id_valid;
+
+  // Pause decoupled F0 fetch-ahead once an unconditional trap or xRET is live
+  // in ID: every sequential instruction after it is dead wrong-path and will
+  // be flushed by either an older redirect or this instruction itself.
+  logic id_slot1_uncond_trap;
+  logic id_slot2_uncond_trap;
+  logic id_trap_hold_valid;
+  assign id_slot1_uncond_trap = decoded_packet.is_real &&
+      (decoded_packet.is_illegal_instruction || decoded_packet.is_fetch_fault ||
+       decoded_packet.is_mret || decoded_packet.is_sret || decoded_packet.is_dret ||
+       (decoded_packet.instruction_operation == riscv_pkg::ECALL) ||
+       (decoded_packet.instruction_operation == riscv_pkg::EBREAK));
+  assign id_slot2_uncond_trap = decoded_packet_2.is_real &&
+      (decoded_packet_2.is_illegal_instruction || decoded_packet_2.is_fetch_fault ||
+       decoded_packet_2.is_mret || decoded_packet_2.is_sret || decoded_packet_2.is_dret ||
+       (decoded_packet_2.instruction_operation == riscv_pkg::ECALL) ||
+       (decoded_packet_2.instruction_operation == riscv_pkg::EBREAK));
+  assign id_trap_hold_valid = (DECODED_QUEUE_DEPTH != 0) ? pd_valid_q : direct_id_valid_preflush;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      fetch_trap_hold_q <= 1'b0;
+    end else if (flush_pipeline) begin
+      fetch_trap_hold_q <= 1'b0;
+    end else if (id_trap_hold_valid && (id_slot1_uncond_trap || id_slot2_uncond_trap)) begin
+      fetch_trap_hold_q <= 1'b1;
+    end
+  end
 
   // ===========================================================================
   // Tomasulo Wrapper Instance

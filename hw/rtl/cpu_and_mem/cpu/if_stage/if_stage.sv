@@ -80,6 +80,7 @@ module if_stage #(
     input logic [XLEN-1:0] i_fence_i_target,
     input logic i_btb_invalidate,
     input logic i_disable_branch_prediction,
+    input logic i_fetch_trap_hold = 1'b0,
     input logic i_dir_update_valid,
     input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
     input logic i_dir_update_taken,
@@ -286,7 +287,9 @@ module if_stage #(
   pred_hold_t f1_pred_hold_q;
 
   logic q_stop_fetch;
+  logic f0_stop_fetch;
   logic f0_launch;
+  assign f0_stop_fetch = q_stop_fetch || i_fetch_trap_hold;
   logic f1_accept;
   logic f1_collapsed_accept;
   logic f1_collapsed_btb_steer;
@@ -306,6 +309,9 @@ module if_stage #(
   logic f0_ras_push;
   logic f0_ras_pop;
   logic [XLEN-1:0] f0_ras_link;
+  logic f0_ras_push_q;
+  logic f0_ras_pop_q;
+  logic [XLEN-1:0] f0_ras_link_q;
 
   logic [RasPtrBits-1:0] pd_ras_ckpt_tos_q;
   logic [RasPtrBits:0] pd_ras_ckpt_cnt_q;
@@ -418,6 +424,7 @@ module if_stage #(
   // completing, or when a bare-mode target would cross memory tiers.
   logic [XLEN-1:0] f0_btb_eff_target;
   logic f0_btb_same_tier;
+  logic f0_span_fault_veto;
   logic f0_span_btb_fire;
   logic f0_pred_en;
   logic f0_btb_valid;
@@ -429,7 +436,8 @@ module if_stage #(
   assign f0_btb_same_tier = i_fetch_translation_active ||
       (riscv_pkg::pma_cached_ok(f0_btb_eff_target) ==
        riscv_pkg::pma_cached_ok(XLEN'(fetch_pa0_live)));
-  assign f0_span_btb_fire = span_btb_pending_q.valid && !f1_cancel_span;
+  assign f0_span_fault_veto = span_btb_pending_q.valid && !f1_cancel_span && fetch_fault0_live;
+  assign f0_span_btb_fire = span_btb_pending_q.valid && !f1_cancel_span && !fetch_fault0_live;
   assign f0_pred_en = !i_disable_branch_prediction && !fetch_fault0_live &&
       !f1_resteer_nopred_q && !f0_span_btb_fire &&
       (i_fetch_translation_active || riscv_pkg::pma_fetch_ok(pc));
@@ -605,15 +613,31 @@ module if_stage #(
   assign f0_ras_link = ((f0_launch && f0_span_btb_fire) || f1_collapsed_span_fire) ?
       span_btb_pending_q.link : f0_btb_link;
 
+  // Register F0's speculative push/pop by one cycle to match return_address_stack's
+  // pending-op contract: o_top/o_tos/o_valid_count reflect the prior cycle's push/pop
+  // with zero-cycle bypass, stay free of this cycle's own op (giving exact pre-op
+  // checkpoints and exact return targets), and avoid a combinational loop through o_top.
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || any_redirect || i_from_ex_comb.ras_misprediction ||
+        f1_ras_restore) begin
+      f0_ras_push_q <= 1'b0;
+      f0_ras_pop_q  <= 1'b0;
+    end else begin
+      f0_ras_push_q <= f0_ras_push;
+      f0_ras_pop_q  <= f0_ras_pop;
+    end
+    f0_ras_link_q <= f0_ras_link;
+  end
+
   return_address_stack #(
       .RAS_DEPTH(riscv_pkg::RasDepth),
       .RAS_PTR_BITS(RasPtrBits)
   ) u_ras (
       .i_clk,
       .i_rst(i_pipeline_ctrl.reset),
-      .i_push(f0_ras_push),
-      .i_pop(f0_ras_pop),
-      .i_push_address(f0_ras_link),
+      .i_push(f0_ras_push_q && !any_redirect && !f1_ras_restore),
+      .i_pop(f0_ras_pop_q && !any_redirect && !f1_ras_restore),
+      .i_push_address(f0_ras_link_q),
       .i_misprediction(ras_restore),
       .i_restore_tos(ras_restore_tos),
       .i_restore_valid_count(ras_restore_cnt),
@@ -632,7 +656,7 @@ module if_stage #(
   // ===========================================================================
   logic pred_lookup_capture;
   assign pred_lookup_capture = f0_launch ||
-      (!f1_req_q.valid && !i_instr_valid && fetch_pa_valid && !q_stop_fetch && !any_redirect);
+      (!f1_req_q.valid && !i_instr_valid && fetch_pa_valid && !f0_stop_fetch && !any_redirect);
 
   logic [XLEN-1:0] f1_win_pc;
   assign f1_win_pc = f1_req_q.valid ? f1_req_q.pc : pc;
@@ -761,7 +785,7 @@ module if_stage #(
   assign f1_accept = !any_redirect && f1_req_q.valid && i_instr_valid && f1_tag_match;
   assign f1_tag_resteer = !any_redirect && f1_req_q.valid && i_instr_valid && !f1_tag_match;
   assign f1_collapsed_accept = !any_redirect && !f1_req_q.valid && collapsed_armed_q &&
-      i_instr_valid && fetch_pa_valid && !q_stop_fetch && collapsed_tag_match;
+      i_instr_valid && fetch_pa_valid && !f0_stop_fetch && collapsed_tag_match;
 
   // Extract the four halfwords and their predecode sideband fields from i_instr.
   logic [15:0] hw_raw[4];
@@ -907,7 +931,7 @@ module if_stage #(
   // F0 launches a new fetch when memory is valid, translation is ready, the
   // parcel queue has headroom, and no redirect, resteer, or collapsed accept
   // is taking this cycle.
-  assign f0_launch = i_instr_valid && fetch_pa_valid && !q_stop_fetch &&
+  assign f0_launch = i_instr_valid && fetch_pa_valid && !f0_stop_fetch &&
       !any_redirect && !f1_resteer && !f1_collapsed_accept;
 
   // Next f1_carry_hi_q after an accepted window: set when a non-taken,
@@ -1121,7 +1145,7 @@ module if_stage #(
           f1_pred_hold_q  <= f1_pred_live;
           f1_pred_fresh_q <= 1'b0;
         end
-      end else if (!f1_req_q.valid && !i_instr_valid && fetch_pa_valid && !q_stop_fetch) begin
+      end else if (!f1_req_q.valid && !i_instr_valid && fetch_pa_valid && !f0_stop_fetch) begin
         collapsed_armed_q <= 1'b1;
         f1_pred_fresh_q   <= 1'b1;
       end else if (!f1_req_q.valid && i_instr_valid && f1_pred_fresh_q) begin
@@ -1220,7 +1244,7 @@ module if_stage #(
   assign s1_fault_page = s1_fault_lo ? s1_p.fault_page : view1.fault_page;
   assign s1_need_2     = !s1_fault_lo && !s1_comp;
   assign s1_have_bytes = s1_need_2 ? q_avail_ge[1] : q_avail_ge[0];
-  assign s1_valid      = !pqueue_flush && s1_have_bytes;
+  assign s1_valid      = !pqueue_flush && !i_fetch_trap_hold && s1_have_bytes;
 
   logic [XLEN-1:0] s1_pc;
   logic [31:0] s1_instr;
