@@ -968,6 +968,8 @@ jobs:
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --trace-dir verif/testrig/traces --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --misaligned --continue-on-fail
+          ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --crypto 50 --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --svinval 50 --continue-on-fail

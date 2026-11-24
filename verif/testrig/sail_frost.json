@@ -38,9 +38,10 @@
     "physaddr_bits": 64,
     "asidlen": 9,
     "pmp": {"grain": 0, "count": 0, "usable_count": 0, "tor_supported": true, "na4_supported": true, "napot_supported": true},
-    // Misaligned accesses trap after translation and the region check: an
-    // untranslated access outside every region is an access fault first, as
-    // on FROST.
+    // Misaligned checks follow translation and region lookup, so an
+    // untranslated access outside every region raises an access fault first.
+    // Cached DDR allows plain misaligned loads and stores; low BRAM and the
+    // device windows raise address-misaligned traps.
     "misaligned": {
       "exceptions": {"load_store": {"None": null}, "vector": {"None": null}, "amo": {"None": null}, "lrsc": {"None": null}},
       "order_decreasing": false,
@@ -227,7 +228,7 @@
           "write_idempotent": true,
           "misaligned_exceptions": {
             "load_store": {
-              "Some": "AlignmentException"
+              "None": null
             },
             "vector": {
               "Some": "AlignmentException"
@@ -344,8 +345,9 @@
     "Ziccamoa": {"supported": false},
     "Ziccamoc": {"supported": false},
     "Ziccif": {"supported": true},
-    // Left off: TestRIG builds omit the misaligned-access engine and trap misaligned loads and stores.
-    "Zicclsm": {"supported": false},
+    // Plain misaligned loads and stores execute in hardware in cached DDR;
+    // low BRAM and the device windows keep address-misaligned traps.
+    "Zicclsm": {"supported": true},
     // Left off: Sail requires RsrvEventual on every coherent cacheable MainMemory region, while the TestRIG device RAM windows set RsrvNone.
     "Ziccrse": {"supported": false},
     "Zicfilp": {"supported": false},

@@ -1075,8 +1075,8 @@ def test_advertised_isa_lists_agree() -> None:
     assert not (roadmap_unadvertised & sail_enabled)
     # Sail enables B/S/U/Sv39/Svbare alongside individual subset flags, models
     # RV64C as Zca + Zcd, and takes RV64I as the base ISA (not an extensions
-    # entry); AIA/IMSIC, Za64rs, misaligned hardware and multi-region PMA flags
-    # are either absent from Sail or kept off for the TestRIG device-RAM map.
+    # entry); AIA/IMSIC, Za64rs, and multi-region PMA flags are either absent
+    # from Sail or kept off for the TestRIG device-RAM map.
     # Sail has no Ssu64xl option: its RV64 model keeps UXL at 64 bits, which
     # traces/ssu64xl_uxl.S compares.
     sail_umbrella_only = {"b", "s", "sv39", "svbare", "u", "zca", "zcd"}
@@ -1087,7 +1087,6 @@ def test_advertised_isa_lists_agree() -> None:
         "ssu64xl",
         "za64rs",
         "ziccamoa",
-        "zicclsm",
         "ziccrse",
     }
     assert sail_umbrella_only <= sail_enabled
