@@ -70,10 +70,10 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_sc_wa", "sc_wa_s1_prove"): 600,
     ("coherence_sc_wa", "sc_wa_s2_prove"): 600,
     ("coherence_sc_wa", "sc_wa_s3_prove"): 600,
-    ("coherence_sc_wa", "sc_wa_s0_cover"): 600,
-    ("coherence_sc_wa", "sc_wa_s1_cover"): 600,
-    ("coherence_sc_wa", "sc_wa_s2_cover"): 600,
-    ("coherence_sc_wa", "sc_wa_s3_cover"): 600,
+    ("coherence_sc_wa", "sc_wa_s0_cover"): 1200,
+    ("coherence_sc_wa", "sc_wa_s1_cover"): 1200,
+    ("coherence_sc_wa", "sc_wa_s2_cover"): 1200,
+    ("coherence_sc_wa", "sc_wa_s3_cover"): 1200,
     ("coherence_home", "coh_home_control_prove"): 1800,
     ("coherence_home", "coh_home_control64_prove"): 1800,
     ("coherence_home", "coh_home_control_partition_prove"): 1800,
@@ -2345,35 +2345,35 @@ SBY_TASKS = [
     ),
     (
         "sc_wa_s0_prove",
-        "Composed L1D, home and links (0 stages): SC GrantM has no same-sector wb_live slot.",
+        "Production L1D, home and links (0 stages): SC GrantM has no same-sector wb_live slot.",
     ),
     (
         "sc_wa_s1_prove",
-        "Composed L1D, home and links (1 stage): SC GrantM has no same-sector wb_live slot.",
+        "Production L1D, home and links (1 stage): SC GrantM has no same-sector wb_live slot.",
     ),
     (
         "sc_wa_s2_prove",
-        "Composed L1D, home and links (2 stages): SC GrantM has no same-sector wb_live slot.",
+        "Production L1D, home and links (2 stages): SC GrantM has no same-sector wb_live slot.",
     ),
     (
         "sc_wa_s3_prove",
-        "Composed L1D, home and links (3 stages): SC GrantM has no same-sector wb_live slot.",
+        "Production L1D, home and links (3 stages): SC GrantM has no same-sector wb_live slot.",
     ),
     (
         "sc_wa_s0_cover",
-        "Composed L1D, home and links (0 stages): cover SC GrantM/GrantFail, PutM WA and ProbeSnapshot.",
+        "Production L1D, home and links (0 stages): cover SC GrantM, PutM token, put_blocks, ProbeSnapshot and FillRecall.",
     ),
     (
         "sc_wa_s1_cover",
-        "Composed L1D, home and links (1 stage): cover SC GrantM/GrantFail, PutM WA and ProbeSnapshot.",
+        "Production L1D, home and links (1 stage): cover SC GrantM, PutM token, put_blocks, ProbeSnapshot and FillRecall.",
     ),
     (
         "sc_wa_s2_cover",
-        "Composed L1D, home and links (2 stages): cover SC GrantM/GrantFail, PutM WA and ProbeSnapshot.",
+        "Production L1D, home and links (2 stages): cover SC GrantM, PutM token, put_blocks, ProbeSnapshot and FillRecall.",
     ),
     (
         "sc_wa_s3_cover",
-        "Composed L1D, home and links (3 stages): cover SC GrantM/GrantFail, PutM WA and ProbeSnapshot.",
+        "Production L1D, home and links (3 stages): cover SC GrantM, PutM token, put_blocks, ProbeSnapshot and FillRecall.",
     ),
     ("link_credit1_cover", "A credit link delivers four messages."),
     ("link_mirror1_cover", "A mirrored link completes four handshakes."),
@@ -9060,6 +9060,10 @@ def test_script_and_dialect_bypass_cases_refused(
 def test_coherence_sc_wa_contract() -> None:
     """Pin the composed SC GrantM writeback-exclusion proofs and covers."""
     target = next(t for t in FORMAL_TARGETS if t.name == "coherence_sc_wa")
+    harness_text = (Path(FORMAL_DIR) / "coherence_sc_wa_formal.sv").read_text(
+        encoding="utf-8"
+    )
+    assert "coherence_home #(" in harness_text
     assert target.tasks == (
         "sc_wa_s0_prove",
         "sc_wa_s1_prove",
@@ -9079,11 +9083,17 @@ def test_coherence_sc_wa_contract() -> None:
         assert prove_cfg["[engines]"] == ["smtbmc boolector"]
         prove_script = prove_cfg["[script]"]
         assert any(
-            f"-GLINK_STAGES={stages}" in line and "-GCOVER_MODE=0" in line
+            f"-GLINK_STAGES={stages}" in line
+            and "-GCOVER_MODE=0" in line
+            and "coherence_home.sv" in line
+            and "coherence_home_array.sv" in line
+            and "coherence_seat_select.sv" in line
             for line in prove_script
         )
+        assert "../hw/rtl/lib/cache/coherence_home.sv" in prove_cfg["[files]"]
+        assert "../hw/rtl/lib/cache/coherence_home_array.sv" in prove_cfg["[files]"]
         assert "select -assert-none t:$check r:FLAVOR=assume %i" in prove_script
-        expected_asserts = 128 if stages == 0 else 137
+        expected_asserts = 141 if stages == 0 else 150
         assert (
             f"select -assert-count {expected_asserts} t:$check r:FLAVOR=assert %i"
             in prove_script
@@ -9098,17 +9108,19 @@ def test_coherence_sc_wa_contract() -> None:
             "mode": "cover",
             "depth": "200",
             "vcd_sim": "on",
-            "timeout": "600",
+            "timeout": "1200",
         }
-        assert formal_task_timeout_s(target.name, cover_task) == 600
+        assert formal_task_timeout_s(target.name, cover_task) == 1200
         assert cover_cfg["[engines]"] == ["btor btormc"]
         cover_script = cover_cfg["[script]"]
         assert any(
-            f"-GLINK_STAGES={stages}" in line and "-GCOVER_MODE=1" in line
+            f"-GLINK_STAGES={stages}" in line
+            and "-GCOVER_MODE=1" in line
+            and "coherence_home.sv" in line
             for line in cover_script
         )
         assert "select -assert-none t:$check r:FLAVOR=assume %i" in cover_script
-        assert "select -assert-count 8 t:$check r:FLAVOR=cover %i" in cover_script
+        assert "select -assert-count 12 t:$check r:FLAVOR=cover %i" in cover_script
 
 
 def test_store_home_cover_budgets() -> None:

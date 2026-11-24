@@ -18,14 +18,15 @@
 
 // Composed verification of the StoreConditional GrantM writeback-exclusion
 // obligation assumed in standalone coherence_l1d (lines 5718-5721):
-// composes the real coherence_l1d, real coherence_home_engine, real
-// coherence_home_completions, real coherence_d_arbiter instances (including
-// ack_arbiter and result_arbiter), the home's PutM tracking / PutAck FSM, and
-// all eight real coherence_link stages at LINK_STAGES = 0, 1, 2, 3.
+// composes production coherence_l1d, production coherence_home (with its real
+// coherence_home_completions, coherence_home_engine, coherence_home_array,
+// PutM/PutAck FSM, FillRecall/FillInstall FSM, writeback slot, forward path,
+// and arbiters), a legal DMA requester, a free-latency memory responder, and
+// all eight real coherence_link channels at LINK_STAGES = 0, 1, 2, 3.
 module coherence_sc_wa_formal #(
     parameter int unsigned LINK_STAGES = 0,
     parameter int unsigned L1D_MISSES = 1,
-    parameter int unsigned ADDR_BITS = 7,
+    parameter int unsigned ADDR_BITS = 8,
     parameter bit ENABLE_DMA = 1'b1,
     parameter bit COVER_MODE = 1'b0
 ) (
@@ -50,18 +51,15 @@ module coherence_sc_wa_formal #(
     input logic i_dma_write,
     input logic [ADDR_BITS-1:5] i_dma_sector,
     input logic i_dma_g_ready,
+    input logic i_dma_c_valid,
     input logic i_dma_u_ready,
-    input logic i_tag_ready,
-    input logic i_decision_hit,
-    input logic i_decision_spec,
-    input logic i_read_ready,
-    input logic i_data_valid_req,
-    input logic i_update_ready,
-    input logic i_updated_req,
-    input logic [1:0] i_put_done
+    input logic i_mem_req_ready,
+    input logic i_mem_resp_valid,
+    input logic i_mem_resp_write
 );
   localparam int unsigned AddrWidth = 32;
   localparam int unsigned LineBytes = 64;
+  localparam logic [5:0] FillTid = 6'(coherence_pkg::fill_base(1));
   localparam logic [5:0] PutTid = 6'(coherence_pkg::put_base(1, 1));
   `FROST_COHERENCE_TYPES(AddrWidth)
 
@@ -70,8 +68,8 @@ module coherence_sc_wa_formal #(
   always_ff @(posedge i_clk) past_q <= 1'b1;
 
   logic store_credit_q;
-  logic hart_fatal, engine_fatal;
-  wire fatal = hart_fatal || engine_fatal;
+  logic hart_fatal, home_fatal;
+  wire fatal = hart_fatal || home_fatal;
   wire hart_active = !rst && !fatal;
 
   logic o_write_done, o_write_inflight, o_store_ready, o_pending_store;
@@ -98,6 +96,7 @@ module coherence_sc_wa_formal #(
     DmaIdle,
     DmaDemand,
     DmaWaitG,
+    DmaHoldC,
     DmaSendC,
     DmaWaitU
   } dma_phase_t;
@@ -108,11 +107,10 @@ module coherence_sc_wa_formal #(
   logic c_atomic_protected_extra;
   logic [2:0] c_sc_size, c_res_size;
   logic c_sc_result_ready, c_cut_admit_ready, c_cut_inval_done;
-  logic c_dma_req, c_dma_write, c_dma_g_ready, c_dma_u_ready;
+  logic c_dma_req, c_dma_write, c_dma_g_ready, c_dma_c_valid, c_dma_u_ready;
   logic [ADDR_BITS-1:5] c_dma_sector;
-  logic c_tag_ready, c_decision_hit, c_decision_spec;
-  logic c_read_ready, c_data_valid_req, c_update_ready, c_updated_req;
-  logic [1:0] c_put_done;
+  logic c_mem_req_ready, c_mem_resp_valid, c_mem_resp_write;
+  logic sc_fire, ordinary_store_ok, dma_g_hit;
 
   if (!COVER_MODE) begin : gen_free_inputs
     assign c_cpu_addr = i_cpu_addr;
@@ -135,92 +133,66 @@ module coherence_sc_wa_formal #(
     assign c_dma_write = i_dma_write;
     assign c_dma_sector = i_dma_sector;
     assign c_dma_g_ready = i_dma_g_ready;
+    assign c_dma_c_valid = i_dma_c_valid;
     assign c_dma_u_ready = i_dma_u_ready;
-    assign c_tag_ready = i_tag_ready;
-    assign c_decision_hit = i_decision_hit;
-    assign c_decision_spec = i_decision_spec;
-    assign c_read_ready = i_read_ready;
-    assign c_data_valid_req = i_data_valid_req;
-    assign c_update_ready = i_update_ready;
-    assign c_updated_req = i_updated_req;
-    assign c_put_done = i_put_done;
+    assign c_mem_req_ready = i_mem_req_ready;
+    assign c_mem_resp_valid = i_mem_resp_valid;
+    assign c_mem_resp_write = i_mem_resp_write;
   end else begin : gen_cover_driver
-    // Four self-timed primary-input scenarios selected by i_cpu_addr[1:0] on
-    // the reset cycle, using only public DUT/agent handshake outputs:
-    //   0: SC GrantM followed by SC GrantFail
-    //   1: Store 0x00 -> Store 0x40 (eviction PutM held in PutWork) -> SC 0x00
-    //      -> ordinary WA while SC live -> SC GrantM
-    //   2: Store 0x00 -> Store 0x40 (evicts 0x00 into wb) + DMAWrite 0x00
-    //      paused in EngLookup (holds put_busy) -> SC 0x00 -> DMAWrite
-    //      absorbs wb -> absorbed WA while SC live -> SC GrantM
-    //   3: Store 0x20 -> Store 0x60 (eviction PutM held in PutWork) ->
-    //      DMARead 0x60 (ProbeSnapshot dirty) -> SC 0x00 GrantM beside wb
-    localparam logic [4:0] CoverWait = 5'(8 + 2 * LINK_STAGES);
-    logic [1:0] cover_case_q;
+    // Five deterministic primary-input scenarios selected on reset, using only
+    // public handshakes and LINK_STAGES-scaled DMA-C release timings so all 12
+    // covers are reached cleanly under depth 200 for LINK_STAGES = 0..3.
+    logic [2:0] cover_case_q;
     logic [3:0] cover_step_q;
-    logic [4:0] cover_wait_q;
+    logic [5:0] cover_wait_q;
     wire cover_idle = store_credit_q && o_sc_ready && !o_pending_store && !o_atomic_live;
+    wire [5:0] dma_overlap = 6'd10 + 6'(LINK_STAGES);
+    wire [5:0] case1_rel = 6'(LINK_STAGES);
+    wire [5:0] case2_rel = 6'd5 + 6'(LINK_STAGES);
+    wire [5:0] case3_rel = 6'd18 + 6'(5 * LINK_STAGES);
+
     always_ff @(posedge i_clk) begin
       if (rst) begin
-        cover_case_q <= i_cpu_addr[1:0];
+        cover_case_q <= i_cpu_addr[2:0];
         cover_step_q <= 4'd0;
-        cover_wait_q <= 5'd0;
+        cover_wait_q <= 6'd0;
       end else begin
         case (cover_case_q)
-          2'd0: begin
+          3'd0: begin
             case (cover_step_q)
-              4'd0: if (cover_idle) cover_step_q <= 4'd1;
-              4'd1: if (o_sc_ready) cover_step_q <= 4'd2;
-              4'd2: if (cover_idle) cover_step_q <= 4'd3;
-              default: ;
-            endcase
-          end
-          2'd1: begin
-            case (cover_step_q)
-              4'd0: if (cover_idle) cover_step_q <= 4'd1;
+              4'd0: if (sc_fire) cover_step_q <= 4'd1;
               4'd1: if (cover_idle) cover_step_q <= 4'd2;
-              4'd2:
-              if (cover_idle) begin
-                cover_step_q <= 4'd3;
-                cover_wait_q <= 5'd0;
-              end
-              4'd3: begin
-                if (cover_wait_q == CoverWait) cover_step_q <= 4'd4;
-                else cover_wait_q <= cover_wait_q + 5'd1;
-              end
+              4'd2: if (sc_fire) cover_step_q <= 4'd3;
               default: ;
             endcase
           end
-          2'd2: begin
+          3'd1, 3'd2, 3'd3: begin
             case (cover_step_q)
-              4'd0: if (cover_idle) cover_step_q <= 4'd1;
-              4'd1:
-              if (cover_idle) begin
-                cover_step_q <= 4'd2;
-                cover_wait_q <= 5'd0;
+              4'd0:
+              if (ordinary_store_ok) begin
+                cover_step_q <= 4'd1;
+                cover_wait_q <= 6'd0;
               end
-              4'd2: begin
-                if (cover_wait_q == 5'(12 + 2 * LINK_STAGES)) cover_step_q <= 4'd3;
-                else cover_wait_q <= cover_wait_q + 5'd1;
+              4'd1: begin
+                if (dma_phase_q == DmaHoldC && cover_idle) cover_step_q <= 4'd2;
+                else if (cover_wait_q != 6'd63) cover_wait_q <= cover_wait_q + 6'd1;
               end
-              4'd3:
-              if (dma_phase_q == DmaWaitG && cover_idle) begin
-                cover_step_q <= 4'd4;
-                cover_wait_q <= 5'd0;
+              4'd2: if (ordinary_store_ok) cover_step_q <= 4'd3;
+              4'd3: if (ordinary_store_ok) cover_step_q <= 4'd4;
+              4'd4:
+              if (sc_fire) begin
+                cover_step_q <= 4'd5;
+                cover_wait_q <= 6'd0;
               end
-              4'd4: begin
-                if (cover_wait_q == CoverWait) cover_step_q <= 4'd5;
-                else cover_wait_q <= cover_wait_q + 5'd1;
-              end
+              4'd5: if (cover_wait_q != 6'd63) cover_wait_q <= cover_wait_q + 6'd1;
               default: ;
             endcase
           end
           default: begin
             case (cover_step_q)
-              4'd0: if (cover_idle) cover_step_q <= 4'd1;
-              4'd1: if (cover_idle) cover_step_q <= 4'd2;
-              4'd2: if (cover_idle) cover_step_q <= 4'd3;
-              4'd3: if (dma_phase_q == DmaIdle && cover_idle) cover_step_q <= 4'd4;
+              4'd0: if (ordinary_store_ok) cover_step_q <= 4'd1;
+              4'd1: if (dma_phase_q == DmaDemand) cover_step_q <= 4'd2;
+              4'd2: if (sc_fire) cover_step_q <= 4'd3;
               default: ;
             endcase
           end
@@ -234,12 +206,12 @@ module coherence_sc_wa_formal #(
       c_res_addr = '0;
       c_store_req = 1'b0;
       c_store_mask = 8'hff;
-      c_atomic_write_req = 1'b0;
+      c_atomic_write_req = 1'b1;
       c_atomic_write_mask = 8'hff;
       c_atomic_protected_extra = 1'b1;
       c_sc_req = 1'b0;
       c_sc_size = 3'd3;
-      c_sc_commit_req = 1'b0;
+      c_sc_commit_req = 1'b1;
       c_sc_result_ready = 1'b1;
       c_res_valid = 1'b0;
       c_res_size = 3'd3;
@@ -249,129 +221,91 @@ module coherence_sc_wa_formal #(
       c_dma_write = 1'b0;
       c_dma_sector = '0;
       c_dma_g_ready = 1'b1;
+      c_dma_c_valid = 1'b1;
       c_dma_u_ready = 1'b1;
-      c_tag_ready = 1'b1;
-      c_decision_hit = 1'b1;
-      c_decision_spec = 1'b0;
-      c_read_ready = 1'b1;
-      c_data_valid_req = 1'b1;
-      c_update_ready = 1'b1;
-      c_updated_req = 1'b1;
-      c_put_done = 2'b11;
+      c_mem_req_ready = 1'b1;
+      c_mem_resp_valid = 1'b1;
+      c_mem_resp_write = 1'b0;
 
       case (cover_case_q)
-        2'd0: begin
+        3'd0: begin
           case (cover_step_q)
             4'd0: begin
               c_sc_req = cover_idle;
-              c_sc_addr = 7'h00;
+              c_sc_addr = 8'h00;
               c_res_valid = 1'b1;
-              c_res_addr = 7'h00;
+              c_res_addr = 8'h00;
             end
             4'd1: begin
               c_res_valid = 1'b1;
-              c_res_addr = 7'h00;
-              c_sc_commit_req = 1'b1;
-              c_atomic_write_req = 1'b1;
+              c_res_addr  = 8'h00;
             end
             4'd2: begin
               c_sc_req = cover_idle;
-              c_sc_addr = 7'h20;
+              c_sc_addr = 8'h20;
               c_res_valid = 1'b0;
             end
             default: ;
           endcase
         end
-        2'd1: begin
+        3'd1, 3'd2, 3'd3: begin
           case (cover_step_q)
             4'd0: begin
               c_store_req = cover_idle;
-              c_cpu_addr  = 7'h00;
+              c_cpu_addr  = 8'h40;
             end
             4'd1: begin
-              c_store_req = cover_idle;
-              c_cpu_addr  = 7'h40;
-              c_put_done  = 2'b00;
+              c_dma_req = dma_phase_q == DmaIdle && cover_wait_q >= dma_overlap;
+              c_dma_write = 1'b0;
+              c_dma_sector = 3'd2;
+              c_dma_c_valid = 1'b0;
             end
             4'd2: begin
-              c_sc_req = cover_idle;
-              c_sc_addr = 7'h00;
-              c_res_valid = 1'b1;
-              c_res_addr = 7'h00;
-              c_put_done = 2'b00;
+              c_store_req = cover_idle;
+              c_cpu_addr = 8'h40;
+              c_dma_c_valid = 1'b0;
             end
             4'd3: begin
-              c_res_valid = 1'b1;
-              c_res_addr  = 7'h00;
-              c_put_done  = 2'b00;
-            end
-            default: begin
-              c_res_valid = 1'b1;
-              c_res_addr  = 7'h00;
-              c_put_done  = 2'b11;
-            end
-          endcase
-        end
-        2'd2: begin
-          case (cover_step_q)
-            4'd0: begin
-              c_store_req = cover_idle;
-              c_cpu_addr  = 7'h00;
-            end
-            4'd1: begin
-              c_store_req = cover_idle;
-              c_cpu_addr  = 7'h40;
-            end
-            4'd2: begin
-              if (cover_wait_q == 5'(12 + 2 * LINK_STAGES)) begin
-                c_dma_req = 1'b1;
-                c_dma_write = 1'b1;
-                c_dma_sector = 2'd0;
-              end
-            end
-            4'd3: begin
-              c_tag_ready = 1'b0;
-              c_sc_req = dma_phase_q == DmaWaitG && cover_idle;
-              c_sc_addr = 7'h00;
-              c_res_valid = 1'b1;
-              c_res_addr = 7'h00;
+              c_store_req = store_credit_q && !o_pending_store;
+              c_cpu_addr = 8'h00;
+              c_dma_c_valid = 1'b0;
             end
             4'd4: begin
-              c_tag_ready = 1'b0;
+              c_dma_c_valid = 1'b0;
+              c_sc_req = o_sc_ready;
+              c_sc_addr = cover_case_q == 3'd3 ? 8'h20 : 8'h40;
               c_res_valid = 1'b1;
-              c_res_addr  = 7'h00;
+              c_res_addr = cover_case_q == 3'd3 ? 8'h20 : 8'h40;
             end
             default: begin
-              c_tag_ready = 1'b1;
               c_res_valid = 1'b1;
-              c_res_addr  = 7'h00;
+              c_res_addr = cover_case_q == 3'd3 ? 8'h20 : 8'h40;
+              if (cover_case_q == 3'd1) c_dma_c_valid = cover_wait_q >= case1_rel;
+              else if (cover_case_q == 3'd2) c_dma_c_valid = cover_wait_q >= case2_rel;
+              else c_dma_c_valid = cover_wait_q >= case3_rel;
             end
           endcase
         end
         default: begin
-          c_put_done = 2'b00;
           case (cover_step_q)
             4'd0: begin
               c_store_req = cover_idle;
-              c_cpu_addr  = 7'h20;
+              c_cpu_addr  = 8'h00;
             end
             4'd1: begin
-              c_store_req = cover_idle;
-              c_cpu_addr  = 7'h60;
+              c_dma_req = cover_idle && dma_phase_q == DmaIdle;
+              c_dma_write = 1'b0;
+              c_dma_sector = 3'd4;
             end
             4'd2: begin
-              c_dma_req = cover_idle;
-              c_dma_sector = 2'd3;
-            end
-            4'd3: begin
               c_sc_req = dma_phase_q == DmaIdle && cover_idle;
-              c_sc_addr = 7'h00;
+              c_sc_addr = 8'h80;
               c_res_valid = 1'b1;
-              c_res_addr = 7'h00;
+              c_res_addr = 8'h80;
             end
             default: begin
               c_res_valid = 1'b1;
-              c_res_addr  = 7'h00;
+              c_res_addr  = 8'h80;
             end
           endcase
         end
@@ -384,13 +318,13 @@ module coherence_sc_wa_formal #(
   wire [AddrWidth-1:0] full_res_addr = {{(AddrWidth - ADDR_BITS) {1'b0}}, c_res_addr};
 
   wire sc_valid = hart_active && c_sc_req && !atomic_q && !amo_waiting;
-  wire sc_fire = sc_valid && o_sc_ready;
+  assign sc_fire = sc_valid && o_sc_ready;
 
   wire atomic_write_ok = hart_active && c_atomic_write_req && (|c_atomic_write_mask) &&
       atomic_q && atomic_granted_q && !atomic_written_q && !atomic_write_q &&
       (!atomic_sc_q || sc_committed_q);
 
-  wire ordinary_store_ok = hart_active && !atomic_write_ok && !sc_fire &&
+  assign ordinary_store_ok = hart_active && !atomic_write_ok && !sc_fire &&
       c_store_req && store_credit_q && !atomic_q && !amo_waiting && (|c_store_mask);
 
   wire [7:0] write_mask = atomic_write_ok ? c_atomic_write_mask :
@@ -416,7 +350,7 @@ module coherence_sc_wa_formal #(
     else store_credit_q <= o_store_ready;
   end
 
-  // Channels between L1D, real coherence_link stages, and real home components.
+  // Channels between L1D, real coherence_link stages, and production coherence_home.
   logic [L1D_MISSES-1:0] l1d_d_valid, l1d_d_ready, l1d_c_valid, l1d_c_ready;
   logic [L1D_MISSES-1:0][AddrWidth+311:0] l1d_d;
   logic [L1D_MISSES-1:0][ AddrWidth+17:0] l1d_c;
@@ -443,14 +377,14 @@ module coherence_sc_wa_formal #(
   coh_u_t home_u;
   logic link_g_ready, link_u_ready;
 
-  // Minimal single-slot legal DMA agent (source 2) for ProbeSnapshot/ProbeInvalidate.
+  // Minimal single-slot legal DMA agent (source 2) for ProbeSnapshot/ProbeInvalidate/FillRecall.
   localparam logic [8:0] DmaKey = {2'd2, 2'd3, 4'd0, 1'b0};
   coh_d_t dma_d_q;
   coh_c_t dma_c_q;
   logic dma_d_ready, dma_c_ready;
   wire dma_d_valid = ENABLE_DMA && hart_active && dma_phase_q == DmaDemand;
   wire dma_c_valid = ENABLE_DMA && hart_active && dma_phase_q == DmaSendC;
-  wire dma_g_hit = ENABLE_DMA && home_g_valid && home_g.q.src == 2'd2;
+  assign dma_g_hit = ENABLE_DMA && home_g_valid && home_g.q.src == 2'd2;
   wire dma_u_hit = ENABLE_DMA && home_u_valid && home_u.q.src == 2'd2;
   wire dma_g_ready = ENABLE_DMA && dma_phase_q == DmaWaitG && c_dma_g_ready;
   wire dma_u_ready = ENABLE_DMA && dma_phase_q == DmaWaitU && c_dma_u_ready;
@@ -480,8 +414,9 @@ module coherence_sc_wa_formal #(
           dma_c_q.tid <= home_g.tid;
           dma_c_q.addr <= home_g.addr;
           dma_c_q.status <= coherence_pkg::Consumed;
-          dma_phase_q <= DmaSendC;
+          dma_phase_q <= c_dma_c_valid ? DmaSendC : DmaHoldC;
         end
+        DmaHoldC:  if (c_dma_c_valid) dma_phase_q <= DmaSendC;
         DmaSendC:  if (dma_c_valid && dma_c_ready) dma_phase_q <= DmaWaitU;
         DmaWaitU:  if (dma_u_hit && dma_u_ready) dma_phase_q <= DmaIdle;
         default:   dma_phase_q <= DmaIdle;
@@ -749,190 +684,64 @@ module coherence_sc_wa_formal #(
       .o_payload(home_c)
   );
 
-  // Real coherence_home_completions + real coherence_home_engine + real
-  // coherence_d_arbiter (ack_arbiter, result_arbiter, probe_arbiter) + exact
-  // coherence_home PutM acceptance & PutAck locking.
-  logic run;
-  always_ff @(posedge i_clk) begin
-    if (rst) run <= 1'b1;
-    else run <= !fatal;
-  end
-
-  logic work_valid, work_error, work_buffer;
-  coh_d_t work;
-  logic [5:0] work_tid;
-  logic put_busy;
-  logic result_valid, result_ready, engine_result_valid, engine_result_ready;
-  logic [AddrWidth+274:0] engine_result_payload, result_payload;
-  logic [255:0] engine_image;
-
-  // PutM handling matching coherence_home.sv lines 1291-1434.
-  typedef enum logic [1:0] {
-    PutFree,
-    PutWork,
-    PutAck
-  } put_phase_t;
-  put_phase_t put_phase_q[2];
-  logic [1:0] put_busy_q;
-  coh_w_t incoming_put, selected_put_q, put_q[2];
-  logic put_selected_q;
-  assign incoming_put = home_w;
-  wire put_key_match = incoming_put.hart == selected_put_q.hart &&
-      incoming_put.put_id == selected_put_q.put_id &&
-      incoming_put.epoch == selected_put_q.epoch &&
-      incoming_put.addr == selected_put_q.addr;
-  wire [AddrWidth-1:0] held_put_next = put_selected_q ? selected_put_q.addr : incoming_put.addr;
-  assign home_w_ready = run && put_selected_q && put_key_match && !put_busy &&
-      !put_busy_q[selected_put_q.put_id];
+  // Free-latency legal memory responder (zero assumptions) for production coherence_home.
+  logic mem_req_valid, mem_req_write;
+  logic [AddrWidth-1:0] mem_req_addr;
+  logic [4:0] mem_req_id;
+  logic mem_read_pend_q, mem_write_pend_q;
+  wire mem_resp_read = !rst && c_mem_resp_valid && mem_read_pend_q &&
+      (!mem_write_pend_q || !c_mem_resp_write);
+  wire mem_resp_write = !rst && c_mem_resp_valid && mem_write_pend_q &&
+      (!mem_read_pend_q || c_mem_resp_write);
+  wire mem_resp_valid = mem_resp_read || mem_resp_write;
+  wire [4:0] mem_resp_id = mem_resp_write ? 5'd16 : 5'd0;
 
   always_ff @(posedge i_clk) begin
     if (rst) begin
-      put_selected_q <= 1'b0;
-      selected_put_q <= '0;
+      mem_read_pend_q  <= 1'b0;
+      mem_write_pend_q <= 1'b0;
     end else begin
-      if (!put_selected_q && home_w_valid) begin
-        selected_put_q <= incoming_put;
-        put_selected_q <= 1'b1;
-      end
-      if (put_selected_q && (!home_w_valid || !put_key_match || home_w_ready))
-        put_selected_q <= 1'b0;
-    end
-  end
-
-  logic [2:0] ack_valid, ack_ready;
-  logic [2:0][AddrWidth+10:0] ack_payload;
-  logic ack_out_valid;
-  logic [AddrWidth+10:0] ack_out;
-
-  for (genvar put = 0; put < 2; put++) begin : gen_put
-    coh_wa_t ack;
-    always_comb begin
-      ack = '0;
-      ack.hart = put_q[put].hart;
-      ack.put_id = put_q[put].put_id;
-      ack.epoch = put_q[put].epoch;
-      ack.addr = put_q[put].addr;
-      ack.tid = PutTid + 6'(put);
-    end
-    assign ack_valid[1+put]   = run && put_phase_q[put] == PutAck;
-    assign ack_payload[1+put] = ack;
-    always_ff @(posedge i_clk) begin
-      if (rst) begin
-        put_phase_q[put] <= PutFree;
-        put_busy_q[put] <= 1'b0;
-        put_q[put] <= '0;
-      end else if (run) begin
-        if (home_w_valid && home_w_ready && incoming_put.put_id == 1'(put)) begin
-          put_q[put] <= incoming_put;
-          put_busy_q[put] <= 1'b1;
-          put_phase_q[put] <= PutWork;
-        end
-        if (put_phase_q[put] == PutWork && c_put_done[put]) put_phase_q[put] <= PutAck;
-        if (ack_valid[1+put] && ack_ready[1+put]) begin
-          put_phase_q[put] <= PutFree;
-          put_busy_q[put]  <= 1'b0;
-        end
+      if (mem_resp_read) mem_read_pend_q <= 1'b0;
+      if (mem_resp_write) mem_write_pend_q <= 1'b0;
+      if (mem_req_valid && c_mem_req_ready) begin
+        if (mem_req_write) mem_write_pend_q <= 1'b1;
+        else mem_read_pend_q <= 1'b1;
       end
     end
   end
 
-  // Engine array-handshake model with free latency, hit/miss, spec read, and exact PutM sector blocking.
-  logic engine_idle, engine_lookup_valid, engine_read_valid, engine_update_valid;
-  logic engine_take_spec;
-  logic [AddrWidth-1:0] engine_lookup_addr, engine_addr;
-  logic [5:0] engine_tid;
-  logic [3:0] engine_opcode;
-  logic engine_p_valid, engine_p_ready;
-  logic [AddrWidth+29:0] engine_p;
-  logic tag_pending_q, read_pending_q, update_pending_q;
-
-  wire engine_lookup_ready = run && !tag_pending_q && c_tag_ready;
-  wire engine_read_ready = run && !read_pending_q && c_read_ready;
-  wire engine_update_ready = run && !update_pending_q && c_update_ready;
-
-  wire decision_put_conflict =
-      (put_busy_q[0] && put_q[0].addr[AddrWidth-1:5] == engine_addr[AddrWidth-1:5]) ||
-      (put_busy_q[1] && put_q[1].addr[AddrWidth-1:5] == engine_addr[AddrWidth-1:5]);
-  wire decision_valid = run && tag_pending_q;
-  wire decision_resident = !decision_put_conflict && c_decision_hit;
-  wire decision_spec = c_decision_spec && !read_pending_q;
-  wire retry_valid = decision_valid && !decision_resident;
-  wire pin_valid = decision_valid && decision_resident;
-  wire data_valid = run && read_pending_q && c_data_valid_req;
-  wire updated = run && update_pending_q && c_updated_req;
-
-  always_ff @(posedge i_clk) begin
-    if (rst) begin
-      tag_pending_q <= 1'b0;
-      read_pending_q <= 1'b0;
-      update_pending_q <= 1'b0;
-    end else if (run) begin
-      if (decision_valid) tag_pending_q <= 1'b0;
-      else if (engine_lookup_valid && engine_lookup_ready) tag_pending_q <= 1'b1;
-      if (data_valid) read_pending_q <= 1'b0;
-      else if ((engine_read_valid && engine_read_ready) ||
-          (decision_valid && decision_resident && engine_take_spec))
-        read_pending_q <= 1'b1;
-      if (updated) update_pending_q <= 1'b0;
-      else if (engine_update_valid && engine_update_ready) update_pending_q <= 1'b1;
-    end
-  end
-
-  coherence_home_completions #(
+  coherence_home #(
       .ADDR_WIDTH(AddrWidth),
       .LINE_BYTES(LineBytes),
       .CACHE_BYTES(128),
       .WAYS(1),
-      .SLOTS(2),
-      .RESULT_SLOTS(1),
-      .PREFETCH_SLOTS(0)
-  ) completions (
+      .NUM_WB(1),
+      .COMPLETIONS(2),
+      .RESULTS(1),
+      .FILLS(1),
+      .PREFETCH_RESERVE(0),
+      .PREFETCH_SLOTS(0),
+      .ULTRA(1'b0),
+      .PARALLEL_READ(1'b0)
+  ) home (
       .i_clk(i_clk),
       .i_rst(rst),
-      .i_fatal_stop(!run),
+      .i_fatal_stop(fatal),
       .i_d_valid(home_d_valid),
       .o_d_ready(home_d_ready),
       .i_d(home_d),
-      .o_work_valid(work_valid),
-      .i_work_ready(run && engine_idle),
-      .o_work(work),
-      .o_work_tid(work_tid),
-      .o_work_buffer(work_buffer),
-      .o_work_error(work_error),
-      .o_work_counted(),
-      .o_work_nofill(),
-      .o_accepted(),
-      .o_accepted_opcode(),
-      .o_accepted_q(),
-      .o_accepted_addr(),
-      .i_count_valid(decision_valid),
-      .i_count_tid(engine_tid),
-      .o_waiting(),
-      .o_waiting_request(),
-      .i_park(2'b0),
-      .i_wake(2'b0),
-      .i_wake_error(2'b0),
-      .i_retry_park(1'b0),
-      .o_image_index(),
-      .o_image_select(),
-      .i_image_data(engine_image),
-      .i_forward_valid(1'b0),
-      .o_forward_ready(),
-      .i_forward_slots(2'b0),
-      .i_forward_way(1'b0),
-      .i_forward('0),
-      .i_retry_valid(retry_valid),
-      .i_retry_tid(engine_tid),
-      .i_pin_valid(pin_valid),
-      .i_pin_tid(engine_tid),
-      .i_pin_way(1'b0),
-      .i_query_addr(engine_addr),
-      .o_exclude(),
-      .i_next_put_addr(held_put_next),
-      .o_put_busy(put_busy),
-      .i_result_valid(result_valid && run),
-      .o_result_ready(result_ready),
-      .i_result(result_payload),
+      .o_p_valid(home_p_valid),
+      .i_p_ready(home_p_ready),
+      .o_p(home_p),
+      .i_r_valid(home_r_valid),
+      .o_r_ready(home_r_ready),
+      .i_r(home_r),
+      .i_w_valid(home_w_valid),
+      .o_w_ready(home_w_ready),
+      .i_w(home_w),
+      .o_wa_valid(home_wa_valid),
+      .i_wa_ready(home_wa_ready),
+      .o_wa(home_wa),
       .o_g_valid(home_g_valid),
       .i_g_ready(home_g_ready),
       .o_g(home_g),
@@ -941,120 +750,72 @@ module coherence_sc_wa_formal #(
       .i_c(home_c),
       .o_u_valid(home_u_valid),
       .i_u_ready(home_u_ready),
-      .o_u(home_u)
+      .o_u(home_u),
+      .o_prefetch_room(),
+      .o_accepted(),
+      .o_accepted_opcode(),
+      .o_accepted_q(),
+      .o_accepted_addr(),
+      .o_mem_req_valid(mem_req_valid),
+      .i_mem_req_ready(c_mem_req_ready),
+      .o_mem_req_write(mem_req_write),
+      .o_mem_req_addr(mem_req_addr),
+      .o_mem_req_data(),
+      .o_mem_req_mask(),
+      .o_mem_req_id(mem_req_id),
+      .i_mem_resp_valid(mem_resp_valid),
+      .i_mem_resp_id(mem_resp_id),
+      .i_mem_resp_data('0),
+      .i_mem_resp_error(1'b0),
+      .o_perf_events(),
+      .o_write_perf_events(),
+      .o_fatal(home_fatal),
+      .o_fatal_addr()
   );
 
-  coherence_home_engine #(
-      .ADDR_WIDTH(AddrWidth),
-      .LINE_BYTES(LineBytes),
-      .WAYS(1)
-  ) engine (
-      .i_clk(i_clk),
-      .i_rst(rst),
-      .i_stop(!run),
-      .i_work_valid(work_valid && engine_idle),
-      .i_work(work),
-      .i_tid(work_tid),
-      .i_work_error(work_error),
-      .o_idle(engine_idle),
-      .o_lookup_valid(engine_lookup_valid),
-      .i_lookup_ready(engine_lookup_ready),
-      .o_lookup_addr(engine_lookup_addr),
-      .o_addr(engine_addr),
-      .o_tid(engine_tid),
-      .o_opcode(engine_opcode),
-      .o_maintenance(),
-      .o_non_alloc(),
-      .i_decision_valid(decision_valid),
-      .i_decision_resident(decision_resident),
-      .i_decision_way(1'b0),
-      .i_decision_state(2'(coherence_pkg::Shared)),
-      .i_decision_spec(decision_spec),
-      .o_take_spec(engine_take_spec),
-      .o_read_valid(engine_read_valid),
-      .o_read_offer(),
-      .i_read_ready(engine_read_ready),
-      .o_way(),
-      .i_data_valid(data_valid),
-      .i_data(512'b0),
-      .o_p_valid(engine_p_valid),
-      .i_p_ready(engine_p_ready),
-      .o_p(engine_p),
-      .i_r_valid(home_r_valid),
-      .o_r_ready(home_r_ready),
-      .i_r(home_r),
-      .o_wa_valid(ack_valid[0]),
-      .i_wa_ready(ack_ready[0]),
-      .o_wa(ack_payload[0]),
-      .o_update_valid(engine_update_valid),
-      .i_update_ready(engine_update_ready),
-      .o_update_mask(),
-      .o_update_data(),
-      .i_updated(updated),
-      .o_result_valid(engine_result_valid),
-      .i_result_ready(engine_result_ready),
-      .o_result(engine_result_payload),
-      .o_image(engine_image),
-      .o_fatal(engine_fatal)
-  );
-
-  coherence_d_arbiter #(
-      .WIDTH(AddrWidth + 275),
-      .PORTS(1),
-      .HOLD_VALID(1)
-  ) result_arbiter (
-      .i_clk(i_clk),
-      .i_rst(rst),
-      .i_valid(engine_result_valid),
-      .o_ready(engine_result_ready),
-      .i_payload(engine_result_payload),
-      .o_valid(result_valid),
-      .o_selected(),
-      .i_ready(result_ready && run),
-      .o_payload(result_payload)
-  );
-  logic probe_out_valid;
-  logic [AddrWidth+29:0] probe_out;
-  coherence_d_arbiter #(
-      .WIDTH(AddrWidth + 30),
-      .PORTS(1),
-      .HOLD_VALID(1)
-  ) probe_arbiter (
-      .i_clk(i_clk),
-      .i_rst(rst),
-      .i_valid(engine_p_valid),
-      .o_ready(engine_p_ready),
-      .i_payload(engine_p),
-      .o_valid(probe_out_valid),
-      .o_selected(),
-      .i_ready(home_p_ready && run),
-      .o_payload(probe_out)
-  );
-  assign home_p_valid = run && probe_out_valid;
-  assign home_p = probe_out;
-
-  coherence_d_arbiter #(
-      .WIDTH(AddrWidth + 11),
-      .PORTS(3),
-      .HOLD_VALID(1)
-  ) ack_arbiter (
-      .i_clk(i_clk),
-      .i_rst(rst),
-      .i_valid(ack_valid),
-      .o_ready(ack_ready),
-      .i_payload(ack_payload),
-      .o_valid(ack_out_valid),
-      .o_selected(),
-      .i_ready(home_wa_ready && run),
-      .o_payload(ack_out)
-  );
-  assign home_wa_valid = run && ack_out_valid;
-  assign home_wa = ack_out;
-
+  // Read-only observation of production coherence_home internals for invariants and covers.
   coh_g_t  l1d_grant;
   coh_wa_t l1d_wa_pkt;
-  assign l1d_grant  = l1d_g;
+  coh_r_t  home_r_obs, l1d_r_pkt;
+  coh_w_t  home_put_pkt[2];
+  coh_p_t  home_fill_probe;
+  coh_wa_t home_fill_ack;
+  coh_g_t  result_g, comp_buf0_g, comp_buf1_g;
+  assign l1d_grant = l1d_g;
   assign l1d_wa_pkt = l1d_wa;
+  assign home_r_obs = home_r;
+  assign l1d_r_pkt = l1d_r;
+  assign home_put_pkt[0] = home.put_q[0];
+  assign home_put_pkt[1] = home.put_q[1];
+  assign home_fill_probe = home.fill_probe[0];
+  assign home_fill_ack = home.fill_ack_q[0];
+  assign result_g = home.result;
+  assign comp_buf0_g = home.completions.buffer_q[0];
+  assign comp_buf1_g = home.completions.buffer_q[1];
+
+  wire [53:0] home_tag_ram = home.array.gen_tag_block.gen_way[0].tags.o_f_ram;
+  wire [26:0] home_tag_ent0 = home_tag_ram[0+:27];
+  wire [26:0] home_tag_ent1 = home_tag_ram[27+:27];
+
+  localparam logic [2:0] ArrInit = 3'd0, ArrInitDrain = 3'd1, ArrIdle = 3'd2,
+      ArrTags = 3'd3, ArrSelect = 3'd4, ArrReply = 3'd5;
+  localparam logic [2:0] PutFree = 3'd0, PutLookup = 3'd1, PutDecision = 3'd2,
+      PutUpdate = 3'd3, PutUpdateWait = 3'd4, PutAck = 3'd5;
+  localparam logic [3:0] FillFree = 4'd0, FillRecall = 4'd1, FillDetach = 4'd2,
+      FillInvalidate = 4'd3, FillInvalidateWait = 4'd4, FillMemory = 4'd5,
+      FillInstall = 4'd6, FillInstallWait = 4'd7, FillReady = 4'd8;
+  localparam logic [2:0] RecallOffer = 3'd0, RecallWait = 3'd1, RecallAck = 3'd2,
+      RecallDone = 3'd3;
+  localparam logic [3:0] EngFree = 4'd0, EngLookup = 4'd1, EngService = 4'd2,
+      EngUpdate = 4'd3, EngUpdateWait = 4'd4, EngResult = 4'd5;
+  localparam logic [2:0] EngProbeDone = 3'd0, EngProbeOffer = 3'd1,
+      EngProbeWait = 3'd2, EngProbeAck = 3'd3;
+  localparam logic [1:0] PutPresent = 2'd1, PutAccepted = 2'd2;
+  localparam logic [3:0] L1dIdle = 4'd0, L1dLookup = 4'd1, L1dLookupWait = 4'd2,
+      L1dAcquire = 4'd3, L1dFreeze = 4'd4, L1dUpdate = 4'd5, L1dUpdateWait = 4'd6,
+      L1dProbeAbsorb = 4'd7, L1dProbeReply = 4'd8;
+  localparam logic [3:0] L1dOpRead = 4'd0, L1dOpStore = 4'd1, L1dOpGrant = 4'd2,
+      L1dOpProbe = 4'd3, L1dOpMaint = 4'd4, L1dOpAtomicWr = 4'd5, L1dOpSC = 4'd6;
 
   wire sc_ep0_grant = !rst && l1d_g_valid && hart.ep_g_ready[0] &&
       !l1d_grant.error &&
@@ -1071,36 +832,35 @@ module coherence_sc_wa_formal #(
       (hart.wb_live[1] &&
       hart.wb_addr[1][AddrWidth-1:5] != l1d_grant.addr[AddrWidth-1:5]);
 
-  logic sc_wa_ordinary_seen_q, sc_wa_absorbed_seen_q, snapshot_probe_seen_q;
-  coh_r_t home_r_obs;
-  assign home_r_obs = home_r;
-  wire snapshot_probe_dirty = !rst && home_r_valid && home_r_ready &&
-      engine.probe_q.opcode == coherence_pkg::ProbeSnapshot &&
-      !home_r_obs.error && home_r_obs.opcode == coherence_pkg::ProbeData &&
-      home_r_obs.data_valid && !home_r_obs.absorbed;
   wire ep0_sc_live = hart.live[0] && hart.acquisition_q.opcode == coherence_pkg::StoreConditional;
   wire l1d_wa_fire = !rst && l1d_wa_valid && l1d_wa_ready && !l1d_wa_pkt.error;
   wire wa_matches_sc = l1d_wa_fire && ep0_sc_live &&
       l1d_wa_pkt.addr[AddrWidth-1:5] == hart.acquisition_q.addr[AddrWidth-1:5];
 
-  // Protocol-level inductive invariants (all checked as assertions, zero assumptions).
-  coh_r_t l1d_r_pkt;
-  coh_g_t result_g, comp_buf_g;
-  assign l1d_r_pkt  = l1d_r;
-  assign result_g   = result_payload;
-  assign comp_buf_g = completions.buffer_q[0];
+  wire snapshot_probe_dirty = !rst && home_r_valid && home_r_ready &&
+      home.gen_engine[0].service.probe_q.opcode == coherence_pkg::ProbeSnapshot &&
+      !home_r_obs.error && home_r_obs.opcode == coherence_pkg::ProbeData &&
+      home_r_obs.data_valid && !home_r_obs.absorbed;
 
-  localparam logic [3:0] EngFree = 4'd0, EngLookup = 4'd1, EngService = 4'd2,
-      EngUpdate = 4'd3, EngUpdateWait = 4'd4, EngResult = 4'd5;
-  localparam logic [2:0] EngProbeDone = 3'd0, EngProbeOffer = 3'd1,
-      EngProbeWait = 3'd2, EngProbeAck = 3'd3;
-  localparam logic [1:0] PutPresent = 2'd1, PutAccepted = 2'd2;
-  localparam logic [3:0] L1dIdle = 4'd0, L1dLookup = 4'd1, L1dLookupWait = 4'd2,
-      L1dAcquire = 4'd3, L1dFreeze = 4'd4, L1dUpdate = 4'd5, L1dUpdateWait = 4'd6,
-      L1dProbeAbsorb = 4'd7, L1dProbeReply = 4'd8;
-  localparam logic [3:0] L1dOpRead = 4'd0, L1dOpStore = 4'd1, L1dOpGrant = 4'd2,
-      L1dOpProbe = 4'd3, L1dOpMaint = 4'd4, L1dOpAtomicWr = 4'd5, L1dOpSC = 4'd6,
-      L1dOpPrefetch = 4'd7, L1dOpLookahead = 4'd8, L1dOpTwin = 4'd9;
+  wire put0_holds_token = home.array_response && home.array_token_onehot[2] &&
+      home.put_busy_q[0] && !home.put_live[0];
+  wire put1_holds_token = home.array_response && home.array_token_onehot[3] &&
+      home.put_busy_q[1] && !home.put_live[1];
+  wire any_put_holds_token = put0_holds_token || put1_holds_token;
+  wire same_put_holds_token_sc = ep0_sc_live && (
+      (put0_holds_token &&
+       home_put_pkt[0].addr[AddrWidth-1:5] == hart.acquisition_q.addr[AddrWidth-1:5]) ||
+      (put1_holds_token &&
+       home_put_pkt[1].addr[AddrWidth-1:5] == hart.acquisition_q.addr[AddrWidth-1:5]));
+  wire sc_blocked_by_put = !rst && home.array_response && home.decision_engine &&
+      !home.engine_idle[0] &&
+      home.gen_engine[0].service.request_q.opcode == coherence_pkg::StoreConditional &&
+      home.decision_blocked && (|home.put_blocks);
+  wire fill_recall_dirty_fire = !rst && home.fill_phase_q[0] == FillRecall &&
+      home_r_valid && home.fill_r_ready[0] && !home_r_obs.error && home_r_obs.data_valid;
+
+  logic sc_wa_ordinary_seen_q, sc_wa_absorbed_seen_q, snapshot_probe_seen_q;
+  logic sc_same_put_token_seen_q, sc_put_blocked_seen_q, fill_recall_seen_q;
 
   wire ep0_send_d = hart.gen_request[0].request.send_d_phase;
   wire ep0_wait_g = hart.gen_request[0].request.wait_g_phase;
@@ -1110,35 +870,42 @@ module coherence_sc_wa_formal #(
   wire ep0_wait_u = hart.gen_request[0].request.wait_u_phase;
   wire ep0_sc_wait_g = ep0_wait_g && hart.acquisition_q.opcode == coherence_pkg::StoreConditional;
 
-  wire engine_sc_live = !engine_idle &&
-      engine.request_q.opcode == coherence_pkg::StoreConditional &&
-      !engine.failed_q && !engine.error_q;
+  wire eng_idle = home.engine_idle[0];
+  wire [AddrWidth-1:0] eng_addr = home.engine_addr[0];
+  wire [5:0] eng_tid = home.engine_tid[0];
+  wire [3:0] eng_opcode = home.engine_opcode[0];
+  wire [3:0] eng_phase = home.gen_engine[0].service.phase_q;
+  wire [2:0] eng_probe_phase = home.gen_engine[0].service.probe_phase_q;
+
+  wire engine_sc_live = !eng_idle &&
+      eng_opcode == coherence_pkg::StoreConditional &&
+      !home.gen_engine[0].service.failed_q && !home.gen_engine[0].service.error_q;
   wire engine_sc_service = engine_sc_live &&
-      (engine.phase_q == EngService || engine.phase_q == EngUpdate ||
-       engine.phase_q == EngUpdateWait || engine.phase_q == EngResult);
-  wire engine_sc_probing_read = engine_sc_live && engine.phase_q == EngService &&
-      engine.probe_q.opcode == coherence_pkg::ProbeRead &&
-      (engine.probe_phase_q == EngProbeOffer || engine.probe_phase_q == EngProbeWait);
-  wire engine_sc_probe_wait_read = engine_sc_live && engine.phase_q == EngService &&
-      engine.probe_q.opcode == coherence_pkg::ProbeRead &&
-      engine.probe_phase_q == EngProbeWait;
-  wire engine_sc_probe_ack = engine_sc_live && engine.phase_q == EngService &&
-      engine.probe_phase_q == EngProbeAck;
+      (eng_phase == EngService || eng_phase == EngUpdate ||
+       eng_phase == EngUpdateWait || eng_phase == EngResult);
+  wire engine_sc_probing_read = engine_sc_live && eng_phase == EngService &&
+      home.gen_engine[0].service.probe_q.opcode == coherence_pkg::ProbeRead &&
+      (eng_probe_phase == EngProbeOffer || eng_probe_phase == EngProbeWait);
+  wire engine_sc_probe_wait_read = engine_sc_live && eng_phase == EngService &&
+      home.gen_engine[0].service.probe_q.opcode == coherence_pkg::ProbeRead &&
+      eng_probe_phase == EngProbeWait;
+  wire engine_sc_probe_ack = engine_sc_live && eng_phase == EngService &&
+      eng_probe_phase == EngProbeAck;
   wire engine_sc_past_probe = engine_sc_live &&
-      (engine.phase_q == EngUpdate || engine.phase_q == EngUpdateWait ||
-       engine.phase_q == EngResult ||
-       (engine.phase_q == EngService && engine.probe_phase_q == EngProbeDone &&
-        engine.probe_q.opcode == coherence_pkg::ProbeRead));
-  wire engine_sc_update_wait = engine_sc_live && engine.phase_q == EngUpdateWait;
-  wire engine_sc_result = engine_sc_live && engine.phase_q == EngResult;
-  wire result_is_sc_grantm = result_valid && !result_g.error &&
+      (eng_phase == EngUpdate || eng_phase == EngUpdateWait ||
+       eng_phase == EngResult ||
+       (eng_phase == EngService && eng_probe_phase == EngProbeDone &&
+        home.gen_engine[0].service.probe_q.opcode == coherence_pkg::ProbeRead));
+  wire engine_sc_update_wait = engine_sc_live && eng_phase == EngUpdateWait;
+  wire engine_sc_result = engine_sc_live && eng_phase == EngResult;
+  wire result_is_sc_grantm = home.result_valid && !result_g.error &&
       result_g.opcode == coherence_pkg::GrantM && ep0_sc_live &&
       result_g.q == hart.acquisition_q.q &&
       result_g.addr == hart.acquisition_q.addr;
-  wire comp_buf_is_sc_grantm = completions.buffer_ready_q[0] && !comp_buf_g.error &&
-      comp_buf_g.opcode == coherence_pkg::GrantM && ep0_sc_live &&
-      comp_buf_g.q == hart.acquisition_q.q &&
-      comp_buf_g.addr == hart.acquisition_q.addr;
+  wire comp_buf_is_sc_grantm = home.completions.buffer_ready_q[0] && !comp_buf0_g.error &&
+      comp_buf0_g.opcode == coherence_pkg::GrantM && ep0_sc_live &&
+      comp_buf0_g.q == hart.acquisition_q.q &&
+      comp_buf0_g.addr == hart.acquisition_q.addr;
   wire home_g_is_sc_grantm = home_g_valid && !home_g.error &&
       home_g.opcode == coherence_pkg::GrantM && ep0_sc_live &&
       home_g.q == hart.acquisition_q.q &&
@@ -1148,11 +915,15 @@ module coherence_sc_wa_formal #(
   logic [1:0] wa_link_any, wa_link_ge1, wa_link_ge2;
   logic [1:0] wa_link_ord, wa_link_ord_ge1, wa_link_ord_ge2;
   logic [1:0] wa_link_abs, wa_link_abs_ge1, wa_link_abs_ge2;
+  logic [1:0] wa_link_abs_fill, wa_link_abs_fill_ge1, wa_link_abs_fill_ge2;
   logic [1:0] r_link_abs;
   logic r_link_sc_reply_clean, r_link_sc_reply_abs;
   logic [1:0] r_link_sc_reply_abs_slot;
+  logic r_link_fill_reply_clean, r_link_fill_reply_abs;
+  logic [1:0] r_link_fill_reply_abs_slot;
   logic [1:0] g_link_sc_grantm;
-  logic g_link_sc_any;
+  logic g_link_sc_any, g_link_getm_any;
+  logic [AddrWidth-1:0] g_link_getm_addr;
   logic d_link_ep0_any, c_link_ep0_any, g_link_ep0_any, u_link_ep0_any;
   logic p_link_any, r_link_any, w_link_ret_any, w_link_ret_last;
   if (LINK_STAGES == 0) begin : gen_obs_s0
@@ -1165,12 +936,20 @@ module coherence_sc_wa_formal #(
     assign wa_link_abs = 2'b00;
     assign wa_link_abs_ge1 = 2'b00;
     assign wa_link_abs_ge2 = 2'b00;
+    assign wa_link_abs_fill = 2'b00;
+    assign wa_link_abs_fill_ge1 = 2'b00;
+    assign wa_link_abs_fill_ge2 = 2'b00;
     assign r_link_abs = 2'b00;
     assign r_link_sc_reply_clean = 1'b0;
     assign r_link_sc_reply_abs = 1'b0;
     assign r_link_sc_reply_abs_slot = 2'b00;
+    assign r_link_fill_reply_clean = 1'b0;
+    assign r_link_fill_reply_abs = 1'b0;
+    assign r_link_fill_reply_abs_slot = 2'b00;
     assign g_link_sc_grantm = 2'b00;
     assign g_link_sc_any = 1'b0;
+    assign g_link_getm_any = 1'b0;
+    assign g_link_getm_addr = '0;
     assign d_link_ep0_any = 1'b0;
     assign c_link_ep0_any = 1'b0;
     assign g_link_ep0_any = 1'b0;
@@ -1200,12 +979,20 @@ module coherence_sc_wa_formal #(
       wa_link_abs = 2'b00;
       wa_link_abs_ge1 = 2'b00;
       wa_link_abs_ge2 = 2'b00;
+      wa_link_abs_fill = 2'b00;
+      wa_link_abs_fill_ge1 = 2'b00;
+      wa_link_abs_fill_ge2 = 2'b00;
       r_link_abs = 2'b00;
       r_link_sc_reply_clean = 1'b0;
       r_link_sc_reply_abs = 1'b0;
       r_link_sc_reply_abs_slot = 2'b00;
+      r_link_fill_reply_clean = 1'b0;
+      r_link_fill_reply_abs = 1'b0;
+      r_link_fill_reply_abs_slot = 2'b00;
       g_link_sc_grantm = 2'b00;
       g_link_sc_any = 1'b0;
+      g_link_getm_any = 1'b0;
+      g_link_getm_addr = '0;
       for (int s = 0; s < int'(LINK_STAGES); s++) begin
         coh_wa_t wa_s;
         coh_r_t  r_s;
@@ -1215,7 +1002,7 @@ module coherence_sc_wa_formal #(
         g_s  = link_g.gen_always.payload_q[s*(AddrWidth+275)+:(AddrWidth+275)];
         if (link_r.gen_always.valid_q[s] && !r_s.error &&
             engine_sc_probe_wait_read &&
-            r_s.tid == engine_tid && r_s.addr == engine_addr &&
+            r_s.tid == eng_tid && r_s.addr == eng_addr &&
             (r_s.opcode == coherence_pkg::ProbeAck || r_s.opcode == coherence_pkg::ProbeData)) begin
           if (r_s.absorbed) begin
             r_link_sc_reply_abs = 1'b1;
@@ -1224,11 +1011,25 @@ module coherence_sc_wa_formal #(
             r_link_sc_reply_clean = 1'b1;
           end
         end
+        if (link_r.gen_always.valid_q[s] && !r_s.error &&
+            home.fill_phase_q[0] == FillRecall && home.recall_phase_q[0] == RecallWait &&
+            r_s.tid == FillTid && r_s.addr == home_fill_probe.addr &&
+            (r_s.opcode == coherence_pkg::ProbeAck || r_s.opcode == coherence_pkg::ProbeData)) begin
+          if (r_s.absorbed) begin
+            r_link_fill_reply_abs = 1'b1;
+            r_link_fill_reply_abs_slot[r_s.put_id] = 1'b1;
+          end else begin
+            r_link_fill_reply_clean = 1'b1;
+          end
+        end
         if (link_g.gen_always.valid_q[s] && !g_s.error &&
-            g_s.opcode == coherence_pkg::GrantM &&
-            ep0_sc_live && g_s.q == hart.acquisition_q.q &&
-            g_s.addr == hart.acquisition_q.addr)
-          g_link_sc_any = 1'b1;
+            g_s.opcode == coherence_pkg::GrantM) begin
+          g_link_getm_any  = 1'b1;
+          g_link_getm_addr = g_s.addr;
+          if (ep0_sc_live && g_s.q == hart.acquisition_q.q &&
+              g_s.addr == hart.acquisition_q.addr)
+            g_link_sc_any = 1'b1;
+        end
         for (int slot = 0; slot < 2; slot++) begin
           if (link_wa.gen_always.valid_q[s] && !wa_s.error &&
               wa_s.put_id == 1'(slot) &&
@@ -1245,6 +1046,11 @@ module coherence_sc_wa_formal #(
               wa_link_abs[slot] = 1'b1;
               if (s >= 1) wa_link_abs_ge1[slot] = 1'b1;
               if (s >= 2) wa_link_abs_ge2[slot] = 1'b1;
+              if (wa_s.tid == FillTid) begin
+                wa_link_abs_fill[slot] = 1'b1;
+                if (s >= 1) wa_link_abs_fill_ge1[slot] = 1'b1;
+                if (s >= 2) wa_link_abs_fill_ge2[slot] = 1'b1;
+              end
             end
           end
           if (link_r.gen_always.valid_q[s] && !r_s.error && r_s.absorbed &&
@@ -1263,21 +1069,41 @@ module coherence_sc_wa_formal #(
 
   wire l1d_r_sc_clean = l1d_r_valid && !l1d_r_pkt.error && !l1d_r_pkt.absorbed &&
       engine_sc_probe_wait_read &&
-      l1d_r_pkt.tid == engine_tid && l1d_r_pkt.addr == engine_addr &&
+      l1d_r_pkt.tid == eng_tid && l1d_r_pkt.addr == eng_addr &&
       (l1d_r_pkt.opcode == coherence_pkg::ProbeAck ||
        l1d_r_pkt.opcode == coherence_pkg::ProbeData);
   wire l1d_r_sc_abs = l1d_r_valid && !l1d_r_pkt.error && l1d_r_pkt.absorbed &&
       engine_sc_probe_wait_read &&
-      l1d_r_pkt.tid == engine_tid && l1d_r_pkt.addr == engine_addr &&
+      l1d_r_pkt.tid == eng_tid && l1d_r_pkt.addr == eng_addr &&
       l1d_r_pkt.opcode == coherence_pkg::ProbeData;
   wire l1d_probe_reply_sc_clean = hart.phase_q == L1dProbeReply && !hart.reply_q.error &&
       !hart.reply_q.absorbed && engine_sc_probe_wait_read &&
       hart.probe_q.opcode == coherence_pkg::ProbeRead &&
-      hart.reply_q.tid == engine_tid && hart.reply_q.addr == engine_addr;
+      hart.reply_q.tid == eng_tid && hart.reply_q.addr == eng_addr;
   wire l1d_probe_reply_sc_abs = hart.phase_q == L1dProbeReply && !hart.reply_q.error &&
       hart.reply_q.absorbed && engine_sc_probe_wait_read &&
       hart.probe_q.opcode == coherence_pkg::ProbeRead &&
-      hart.reply_q.tid == engine_tid && hart.reply_q.addr == engine_addr;
+      hart.reply_q.tid == eng_tid && hart.reply_q.addr == eng_addr;
+
+  wire fill_recall_wait = home.fill_phase_q[0] == FillRecall &&
+      home.recall_phase_q[0] == RecallWait;
+  wire l1d_r_fill_clean = l1d_r_valid && !l1d_r_pkt.error && !l1d_r_pkt.absorbed &&
+      fill_recall_wait && l1d_r_pkt.tid == FillTid &&
+      l1d_r_pkt.addr == home_fill_probe.addr &&
+      (l1d_r_pkt.opcode == coherence_pkg::ProbeAck ||
+       l1d_r_pkt.opcode == coherence_pkg::ProbeData);
+  wire l1d_r_fill_abs = l1d_r_valid && !l1d_r_pkt.error && l1d_r_pkt.absorbed &&
+      fill_recall_wait && l1d_r_pkt.tid == FillTid &&
+      l1d_r_pkt.addr == home_fill_probe.addr &&
+      l1d_r_pkt.opcode == coherence_pkg::ProbeData;
+  wire l1d_probe_reply_fill_clean = hart.phase_q == L1dProbeReply && !hart.reply_q.error &&
+      !hart.reply_q.absorbed && fill_recall_wait &&
+      hart.probe_q.opcode == coherence_pkg::ProbeRead &&
+      hart.reply_q.tid == FillTid && hart.reply_q.addr == home_fill_probe.addr;
+  wire l1d_probe_reply_fill_abs = hart.phase_q == L1dProbeReply && !hart.reply_q.error &&
+      hart.reply_q.absorbed && fill_recall_wait &&
+      hart.probe_q.opcode == coherence_pkg::ProbeRead &&
+      hart.reply_q.tid == FillTid && hart.reply_q.addr == home_fill_probe.addr;
 
   wire sc_grant_pipeline = engine_sc_service || result_is_sc_grantm ||
       comp_buf_is_sc_grantm || home_g_is_sc_grantm || g_link_sc_any;
@@ -1287,23 +1113,65 @@ module coherence_sc_wa_formal #(
   coh_g_t ep0_grant_pkt;
   coh_c_t ep0_comp_pkt;
   assign ep0_demand = hart.gen_request[0].request.demand_q;
-  assign comp_work[0] = completions.work[0];
-  assign comp_work[1] = completions.work[1];
+  assign comp_work[0] = home.completions.work[0];
+  assign comp_work[1] = home.completions.work[1];
   assign ep0_grant_pkt = hart.gen_request[0].request.grant_q;
   assign ep0_comp_pkt = hart.gen_request[0].request.completion_q;
 
-  // L1D 1-way 2-set array tag and writeback disjointness invariants.
+  function automatic logic home_block_resident(
+      input logic [2:0] arr_phase,
+      input logic [26:0] ent0,
+      input logic [26:0] ent1,
+      input logic [AddrWidth-1:0] addr
+  );
+    logic [26:0] ent;
+    ent = addr[6] ? ent1 : ent0;
+    home_block_resident = arr_phase != ArrInit && ent[26:25] != 2'b00 &&
+        ent[24:0] == addr[AddrWidth-1:7];
+  endfunction
+
+  function automatic logic home_fill_installing(
+      input logic [3:0] fphase,
+      input logic [AddrWidth-1:0] faddr,
+      input logic [AddrWidth-1:0] addr
+  );
+    home_fill_installing = (fphase == FillInstall || fphase == FillInstallWait) &&
+        faddr[AddrWidth-1:6] == addr[AddrWidth-1:6];
+  endfunction
+
+  function automatic logic home_fill_invalidating(
+      input logic [3:0] fphase,
+      input logic fvic,
+      input logic [AddrWidth-1:0] fold,
+      input logic [AddrWidth-1:0] addr
+  );
+    home_fill_invalidating = (fphase == FillDetach || fphase == FillInvalidate ||
+        fphase == FillInvalidateWait) && fvic && fold[AddrWidth-1:6] == addr[AddrWidth-1:6];
+  endfunction
+
+  // L1D 1-way 2-set array tag, writeback disjointness, and L2 inclusion invariants.
   localparam int unsigned ArrTagBits = AddrWidth - 6;
   localparam int unsigned ArrEntryBits = ArrTagBits + 3;
   logic inv_wb_tag_ok, inv_arr_ok, inv_freeze_ok, inv_grant_wb_ok;
+  logic inv_home_arr_ok, inv_home_fill_ok, inv_home_incl_ok, inv_home_cmp_ok;
   always_comb begin
     logic [ArrEntryBits-1:0] ent;
     logic is_mod;
     logic [AddrWidth-6:0] sec;
+    logic [AddrWidth-1:0] sec_addr;
+    logic [26:0] h_ent;
+    logic [3:0] tag_owners, read_owners, upd_owners;
+    int tag_cnt, read_cnt, upd_cnt;
     inv_wb_tag_ok = 1'b1;
     inv_arr_ok = 1'b1;
     inv_freeze_ok = 1'b1;
     inv_grant_wb_ok = 1'b1;
+    inv_home_arr_ok = 1'b1;
+    inv_home_fill_ok = 1'b1;
+    inv_home_incl_ok = 1'b1;
+    inv_home_cmp_ok = 1'b1;
+
+    // L1D array and phase consistency.
     if (hart.f_arr_phase > 4'd5) inv_arr_ok = 1'b0;
     if (hart.active && hart.phase_q == L1dLookupWait) begin
       if (hart.f_arr_phase == 4'd0 || hart.f_arr_phase == 4'd1 || hart.f_arr_phase == 4'd5)
@@ -1490,7 +1358,13 @@ module coherence_sc_wa_formal #(
       if (hart.update_mask_q != '0 ||
           hart.update_addr_q[AddrWidth-1:5] != hart.probe_q.addr[AddrWidth-1:5] ||
           ent[ArrTagBits+:2] == 2'b00 ||
-          ent[ArrTagBits-1:0] != hart.update_addr_q[AddrWidth-1:6])
+          ent[ArrTagBits-1:0] != hart.update_addr_q[AddrWidth-1:6] ||
+          (hart.probe_q.opcode == coherence_pkg::ProbeRead &&
+           hart.state_q != coherence_pkg::Shared) ||
+          (hart.probe_q.opcode == coherence_pkg::ProbeInvalidate &&
+           hart.state_q != coherence_pkg::Invalid) ||
+          (hart.probe_q.opcode == coherence_pkg::ProbeSnapshot &&
+           hart.state_q != coherence_pkg::Modified))
         inv_freeze_ok = 1'b0;
     end
     if (hart.active && hart.phase_q >= 4'd9 && hart.phase_q <= 4'd12) begin
@@ -1507,6 +1381,7 @@ module coherence_sc_wa_formal #(
       is_mod = (ent[ArrTagBits+:2] == 2'b11) &&
           (hart.f_arr_phase != 4'd0 || set_i < int'(hart.f_arr_init_set));
       sec = {ent[ArrTagBits-1:0], 1'(set_i)};
+      sec_addr = {sec, 5'b0};
       for (int s = 0; s < 2; s++) begin
         if (hart.wb_live[s] && is_mod && sec == hart.wb_addr[s][AddrWidth-1:5]) begin
           if (!(hart.phase_q == L1dUpdate && hart.operation_q == L1dOpGrant &&
@@ -1515,6 +1390,30 @@ module coherence_sc_wa_formal #(
                 hart.update_addr_q[5] == 1'(set_i) &&
                 hart.update_addr_q[AddrWidth-1:5] != sec))
             inv_wb_tag_ok = 1'b0;
+        end
+      end
+      // L2 inclusion for L1D Modified sectors.
+      if (is_mod) begin
+        if (!(home_block_resident(home.array.phase_q, home_tag_ent0, home_tag_ent1, sec_addr) ||
+              home_fill_installing(home.fill_phase_q[0], home.fill_addr_q[0], sec_addr)))
+          inv_home_incl_ok = 1'b0;
+        if (home_fill_invalidating(
+                home.fill_phase_q[0], home.fill_victim_q[0], home.fill_old_addr_q[0], sec_addr))
+          inv_home_incl_ok = 1'b0;
+        if (home.fill_phase_q[0] == FillRecall && home.fill_victim_q[0] &&
+            home.fill_old_addr_q[0][AddrWidth-1:6] == sec_addr[AddrWidth-1:6]) begin
+          if (sec_addr[5] == 1'b0 &&
+              (home.fill_sector_q[0] || home.recall_phase_q[0] == RecallAck ||
+               home.recall_phase_q[0] == RecallDone || l1d_probe_reply_fill_clean ||
+               l1d_probe_reply_fill_abs || l1d_r_fill_clean || l1d_r_fill_abs ||
+               r_link_fill_reply_clean || r_link_fill_reply_abs))
+            inv_home_incl_ok = 1'b0;
+          if (sec_addr[5] == 1'b1 && home.fill_sector_q[0] &&
+              (home.recall_phase_q[0] == RecallAck || home.recall_phase_q[0] == RecallDone ||
+               l1d_probe_reply_fill_clean || l1d_probe_reply_fill_abs ||
+               l1d_r_fill_clean || l1d_r_fill_abs ||
+               r_link_fill_reply_clean || r_link_fill_reply_abs))
+            inv_home_incl_ok = 1'b0;
         end
       end
     end
@@ -1540,7 +1439,417 @@ module coherence_sc_wa_formal #(
             (hart.phase_q == L1dLookup || hart.phase_q == L1dLookupWait) &&
             hart.lookup_addr_q[AddrWidth-1:5] == hart.wb_addr[s][AddrWidth-1:5])
           inv_grant_wb_ok = 1'b0;
+        // L2 inclusion for L1D wb_live slots (except absorbed fill-recall WA already in link_wa).
+        if (!wa_link_abs_fill[s]) begin
+          if (!(home_block_resident(
+                  home.array.phase_q, home_tag_ent0, home_tag_ent1, hart.wb_addr[s]) ||
+                home_fill_installing(home.fill_phase_q[0], home.fill_addr_q[0], hart.wb_addr[s])))
+            inv_home_incl_ok = 1'b0;
+          if (home_fill_invalidating(
+                  home.fill_phase_q[0], home.fill_victim_q[0],
+                  home.fill_old_addr_q[0], hart.wb_addr[s]))
+            inv_home_incl_ok = 1'b0;
+          if (home.fill_phase_q[0] == FillRecall && home.fill_victim_q[0] &&
+              home.fill_old_addr_q[0][AddrWidth-1:6] == hart.wb_addr[s][AddrWidth-1:6]) begin
+            if (hart.wb_addr[s][5] == 1'b0 &&
+                (home.fill_sector_q[0] || home.recall_phase_q[0] == RecallDone ||
+                 (home.recall_phase_q[0] == RecallAck &&
+                  !(home_fill_ack.absorbed && home_fill_ack.put_id == 1'(s))) ||
+                 l1d_probe_reply_fill_clean || l1d_r_fill_clean || r_link_fill_reply_clean ||
+                 (l1d_probe_reply_fill_abs && hart.reply_q.put_id != 1'(s)) ||
+                 (l1d_r_fill_abs && l1d_r_pkt.put_id != 1'(s)) ||
+                 (r_link_fill_reply_abs && !r_link_fill_reply_abs_slot[s])))
+              inv_home_incl_ok = 1'b0;
+            if (hart.wb_addr[s][5] == 1'b1 && home.fill_sector_q[0] &&
+                (home.recall_phase_q[0] == RecallDone ||
+                 (home.recall_phase_q[0] == RecallAck &&
+                  !(home_fill_ack.absorbed && home_fill_ack.put_id == 1'(s))) ||
+                 l1d_probe_reply_fill_clean || l1d_r_fill_clean || r_link_fill_reply_clean ||
+                 (l1d_probe_reply_fill_abs && hart.reply_q.put_id != 1'(s)) ||
+                 (l1d_r_fill_abs && l1d_r_pkt.put_id != 1'(s)) ||
+                 (r_link_fill_reply_abs && !r_link_fill_reply_abs_slot[s])))
+              inv_home_incl_ok = 1'b0;
+          end
+        end
+        // Pipeline bound for fill-recall absorbed WA draining through link_wa.
+        if (wa_link_abs_fill[s]) begin
+          if (home.fill_phase_q[0] == FillInvalidate && !wa_link_abs_fill_ge1[s])
+            inv_home_incl_ok = 1'b0;
+          if (home.fill_phase_q[0] == FillInvalidateWait &&
+              !((home.array.write_valid_q[0] && home.array.write_token_q[0] == 2'd1) ?
+                wa_link_abs_fill_ge2[s] : 1'b0))
+            inv_home_incl_ok = 1'b0;
+          if (home.fill_phase_q[0] == FillMemory || home.fill_phase_q[0] == FillInstall ||
+              home.fill_phase_q[0] == FillInstallWait || home.fill_phase_q[0] == FillReady ||
+              home.fill_phase_q[0] == FillFree)
+            inv_home_incl_ok = 1'b0;
+        end
       end
+    end
+    // L2 inclusion for live GrantM in L1D/links/completions (excluding FillInstall forward window).
+    if (hart.live[0] && (ep0_grant_ph || (ep0_done_ph && !hart.done_q &&
+        hart.operation_q == L1dOpGrant &&
+        (hart.phase_q == L1dLookup || hart.phase_q == L1dLookupWait ||
+         hart.phase_q == L1dFreeze || hart.phase_q == L1dUpdate))) &&
+        !ep0_grant_pkt.error && coherence_pkg::is_grantm(ep0_grant_pkt.opcode)) begin
+      if (!(home_block_resident(
+              home.array.phase_q, home_tag_ent0, home_tag_ent1, hart.acquisition_q.addr) ||
+            home_fill_installing(
+              home.fill_phase_q[0], home.fill_addr_q[0], hart.acquisition_q.addr)))
+        inv_home_incl_ok = 1'b0;
+      if (home_fill_invalidating(
+              home.fill_phase_q[0], home.fill_victim_q[0],
+              home.fill_old_addr_q[0], hart.acquisition_q.addr) ||
+          (home.fill_phase_q[0] == FillRecall && home.fill_victim_q[0] &&
+           home.fill_old_addr_q[0][AddrWidth-1:6] == hart.acquisition_q.addr[AddrWidth-1:6]))
+        inv_home_incl_ok = 1'b0;
+    end
+    if (g_link_getm_any) begin
+      if (!(home_block_resident(
+              home.array.phase_q, home_tag_ent0, home_tag_ent1, g_link_getm_addr) ||
+            home_fill_installing(home.fill_phase_q[0], home.fill_addr_q[0], g_link_getm_addr)))
+        inv_home_incl_ok = 1'b0;
+      if (home_fill_invalidating(
+              home.fill_phase_q[0], home.fill_victim_q[0],
+              home.fill_old_addr_q[0], g_link_getm_addr) ||
+          (home.fill_phase_q[0] == FillRecall && home.fill_victim_q[0] &&
+           home.fill_old_addr_q[0][AddrWidth-1:6] == g_link_getm_addr[AddrWidth-1:6]))
+        inv_home_incl_ok = 1'b0;
+    end
+    for (int p = 0; p < 2; p++) begin
+      if (home.put_busy_q[p]) begin
+        if (!home_block_resident(
+                home.array.phase_q, home_tag_ent0, home_tag_ent1, home_put_pkt[p].addr))
+          inv_home_incl_ok = 1'b0;
+        if (home.fill_blocking_q[0] &&
+            (home.fill_addr_q[0][AddrWidth-1:6] == home_put_pkt[p].addr[AddrWidth-1:6] ||
+             (home.fill_victim_q[0] &&
+              home.fill_old_addr_q[0][AddrWidth-1:6] == home_put_pkt[p].addr[AddrWidth-1:6])))
+          inv_home_incl_ok = 1'b0;
+      end
+    end
+
+    // Production coherence_home_array invariants (ULTRA=0, WAYS=1, Sets=2).
+    tag_owners = {
+        home.put_phase_q[1] == PutDecision,
+        home.put_phase_q[0] == PutDecision,
+        1'b0,
+        eng_phase == EngLookup && home.gen_engine[0].service.lookup_sent_q
+    };
+    read_owners = {
+        1'b0,
+        1'b0,
+        home.fill_phase_q[0] == FillRecall &&
+            home.fill_read_sent_q[0] && !home.fill_read_done_q[0],
+        eng_phase == EngService &&
+            home.gen_engine[0].service.read_sent_q && !home.gen_engine[0].service.read_done_q
+    };
+    upd_owners = {
+        home.put_phase_q[1] == PutUpdateWait,
+        home.put_phase_q[0] == PutUpdateWait,
+        home.fill_phase_q[0] == FillInvalidateWait || home.fill_phase_q[0] == FillInstallWait,
+        eng_phase == EngUpdateWait
+    };
+    tag_cnt = $countones(tag_owners);
+    read_cnt = $countones(read_owners);
+    upd_cnt = $countones(upd_owners);
+
+    if (home.array.phase_q > ArrReply) inv_home_arr_ok = 1'b0;
+    if (home.array.token_onehot_q != (4'b0001 << home.array.token_q)) inv_home_arr_ok = 1'b0;
+    if (home.array.read_open_q != 3'b000 || home.array.spec_want_q) inv_home_arr_ok = 1'b0;
+    if (home.array.o_read_valid != home.array.read_valid_q[2]) inv_home_arr_ok = 1'b0;
+    if (home.array.phase_q == ArrInit || home.array.phase_q == ArrInitDrain ||
+        home.array.phase_q == ArrIdle) begin
+      if (tag_cnt != 0) inv_home_arr_ok = 1'b0;
+    end else begin
+      if (tag_cnt != 1 || !tag_owners[home.array.token_q]) inv_home_arr_ok = 1'b0;
+      if (home.array.phase_q == ArrTags && home.array.count_q != 2'd1) inv_home_arr_ok = 1'b0;
+      if (home.array.token_q == 2'd0 &&
+          home.array_query[AddrWidth-1:6] != eng_addr[AddrWidth-1:6])
+        inv_home_arr_ok = 1'b0;
+      if (home.array.token_q == 2'd2 &&
+          home.array_query[AddrWidth-1:6] != home_put_pkt[0].addr[AddrWidth-1:6])
+        inv_home_arr_ok = 1'b0;
+      if (home.array.token_q == 2'd3 &&
+          home.array_query[AddrWidth-1:6] != home_put_pkt[1].addr[AddrWidth-1:6])
+        inv_home_arr_ok = 1'b0;
+    end
+    h_ent = home.array.set_q ? home_tag_ent1 : home_tag_ent0;
+    if (home.array.phase_q == ArrTags && home.array.tag_rdata[0] != h_ent)
+      inv_home_arr_ok = 1'b0;
+    if (home.array.phase_q == ArrSelect || home.array.phase_q == ArrReply) begin
+      if (home.array.tags_q[0] != h_ent) inv_home_arr_ok = 1'b0;
+    end
+    if (home.array.phase_q == ArrReply) begin
+      if (home.array_way != 1'b0 ||
+          home.array_hit != (h_ent[26:25] != 2'b00 && h_ent[24:0] == home.array.tag_q) ||
+          home.array_state != h_ent[26:25] ||
+          home.array_addr != {h_ent[24:0], home.array.set_q, 6'b0} ||
+          (home.array_hit && !home.array_available) ||
+          (!home.array_hit && home.array_available && home.array_exclude[0]))
+        inv_home_arr_ok = 1'b0;
+    end
+    if ($countones(home.array.read_valid_q) != read_cnt) inv_home_arr_ok = 1'b0;
+    for (int st = 0; st < 3; st++) begin
+      if (home.array.read_valid_q[st]) begin
+        if (!read_owners[home.array.read_token_q[st]] || home.array.read_way_q[st] != 1'b0)
+          inv_home_arr_ok = 1'b0;
+        for (int oth = st + 1; oth < 3; oth++)
+        if (home.array.read_valid_q[oth] &&
+            home.array.read_token_q[st] == home.array.read_token_q[oth])
+          inv_home_arr_ok = 1'b0;
+      end
+    end
+    if ($countones(home.array.write_valid_q) != upd_cnt) inv_home_arr_ok = 1'b0;
+    for (int st = 0; st < 2; st++) begin
+      if (home.array.write_valid_q[st]) begin
+        if (!upd_owners[home.array.write_token_q[st]]) inv_home_arr_ok = 1'b0;
+        for (int oth = st + 1; oth < 2; oth++)
+        if (home.array.write_valid_q[oth] &&
+            home.array.write_token_q[st] == home.array.write_token_q[oth])
+          inv_home_arr_ok = 1'b0;
+      end
+    end
+    if (home.array.phase_q == ArrInit || home.array.phase_q == ArrInitDrain) begin
+      if (home.array.read_valid_q != 3'b0 || home.array.write_valid_q != 2'b0 ||
+          home.fill_phase_q[0] != FillFree || home.put_busy_q != 2'b00 ||
+          home.completions.pin_valid_q != 2'b00 || (!eng_idle && eng_phase != EngLookup))
+        inv_home_arr_ok = 1'b0;
+      if (home.array.phase_q == ArrInit && home.array.init_set_q && home_tag_ent0 != 27'b0)
+        inv_home_arr_ok = 1'b0;
+      if (home.array.phase_q == ArrInitDrain && (home_tag_ent0 != 27'b0 || home_tag_ent1 != 27'b0))
+        inv_home_arr_ok = 1'b0;
+    end
+
+    // Registered decision and W-readiness comparators in production coherence_home.
+    if (home.array.phase_q == ArrSelect || home.array.phase_q == ArrReply) begin
+      if (home.wb_block_q[0] !=
+              (home.wb_addr_q[0][AddrWidth-1:6] == home.array_query[AddrWidth-1:6]) ||
+          home.wb_set_q[0] != (home.wb_addr_q[0][6] == home.array_query[6]) ||
+          home.fill_block_q[0] !=
+              (home.fill_addr_q[0][AddrWidth-1:6] == home.array_query[AddrWidth-1:6]) ||
+          home.fill_old_block_q[0] !=
+              (home.fill_old_addr_q[0][AddrWidth-1:6] == home.array_query[AddrWidth-1:6]) ||
+          home.fill_set_q[0] != (home.fill_addr_q[0][6] == home.array_query[6]))
+        inv_home_cmp_ok = 1'b0;
+      for (int p = 0; p < 2; p++) begin
+        if (!home.put_accepted_q[p] &&
+            (home.put_sector_q[p] !=
+                (home_put_pkt[p].addr[AddrWidth-1:5] == home.decision_addr[AddrWidth-1:5]) ||
+             home.put_set_q[p] != (home_put_pkt[p].addr[6] == home.array_query[6])))
+          inv_home_cmp_ok = 1'b0;
+        if (home.put_accepted_q[p] &&
+            (!home.put_busy_q[p] || home.put_phase_q[p] != PutLookup ||
+             home.held_put_sector_q !=
+                (home_put_pkt[p].addr[AddrWidth-1:5] == home.decision_addr[AddrWidth-1:5]) ||
+             home.held_put_set_q != (home_put_pkt[p].addr[6] == home.array_query[6])))
+          inv_home_cmp_ok = 1'b0;
+      end
+      for (int slot = 0; slot < 2; slot++) begin
+        if (home.completions.pin_valid_q[slot] &&
+            home.completions.query_set_q[slot] !=
+                (home.completions.work_address[slot][6] == home.array_query[6]))
+          inv_home_cmp_ok = 1'b0;
+      end
+    end
+    if (home.array.phase_q == ArrReply) begin
+      if (home.wb_tag_q[0][0] != (home.wb_addr_q[0][AddrWidth-1:7] == home.array_tags[0]))
+        inv_home_cmp_ok = 1'b0;
+      for (int p = 0; p < 2; p++) begin
+        if (!home.put_accepted_q[p] &&
+            home.put_tag_q[p][0] != (home_put_pkt[p].addr[AddrWidth-1:7] == home.array_tags[0]))
+          inv_home_cmp_ok = 1'b0;
+        if (home.put_accepted_q[p] &&
+            home.held_put_tag_q[0] != (home_put_pkt[p].addr[AddrWidth-1:7] == home.array_tags[0]))
+          inv_home_cmp_ok = 1'b0;
+      end
+      if (!home.engine_accepted_q[0] &&
+          (home.engine_set_q[0] != (eng_addr[6] == home.array_query[6]) ||
+           home.engine_tag_q[0][0] != (eng_addr[AddrWidth-1:7] == home.array_tags[0])))
+        inv_home_cmp_ok = 1'b0;
+      if (home.engine_accepted_q[0] &&
+          (eng_idle ||
+           home.work_set_q != (eng_addr[6] == home.array_query[6]) ||
+           home.work_tag_q[0] != (eng_addr[AddrWidth-1:7] == home.array_tags[0])))
+        inv_home_cmp_ok = 1'b0;
+      if (home.put_selected_q &&
+          (home.held_put_set_q != (home.selected_put_q.addr[6] == home.array_query[6]) ||
+           home.held_put_tag_q[0] !=
+               (home.selected_put_q.addr[AddrWidth-1:7] == home.array_tags[0])))
+        inv_home_cmp_ok = 1'b0;
+    end
+    // W readiness registered blocking terms when put_selected_q holds.
+    if (home.put_selected_q) begin
+      if (home.fill_blocking_q[0] &&
+          (home.fill_addr_q[0][AddrWidth-1:6] == home.selected_put_q.addr[AddrWidth-1:6] ||
+           (home.fill_victim_q[0] &&
+            home.fill_old_addr_q[0][AddrWidth-1:6] == home.selected_put_q.addr[AddrWidth-1:6])) &&
+          !home.put_held_blocked)
+        inv_home_cmp_ok = 1'b0;
+      if (home.wb_valid_q[0] &&
+          home.wb_addr_q[0][AddrWidth-1:6] == home.selected_put_q.addr[AddrWidth-1:6] &&
+          !home.put_held_blocked)
+        inv_home_cmp_ok = 1'b0;
+      if (home.fill_allocated_q &&
+          home.fill_phase_q[0] != FillFree &&
+          home.fill_addr_q[0][AddrWidth-1:6] == home.selected_put_q.addr[AddrWidth-1:6] &&
+          !home.put_query_q)
+        inv_home_cmp_ok = 1'b0;
+      if (home.victim_allocated_q &&
+          home.fill_phase_q[0] != FillFree && home.fill_victim_q[0] &&
+          home.fill_old_addr_q[0][AddrWidth-1:6] == home.selected_put_q.addr[AddrWidth-1:6] &&
+          !home.put_victim_q)
+        inv_home_cmp_ok = 1'b0;
+    end
+
+    // Production coherence_home fill, writeback, forward, and memory invariants.
+    if (home.fill_phase_q[0] > FillReady || home.recall_phase_q[0] > RecallDone ||
+        home.fill_cmo_q[0] || home.fill_cmo_hit_q[0] || home.fill_cmo_clean_q[0] ||
+        home.fill_cmo_inval_q[0] || home.fill_cmo_wb_q[0] || home.fill_prefetch_q[0] ||
+        home.fill_zero_q[0] || home.zero_clear_q[0] || home.fill_error_q[0] ||
+        home.lookup_prefetch_q || home.lookup_fill_q || home.lookup_cmo_q ||
+        home.prefetch_fill_q || home.engine_prefetch_q[0] || home.engine_nofill_q[0] ||
+        home.engine_cmo_q[0] || home.fill_way_q[0] != 1'b0 || home.fill_wb_q[0] != 1'b0)
+      inv_home_fill_ok = 1'b0;
+    if (home.fill_live_q[0] != (home.fill_phase_q[0] != FillFree) ||
+        home.fill_blocking_q[0] !=
+            (home.fill_phase_q[0] != FillFree && home.fill_phase_q[0] != FillReady) ||
+        home.gen_fill[0].fill_install_q != (home.fill_phase_q[0] == FillInstall) ||
+        home.gen_fill[0].fill_invalidate_q != (home.fill_phase_q[0] == FillInvalidate) ||
+        home.forward_pick_q[0] != home.fill_forward_q[0] ||
+        int'(home.fill_seat_count_q[0]) != $countones(home.fill_seats_q[0]) ||
+        !$onehot0(home.fill_primary_q[0]) ||
+        (home.fill_primary_q[0] & ~home.fill_seats_q[0]) != 2'b00 ||
+        home.fill_forward_q[0] != (home.fill_primary_q[0] != 2'b00 &&
+            (home.fill_phase_q[0] == FillInstall || home.fill_phase_q[0] == FillInstallWait ||
+             home.fill_phase_q[0] == FillReady)))
+      inv_home_fill_ok = 1'b0;
+    if (home.fill_phase_q[0] == FillFree &&
+        (home.fill_seats_q[0] != 2'b00 || home.fill_primary_q[0] != 2'b00 ||
+         home.fill_forward_q[0]))
+      inv_home_fill_ok = 1'b0;
+    if (home.fill_phase_q[0] != FillFree) begin
+      if (home.fill_addr_q[0][5:0] != 6'b0 || home.fill_old_addr_q[0][5:0] != 6'b0 ||
+          (home.fill_done_q[0] && !home.fill_sent_q[0]) ||
+          (home.fill_read_done_q[0] && !home.fill_read_sent_q[0]))
+        inv_home_fill_ok = 1'b0;
+      if (home.fill_phase_q[0] != FillInstall && home.fill_phase_q[0] != FillInstallWait &&
+          home.fill_phase_q[0] != FillReady && home.fill_seats_q[0] == 2'b00)
+        inv_home_fill_ok = 1'b0;
+      if ((home.fill_phase_q[0] == FillInstall || home.fill_phase_q[0] == FillInstallWait ||
+           home.fill_phase_q[0] == FillReady) &&
+          !(home.fill_sent_q[0] && home.fill_done_q[0]))
+        inv_home_fill_ok = 1'b0;
+      if (home.fill_phase_q[0] == FillReady && !home.fill_woken_q[0]) inv_home_fill_ok = 1'b0;
+      if (home.fill_woken_q[0] &&
+          !(home.fill_phase_q[0] == FillInstallWait || home.fill_phase_q[0] == FillReady))
+        inv_home_fill_ok = 1'b0;
+      if (home.fill_victim_q[0] &&
+          (home.fill_old_addr_q[0][6] != home.fill_addr_q[0][6] ||
+           home.fill_old_addr_q[0][AddrWidth-1:6] == home.fill_addr_q[0][AddrWidth-1:6]))
+        inv_home_fill_ok = 1'b0;
+      if (home.fill_phase_q[0] == FillRecall || home.fill_phase_q[0] == FillDetach) begin
+        if (!home.fill_victim_q[0] || !home.wb_valid_q[0] || home.wb_frozen_q[0] ||
+            home.wb_addr_q[0] != home.fill_old_addr_q[0])
+          inv_home_fill_ok = 1'b0;
+      end
+      if (home.fill_phase_q[0] == FillRecall || home.fill_phase_q[0] == FillDetach ||
+          home.fill_phase_q[0] == FillInvalidate) begin
+        if (!home.fill_victim_q[0] ||
+            !home_block_resident(
+                home.array.phase_q, home_tag_ent0, home_tag_ent1, home.fill_old_addr_q[0]))
+          inv_home_fill_ok = 1'b0;
+      end
+      if ((home.fill_phase_q[0] == FillInvalidate ||
+           home.fill_phase_q[0] == FillInvalidateWait) && !home.fill_victim_q[0])
+        inv_home_fill_ok = 1'b0;
+      if (home.fill_phase_q[0] == FillInvalidateWait ||
+          home.fill_phase_q[0] == FillMemory || home.fill_phase_q[0] == FillInstall) begin
+        if ((home.fill_addr_q[0][6] ? home_tag_ent1[26:25] : home_tag_ent0[26:25]) != 2'b00)
+          inv_home_fill_ok = 1'b0;
+      end
+      if (home.fill_phase_q[0] == FillInstallWait || home.fill_phase_q[0] == FillReady) begin
+        if (!home_block_resident(
+                home.array.phase_q, home_tag_ent0, home_tag_ent1, home.fill_addr_q[0]))
+          inv_home_fill_ok = 1'b0;
+      end
+      if (home.fill_phase_q[0] == FillRecall && home.recall_phase_q[0] == RecallAck) begin
+        if (!home_fill_ack.absorbed || home_fill_ack.error ||
+            home_fill_ack.hart != 1'b0 || home_fill_ack.epoch != 1'b0 ||
+            home_fill_ack.tid != FillTid || home_fill_ack.addr != home_fill_probe.addr)
+          inv_home_fill_ok = 1'b0;
+      end
+      for (int slot = 0; slot < 2; slot++) begin
+        if (home.fill_seats_q[0][slot]) begin
+          if (!home.completions.live[slot] || !home.completions.work_valid[slot] ||
+              home.completions.pin_valid_q[slot] ||
+              home.completions.work_address[slot][AddrWidth-1:6] !=
+                  home.fill_addr_q[0][AddrWidth-1:6])
+            inv_home_fill_ok = 1'b0;
+        end
+        if (home.fill_primary_q[0][slot]) begin
+          if (home.completions.work_identity[slot] != 9'b0 ||
+              home.completions.predecessors_q[slot] != 2'b00 ||
+              home.completions.issued_q[slot] ||
+              comp_work[slot].opcode != coherence_pkg::GetM ||
+              home.completions.work_address[slot][5] != home.fill_primary_upper_q[0] ||
+              home.fill_primary_ident_q[0] != 9'b0 ||
+              home.fill_primary_tid_q[0] != 6'(slot) || !home.fill_primary_getm_q[0])
+            inv_home_fill_ok = 1'b0;
+        end
+      end
+    end
+    // Memory request / response tracking invariants.
+    if ((home.wb_frozen_q[0] && !home.wb_valid_q[0]) ||
+        (home.wb_sent_q[0] && !home.wb_frozen_q[0]))
+      inv_home_fill_ok = 1'b0;
+    if (mem_read_pend_q &&
+        !(home.fill_phase_q[0] != FillFree && home.fill_sent_q[0] && !home.fill_done_q[0]))
+      inv_home_fill_ok = 1'b0;
+    if (mem_write_pend_q && !(home.wb_valid_q[0] && home.wb_frozen_q[0] && home.wb_sent_q[0]))
+      inv_home_fill_ok = 1'b0;
+    if (home.memory_out_valid) begin
+      if (mem_req_write) begin
+        if (mem_req_id != 5'd16 || !home.wb_valid_q[0] || !home.wb_frozen_q[0] ||
+            home.wb_sent_q[0] || mem_write_pend_q)
+          inv_home_fill_ok = 1'b0;
+      end else begin
+        if (mem_req_id != 5'd0 || home.fill_phase_q[0] == FillFree ||
+            home.fill_sent_q[0] || home.fill_done_q[0] || mem_read_pend_q)
+          inv_home_fill_ok = 1'b0;
+      end
+    end
+  end
+
+  // Per-source probe uniqueness across {link_p, hart.probe_valid_q, link_r}.
+  logic inv_probe_src_ok;
+  if (LINK_STAGES == 0) begin : gen_probe_src_s0
+    assign inv_probe_src_ok = 1'b1;
+  end else begin : gen_probe_src_staged
+    always_comb begin
+      int eng_probe_cnt, fill_probe_cnt;
+      inv_probe_src_ok = 1'b1;
+      eng_probe_cnt = 0;
+      fill_probe_cnt = 0;
+      if (hart.probe_valid_q) begin
+        if (hart.probe_q.tid == FillTid) fill_probe_cnt = fill_probe_cnt + 1;
+        else eng_probe_cnt = eng_probe_cnt + 1;
+      end
+      for (int s = 0; s < int'(LINK_STAGES); s++) begin
+        coh_p_t p_s;
+        coh_r_t r_s;
+        p_s = link_p.gen_credit_one.payload_q[s*(AddrWidth+30)+:(AddrWidth+30)];
+        r_s = link_r.gen_always.payload_q[s*(AddrWidth+275)+:(AddrWidth+275)];
+        if (link_p.gen_credit_one.valid_q[s]) begin
+          if (p_s.tid == FillTid) fill_probe_cnt = fill_probe_cnt + 1;
+          else eng_probe_cnt = eng_probe_cnt + 1;
+        end
+        if (link_r.gen_always.valid_q[s]) begin
+          if (r_s.tid == FillTid) fill_probe_cnt = fill_probe_cnt + 1;
+          else eng_probe_cnt = eng_probe_cnt + 1;
+        end
+      end
+      if (eng_probe_cnt > 1 || fill_probe_cnt > 1) inv_probe_src_ok = 1'b0;
     end
   end
 
@@ -1548,13 +1857,15 @@ module coherence_sc_wa_formal #(
     always_ff @(posedge i_clk)
       if (!rst) begin
         p_inv_put_phase :
-        assert (put_phase_q[slot] <= PutAck && put_busy_q[slot] == (put_phase_q[slot] != PutFree));
-        if (put_busy_q[slot]) begin
+        assert (home.put_phase_q[slot] <= PutAck &&
+            home.put_busy_q[slot] == (home.put_phase_q[slot] != PutFree) &&
+            home.put_way_q[slot] == 1'b0);
+        if (home.put_busy_q[slot]) begin
           p_inv_put_meta :
-          assert (put_q[slot].hart == 1'b0 &&
-              put_q[slot].put_id == 1'(slot) &&
-              put_q[slot].epoch == 1'b0 &&
-              put_q[slot].addr[4:0] == 5'b0);
+          assert (home_put_pkt[slot].hart == 1'b0 &&
+              home_put_pkt[slot].put_id == 1'(slot) &&
+              home_put_pkt[slot].epoch == 1'b0 &&
+              home_put_pkt[slot].addr[4:0] == 5'b0);
         end
         if (hart.wb_live[slot])
           p_inv_wb_aligned :
@@ -1565,7 +1876,7 @@ module coherence_sc_wa_formal #(
         if (hart.wb_live[slot] && hart.gen_put[slot].put.phase_q == PutAccepted)
           p_inv_put_acc :
           assert (
-              (put_busy_q[slot] && put_q[slot].addr == hart.wb_addr[slot]) ||
+              (home.put_busy_q[slot] && home_put_pkt[slot].addr == hart.wb_addr[slot]) ||
               wa_link_ord[slot]);
         if (hart.wb_live[slot] &&
             hart.gen_put[slot].put.phase_q == PutPresent &&
@@ -1579,30 +1890,37 @@ module coherence_sc_wa_formal #(
                l1d_r_pkt.put_id == 1'(slot) &&
                l1d_r_pkt.addr == hart.wb_addr[slot]) ||
               r_link_abs[slot] ||
-              (!engine_idle && engine.phase_q == EngService &&
-               engine.probe_phase_q == EngProbeAck &&
-               engine.ack_q.absorbed && engine.ack_q.put_id == 1'(slot) &&
-               engine.ack_q.addr == hart.wb_addr[slot]) ||
+              (!eng_idle && eng_phase == EngService &&
+               eng_probe_phase == EngProbeAck &&
+               home.gen_engine[0].service.ack_q.absorbed &&
+               home.gen_engine[0].service.ack_q.put_id == 1'(slot) &&
+               home.gen_engine[0].service.ack_q.addr == hart.wb_addr[slot]) ||
+              (home.fill_phase_q[0] == FillRecall && home.recall_phase_q[0] == RecallAck &&
+               home_fill_ack.absorbed && home_fill_ack.put_id == 1'(slot) &&
+               home_fill_ack.addr == hart.wb_addr[slot]) ||
               wa_link_abs[slot]);
           if (!wa_link_abs[slot])
             p_inv_put_abs_comp :
             assert (
-                hart.gen_put[slot].put.absorb_tid_q < 6'd2 &&
-                completions.live[hart.gen_put[slot].put.absorb_tid_q[0]] &&
-                !completions.release_valid[hart.gen_put[slot].put.absorb_tid_q[0]] &&
-                completions.work_address[hart.gen_put[slot].put.absorb_tid_q[0]][AddrWidth-1:5] ==
-                    hart.wb_addr[slot][AddrWidth-1:5]);
+                (hart.gen_put[slot].put.absorb_tid_q == FillTid &&
+                 home.fill_phase_q[0] == FillRecall &&
+                 home_fill_probe.addr == hart.wb_addr[slot]) ||
+                (hart.gen_put[slot].put.absorb_tid_q < 6'd2 &&
+                 home.completions.live[hart.gen_put[slot].put.absorb_tid_q[0]] &&
+                 !home.completions.release_valid[hart.gen_put[slot].put.absorb_tid_q[0]] &&
+                 home.completions.work_address[hart.gen_put[slot].put.absorb_tid_q[0]]
+                     [AddrWidth-1:5] == hart.wb_addr[slot][AddrWidth-1:5]));
         end
-        if (put_busy_q[slot])
+        if (home.put_busy_q[slot])
           p_inv_put_busy :
           assert (hart.wb_live[slot] &&
-              hart.wb_addr[slot] == put_q[slot].addr &&
+              hart.wb_addr[slot] == home_put_pkt[slot].addr &&
               !wa_link_ord[slot] &&
               (hart.gen_put[slot].put.phase_q == PutAccepted ||
                (w_link_ret_any && hart.wb_selected_q && hart.wb_select_q == 1'(slot) &&
                 hart.gen_put[slot].put.phase_q == PutPresent &&
                 !hart.gen_put[slot].put.absorbed_q)));
-        if (ack_arbiter.selected_q && ack_arbiter.selected_port_q == 2'(1 + slot))
+        if (home.ack_arbiter.selected_q && home.ack_arbiter.selected_port_q == 2'(2 + slot))
           p_inv_ack_ord_put :
           assert (
               hart.gen_put[slot].put.phase_q == PutAccepted ||
@@ -1624,32 +1942,47 @@ module coherence_sc_wa_formal #(
               hart.wb_addr[slot] == l1d_r_pkt.addr &&
               hart.gen_put[slot].put.absorb_tid_q == l1d_r_pkt.tid &&
               !wa_link_abs[slot]);
-        if (!engine_idle && engine.phase_q == EngService &&
-            engine.probe_phase_q == EngProbeAck && engine.ack_q.put_id == 1'(slot))
+        if (!eng_idle && eng_phase == EngService &&
+            eng_probe_phase == EngProbeAck &&
+            home.gen_engine[0].service.ack_q.put_id == 1'(slot))
           p_inv_eng_ack_slot :
           assert (hart.wb_live[slot] &&
               hart.gen_put[slot].put.phase_q == PutPresent &&
               hart.gen_put[slot].put.absorbed_q &&
-              hart.wb_addr[slot] == engine.ack_q.addr &&
-              hart.gen_put[slot].put.absorb_tid_q == engine.ack_q.tid &&
+              hart.wb_addr[slot] == home.gen_engine[0].service.ack_q.addr &&
+              hart.gen_put[slot].put.absorb_tid_q == home.gen_engine[0].service.ack_q.tid &&
               !wa_link_abs[slot]);
-        if (!engine_idle && engine.phase_q != EngLookup)
+        if (home.fill_phase_q[0] == FillRecall && home.recall_phase_q[0] == RecallAck &&
+            home_fill_ack.put_id == 1'(slot))
+          p_inv_fill_ack_slot :
+          assert (hart.wb_live[slot] &&
+              hart.gen_put[slot].put.phase_q == PutPresent &&
+              hart.gen_put[slot].put.absorbed_q &&
+              hart.wb_addr[slot] == home_fill_ack.addr &&
+              hart.gen_put[slot].put.absorb_tid_q == FillTid &&
+              !wa_link_abs[slot]);
+        if (!eng_idle && eng_phase != EngLookup)
           p_inv_eng_no_put_busy :
-          assert (!(put_busy_q[slot] &&
-              put_q[slot].addr[AddrWidth-1:5] == engine_addr[AddrWidth-1:5]));
-        if (engine_sc_live && engine.phase_q == EngService &&
-            engine.probe_q.opcode == coherence_pkg::CheckSC &&
+          assert (!(home.put_busy_q[slot] &&
+              home_put_pkt[slot].addr[AddrWidth-1:5] == eng_addr[AddrWidth-1:5]));
+        if (sc_grant_pipeline)
+          p_inv_sc_no_put_busy :
+          assert (!(home.put_busy_q[slot] &&
+              home_put_pkt[slot].addr[AddrWidth-1:5] == hart.acquisition_q.addr[AddrWidth-1:5]));
+        if (engine_sc_live && eng_phase == EngService &&
+            home.gen_engine[0].service.probe_q.opcode == coherence_pkg::CheckSC &&
             hart.wb_live[slot] && hart.gen_put[slot].put.phase_q == PutAccepted &&
-            hart.wb_addr[slot][AddrWidth-1:5] == engine_addr[AddrWidth-1:5])
+            hart.wb_addr[slot][AddrWidth-1:5] == eng_addr[AddrWidth-1:5])
           p_inv_sc_check_ord :
           assert (
-              engine.probe_phase_q == EngProbeOffer &&
-              (probe_arbiter.selected_q ? wa_link_ord_ge2[slot] : wa_link_ord_ge1[slot]));
+              eng_probe_phase == EngProbeOffer &&
+              (home.probe_arbiter.selected_q && home.probe_arbiter.selected_port_q == 2'd0 ?
+               wa_link_ord_ge2[slot] : wa_link_ord_ge1[slot]));
         if (engine_sc_probing_read)
           p_inv_sc_probe_no_ord :
           assert (!(hart.wb_live[slot] &&
               hart.gen_put[slot].put.phase_q == PutAccepted &&
-              hart.wb_addr[slot][AddrWidth-1:5] == engine_addr[AddrWidth-1:5]));
+              hart.wb_addr[slot][AddrWidth-1:5] == eng_addr[AddrWidth-1:5]));
         if (hart.operation_q == L1dOpProbe &&
             (hart.phase_q == L1dLookup || hart.phase_q == L1dLookupWait ||
              hart.phase_q == L1dUpdate || hart.phase_q == L1dProbeAbsorb) &&
@@ -1658,40 +1991,41 @@ module coherence_sc_wa_formal #(
         if (l1d_probe_reply_sc_clean || l1d_r_sc_clean || r_link_sc_reply_clean)
           p_inv_sc_reply_clean_wb :
           assert (!(hart.wb_live[slot] &&
-              hart.wb_addr[slot][AddrWidth-1:5] == engine_addr[AddrWidth-1:5]));
+              hart.wb_addr[slot][AddrWidth-1:5] == eng_addr[AddrWidth-1:5]));
         if (l1d_probe_reply_sc_abs && hart.reply_q.put_id != 1'(slot))
           p_inv_sc_reply_abs_other :
           assert (!(hart.wb_live[slot] &&
-              hart.wb_addr[slot][AddrWidth-1:5] == engine_addr[AddrWidth-1:5]));
+              hart.wb_addr[slot][AddrWidth-1:5] == eng_addr[AddrWidth-1:5]));
         if (l1d_r_sc_abs && l1d_r_pkt.put_id != 1'(slot))
           p_inv_sc_r_abs_other :
           assert (!(hart.wb_live[slot] &&
-              hart.wb_addr[slot][AddrWidth-1:5] == engine_addr[AddrWidth-1:5]));
+              hart.wb_addr[slot][AddrWidth-1:5] == eng_addr[AddrWidth-1:5]));
         if (r_link_sc_reply_abs && !r_link_sc_reply_abs_slot[slot])
           p_inv_sc_rlink_abs_other :
           assert (!(hart.wb_live[slot] &&
-              hart.wb_addr[slot][AddrWidth-1:5] == engine_addr[AddrWidth-1:5]));
+              hart.wb_addr[slot][AddrWidth-1:5] == eng_addr[AddrWidth-1:5]));
         if (engine_sc_probe_ack)
           p_inv_sc_probe_ack_wb :
           assert (!(hart.wb_live[slot] &&
-              hart.wb_addr[slot][AddrWidth-1:5] == engine_addr[AddrWidth-1:5] &&
-              !(engine.ack_q.absorbed && engine.ack_q.put_id == 1'(slot) &&
-                engine.dirty_q)));
+              hart.wb_addr[slot][AddrWidth-1:5] == eng_addr[AddrWidth-1:5] &&
+              !(home.gen_engine[0].service.ack_q.absorbed &&
+                home.gen_engine[0].service.ack_q.put_id == 1'(slot) &&
+                home.gen_engine[0].service.dirty_q)));
         if (engine_sc_past_probe)
           p_inv_sc_past_probe_wb :
           assert (!(hart.wb_live[slot] &&
-              hart.wb_addr[slot][AddrWidth-1:5] == engine_addr[AddrWidth-1:5] &&
-              !(engine.dirty_q && wa_link_abs[slot])));
+              hart.wb_addr[slot][AddrWidth-1:5] == eng_addr[AddrWidth-1:5] &&
+              !(home.gen_engine[0].service.dirty_q && wa_link_abs[slot])));
         if (engine_sc_update_wait)
           p_inv_sc_upwait_wb :
           assert (!(hart.wb_live[slot] &&
-              hart.wb_addr[slot][AddrWidth-1:5] == engine_addr[AddrWidth-1:5] &&
-              !wa_link_abs_ge1[slot]));
+              hart.wb_addr[slot][AddrWidth-1:5] == eng_addr[AddrWidth-1:5] &&
+              !((home.array.write_valid_q[0] && home.array.write_token_q[0] == 2'd0) ?
+                wa_link_abs_ge1[slot] : wa_link_abs_ge2[slot])));
         if (engine_sc_result)
           p_inv_sc_result_wb :
           assert (!(hart.wb_live[slot] &&
-              hart.wb_addr[slot][AddrWidth-1:5] == engine_addr[AddrWidth-1:5] &&
-              !wa_link_abs_ge2[slot]));
+              hart.wb_addr[slot][AddrWidth-1:5] == eng_addr[AddrWidth-1:5]));
         if (result_is_sc_grantm)
           p_inv_result_sc_wb :
           assert (!(hart.wb_live[slot] &&
@@ -1699,68 +2033,104 @@ module coherence_sc_wa_formal #(
         if (comp_buf_is_sc_grantm)
           p_inv_buf_sc_wb :
           assert (!(hart.wb_live[slot] &&
-              hart.wb_addr[slot][AddrWidth-1:5] == comp_buf_g.addr[AddrWidth-1:5]));
+              hart.wb_addr[slot][AddrWidth-1:5] == comp_buf0_g.addr[AddrWidth-1:5]));
         if (home_g_is_sc_grantm)
           p_inv_home_g_sc_wb :
           assert (!(hart.wb_live[slot] &&
               hart.wb_addr[slot][AddrWidth-1:5] == home_g.addr[AddrWidth-1:5]));
         if (g_link_sc_grantm[slot]) p_inv_link_g_sc_wb : assert (!hart.wb_live[slot]);
 
-        // Completions per-slot invariants.
+        // Completions per-slot invariants (supporting engine buffer 0 + forward buffer 1).
         p_inv_comp_pred :
         assert (
-            completions.gen_endpoint[slot].endpoint.phase_q <= 3'd4 &&
-            completions.gen_endpoint[slot].endpoint.phase_q != 3'd3 &&
-            completions.gen_endpoint[slot].endpoint.pending_q == 4'b0 &&
-            (!completions.handed_q[slot] ||
-             (completions.live[slot] &&
-              (!completions.work_valid[slot] || completions.result_valid_q[slot]) &&
-              completions.work_identity[slot] == DmaKey)) &&
-            !completions.predecessors_q[slot][slot] &&
-            (completions.predecessors_q[slot] & ~completions.live) == 2'b00 &&
-            completions.pred_clear_q[slot] == (completions.predecessors_q[slot] == 2'b00));
-        if (completions.issued_q[slot] || (completions.live[slot] && !completions.work_valid[slot]))
+            home.completions.gen_endpoint[slot].endpoint.phase_q <= 3'd4 &&
+            home.completions.gen_endpoint[slot].endpoint.phase_q != 3'd3 &&
+            home.completions.gen_endpoint[slot].endpoint.pending_q == 4'b0 &&
+            (!home.completions.handed_q[slot] ||
+             (home.completions.live[slot] &&
+              (!home.completions.work_valid[slot] || home.completions.result_valid_q[slot]) &&
+              home.completions.work_identity[slot] == DmaKey)) &&
+            !home.completions.predecessors_q[slot][slot] &&
+            (home.completions.predecessors_q[slot] & ~home.completions.live) == 2'b00 &&
+            home.completions.pred_clear_q[slot] ==
+                (home.completions.predecessors_q[slot] == 2'b00) &&
+            home.completions.way_q[slot] == 1'b0 &&
+            !home.completions.follows_cmo_q[slot] &&
+            !home.completions.nofill_q[slot] &&
+            home.completions.parked_q[slot] == (home.fill_phase_q[0] != FillFree &&
+                (home.fill_primary_q[0][slot] ||
+                 (home.fill_phase_q[0] != FillReady &&
+                  !(home.fill_phase_q[0] == FillInstallWait && home.fill_woken_q[0]) &&
+                  home.fill_seats_q[0][slot]))));
+        if (home.completions.issued_q[slot] ||
+            (home.completions.live[slot] && !home.completions.work_valid[slot]))
           p_inv_comp_issued :
-          assert (completions.live[slot] && completions.predecessors_q[slot] == 2'b00);
-        if (completions.buffer_owned_q[slot])
+          assert (home.completions.live[slot] && home.completions.predecessors_q[slot] == 2'b00 &&
+              !home.completions.parked_q[slot] &&
+              (home.completions.work_valid[slot] || home.completions.pin_valid_q[slot]));
+        if (home.completions.buffer_owned_q[slot])
           p_inv_comp_buf_own :
-          assert (completions.issued_q[slot] && completions.work_valid[slot] &&
-              completions.buffer_index_q[slot] == 1'b0 && completions.buffer_live_q[0]);
-        if (completions.result_valid_q[slot])
+          assert (home.completions.issued_q[slot] && home.completions.work_valid[slot] &&
+              home.completions.buffer_live_q[home.completions.buffer_index_q[slot]] &&
+              (!home.completions.buffer_index_q[slot] ||
+               (home.completions.result_valid_q[slot] && home.completions.pin_valid_q[slot] &&
+                home.completions.work_identity[slot] == 9'b0 &&
+                comp_work[slot].opcode == coherence_pkg::GetM)));
+        if (home.completions.result_valid_q[slot])
           p_inv_comp_res_valid :
-          assert (completions.buffer_owned_q[slot] &&
-              completions.work_valid[slot] && !completions.error_q[slot] &&
-              !comp_buf_g.error &&
-              (comp_buf_g.opcode != coherence_pkg::GrantFail ||
-               comp_work[slot].opcode == coherence_pkg::StoreConditional) &&
-              (comp_work[slot].opcode != coherence_pkg::StoreConditional ||
-               comp_buf_g.opcode == coherence_pkg::GrantM ||
-               comp_buf_g.opcode == coherence_pkg::GrantFail) &&
-              comp_buf_g.tid == 6'(slot) &&
-              comp_buf_g.q == completions.work_identity[slot] &&
-              comp_buf_g.addr == completions.work_address[slot] &&
-              comp_buf_g.opcode <= coherence_pkg::GrantMZero);
-        if (completions.pin_valid_q[slot])
-          p_inv_comp_pin : assert (completions.issued_q[slot] && completions.live[slot]);
-        if (put_selected_q && completions.live[slot] && !completions.release_valid[slot] &&
-            completions.work_address[slot][AddrWidth-1:5] == selected_put_q.addr[AddrWidth-1:5])
-          p_inv_comp_put_busy : assert (put_busy);
-        if (completions.live[slot] && completions.work_identity[slot] == 9'b0)
+          assert (home.completions.buffer_owned_q[slot] &&
+              home.completions.pin_valid_q[slot] &&
+              home.completions.work_valid[slot] && !home.completions.error_q[slot] &&
+              (home.completions.buffer_index_q[slot] ?
+               (!comp_buf1_g.error && comp_buf1_g.opcode == coherence_pkg::GrantM &&
+                comp_buf1_g.tid == 6'(slot) && comp_buf1_g.q == 9'b0 &&
+                comp_buf1_g.addr == home.completions.work_address[slot]) :
+               (!comp_buf0_g.error &&
+                (comp_buf0_g.opcode != coherence_pkg::GrantFail ||
+                 comp_work[slot].opcode == coherence_pkg::StoreConditional) &&
+                (comp_work[slot].opcode != coherence_pkg::GetM ||
+                 comp_buf0_g.opcode == coherence_pkg::GrantM) &&
+                (comp_work[slot].opcode != coherence_pkg::StoreConditional ||
+                 comp_buf0_g.opcode == coherence_pkg::GrantM ||
+                 comp_buf0_g.opcode == coherence_pkg::GrantFail) &&
+                comp_buf0_g.tid == 6'(slot) &&
+                comp_buf0_g.q == home.completions.work_identity[slot] &&
+                comp_buf0_g.addr == home.completions.work_address[slot] &&
+                comp_buf0_g.opcode <= coherence_pkg::GrantMZero)));
+        if (home.completions.pin_valid_q[slot])
+          p_inv_comp_pin :
+          assert (home.completions.issued_q[slot] && home.completions.live[slot] &&
+              (home_block_resident(home.array.phase_q, home_tag_ent0, home_tag_ent1,
+                                   home.completions.work_address[slot]) ||
+               home_fill_installing(home.fill_phase_q[0], home.fill_addr_q[0],
+                                    home.completions.work_address[slot])) &&
+              !home_fill_invalidating(home.fill_phase_q[0], home.fill_victim_q[0],
+                                      home.fill_old_addr_q[0],
+                                      home.completions.work_address[slot]) &&
+              !(home.fill_phase_q[0] == FillRecall && home.fill_victim_q[0] &&
+                home.fill_old_addr_q[0][AddrWidth-1:6] ==
+                    home.completions.work_address[slot][AddrWidth-1:6]));
+        if (home.put_selected_q && home.completions.live[slot] &&
+            !home.completions.release_valid[slot] &&
+            home.completions.work_address[slot][AddrWidth-1:5] ==
+                home.selected_put_q.addr[AddrWidth-1:5])
+          p_inv_comp_put_busy : assert (home.put_busy);
+        if (home.completions.live[slot] && home.completions.work_identity[slot] == 9'b0)
           p_inv_comp_ep0 :
-          assert (hart.live[0] && !completions.handed_q[slot] &&
+          assert (hart.live[0] && !home.completions.handed_q[slot] &&
               !d_link_ep0_any && !u_link_ep0_any &&
-              completions.work[slot] == hart.acquisition_q &&
-              (!completions.work_valid[slot] || (ep0_wait_g && !g_link_ep0_any)) &&
-              (completions.gen_endpoint[slot].endpoint.phase_q != 3'd2 ||
+              home.completions.work[slot] == hart.acquisition_q &&
+              (!home.completions.work_valid[slot] || (ep0_wait_g && !g_link_ep0_any)) &&
+              (home.completions.gen_endpoint[slot].endpoint.phase_q != 3'd2 ||
                ((g_link_ep0_any && ep0_wait_g) ||
                 ((ep0_grant_ph || ep0_done_ph || ep0_send_c) &&
                  ep0_grant_pkt.tid == 6'(slot)) ||
                 (ep0_wait_u && c_link_ep0_any && ep0_grant_pkt.tid == 6'(slot)))) &&
-              (!completions.release_valid[slot] ||
+              (!home.completions.release_valid[slot] ||
                (ep0_wait_u && !c_link_ep0_any && ep0_grant_pkt.tid == 6'(slot))));
-        if (completions.live[slot] && completions.work_identity[slot] != 9'b0)
+        if (home.completions.live[slot] && home.completions.work_identity[slot] != 9'b0)
           p_inv_comp_dma :
-          assert (completions.work_identity[slot] == DmaKey &&
+          assert (home.completions.work_identity[slot] == DmaKey &&
               (comp_work[slot].opcode == coherence_pkg::DMARead ||
                comp_work[slot].opcode == coherence_pkg::DMAWrite) &&
               comp_work[slot].addr[4:0] == 5'b0);
@@ -1768,14 +2138,23 @@ module coherence_sc_wa_formal #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (rst) snapshot_probe_seen_q <= 1'b0;
-    else if (snapshot_probe_dirty) snapshot_probe_seen_q <= 1'b1;
+    if (rst) begin
+      snapshot_probe_seen_q <= 1'b0;
+      fill_recall_seen_q <= 1'b0;
+    end else begin
+      if (snapshot_probe_dirty) snapshot_probe_seen_q <= 1'b1;
+      if (fill_recall_dirty_fire) fill_recall_seen_q <= 1'b1;
+    end
     if (rst || !ep0_sc_live) begin
       sc_wa_ordinary_seen_q <= 1'b0;
       sc_wa_absorbed_seen_q <= 1'b0;
+      sc_same_put_token_seen_q <= 1'b0;
+      sc_put_blocked_seen_q <= 1'b0;
     end else begin
       if (wa_matches_sc && !l1d_wa_pkt.absorbed) sc_wa_ordinary_seen_q <= 1'b1;
       if (wa_matches_sc && l1d_wa_pkt.absorbed) sc_wa_absorbed_seen_q <= 1'b1;
+      if (same_put_holds_token_sc) sc_same_put_token_seen_q <= 1'b1;
+      if (sc_blocked_by_put) sc_put_blocked_seen_q <= 1'b1;
     end
     if (!rst) begin
       // Core obligation from standalone coherence_l1d.sv (lines 5718-5721).
@@ -1783,7 +2162,12 @@ module coherence_sc_wa_formal #(
         p_sc_grantm_no_wb0 : assert (!wb0_same_grant);
         p_sc_grantm_no_wb1 : assert (!wb1_same_grant);
       end
-      p_inv_no_fatal : assert (!fatal && run && hart.active);
+      // Production array_token mutual exclusion: an engine decision never shares
+      // a cycle with a put holding the array token.
+      p_engine_put_token_excl :
+      assert (!(home.array_response && home.decision_engine &&
+                (home.array_token_onehot[2] || home.array_token_onehot[3])));
+      p_inv_no_fatal : assert (!fatal && home.run && hart.active);
       p_inv_wb_distinct :
       assert (!(hart.wb_live[0] && hart.wb_live[1] &&
           hart.wb_addr[0][AddrWidth-1:5] == hart.wb_addr[1][AddrWidth-1:5]));
@@ -1791,28 +2175,33 @@ module coherence_sc_wa_formal #(
       p_inv_arr_ok : assert (inv_arr_ok);
       p_inv_freeze_ok : assert (inv_freeze_ok);
       p_inv_grant_wb_ok : assert (inv_grant_wb_ok);
+      p_inv_home_arr_ok : assert (inv_home_arr_ok);
+      p_inv_home_fill_ok : assert (inv_home_fill_ok);
+      p_inv_home_incl_ok : assert (inv_home_incl_ok);
+      p_inv_home_cmp_ok : assert (inv_home_cmp_ok);
+      p_inv_probe_src_ok : assert (inv_probe_src_ok);
+
       if (ep0_send_d || ep0_wait_g || ep0_grant_ph) p_inv_ep0_not_done : assert (!hart.done_q);
       if (hart.live[0]) begin
         if (ep0_grant_ph || ep0_done_ph || ep0_send_c || ep0_wait_u)
           p_inv_ep0_grant_meta :
           assert (ep0_grant_pkt.addr == hart.acquisition_q.addr &&
               !ep0_grant_pkt.error &&
-              (ep0_grant_pkt.opcode != coherence_pkg::GrantFail ||
-               hart.acquisition_q.opcode == coherence_pkg::StoreConditional) &&
-              (!hart.acquisition_sc_q ||
-               ep0_grant_pkt.opcode == coherence_pkg::GrantM ||
-               ep0_grant_pkt.opcode == coherence_pkg::GrantFail));
+              (hart.acquisition_q.opcode == coherence_pkg::GetM ?
+               ep0_grant_pkt.opcode == coherence_pkg::GrantM :
+               (ep0_grant_pkt.opcode == coherence_pkg::GrantM ||
+                ep0_grant_pkt.opcode == coherence_pkg::GrantFail)));
         if (ep0_grant_ph || ep0_done_ph || ep0_send_c)
           p_inv_ep0_has_comp :
           assert (
-              (completions.live[0] && completions.work_identity[0] == 9'b0 &&
-               !completions.work_valid[0] && !completions.release_valid[0] &&
-               !completions.handed_q[0] &&
-               completions.work_address[0] == hart.acquisition_q.addr) ||
-              (completions.live[1] && completions.work_identity[1] == 9'b0 &&
-               !completions.work_valid[1] && !completions.release_valid[1] &&
-               !completions.handed_q[1] &&
-               completions.work_address[1] == hart.acquisition_q.addr));
+              (home.completions.live[0] && home.completions.work_identity[0] == 9'b0 &&
+               !home.completions.work_valid[0] && !home.completions.release_valid[0] &&
+               !home.completions.handed_q[0] &&
+               home.completions.work_address[0] == hart.acquisition_q.addr) ||
+              (home.completions.live[1] && home.completions.work_identity[1] == 9'b0 &&
+               !home.completions.work_valid[1] && !home.completions.release_valid[1] &&
+               !home.completions.handed_q[1] &&
+               home.completions.work_address[1] == hart.acquisition_q.addr));
         if (ep0_send_c)
           p_inv_ep0_comp_meta :
           assert (ep0_comp_pkt.q == 9'b0 &&
@@ -1833,9 +2222,9 @@ module coherence_sc_wa_formal #(
            hart.phase_q == L1dUpdateWait))
         p_inv_grant_op_meta :
         assert (hart.grant_ep_q == 1'b0 &&
+            hart.grant_q == ep0_grant_pkt &&
             hart.wb_reserved_q && ep0_done_ph && !hart.done_q &&
-            !hart.grant_q.error && hart.grant_q.opcode != coherence_pkg::GrantFail &&
-            (!hart.acquisition_sc_q || hart.grant_q.opcode == coherence_pkg::GrantM) &&
+            !hart.grant_q.error && hart.grant_q.opcode == coherence_pkg::GrantM &&
             hart.grant_q.addr == hart.acquisition_q.addr &&
             !hart.atomic_local_q && !(hart.atomic_q && hart.atomic_granted_q));
       p_inv_store_buf :
@@ -1862,23 +2251,48 @@ module coherence_sc_wa_formal #(
             (hart.phase_q == L1dUpdate && hart.operation_q == L1dOpGrant &&
              hart.freeze_slot_q == hart.reserved_wb_q) ||
             (hart.phase_q == L1dUpdateWait && hart.operation_q == L1dOpGrant));
-      // Arbiter consistency.
+
+      // Arbiter consistency across harness and production coherence_home.
       p_inv_arb_ack :
-      assert (ack_arbiter.selected_port_q < 2'd3 &&
-          ack_arbiter.selected_ports_q ==
-              (ack_arbiter.selected_q ? (3'b001 << ack_arbiter.selected_port_q) : 3'b000) &&
-          (!ack_arbiter.selected_q ||
-           (ack_valid[ack_arbiter.selected_port_q] &&
-            ack_out == ack_payload[ack_arbiter.selected_port_q])));
+      assert (home.ack_arbiter.selected_ports_q ==
+              (home.ack_arbiter.selected_q ?
+               (4'b0001 << home.ack_arbiter.selected_port_q) : 4'b0000) &&
+          (!home.ack_arbiter.selected_q ||
+           (home.ack_valid[home.ack_arbiter.selected_port_q] &&
+            home.ack_out == home.ack_payload[home.ack_arbiter.selected_port_q])));
       p_inv_arb_probe :
-      assert (
-          probe_arbiter.selected_ports_q == (probe_arbiter.selected_q ? 1'b1 : 1'b0) &&
-          (!probe_arbiter.selected_q || (engine_p_valid && probe_out == engine_p)));
+      assert (home.probe_arbiter.selected_ports_q ==
+              (home.probe_arbiter.selected_q ?
+               (4'b0001 << home.probe_arbiter.selected_port_q) : 4'b0000) &&
+          (!home.probe_arbiter.selected_q ||
+           (home.probe_valid[home.probe_arbiter.selected_port_q] &&
+            home.probe_out == home.probe_payload[home.probe_arbiter.selected_port_q])));
       p_inv_arb_result :
-      assert (
-          result_arbiter.selected_ports_q == (result_arbiter.selected_q ? 1'b1 : 1'b0) &&
-          (!result_arbiter.selected_q ||
-           (engine_result_valid && result_payload == engine_result_payload)));
+      assert (home.result_arbiter.selected_ports_q ==
+              (home.result_arbiter.selected_q ? 1'b1 : 1'b0) &&
+          (!home.result_arbiter.selected_q ||
+           (home.engine_result[0] && home.result == home.engine_result_payload[0])));
+      p_inv_arb_tag :
+      assert (home.tag_arbiter.selected_ports_q ==
+              (home.tag_arbiter.selected_q ?
+               (4'b0001 << home.tag_arbiter.selected_port_q) : 4'b0000) &&
+          (!home.tag_arbiter.selected_q ||
+           (home.tag_valid[home.tag_arbiter.selected_port_q] &&
+            home.tag_request == home.tag_payload[home.tag_arbiter.selected_port_q])));
+      p_inv_arb_read :
+      assert (home.read_arbiter.selected_ports_q ==
+              (home.read_arbiter.selected_q ?
+               (4'b0001 << home.read_arbiter.selected_port_q) : 4'b0000) &&
+          (!home.read_arbiter.selected_q ||
+           (home.read_valid[home.read_arbiter.selected_port_q] &&
+            home.row_request == home.read_payload[home.read_arbiter.selected_port_q])));
+      p_inv_arb_update :
+      assert (home.update_arbiter.selected_ports_q ==
+              (home.update_arbiter.selected_q ?
+               (4'b0001 << home.update_arbiter.selected_port_q) : 4'b0000) &&
+          (!home.update_arbiter.selected_q ||
+           (home.update_valid[home.update_arbiter.selected_port_q] &&
+            home.update_request == home.update_payload[home.update_arbiter.selected_port_q])));
       p_inv_arb_d :
       assert (
           d_arbiter.selected_ports_q ==
@@ -1895,76 +2309,96 @@ module coherence_sc_wa_formal #(
             home_c == (c_arbiter.selected_port_q ? dma_c_q : hart_c[0]))));
       p_inv_arb_rel :
       assert (
-          completions.release_arbiter.selected_ports_q ==
-              (completions.release_arbiter.selected_q ?
-               (2'b01 << completions.release_arbiter.selected_port_q) : 2'b00) &&
-          (!completions.release_arbiter.selected_q ||
-           (completions.release_valid[completions.release_arbiter.selected_port_q] &&
-            home_u == completions.releases[completions.release_arbiter.selected_port_q])));
+          home.completions.release_arbiter.selected_ports_q ==
+              (home.completions.release_arbiter.selected_q ?
+               (2'b01 << home.completions.release_arbiter.selected_port_q) : 2'b00) &&
+          (!home.completions.release_arbiter.selected_q ||
+           (home.completions.release_valid[home.completions.release_arbiter.selected_port_q] &&
+            home_u ==
+                home.completions.releases[home.completions.release_arbiter.selected_port_q])));
 
-      // Completions global invariants.
+      // Completions global invariants (engine buffer 0 + forward buffer 1).
       p_inv_comp_global :
       assert (
-          !completions.buffer_live_q[1] && !completions.buffer_ready_q[1] &&
-          completions.parked_q == 2'b00 && completions.ready_q == 2'b00 &&
-          completions.wake_error_q == 2'b00 && completions.error_q == 2'b00 &&
-          completions.work_parked_q == 1'b0 && completions.work_buffer_q == 1'b0 &&
-          completions.work_selected_slots_q ==
-              (completions.work_selected_q ? (2'b01 << completions.work_slot_q) : 2'b00) &&
-          !(completions.buffer_owned_q[0] && completions.buffer_owned_q[1]) &&
-          completions.buffer_live_q[0] == (|completions.buffer_owned_q) &&
-          completions.buffer_ready_q[0] == (|completions.result_valid_q) &&
-          (!(completions.live[0] && completions.live[1]) ||
-           completions.work_identity[0] != completions.work_identity[1]));
-      if (completions.work_selected_q)
+          home.completions.wake_error_q == 2'b00 && home.completions.error_q == 2'b00 &&
+          home.completions.work_buffer_q == 1'b0 &&
+          (!home.completions.work_selected_q ||
+           home.completions.work_parked_q[0] ==
+               home.completions.parked_q[home.completions.work_slot_q]) &&
+          home.completions.work_selected_slots_q ==
+              (home.completions.work_selected_q ?
+               (2'b01 << home.completions.work_slot_q) : 2'b00) &&
+          home.completions.buffer_live_q[0] ==
+              ((home.completions.buffer_owned_q[0] && !home.completions.buffer_index_q[0]) ||
+               (home.completions.buffer_owned_q[1] && !home.completions.buffer_index_q[1])) &&
+          home.completions.buffer_live_q[1] ==
+              ((home.completions.buffer_owned_q[0] && home.completions.buffer_index_q[0]) ||
+               (home.completions.buffer_owned_q[1] && home.completions.buffer_index_q[1])) &&
+          !(home.completions.buffer_owned_q[0] && home.completions.buffer_owned_q[1] &&
+            home.completions.buffer_index_q[0] == home.completions.buffer_index_q[1]) &&
+          home.completions.buffer_ready_q[0] ==
+              ((home.completions.result_valid_q[0] && !home.completions.buffer_index_q[0]) ||
+               (home.completions.result_valid_q[1] && !home.completions.buffer_index_q[1])) &&
+          home.completions.buffer_ready_q[1] == home.completions.buffer_live_q[1] &&
+          (!(home.completions.live[0] && home.completions.live[1]) ||
+           home.completions.work_identity[0] != home.completions.work_identity[1]));
+      if (home.completions.work_selected_q)
         p_inv_comp_work_sel :
-        assert (completions.work_valid[completions.work_slot_q] &&
-            !completions.issued_q[completions.work_slot_q] &&
-            !completions.buffer_owned_q[completions.work_slot_q] &&
-            !completions.pin_valid_q[completions.work_slot_q] &&
-            completions.predecessors_q[completions.work_slot_q] == 2'b00 &&
-            !completions.buffer_live_q[0]);
-      if (completions.grant_selected_q)
+        assert (home.completions.work_valid[home.completions.work_slot_q] &&
+            !home.completions.issued_q[home.completions.work_slot_q] &&
+            !home.completions.buffer_owned_q[home.completions.work_slot_q] &&
+            !home.completions.pin_valid_q[home.completions.work_slot_q] &&
+            home.completions.predecessors_q[home.completions.work_slot_q] == 2'b00 &&
+            !home.completions.buffer_live_q[0]);
+      if (home.completions.grant_selected_q)
         p_inv_comp_grant_sel :
-        assert (completions.grant_buffer_q == 1'b0 &&
-            completions.result_valid_q[completions.grant_slot_q] &&
-            completions.buffer_owned_q[completions.grant_slot_q] &&
-            home_g.q == completions.work_identity[completions.grant_slot_q] &&
-            home_g.tid == 6'(completions.grant_slot_q) &&
-            home_g.addr == completions.work_address[completions.grant_slot_q] &&
+        assert (home.completions.result_valid_q[home.completions.grant_slot_q] &&
+            home.completions.buffer_owned_q[home.completions.grant_slot_q] &&
+            home.completions.grant_buffer_q ==
+                home.completions.buffer_index_q[home.completions.grant_slot_q] &&
+            home_g.q == home.completions.work_identity[home.completions.grant_slot_q] &&
+            home_g.tid == 6'(home.completions.grant_slot_q) &&
+            home_g.addr == home.completions.work_address[home.completions.grant_slot_q] &&
             !home_g.error &&
             (home_g.opcode != coherence_pkg::GrantFail ||
-             comp_work[completions.grant_slot_q].opcode == coherence_pkg::StoreConditional) &&
-            (comp_work[completions.grant_slot_q].opcode != coherence_pkg::StoreConditional ||
+             comp_work[home.completions.grant_slot_q].opcode == coherence_pkg::StoreConditional) &&
+            (comp_work[home.completions.grant_slot_q].opcode != coherence_pkg::GetM ||
+             home_g.opcode == coherence_pkg::GrantM) &&
+            (comp_work[home.completions.grant_slot_q].opcode != coherence_pkg::StoreConditional ||
              home_g.opcode == coherence_pkg::GrantM ||
              home_g.opcode == coherence_pkg::GrantFail) &&
             home_g.opcode <= coherence_pkg::GrantMZero);
 
       // Engine local invariants.
       p_inv_eng_global :
-      assert (engine.phase_q <= EngResult &&
-          engine.probe_phase_q <= EngProbeAck && !engine.error_q &&
-          (!engine.read_done_q || engine.read_sent_q) &&
-          (!engine_idle || engine.probe_phase_q == EngProbeDone) &&
-          tag_pending_q == (engine.phase_q == EngLookup && engine.lookup_sent_q) &&
-          update_pending_q == (engine.phase_q == EngUpdateWait) &&
-          read_pending_q == (engine.phase_q == EngService &&
-                             engine.read_sent_q && !engine.read_done_q));
-      if (engine.quick_q && engine.phase_q == EngService)
+      assert (eng_phase <= EngResult &&
+          eng_probe_phase <= EngProbeAck && !home.gen_engine[0].service.error_q &&
+          home.gen_engine[0].service.way_q == 1'b0 &&
+          (!home.gen_engine[0].service.read_done_q || home.gen_engine[0].service.read_sent_q) &&
+          (!eng_idle || eng_probe_phase == EngProbeDone));
+      if (home.gen_engine[0].service.quick_q && eng_phase == EngService)
         p_inv_eng_quick :
-        assert (!engine.needs_probe && engine.needs_data &&
-            engine.probe_phase_q == EngProbeDone && !engine.dirty_q && !engine.error_q);
+        assert (!home.gen_engine[0].service.needs_probe &&
+            home.gen_engine[0].service.needs_data &&
+            eng_probe_phase == EngProbeDone &&
+            !home.gen_engine[0].service.dirty_q &&
+            !home.gen_engine[0].service.error_q);
       if (hart.probe_valid_q)
         p_inv_probe_q_meta :
-        assert (hart.probe_q.epoch == 1'b0 &&
-            hart.probe_q.addr[4:0] == 5'b0 &&
-            engine.phase_q == EngService && engine.probe_phase_q == EngProbeWait &&
-            hart.probe_q == engine.probe_q);
+        assert (hart.probe_q.epoch == 1'b0 && hart.probe_q.addr[4:0] == 5'b0 &&
+            ((eng_phase == EngService && eng_probe_phase == EngProbeWait &&
+              hart.probe_q == home.gen_engine[0].service.probe_q) ||
+             (home.fill_phase_q[0] == FillRecall && home.recall_phase_q[0] == RecallWait &&
+              hart.probe_q == home_fill_probe)));
       if (l1d_p_valid)
         p_inv_l1d_p_eng :
-        assert (engine.phase_q == EngService &&
-            engine.probe_phase_q == (LINK_STAGES == 0 ? EngProbeOffer : EngProbeWait) &&
-            l1d_p == engine.probe_q);
+        assert (
+            (eng_phase == EngService &&
+             eng_probe_phase == (LINK_STAGES == 0 ? EngProbeOffer : EngProbeWait) &&
+             l1d_p == home.gen_engine[0].service.probe_q) ||
+            (home.fill_phase_q[0] == FillRecall &&
+             home.recall_phase_q[0] == (LINK_STAGES == 0 ? RecallOffer : RecallWait) &&
+             l1d_p == home_fill_probe));
       if (hart.operation_q == L1dOpProbe &&
           (hart.phase_q == L1dLookup || hart.phase_q == L1dLookupWait ||
            hart.phase_q == L1dUpdate || hart.phase_q == L1dProbeAbsorb ||
@@ -1999,15 +2433,20 @@ module coherence_sc_wa_formal #(
       if (l1d_r_valid)
         p_inv_l1d_r_meta :
         assert (hart.probe_valid_q && !l1d_r_pkt.error &&
+            l1d_r_pkt.tid == hart.probe_q.tid && l1d_r_pkt.addr == hart.probe_q.addr &&
             l1d_r_pkt.hart == 1'b0 && l1d_r_pkt.epoch == 1'b0 &&
             l1d_r_pkt.put_epoch == 1'b0 &&
-            engine.phase_q == EngService && engine.probe_phase_q == EngProbeWait &&
-            l1d_r_pkt.tid == engine_tid && l1d_r_pkt.addr == engine_addr &&
-            (engine.probe_q.opcode == coherence_pkg::CheckSC ?
-             (l1d_r_pkt.opcode == coherence_pkg::CheckAck &&
-              !l1d_r_pkt.data_valid && !l1d_r_pkt.absorbed) :
-             (l1d_r_pkt.opcode == coherence_pkg::ProbeAck ||
-              l1d_r_pkt.opcode == coherence_pkg::ProbeData)) &&
+            ((eng_phase == EngService && eng_probe_phase == EngProbeWait &&
+              l1d_r_pkt.tid == eng_tid && l1d_r_pkt.addr == eng_addr &&
+              (home.gen_engine[0].service.probe_q.opcode == coherence_pkg::CheckSC ?
+               (l1d_r_pkt.opcode == coherence_pkg::CheckAck &&
+                !l1d_r_pkt.data_valid && !l1d_r_pkt.absorbed) :
+               (l1d_r_pkt.opcode == coherence_pkg::ProbeAck ||
+                l1d_r_pkt.opcode == coherence_pkg::ProbeData))) ||
+             (home.fill_phase_q[0] == FillRecall && home.recall_phase_q[0] == RecallWait &&
+              l1d_r_pkt.tid == FillTid && l1d_r_pkt.addr == home_fill_probe.addr &&
+              (l1d_r_pkt.opcode == coherence_pkg::ProbeAck ||
+               l1d_r_pkt.opcode == coherence_pkg::ProbeData))) &&
             (!l1d_r_pkt.absorbed ||
              (l1d_r_pkt.data_valid && l1d_r_pkt.opcode == coherence_pkg::ProbeData)));
       if (home_r_valid) begin
@@ -2018,53 +2457,62 @@ module coherence_sc_wa_formal #(
             (!home_r_obs.absorbed ||
              (home_r_obs.data_valid && home_r_obs.opcode == coherence_pkg::ProbeData)));
       end
-      if (!engine_idle) begin
+      if (!eng_idle) begin
         p_inv_engine_comp :
-        assert (engine_tid < 6'd2 &&
-            completions.live[engine_tid[0]] &&
-            completions.issued_q[engine_tid[0]] &&
-            completions.buffer_owned_q[engine_tid[0]] &&
-            !completions.result_valid_q[engine_tid[0]] &&
-            completions.work_valid[engine_tid[0]] &&
-            !completions.release_valid[engine_tid[0]] &&
-            completions.work_address[engine_tid[0]] == engine_addr &&
-            completions.work_identity[engine_tid[0]] == engine.request_q.q &&
-            completions.work[engine_tid[0]] == engine.request_q);
-        if (engine.phase_q == EngLookup)
+        assert (eng_tid < 6'd2 &&
+            home.completions.live[eng_tid[0]] &&
+            home.completions.issued_q[eng_tid[0]] &&
+            home.completions.buffer_owned_q[eng_tid[0]] &&
+            !home.completions.buffer_index_q[eng_tid[0]] &&
+            !home.completions.result_valid_q[eng_tid[0]] &&
+            home.completions.work_valid[eng_tid[0]] &&
+            !home.completions.release_valid[eng_tid[0]] &&
+            home.completions.work_address[eng_tid[0]] == eng_addr &&
+            home.completions.work_identity[eng_tid[0]] == home.gen_engine[0].service.request_q.q &&
+            home.completions.work[eng_tid[0]] == home.gen_engine[0].service.request_q &&
+            home.gen_engine[0].service.way_q == 1'b0);
+        if (eng_phase == EngLookup)
           p_inv_eng_lookup :
-          assert (!completions.pin_valid_q[engine_tid[0]] &&
-              !engine.read_sent_q && !engine.read_done_q &&
-              !engine.dirty_q && !engine.failed_q && !engine.quick_q &&
-              engine.probe_phase_q == EngProbeDone);
+          assert (!home.completions.pin_valid_q[eng_tid[0]] &&
+              !home.gen_engine[0].service.read_sent_q &&
+              !home.gen_engine[0].service.read_done_q &&
+              !home.gen_engine[0].service.dirty_q &&
+              !home.gen_engine[0].service.failed_q &&
+              !home.gen_engine[0].service.quick_q &&
+              eng_probe_phase == EngProbeDone);
           else
             p_inv_eng_pinned :
-            assert (completions.pin_valid_q[engine_tid[0]] &&
-              engine.probe_q.addr == engine_addr && engine.probe_q.tid == engine_tid &&
-              engine.probe_q.epoch == 1'b0 && engine_addr[4:0] == 5'b0 &&
-              (!engine.failed_q || engine.probe_phase_q == EngProbeDone) &&
+            assert (home.completions.pin_valid_q[eng_tid[0]] &&
+              home_block_resident(home.array.phase_q, home_tag_ent0, home_tag_ent1, eng_addr) &&
+              home.gen_engine[0].service.probe_q.addr == eng_addr &&
+              home.gen_engine[0].service.probe_q.tid == eng_tid &&
+              home.gen_engine[0].service.probe_q.epoch == 1'b0 && eng_addr[4:0] == 5'b0 &&
+              (!home.gen_engine[0].service.failed_q || eng_probe_phase == EngProbeDone) &&
               (!engine_sc_live ||
-               (engine.probe_q.opcode == coherence_pkg::ProbeRead ||
-                (engine.phase_q == EngService &&
-                 (engine.probe_phase_q == EngProbeOffer ||
-                  engine.probe_phase_q == EngProbeWait) &&
-                 engine.probe_q.opcode == coherence_pkg::CheckSC))));
-        if (engine.phase_q == EngUpdate || engine.phase_q == EngUpdateWait ||
-            engine.phase_q == EngResult)
-          p_inv_eng_post_svc : assert (engine.probe_phase_q == EngProbeDone);
-        if (engine.phase_q == EngService && engine.probe_phase_q == EngProbeAck)
+               (home.gen_engine[0].service.probe_q.opcode == coherence_pkg::ProbeRead ||
+                (eng_phase == EngService &&
+                 (eng_probe_phase == EngProbeOffer ||
+                  eng_probe_phase == EngProbeWait) &&
+                 home.gen_engine[0].service.probe_q.opcode == coherence_pkg::CheckSC))));
+        if (eng_phase == EngUpdate || eng_phase == EngUpdateWait || eng_phase == EngResult)
+          p_inv_eng_post_svc : assert (eng_probe_phase == EngProbeDone);
+        if (eng_phase == EngService && eng_probe_phase == EngProbeAck)
           p_inv_eng_ack :
-          assert (engine.dirty_q && engine.ack_q.absorbed &&
-              !engine.ack_q.error &&
-              engine.ack_q.addr == engine_addr && engine.ack_q.tid == engine_tid &&
-              engine.ack_q.hart == 1'b0 && engine.ack_q.epoch == 1'b0);
+          assert (home.gen_engine[0].service.dirty_q &&
+              home.gen_engine[0].service.ack_q.absorbed &&
+              !home.gen_engine[0].service.ack_q.error &&
+              home.gen_engine[0].service.ack_q.addr == eng_addr &&
+              home.gen_engine[0].service.ack_q.tid == eng_tid &&
+              home.gen_engine[0].service.ack_q.hart == 1'b0 &&
+              home.gen_engine[0].service.ack_q.epoch == 1'b0);
       end
       if (l1d_wa_valid) p_inv_wa_no_err : assert (!l1d_wa_pkt.error);
       if (ep0_send_d)
         p_inv_ep0_send_d_clean :
         assert (!d_link_ep0_any && !g_link_ep0_any &&
             !c_link_ep0_any && !u_link_ep0_any &&
-            !(completions.live[0] && completions.work_identity[0] == 9'b0) &&
-            !(completions.live[1] && completions.work_identity[1] == 9'b0));
+            !(home.completions.live[0] && home.completions.work_identity[0] == 9'b0) &&
+            !(home.completions.live[1] && home.completions.work_identity[1] == 9'b0));
       if (hart.atomic_q && hart.atomic_granted_q && !hart.atomic_written_q) begin
         if (hart.atomic_local_q)
           p_inv_local_sc_no_probe :
@@ -2075,27 +2523,30 @@ module coherence_sc_wa_formal #(
           else begin
             p_inv_remote_sc_comp :
             assert (
-              (completions.live[0] && completions.work_identity[0] == 9'b0 &&
-               !completions.work_valid[0] && !completions.release_valid[0] &&
-               !completions.handed_q[0] &&
-               completions.work_address[0][AddrWidth-1:5] == hart.atomic_addr_q[AddrWidth-1:5]) ||
-              (completions.live[1] && completions.work_identity[1] == 9'b0 &&
-               !completions.work_valid[1] && !completions.release_valid[1] &&
-               !completions.handed_q[1] &&
-               completions.work_address[1][AddrWidth-1:5] == hart.atomic_addr_q[AddrWidth-1:5]));
+              (home.completions.live[0] && home.completions.work_identity[0] == 9'b0 &&
+               !home.completions.work_valid[0] && !home.completions.release_valid[0] &&
+               !home.completions.handed_q[0] &&
+               home.completions.work_address[0][AddrWidth-1:5] ==
+                   hart.atomic_addr_q[AddrWidth-1:5]) ||
+              (home.completions.live[1] && home.completions.work_identity[1] == 9'b0 &&
+               !home.completions.work_valid[1] && !home.completions.release_valid[1] &&
+               !home.completions.handed_q[1] &&
+               home.completions.work_address[1][AddrWidth-1:5] ==
+                   hart.atomic_addr_q[AddrWidth-1:5]));
             p_inv_remote_sc_no_probe :
             assert (
-              (engine_idle || engine_addr[AddrWidth-1:5] != hart.atomic_addr_q[AddrWidth-1:5]) &&
+              (eng_idle || eng_addr[AddrWidth-1:5] != hart.atomic_addr_q[AddrWidth-1:5]) &&
               (!hart.probe_valid_q ||
                hart.probe_q.addr[AddrWidth-1:5] != hart.atomic_addr_q[AddrWidth-1:5]));
           end
       end
-      if (completions.live[0] && completions.live[1] &&
-          completions.work_address[0][AddrWidth-1:5] == completions.work_address[1][AddrWidth-1:5])
+      if (home.completions.live[0] && home.completions.live[1] &&
+          home.completions.work_address[0][AddrWidth-1:5] ==
+              home.completions.work_address[1][AddrWidth-1:5])
         p_inv_comp_same_sec_ord :
         assert (
-            completions.handed_q[0] || completions.handed_q[1] ||
-            completions.predecessors_q[0][1] || completions.predecessors_q[1][0]);
+            home.completions.handed_q[0] || home.completions.handed_q[1] ||
+            home.completions.predecessors_q[0][1] || home.completions.predecessors_q[1][0]);
 
       // L1D ep0 metadata and SC exclusivity.
       p_inv_l1d_const :
@@ -2150,12 +2601,13 @@ module coherence_sc_wa_formal #(
             (dma_d_q.opcode == coherence_pkg::DMARead ||
              dma_d_q.opcode == coherence_pkg::DMAWrite) &&
             dma_d_q.addr[4:0] == 5'b0);
-      if (dma_phase_q == DmaSendC) p_inv_dma_c : assert (dma_c_q.q == DmaKey);
+      if (dma_phase_q == DmaHoldC || dma_phase_q == DmaSendC)
+        p_inv_dma_c : assert (dma_c_q.q == DmaKey);
       if (engine_sc_live) begin
         p_inv_engine_sc_ep0 :
         assert (ep0_sc_wait_g &&
-            engine.request_q.q == hart.acquisition_q.q &&
-            engine_addr == hart.acquisition_q.addr);
+            home.gen_engine[0].service.request_q.q == hart.acquisition_q.q &&
+            eng_addr == hart.acquisition_q.addr);
       end
       if (!fatal && l1d_wa_valid) p_l1d_wa_taken : assert (l1d_wa_ready);
       if (!fatal && l1d_g_valid) p_l1d_g_taken : assert (l1d_g_ready);
@@ -2171,6 +2623,11 @@ module coherence_sc_wa_formal #(
       c_sc_wb_same_absorbed_grantm : cover (sc_ep0_grantm && sc_wa_absorbed_seen_q);
       c_sc_wb_other_grantm : cover (sc_ep0_grantm && wb_other_grant);
       c_snapshot_probe_before_sc : cover (sc_ep0_grantm && snapshot_probe_seen_q);
+      c_put_token_same_sector_sc : cover (sc_ep0_grantm && sc_same_put_token_seen_q);
+      c_sc_blocked_by_put_blocks : cover (sc_ep0_grantm && sc_put_blocked_seen_q);
+      c_sc_grantm_other_put_token :
+      cover ((home_g_is_sc_grantm || sc_ep0_grantm) && any_put_holds_token);
+      c_fill_recall_before_sc : cover (sc_ep0_grantm && fill_recall_seen_q);
     end
   end
 
@@ -2196,8 +2653,6 @@ module coherence_sc_wa_formal #(
       c_s = '0;
       r_sr = '0;
 
-      // All reset_q registers mirror i_rst delayed by 1 cycle, so they match
-      // and hold only while the composed machine is still in its reset state.
       if (gen_ep_links[0].link_d.gen_credit.reset_q !=
           gen_ep_links[0].link_c.gen_credit.reset_q ||
           gen_ep_links[0].link_d.gen_credit.reset_q !=
@@ -2205,7 +2660,8 @@ module coherence_sc_wa_formal #(
         inv_link_rst_ok = 1'b0;
       if (gen_ep_links[0].link_d.gen_credit.reset_q) begin
         if (hart.live[0] || (|hart.wb_live) || hart.probe_valid_q ||
-            !engine_idle || (|completions.live) || (|put_busy_q) || put_selected_q ||
+            !eng_idle || (|home.completions.live) || (|home.put_busy_q) ||
+            home.put_selected_q || home.fill_phase_q[0] != FillFree ||
             (|link_g.gen_always.valid_q) || (|link_u.gen_always.valid_q) ||
             (|link_r.gen_always.valid_q) || (|link_wa.gen_always.valid_q) ||
             (|link_w.gen_mirror.valid_q) || (|link_w.gen_mirror.return_q))
@@ -2240,8 +2696,8 @@ module coherence_sc_wa_formal #(
       if (d_occ == 1) begin
         if (!(hart.live[0] && ep0_wait_g && !g_link_ep0_any &&
               !c_link_ep0_any && !u_link_ep0_any &&
-              !(completions.live[0] && completions.work_identity[0] == 9'b0) &&
-              !(completions.live[1] && completions.work_identity[1] == 9'b0)))
+              !(home.completions.live[0] && home.completions.work_identity[0] == 9'b0) &&
+              !(home.completions.live[1] && home.completions.work_identity[1] == 9'b0)))
           inv_link_d_ok = 1'b0;
         for (int s = 0; s < int'(LINK_STAGES); s++) begin
           if (gen_ep_links[0].link_d.gen_credit.valid_q[s] &&
@@ -2282,11 +2738,11 @@ module coherence_sc_wa_formal #(
       if (c_occ == 1) begin
         if (!(hart.live[0] && ep0_wait_u && !u_link_ep0_any &&
               ep0_grant_pkt.tid < 6'd2 &&
-              completions.live[ep0_grant_pkt.tid[0]] &&
-              completions.work_identity[ep0_grant_pkt.tid[0]] == 9'b0 &&
-              !completions.work_valid[ep0_grant_pkt.tid[0]] &&
-              !completions.release_valid[ep0_grant_pkt.tid[0]] &&
-              !completions.handed_q[ep0_grant_pkt.tid[0]]))
+              home.completions.live[ep0_grant_pkt.tid[0]] &&
+              home.completions.work_identity[ep0_grant_pkt.tid[0]] == 9'b0 &&
+              !home.completions.work_valid[ep0_grant_pkt.tid[0]] &&
+              !home.completions.release_valid[ep0_grant_pkt.tid[0]] &&
+              !home.completions.handed_q[ep0_grant_pkt.tid[0]]))
           inv_link_c_ok = 1'b0;
         for (int s = 0; s < int'(LINK_STAGES); s++) begin
           c_s = gen_ep_links[0].link_c.gen_credit.payload_q[s*(AddrWidth+18)+:(AddrWidth+18)];
@@ -2314,15 +2770,17 @@ module coherence_sc_wa_formal #(
                 g_s.tid < 6'd2 && g_s.opcode <= coherence_pkg::GrantMZero &&
                 (g_s.opcode != coherence_pkg::GrantFail ||
                  hart.acquisition_q.opcode == coherence_pkg::StoreConditional) &&
+                (hart.acquisition_q.opcode != coherence_pkg::GetM ||
+                 g_s.opcode == coherence_pkg::GrantM) &&
                 (hart.acquisition_q.opcode != coherence_pkg::StoreConditional ||
                  g_s.opcode == coherence_pkg::GrantM ||
                  g_s.opcode == coherence_pkg::GrantFail) &&
-                completions.live[g_s.tid[0]] &&
-                completions.work_identity[g_s.tid[0]] == 9'b0 &&
-                !completions.work_valid[g_s.tid[0]] &&
-                !completions.release_valid[g_s.tid[0]] &&
-                !completions.handed_q[g_s.tid[0]] &&
-                completions.work_address[g_s.tid[0]] == hart.acquisition_q.addr))
+                home.completions.live[g_s.tid[0]] &&
+                home.completions.work_identity[g_s.tid[0]] == 9'b0 &&
+                !home.completions.work_valid[g_s.tid[0]] &&
+                !home.completions.release_valid[g_s.tid[0]] &&
+                !home.completions.handed_q[g_s.tid[0]] &&
+                home.completions.work_address[g_s.tid[0]] == hart.acquisition_q.addr))
             inv_link_g_ok = 1'b0;
         end
       end
@@ -2336,8 +2794,8 @@ module coherence_sc_wa_formal #(
           if (!(hart.live[0] && ep0_wait_u && !c_link_ep0_any &&
                 u_s.q == 9'b0 && u_s.tid == ep0_grant_pkt.tid &&
                 u_s.addr == hart.acquisition_q.addr &&
-                !(completions.live[0] && completions.work_identity[0] == 9'b0) &&
-                !(completions.live[1] && completions.work_identity[1] == 9'b0)))
+                !(home.completions.live[0] && home.completions.work_identity[0] == 9'b0) &&
+                !(home.completions.live[1] && home.completions.work_identity[1] == 9'b0)))
             inv_link_u_ok = 1'b0;
         end
       end
@@ -2356,29 +2814,32 @@ module coherence_sc_wa_formal #(
             ) != 1)
           inv_link_p_ok = 1'b0;
       end
-      if (int'(p_link_any) + int'(hart.probe_valid_q) + $countones(link_r.gen_always.valid_q) > 1)
-        inv_link_p_ok = 1'b0;
       for (int s = 0; s < int'(LINK_STAGES); s++) begin
         coh_p_t p_s;
         coh_r_t r_s;
         p_s = link_p.gen_credit_one.payload_q[s*(AddrWidth+30)+:(AddrWidth+30)];
         r_s = link_r.gen_always.payload_q[s*(AddrWidth+275)+:(AddrWidth+275)];
         if (link_p.gen_credit_one.valid_q[s]) begin
-          if (!(engine.phase_q == EngService &&
-                engine.probe_phase_q == EngProbeWait &&
-                p_s == engine.probe_q))
+          if (!((eng_phase == EngService && eng_probe_phase == EngProbeWait &&
+                 p_s == home.gen_engine[0].service.probe_q) ||
+                (home.fill_phase_q[0] == FillRecall && home.recall_phase_q[0] == RecallWait &&
+                 p_s == home_fill_probe)))
             inv_link_p_ok = 1'b0;
         end
         if (link_r.gen_always.valid_q[s]) begin
           if (!(!r_s.error && r_s.hart == 1'b0 && r_s.epoch == 1'b0 &&
                 r_s.put_epoch == 1'b0 &&
-                engine.phase_q == EngService && engine.probe_phase_q == EngProbeWait &&
-                r_s.tid == engine_tid && r_s.addr == engine_addr &&
-                (engine.probe_q.opcode == coherence_pkg::CheckSC ?
-                 (r_s.opcode == coherence_pkg::CheckAck &&
-                  !r_s.data_valid && !r_s.absorbed) :
-                 (r_s.opcode == coherence_pkg::ProbeAck ||
-                  r_s.opcode == coherence_pkg::ProbeData))))
+                ((eng_phase == EngService && eng_probe_phase == EngProbeWait &&
+                  r_s.tid == eng_tid && r_s.addr == eng_addr &&
+                  (home.gen_engine[0].service.probe_q.opcode == coherence_pkg::CheckSC ?
+                   (r_s.opcode == coherence_pkg::CheckAck &&
+                    !r_s.data_valid && !r_s.absorbed) :
+                   (r_s.opcode == coherence_pkg::ProbeAck ||
+                    r_s.opcode == coherence_pkg::ProbeData))) ||
+                 (home.fill_phase_q[0] == FillRecall && home.recall_phase_q[0] == RecallWait &&
+                  r_s.tid == FillTid && r_s.addr == home_fill_probe.addr &&
+                  (r_s.opcode == coherence_pkg::ProbeAck ||
+                   r_s.opcode == coherence_pkg::ProbeData)))))
             inv_link_r_ok = 1'b0;
           if (r_s.absorbed) begin
             if (!(r_s.data_valid && r_s.opcode == coherence_pkg::ProbeData &&
@@ -2412,7 +2873,7 @@ module coherence_sc_wa_formal #(
           if (wa_s.put_id) wa_slot_cnt[1] = wa_slot_cnt[1] + 1;
           else wa_slot_cnt[0] = wa_slot_cnt[0] + 1;
           if (!wa_s.absorbed) begin
-            if (put_busy_q[wa_s.put_id] ||
+            if (home.put_busy_q[wa_s.put_id] ||
                 (wa_s.put_id ? (hart.gen_put[1].put.phase_q != PutAccepted) :
                                (hart.gen_put[0].put.phase_q != PutAccepted)))
               inv_link_wa_ok = 1'b0;
@@ -2437,18 +2898,18 @@ module coherence_sc_wa_formal #(
         inv_link_w_ok = 1'b0;
       if (w_link_ret_any) begin
         if (!(hart.wb_selected_q && hart.wb_live[hart.wb_select_q] &&
-              put_busy_q[hart.wb_select_q] &&
-              put_q[hart.wb_select_q].addr == hart.wb_addr[hart.wb_select_q] &&
-              !wa_link_ord[hart.wb_select_q] && !put_selected_q &&
+              home.put_busy_q[hart.wb_select_q] &&
+              home_put_pkt[hart.wb_select_q].addr == hart.wb_addr[hart.wb_select_q] &&
+              !wa_link_ord[hart.wb_select_q] && !home.put_selected_q &&
               (hart.wb_select_q ?
                (hart.gen_put[1].put.phase_q == PutPresent && !hart.gen_put[1].put.absorbed_q) :
                (hart.gen_put[0].put.phase_q == PutPresent && !hart.gen_put[0].put.absorbed_q))))
           inv_link_w_ok = 1'b0;
-        if (link_w.gen_mirror.return_q[0] && put_phase_q[hart.wb_select_q] != PutWork)
+        if (link_w.gen_mirror.return_q[0] && home.put_phase_q[hart.wb_select_q] != PutLookup)
           inv_link_w_ok = 1'b0;
         if (LINK_STAGES >= 2 && link_w.gen_mirror.return_q[LINK_STAGES >= 2 ? 1 : 0] &&
-            ack_arbiter.selected_q &&
-            ack_arbiter.selected_port_q == 2'(1 + hart.wb_select_q))
+            home.ack_arbiter.selected_q &&
+            home.ack_arbiter.selected_port_q == 2'(2 + hart.wb_select_q))
           inv_link_w_ok = 1'b0;
         for (int s = 0; s < int'(LINK_STAGES); s++) begin
           if (link_w.gen_mirror.valid_q[s] &&
@@ -2478,8 +2939,10 @@ module coherence_sc_wa_formal #(
             if (!(hart.wb_selected_q && hart.wb_select_q == w_s.put_id)) inv_link_w_ok = 1'b0;
           end else begin
             if ((l1d_r_valid && s == 0) ||
-                (engine.phase_q == EngService && engine.probe_phase_q == EngProbeAck &&
-                 engine.ack_q.put_id == w_s.put_id) ||
+                (eng_phase == EngService && eng_probe_phase == EngProbeAck &&
+                 home.gen_engine[0].service.ack_q.put_id == w_s.put_id) ||
+                (home.fill_phase_q[0] == FillRecall && home.recall_phase_q[0] == RecallAck &&
+                 home_fill_ack.put_id == w_s.put_id) ||
                 wa_link_abs[w_s.put_id])
               inv_link_w_ok = 1'b0;
             for (int sr = 0; sr < int'(LINK_STAGES); sr++) begin
