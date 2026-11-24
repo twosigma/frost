@@ -15,7 +15,7 @@
  */
 
 /*
- * Data-side Sv39 translation between the MEM_RS address adder and LQ/SQ.
+ * Data-side Sv39 translation between MEM_RS issue and LQ/SQ.
  * The wrapper bypasses this module without delay when translation is off.
  * i_active, i_sum, i_mxr, and i_eff_priv_u are registered CSR state; changes
  * are accompanied by a full flush.
@@ -23,7 +23,7 @@
  * Translation uses two registered stages. S1 holds the operation
  * until its DTLB lookup, checks, and any walk complete. S2 registers the
  * result and drives every consumer pulse. Hits sustain one operation per
- * cycle. Eligible last-page hits enter S2 directly from issue.
+ * cycle. Clean hits on uniform DTLB leaves enter S2 directly from issue.
  * Faults carry the VA for xtval instead of a PA; the wrapper routes
  * them to the LQ for loads/LR/AMOs or the store fault strobe for stores/SC.
  *
@@ -50,8 +50,8 @@ module dmmu (
     input logic i_trap_misaligned,
 
     // Translation changed: an SFENCE.VMA window, or the CSR file's
-    // translation-change pulse (satp access, MPRV change). It drops the
-    // last-page buffer, holds back walk requests and installs, and the walker
+    // translation-change pulse (satp access, MPRV change). It holds back
+    // issue bypass, walk requests and installs. The walker
     // discards its walk in flight on the same signal. It does not empty the
     // DTLB: entries are ASID-tagged, and i_tlb_flush names what to remove.
     input logic i_tlb_invalidate,
@@ -68,7 +68,8 @@ module dmmu (
     // Issue port in (fires with the wrapper's MEM_RS issue while active).
     input logic i_iss_valid,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_iss_rob_tag,
-    input logic [riscv_pkg::XLEN-1:0] i_iss_va,
+    input logic [riscv_pkg::XLEN-1:0] i_iss_base,
+    input logic [riscv_pkg::XLEN-1:0] i_iss_offset,
     input riscv_pkg::mem_size_e i_iss_size,
     input logic i_iss_needs_sq,  // routing: SQ-resident (stores + SC)
     input logic i_iss_store_perms,  // permission class: stores + SC + AMOs
@@ -128,6 +129,7 @@ module dmmu (
     input riscv_pkg::ptw_resp_t i_walk_resp
 );
 
+  localparam int unsigned Entries = 16;
   localparam int unsigned PpnBits = riscv_pkg::PhysAddrBits - 12;
 
   // Partial-flush age test used throughout the back end: entry_tag is younger
@@ -163,7 +165,7 @@ module dmmu (
   iss_payload_t iss_in;
   always_comb begin
     iss_in.tag = i_iss_rob_tag;
-    iss_in.va = i_iss_va;
+    iss_in.va = i_iss_base + i_iss_offset;
     iss_in.size = i_iss_size;
     iss_in.needs_sq = i_iss_needs_sq;
     iss_in.store_perms = i_iss_store_perms;
@@ -390,17 +392,14 @@ module dmmu (
   assign s1_can_load = !s1_valid_q || s1_move || s1_killed;
 
   // ---------------------------------------------------------------------------
-  // Last-page translation buffer (intra-page bypass directly into S2)
+  // Match the issue operands against the resident DTLB entries.
   // ---------------------------------------------------------------------------
-  logic last_valid_q;
-  logic [riscv_pkg::Sv39VpnBits-1:0] last_vpn_q;
-  logic [PpnBits-1:0] last_ppn_q;
-  logic last_priv_u_q;
-  logic last_sum_q;
-  logic last_mxr_q;
-  logic last_perm_r_q, last_perm_w_q, last_perm_x_q, last_perm_u_q, last_perm_d_q;
-  logic last_is_mmio_q;
-  logic last_atomic_ok_q;
+  logic [Entries-1:0] entry_valid, entry_high, entry_load_ok, entry_store_ok;
+  logic [Entries-1:0] entry_device, entry_atomic, entry_whole;
+  logic [Entries-1:0][riscv_pkg::Sv39VpnBits-1:0] entry_vpn;
+  logic [Entries-1:0][1:0] entry_level;
+  logic [Entries-1:0][PpnBits-1:0] entry_ppn;
+  logic tlb_install;
 
   // Live incoming op qualification for bypass
   logic iss_misaligned;
@@ -416,84 +415,63 @@ module dmmu (
   logic iss_noncanonical;
   assign iss_noncanonical = !riscv_pkg::sv39_va_canonical(iss_in.va);
 
-  logic last_priv_match;
-  assign last_priv_match = (i_eff_priv_u == last_priv_u_q) &&
-                           (i_sum == last_sum_q) &&
-                           (i_mxr == last_mxr_q);
+  // For an expected sum bit T, its carry-in must be A ^ B ^ T. Its carry-out
+  // must then be (A & B) | ((A ^ B) & ~T). Compare adjacent carries in
+  // parallel. Only the carry into each nine-bit VPN field comes from the
+  // lower address. Compute those three carries once for all entries.
+  logic [38:0] issue_propagate, issue_generate;
+  assign issue_propagate = i_iss_base[38:0] ^ i_iss_offset[38:0];
+  assign issue_generate  = i_iss_base[38:0] & i_iss_offset[38:0];
+  logic [2:0] vpn_carry;
+  logic carry_gen_1, carry_gen_2, carry_prop_1, carry_prop_2;
+  assign vpn_carry[0] = i_iss_base[11:0] > ~i_iss_offset[11:0];
+  assign carry_gen_1 = i_iss_base[20:12] > ~i_iss_offset[20:12];
+  assign carry_gen_2 = i_iss_base[29:21] > ~i_iss_offset[29:21];
+  assign carry_prop_1 = &issue_propagate[20:12];
+  assign carry_prop_2 = &issue_propagate[29:21];
+  assign vpn_carry[1] = carry_gen_1 || (carry_prop_1 && vpn_carry[0]);
+  assign vpn_carry[2] = carry_gen_2 || (carry_prop_2 && carry_gen_1) ||
+      (carry_prop_2 && carry_prop_1 && vpn_carry[0]);
 
-  logic last_priv_ok;
-  assign last_priv_ok = last_perm_u_q ? (i_eff_priv_u || i_sum) : !i_eff_priv_u;
-
-  logic iss_perm_ok;
-  assign iss_perm_ok = iss_in.store_perms ?
-      (last_priv_ok && last_perm_w_q && last_perm_d_q) :
-      (last_priv_ok && (last_perm_r_q || (i_mxr && last_perm_x_q)));
-
-  logic iss_pma_ok;
-  assign iss_pma_ok = last_atomic_ok_q || (last_is_mmio_q && !iss_in.atomic);
-
-  logic iss_can_bypass;
-  assign iss_can_bypass = i_iss_valid && i_active && !iss_killed && !i_tlb_invalidate &&
-      !s0_valid_q && (!s1_valid_q || s1_killed) &&
-      last_valid_q && last_priv_match &&
-      (iss_in.va[38:12] == last_vpn_q) &&
-      !(i_trap_misaligned && iss_misaligned) &&
-      !iss_noncanonical &&
-      iss_perm_ok && iss_pma_ok;
-
-  // The buffer captures a clean translation. For a DTLB hit the clean check
-  // is the TLB's per-entry verdict, selected with the hit, so the capture
-  // enable does not wait on the fault select.
-  logic last_capture;
-  (* keep = "true" *)wire  last_capture_qualified;
-  assign last_capture_qualified = s1_valid_q && !s1_killed &&
-      !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical;
-  (* keep = "true" *) wire last_capture_walk_good;
-  assign last_capture_walk_good = walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE);
-  // Apply the hit's clean verdict after request and walk qualification.
-`ifdef FROST_XILINX_PRIMS
-  (* dont_touch = "true" *) LUT4 #(
-      .INIT(16'ha280)
-  ) u_last_capture (
-      .I0(last_capture_qualified),
-      .I1(tlb_hit[0]),
-      .I2(tlb_clean_hit[0]),
-      .I3(last_capture_walk_good),
-      .O (last_capture)
-  );
-`else
-  assign last_capture = last_capture_qualified &&
-      (tlb_hit[0] ? tlb_clean_hit[0] : last_capture_walk_good);
-`endif
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all || i_tlb_invalidate || !i_active) begin
-      last_valid_q <= 1'b0;
-    end else if (last_capture) begin
-      last_valid_q  <= 1'b1;
-      last_vpn_q    <= s1_q.va[38:12];
-      last_ppn_q    <= resolve_ppn;
-      last_priv_u_q <= i_eff_priv_u;
-      last_sum_q    <= i_sum;
-      last_mxr_q    <= i_mxr;
-      if (tlb_hit[0]) begin
-        last_perm_r_q    <= tlb_r[0];
-        last_perm_w_q    <= tlb_w[0];
-        last_perm_x_q    <= tlb_x[0];
-        last_perm_u_q    <= tlb_u[0];
-        last_perm_d_q    <= tlb_d[0];
-        last_is_mmio_q   <= tlb_is_mmio;
-        last_atomic_ok_q <= tlb_atomic_page[0];
-      end else begin
-        last_perm_r_q    <= i_walk_resp.perm_r;
-        last_perm_w_q    <= i_walk_resp.perm_w;
-        last_perm_x_q    <= i_walk_resp.perm_x;
-        last_perm_u_q    <= i_walk_resp.perm_u;
-        last_perm_d_q    <= i_walk_resp.perm_d;
-        last_is_mmio_q   <= walk_is_mmio;
-        last_atomic_ok_q <= walk_atomic_page;
-      end
+  logic [Entries-1:0] issue_match, issue_winner, entry_clean, mega_or_giga, giga;
+  for (genvar e = 0; e < Entries; e++) begin : gen_issue_match
+    logic [2:0] field_eq;
+    for (genvar f = 0; f < 3; f++) begin : gen_field
+      localparam int unsigned Bit = 12 + 9 * f;
+      wire [8:0] tag = entry_vpn[e][9*f+:9];
+      wire [8:0] carry_in = issue_propagate[Bit+:9] ^ tag;
+      wire [7:0] carry_out = issue_generate[Bit+:8] | (issue_propagate[Bit+:8] & ~tag[7:0]);
+      assign field_eq[f] = carry_in == {carry_out, vpn_carry[f]};
     end
+    assign giga[e] = entry_level[e] == 2'd2;
+    assign mega_or_giga[e] = giga[e] || entry_level[e] == 2'd1;
+    assign issue_match[e] = entry_valid[e] && field_eq[2] &&
+        (giga[e] || field_eq[1]) && (mega_or_giga[e] || field_eq[0]);
+    // A lower-index mixed or faulting leaf still owns an overlapping hit.
+    assign issue_winner[e] = issue_match[e] && !(|(issue_match & ((Entries'(1) << e) - 1'b1)));
+    assign entry_clean[e] = entry_whole[e] && !entry_high[e] &&
+        (iss_in.store_perms ? entry_store_ok[e] : entry_load_ok[e]) &&
+        (entry_atomic[e] || (entry_device[e] && !iss_in.atomic));
   end
+  logic [PpnBits-1:0] selected_ppn, bypass_ppn;
+  always_comb begin
+    selected_ppn = '0;
+    for (int e = 0; e < Entries; e++) selected_ppn |= {PpnBits{issue_winner[e]}} & entry_ppn[e];
+  end
+  assign bypass_ppn = {
+    selected_ppn[PpnBits-1:18],
+    (|(issue_winner & giga)) ? iss_in.va[29:21] : selected_ppn[17:9],
+    (|(issue_winner & mega_or_giga)) ? iss_in.va[20:12] : selected_ppn[8:0]
+  };
+  logic bypass_mmio, iss_can_bypass;
+  assign bypass_mmio = !iss_in.atomic && (|(issue_winner & entry_device));
+  // A fill may evict the winner or install a higher-priority overlapping
+  // leaf. Issue goes through S1 on that edge and sees the installed state.
+  assign iss_can_bypass = i_iss_valid && i_active && !i_flush_all && !iss_killed &&
+      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install &&
+      !s0_valid_q && (!s1_valid_q || s1_killed) &&
+      !(i_trap_misaligned && iss_misaligned) && !iss_noncanonical &&
+      (|(issue_winner & entry_clean));
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
@@ -539,7 +517,7 @@ module dmmu (
   // the issue's, including one that bypasses to S2 and leaves S1 empty.
   // Every use of the payload is qualified by s1_valid_q, or for the walk VPN
   // by the walk request, so only s1_valid_q waits on the bypass verdict.
-  // The issue VA is the base-plus-offset sum formed before this module. The
+  // The issue VA is the base-plus-offset sum. The
   // skid choice selects in one LUT per bit after the full sum, and the
   // primitive keeps the choice and the load enable out of the adder's
   // operands, where they would run the whole carry chain.
@@ -580,10 +558,6 @@ module dmmu (
 `ifndef SYNTHESIS
   logic reset_seen_q = 1'b0;
   always_ff @(posedge i_clk) if (!i_rst_n) reset_seen_q <= 1'b1;
-  always_comb
-    if (reset_seen_q && i_rst_n && !$isunknown({s1_valid_q, s1_killed, last_capture}))
-      p_last_capture_exact :
-      assert (last_capture == (s1_move && (resolve_fault == riscv_pkg::DFAULT_NONE)));
   // Reference payload loaded only when an op slips in behind a held S1. Both
   // hold the same op whenever the skid is valid.
   iss_payload_t s0_ref_q;
@@ -669,7 +643,7 @@ module dmmu (
   wire s2_pa_next = s2_pa_leaf_selected ? tlb_clean_hit[0] : s2_pa_without_leaf;
 
   // S2's VA takes S1's VA when S1 advances, else the issue address, which is
-  // the base-plus-offset sum formed before this module. s1_move settles after
+  // the base-plus-offset sum. s1_move settles after
   // the DTLB hit, so it selects in one LUT per bit after the full sum. The
   // primitive keeps the select out of the adder's operands, where it would
   // run the whole carry chain.
@@ -705,12 +679,12 @@ module dmmu (
   // S2 holds an operation for one cycle and its readers wait for s2_valid_q, so
   // the payload loads every cycle and only the valid bit reads the bypass.
   always_ff @(posedge i_clk) begin
-    s2_is_mmio_q <= iss_can_bypass ? last_is_mmio_q : s2_mmio_next;
+    s2_is_mmio_q <= iss_can_bypass ? bypass_mmio : s2_mmio_next;
     if (!i_rst_n || i_flush_all) s2_valid_q <= 1'b0;
     else s2_valid_q <= s1_move || iss_can_bypass;
     s2_tag_q <= s1_move ? s1_q.tag : iss_in.tag;
     s2_va_q <= s2_va_next;
-    s2_ppn_q <= s1_move ? resolve_ppn : last_ppn_q;
+    s2_ppn_q <= s1_move ? resolve_ppn : bypass_ppn;
     s2_pa_q <= s2_pa_next;
     s2_fault_q <= s1_move ? riscv_pkg::data_fault_kind_e'(s2_fault_next) : riscv_pkg::DFAULT_NONE;
     s2_needs_sq_q <= s1_move ? s1_q.needs_sq : iss_in.needs_sq;
@@ -740,7 +714,7 @@ module dmmu (
       ref_s2_amo_rs2_q <= s1_q.amo_rs2;
     end else if (iss_can_bypass) begin
       ref_s2_tag_q <= iss_in.tag;
-      ref_s2_addr_q <= riscv_pkg::XLEN'({last_ppn_q, iss_in.va[11:0]});
+      ref_s2_addr_q <= riscv_pkg::XLEN'({bypass_ppn, iss_in.va[11:0]});
       ref_s2_fault_q <= riscv_pkg::DFAULT_NONE;
       ref_s2_needs_sq_q <= iss_in.needs_sq;
       ref_s2_is_sc_q <= iss_in.is_sc;
@@ -774,13 +748,13 @@ module dmmu (
   assign o_iss_out_store_data = s2_store_data_q;
   assign o_iss_out_amo_rs2 = s2_amo_rs2_q;
 
-  // A surviving S1 operation owns the next S2 packet. Otherwise only a live
-  // issue can bypass into S2. Both the tag and LQ-need look-ahead precede
-  // bypass eligibility because the LQ consumes its registered match only with
-  // an address-update packet.
-  assign o_pre_rob_tag = (!s1_valid_q || s1_killed) ? iss_in.tag : s1_q.tag;
-  assign o_pre_needs_lq = (!s1_valid_q || s1_killed) ?
-      (i_iss_valid && !iss_in.needs_sq) : !s1_q.needs_sq;
+  // A surviving S1 operation owns the next S2 packet. Otherwise the LQ
+  // may prepare a match for the incoming load before its translation is
+  // known. Only a valid S2 address-update packet can consume that match.
+  logic pre_from_s1;
+  assign pre_from_s1 = s1_valid_q && !s1_killed;
+  assign o_pre_rob_tag = pre_from_s1 ? s1_q.tag : iss_in.tag;
+  assign o_pre_needs_lq = pre_from_s1 ? !s1_q.needs_sq : (i_iss_valid && !iss_in.needs_sq);
 
   // Request a walk once for a live, canonical S1 miss with no trapping
   // misalignment or matching response. Hold valid until accepted. Suppress
@@ -863,12 +837,11 @@ module dmmu (
   // ---------------------------------------------------------------------------
   // DTLB
   // ---------------------------------------------------------------------------
-  logic tlb_install;
   assign tlb_install = i_walk_resp_valid &&
       (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
 
   dtlb #(
-      .NUM_ENTRIES(16),
+      .NUM_ENTRIES(Entries),
       .NUM_PORTS  (3)
   ) u_dtlb (
       .i_clk(i_clk),
@@ -898,16 +871,16 @@ module dmmu (
       .i_perm_atomic({2'b00, s1_q.atomic}),
       .o_clean_hit(tlb_clean_hit),
       .i_verdict_invalidate(i_tlb_invalidate),
-      .o_entry_valid(),
-      .o_entry_vpn(),
-      .o_entry_level(),
-      .o_entry_ppn(),
-      .o_entry_ppn_hi_nonzero(),
-      .o_entry_load_ok(),
-      .o_entry_store_ok(),
-      .o_entry_device(),
-      .o_entry_atomic_ok(),
-      .o_entry_whole_leaf(),
+      .o_entry_valid(entry_valid),
+      .o_entry_vpn(entry_vpn),
+      .o_entry_level(entry_level),
+      .o_entry_ppn(entry_ppn),
+      .o_entry_ppn_hi_nonzero(entry_high),
+      .o_entry_load_ok(entry_load_ok),
+      .o_entry_store_ok(entry_store_ok),
+      .o_entry_device(entry_device),
+      .o_entry_atomic_ok(entry_atomic),
+      .o_entry_whole_leaf(entry_whole),
       // The instruction MMU's leaf checks; the data side uses its own.
       .i_fetch_priv_u(1'b0),
       .o_fetch_perm_fault(),
@@ -995,6 +968,106 @@ module dmmu (
   end
 `endif
 
+`ifdef DMMU_BYPASS_LOCAL_PROOF
+  // Independent S1-style lookup of arbitrary exported entries. The entry
+  // verdict proof relates each qualified export to the real DTLB.
+  logic [Entries-1:0] f_match;
+  logic [riscv_pkg::XLEN-1:0] f_va, f_pa;
+  logic [PpnBits-1:0] f_ppn;
+  logic f_leaf_ok, f_mmio, f_take;
+  assign f_va = i_iss_base + i_iss_offset;
+  always_comb begin
+    f_ppn = '0;
+    f_leaf_ok = 1'b0;
+    f_mmio = 1'b0;
+    // Later assignments give the lowest matching index S1's priority.
+    for (int e = Entries - 1; e >= 0; e--) begin
+      case (entry_level[e])
+        2'd2: f_match[e] = entry_valid[e] && entry_vpn[e][26:18] == f_va[38:30];
+        2'd1: f_match[e] = entry_valid[e] && entry_vpn[e][26:9] == f_va[38:21];
+        default: f_match[e] = entry_valid[e] && entry_vpn[e] == f_va[38:12];
+      endcase
+      if (f_match[e]) begin
+        f_ppn = entry_ppn[e];
+        case (entry_level[e])
+          2'd2: f_ppn[17:0] = f_va[29:12];
+          2'd1: f_ppn[8:0] = f_va[20:12];
+          default: ;
+        endcase
+        f_mmio = !i_iss_atomic && entry_device[e];
+        f_leaf_ok = entry_whole[e] && (i_iss_store_perms ? entry_store_ok[e] : entry_load_ok[e]) &&
+            !entry_high[e] && (entry_atomic[e] || f_mmio);
+      end
+    end
+  end
+  assign f_pa = riscv_pkg::XLEN'({f_ppn, f_va[11:0]});
+  assign f_take = i_iss_valid && i_active && !iss_killed && !i_flush_all &&
+      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install &&
+      !s0_valid_q && (!s1_valid_q || s1_killed) &&
+      riscv_pkg::sv39_va_canonical(
+      f_va
+  ) && !(i_trap_misaligned && (|(f_va[2:0] & ((3'b001 << i_iss_size) - 1'b1)))) && f_leaf_ok;
+  logic f_bypass_past = 1'b0;
+  always_ff @(posedge i_clk) begin
+    f_bypass_past <= 1'b1;
+    p_sum_addressed_match : assert (issue_match == f_match);
+    p_bypass_decision : assert (iss_can_bypass == f_take);
+    if (f_bypass_past && $past(i_rst_n && f_take)) begin
+      p_bypass_result :
+      assert (s2_valid_q && !s1_valid_q && o_iss_out_addr == $past(
+          f_pa
+      ) && o_iss_out_fault == riscv_pkg::DFAULT_NONE && o_iss_out_is_mmio == $past(
+          f_mmio
+      ));
+    end
+  end
+`endif
+
+`ifdef DMMU_BYPASS_REPLAY_PROOF
+  // S1 samples the issued payload even when its valid bit stays clear on
+  // a bypass. Its real lookup port can replay that exact access alongside
+  // the registered S2 packet when the ASID and permission controls persist.
+  logic f_replay_started = 1'b0;
+  logic f_prev_sum;
+  logic [riscv_pkg::AsidBits-1:0] f_prev_asid;
+  initial assume (!i_rst_n);
+  always_ff @(posedge i_clk) begin
+    f_replay_started <= 1'b1;
+    f_prev_asid <= i_asid;
+    f_prev_sum <= i_sum;
+    if (f_replay_started && $past(
+            i_rst_n && iss_can_bypass
+        ) && {i_asid, i_eff_priv_u, i_mxr, i_sum} == $past(
+            {i_asid, i_eff_priv_u, i_mxr, i_sum}
+        )) begin
+      p_replay_s1_result :
+      assert (s2_valid_q && !s1_valid_q && tlb_hit[0] &&
+          o_iss_out_fault == tlb_fault && o_iss_out_addr == tlb_resolve_addr &&
+          o_iss_out_is_mmio == tlb_is_mmio);
+      // Without winner priority the second PPN would set an extra PA bit.
+      c_replay_overlapping_leaves :
+      cover (s2_valid_q && tlb_hit[0] && $past(
+          issue_match[0] && issue_match[1] && entry_level[0] == 0 && entry_level[1] == 0 &&
+          (|(entry_ppn[1] & ~entry_ppn[0]))
+      ));
+    end
+    if (f_replay_started && i_rst_n && iss_can_bypass) begin
+      c_bypass_after_sum :
+      cover (!i_eff_priv_u && i_sum && $past(i_rst_n && i_sum && !f_prev_sum && !tlb_install));
+      c_bypass_after_sfence :
+      cover ($past(i_rst_n && i_tlb_invalidate && i_tlb_flush.en && i_tlb_flush.use_va));
+      c_bypass_after_asid :
+      cover (i_asid == f_prev_asid && $past(i_rst_n && i_tlb_invalidate && i_asid != f_prev_asid));
+      c_bypass_alternating :
+      cover ($past(
+          i_rst_n && iss_can_bypass && i_iss_store_perms
+      ) && !i_iss_store_perms && iss_in.va[38:12] != $past(
+          iss_in.va[38:12]
+      ));
+    end
+  end
+`endif
+
 `ifdef DMMU_CAPTURE_LOCAL_PROOF
   // Relate the issued packet and the consumer's preceding look-ahead without
   // assumptions on issue order, flushes or permission controls, and on TLB
@@ -1007,7 +1080,6 @@ module dmmu (
   logic [riscv_pkg::XLEN-1:0] f_capture_addr_q;
   logic f_capture_mmio_q;
   riscv_pkg::data_fault_kind_e f_capture_fault_q;
-  logic f_last_clear_q;
   always_ff @(posedge i_clk) begin
     f_capture_past_valid <= 1'b1;
     if (!f_capture_past_valid) assume (!i_rst_n);
@@ -1016,10 +1088,9 @@ module dmmu (
     f_capture_expected_q <= i_rst_n && !i_flush_all && (s1_move || iss_can_bypass);
     f_bypass_expected_q <= i_rst_n && !i_flush_all && iss_can_bypass;
     f_capture_op_q <= s1_move ? s1_q : iss_in;
-    f_capture_addr_q <= s1_move ? resolve_addr : riscv_pkg::XLEN'({last_ppn_q, iss_in.va[11:0]});
+    f_capture_addr_q <= s1_move ? resolve_addr : riscv_pkg::XLEN'({bypass_ppn, iss_in.va[11:0]});
     f_capture_fault_q <= s1_move ? resolve_fault : riscv_pkg::DFAULT_NONE;
-    f_capture_mmio_q <= s1_move ? resolve_is_mmio : last_is_mmio_q;
-    f_last_clear_q <= !i_rst_n || i_flush_all || i_tlb_invalidate || !i_active;
+    f_capture_mmio_q <= s1_move ? resolve_is_mmio : bypass_mmio;
     if (f_capture_past_valid) begin
       p_capture_pulse : assert (s2_valid_q == f_capture_expected_q);
       p_bypass_one_cycle : assert (!f_bypass_expected_q || s2_valid_q);
@@ -1036,19 +1107,12 @@ module dmmu (
         p_lq_lookahead_valid : assert (f_pre_needs_lq_q);
         p_lq_lookahead_tag : assert (o_iss_out_rob_tag == f_pre_tag_q);
       end
-      if (f_last_clear_q) p_last_page_invalidation : assert (!last_valid_q);
-      // The last-page buffer survives SUM and MXR changes only through its
-      // captured-state compare: a bypass grants an access only when the
-      // live SUM, MXR and privilege equal those it captured and the raw
-      // leaf permissions allow the access under them.
-      if (iss_can_bypass) begin
-        p_bypass_live_permission :
-        assert ((i_sum == last_sum_q) && (i_mxr == last_mxr_q) &&
-                (i_eff_priv_u == last_priv_u_q) &&
-                (last_perm_u_q ? (i_eff_priv_u || i_sum) : !i_eff_priv_u) &&
-                (iss_in.store_perms ? (last_perm_w_q && last_perm_d_q) :
-                                      (last_perm_r_q || (i_mxr && last_perm_x_q))));
-      end
+      if (i_tlb_invalidate || i_tlb_flush.en || tlb_install || i_flush_all)
+        p_no_bypass_on_update : assert (!iss_can_bypass);
+      c_lq_lookahead_without_capture :
+      cover (f_pre_needs_lq_q && !s2_valid_q && s1_valid_q && $past(
+          i_rst_n && i_active && i_iss_valid && !s1_valid_q && !s0_valid_q && !iss_can_bypass
+      ));
       cover (f_bypass_expected_q && o_iss_out_lq_capture_valid);
       cover (f_bypass_expected_q && o_iss_out_sq_capture_valid);
       cover (i_rst_n && !i_flush_all && s1_resolved && s1_killed && iss_can_bypass);

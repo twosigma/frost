@@ -99,7 +99,9 @@ which arrives early in the cycle. In the core
 (`PREISSUE_READY_PICK=1`) the LQ compares its tags against every MEM_RS entry
 tag, and each candidate's ready vector picks the compare result of that
 candidate's winner (entry 0 when nothing is ready). Under translation it
-compares `i_pre_issue_direct_tag` instead.
+compares `i_pre_issue_direct_tag` instead. The DMMU can announce a load before
+its lookup settles. The registered match takes effect only when the load's
+address-update packet arrives.
 
 [`lq_issue_selector.sv`](lq_issue_selector.sv) scans in ring order from
 `head_idx` and finds, in parallel: the first entry holding a result, which
@@ -570,7 +572,7 @@ therefore holds interrupts while an AMO occupies the ROB head
 (`trap_unit.i_amo_at_head`); exceptions stay enabled, because an AMO faults
 before it touches memory. A simulation check reports any full flush that
 reaches an active AMO write. A flush that arrives earlier, including in
-`AMO_COMPUTE`, cancels the AMO cleanly. `AMO_COMPUTE` has already freed the
+`AMO_COMPUTE`, cancels the AMO without writing memory. `AMO_COMPUTE` has already freed the
 response slot. A cached AMO holds either the L1D service engine or its home
 lock through write installation and ownership release. CPU protection also
 waits for retirement.

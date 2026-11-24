@@ -32,7 +32,8 @@ applications so cache-geometry and conflicting-set tests use the same geometry.
 ## Board integration
 
 `vcu118_clock.sv` generates the CPU and CPU/4 clocks with an MMCM driven by
-`SYSCLK1_300`. The build and software loader use a fixed clock configuration.
+`SYSCLK1_300`. The default scalar build and the opt-in vector build each use a
+fixed clock configuration selected at synthesis.
 The DDR controller uses its independent reference input. The optional GTY
 CPU clock wrapper is outside the active board file list.
 The networking build generates the GTY and SGMII PCS/PMA cores.
@@ -60,6 +61,19 @@ region. Configuration primitives remain at their fixed device sites. Peripheral
 pins span multiple SLRs; top-level reset and status logic is outside that
 hierarchy selection.
 
+The opt-in vector build (`./fpga/build/build.py vcu118 --vector`) includes the
+256-bit vector unit (`VECTOR=1`, `VLEN=256`, `VECTOR_ADVERTISE=1`, advertising
+`misa.V`) and selects its MMCM clock configuration in synthesis, the DDR block
+design, and the embedded boot ROM. It applies `constr/vcu118_vector.xdc` after
+`constr/vcu118.xdc` across synthesis, optimization, and placement to move the
+vector-unit hierarchy (`gen_vector_unit.u_vec_unit`, including its register
+file) out of `pblock_slr2` into `pblock_vec_slr1` in SLR1. For `--vector`, the
+first routing pass uses `AggressiveExplore`, followed by up to three
+improving `AggressiveExplore` physical-optimization passes after routing. The
+default VCU118 build omits the vector unit and leaves `constr/vcu118.xdc`, the
+default scalar clock configuration, and the default implementation directives
+unchanged.
+
 The PCS/PMA IP supplies the SGMII reference clock constraint. The reset
 button and UART receive input are asynchronous inputs; the UART receiver
 uses a two-register synchronizer. MDC and MDIO form a write-only PHY
@@ -77,7 +91,9 @@ The CPU's memory error unit reports DDR AXI errors.
 
 Svpbmt NC and IO mappings of DDR raise an access fault on this 2 GiB map:
 its 32-bit physical address space has no room for an uncached DDR alias.
-Device mappings support NC and IO attributes.
+The VCU118 device tree and boot image therefore omit `svpbmt`, so OpenSBI
+leaves `menvcfg.PBMTE` clear and Linux does not emit PBMT page attributes.
+Bare-metal device mappings support NC and IO attributes.
 The `svpbmt_cmo_test` application requires the DDR aliases.
 
 The CPU performs plain misaligned loads and stores to cached DDR in hardware
@@ -149,6 +165,17 @@ python3 fpga/program_bitstream/program_bitstream.py vcu118
 python3 fpga/load_software/load_software.py vcu118 hello_world
 ```
 
+For the opt-in vector configuration, pass `--vector` to the build, loader, and
+regression commands so the FPGA image, software clock constants, vector
+applications, and generated Linux device tree match:
+
+```bash
+./fpga/build/build.py vcu118 --vector
+python3 fpga/load_software/load_software.py vcu118 --vector vec_state_test
+python3 fpga/load_software/load_software.py vcu118 --vector linux_boot
+./fpga/hw_regression.py --board vcu118 --vector
+```
+
 `--build-dir` selects an external build directory. Pass its generated
 `.bit` file with the programmer's `--bitstream` option. Target selection and
 hardware-server options are described in the [FPGA guide](../../fpga/README.md).
@@ -200,8 +227,18 @@ python3 fpga/flash/program_flash.py --boot-image /path/to/boot.bin \
 
 The U-Boot build fetches its pinned v2026.10 source revision into
 `sw/uboot/build/source`. OpenSBI uses the repository's FROST configuration;
-the device tree is compiled from `dts/frost_vcu118.dts`. Component overrides
-on the packer are `--fsbl`, `--opensbi`, `--dtb`, and `--uboot`.
+the device tree is compiled from `dts/frost_vcu118.dts`. For the opt-in vector
+build, pass `VECTOR=1` to build `bootrom` and `fsbl` for the vector clock
+configuration and compile `boards/vcu118/frost_vector.dtb` from
+`dts/frost_vcu118_vector.dts`, then pack with `--vector`:
+
+```bash
+./scripts/frost.py run make -C sw/uboot firmware VECTOR=1
+python3 fpga/flash/make_flash_image.py --vector --output /path/to/boot_vector.bin
+```
+
+Component overrides on the packer are `--fsbl`, `--opensbi`, `--dtb`, and
+`--uboot`.
 
 Remove `--prepare-only` to program the selected VCU118 configuration flash.
 Use `--target-exact` and `--hw-server-url` to select a cable and server.
@@ -236,7 +273,8 @@ filesystem. The software flash image contains firmware and a DTB, without a
 kernel or root filesystem.
 
 OpenSBI configures the hart from the flash DTB, and Linux reads the DTB that
-`booti` passes, so build both from `dts/frost_vcu118.dts` and replace them
+`booti` passes, so build both from `dts/frost_vcu118.dts` (or
+`dts/frost_vcu118_vector.dts` for the opt-in vector build) and replace them
 together. OpenSBI sets `menvcfg.CBZE` when the flash DTB lists `zicboz`. Linux
 then zeroes pages with `cbo.zero`, sets `senvcfg.CBZE` for user space and
 reports the extension and its 64-byte block through `riscv_hwprobe`, all from

@@ -147,6 +147,9 @@ environment override starts the MAC clocks in this bench.
   (see [Application bench](#application-bench)).
 - Override `DUTSignalPaths` for hierarchy differences instead of hardcoding
   paths in test logic.
+- When a `frost`-toplevel bench reads or drives an internal RTL signal, list
+  it in `hw/sim/frost_cocotb_visibility.vlt` (`public_flat_rd` or
+  `public_flat_rw`) and check `pytest tests/test_frost_signal_visibility.py`.
 - Keep shared constants in `config.py` and per-run behavior in `TestConfig`.
 - Reuse CPU port layouts from `cocotb_tests/cpu_structs.py` and serialization
   helpers from `utils/packed_structs.py`; keep stimulus defaults in each bench.

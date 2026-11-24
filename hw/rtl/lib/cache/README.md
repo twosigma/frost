@@ -313,7 +313,10 @@ one RAM per tree bit, and a touch writes only the bits on its way's path. A
 controller hit writes from the registered way during data service or the
 reply, before another request or update can enter. A hit-port hit writes its
 way's NRU bit in its third cycle unless the controller writes that same way's
-NRU RAM in that cycle (touches to distinct ways proceed concurrently); in
+NRU RAM in that cycle (touches to distinct ways proceed concurrently, and the
+controller suppresses no-op `1 -> 1` NRU writes on hits and promoted or upgrade
+insertions when the lookup's NRU bit is already 1 so they leave the port free
+for hit-port touches); in
 tree pseudo-LRU configurations (`!(BIMODAL_INSERT && WAYS > 1)`), any
 controller replacement write in that cycle drops the hit-port touch. A
 lookup marked `i_req_no_touch` leaves replacement state unchanged on a hit; the
@@ -1473,7 +1476,7 @@ benches. Their default sizes and storage are:
 |----------|------|------|-------------|------|------|------------|----------------------------|-----------------|-------------|
 | L1D | 128 KiB | 32 B | 4 x 1024 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 4 | 1 | 2 | 4 |
 | L1I | 16 KiB | 32 B | 4 x 128 | Block RAM per way, 1-cycle read | Block RAM, a bank per way | 2 | 1 | 2 (unused) | 0 |
-| L2 | 2 MiB | 64 B | 4 x 8192 | UltraRAM, a set's four ways in one 72-bit row, 3-cycle read | UltraRAM | 4 | 2 | 2 | 0 |
+| L2 | 2 MiB | 64 B | 4 x 8192 | UltraRAM, a set's four ways in one 72-bit row, 3-cycle read | UltraRAM | 4 | 1 (2 in `cpu_top`) | 2 | 0 |
 
 The ways are the hierarchy's `L1D_WAYS`, `L1I_WAYS`, and `L2_WAYS`
 parameters. `L1D_NUM_MSHR` sets its L1D miss slots. `L2_NUM_MSHR`,
@@ -1693,12 +1696,15 @@ sequencer's probes into the L1D. Requests and responses pass through the
 arbiters and the adapter without a register stage, so the boundary between
 the parts adds no cycle.
 `frost_cache_hierarchy` composes the two parts for component benches.
-The CPU hierarchy uses `coherent_hart_cache` and `coherence_home`.
+The CPU hierarchy uses `coherent_hart_cache`, `coherence_home`,
+`coherence_prefetch_agent`, L1D stream prefetch, the hart line client and
+Zicbom CMO.
 
-[![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration through the line-size adapter into the L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
+[![FROST cache hierarchy: coherent CPU path (coherent_hart_cache, hart line client, DMA ingress, prefetch agent and L2 coherence home) and component-bench line-cache hierarchy (frost_hart_cache and frost_cluster_cache)](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
 
-The diagram shows the line-cache component hierarchy. Arrows follow
-requests; responses return by id prefix.
+Section 01 of the diagram shows the coherent CPU cache hierarchy; section 02
+shows the line-cache component hierarchy. Arrows follow requests and probes;
+responses return by transaction identity or ID prefix.
 
 The arbiter tree is a 2:1 `line_port_arbiter` (walker over L1I) under a 3:1
 one (L1D over that pair over DMA). With the stream prefetcher

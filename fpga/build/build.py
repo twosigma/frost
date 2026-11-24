@@ -79,6 +79,10 @@ BOARD_CONFIG = {
     },
 }
 
+# Opt-in VCU118 vector build (VLEN 256, misa.V advertised, SLR1 vector pblock).
+VCU118_VECTOR_CLOCK_FREQ = 162500000
+VCU118_VECTOR_ROUTE_DIRECTIVE = "AggressiveExplore"
+
 
 def board_ddr_capacity_log2_bytes(design: Path) -> int:
     """Derive the CPU's raw DDR aperture from the board's AXI address map."""
@@ -3475,7 +3479,7 @@ Examples:
     parser.add_argument(
         "--route-directive",
         choices=ALL_ROUTER_DIRECTIVES,
-        default="AggressiveExplore",
+        default=None,
         help="Non-x3 first-route directive (default: AggressiveExplore); ignored on "
         "x3, which uses --route-directives",
     )
@@ -3526,6 +3530,14 @@ Examples:
         "cached DDR at synthesis (default: on). Only vcu118 supports disabling it",
     )
     parser.add_argument(
+        "--vector",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Include the vector unit (VLEN 256, misa.V advertised) at synthesis "
+        "(default: on for x3, off for vcu118). On vcu118 this places the unit in "
+        "SLR1 and selects the 162500000 Hz CPU clock; x3 always includes it",
+    )
+    parser.add_argument(
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
@@ -3550,10 +3562,14 @@ Examples:
         args.build_dir = args.build_dir.resolve()
 
     board_name = args.board_name
+    vcu118_vector = board_name == "vcu118" and bool(args.vector)
     if board_name == "vcu118":
         os.environ["FROST_MISALIGNED_HW"] = "1" if args.misaligned_hw else "0"
+        os.environ["FROST_VECTOR"] = "1" if vcu118_vector else "0"
     elif not args.misaligned_hw:
         parser.error("--no-misaligned-hw is only supported for vcu118")
+    elif args.vector is False:
+        parser.error("--no-vector is only supported for vcu118")
     if args.start_at == "bitstream":
         if args.stop_after is not None:
             parser.error("--start-at bitstream cannot be combined with --stop-after")
@@ -3648,7 +3664,9 @@ Examples:
         os.environ["FROST_DDR_CAPACITY_LOG2_BYTES"] = str(board_ddr_log2)
 
     board_config = BOARD_CONFIG[board_name]
-    clock_freq = board_config["clock_freq"]
+    clock_freq = (
+        VCU118_VECTOR_CLOCK_FREQ if vcu118_vector else board_config["clock_freq"]
+    )
     is_ultrascale = board_config["is_ultrascale"]
     route_sweep_directives = resolve_x3_route_sweep_directives(args.route_directives)
     if args.cpu_clock_div != 1 and board_name != "x3":
@@ -3714,7 +3732,9 @@ Examples:
         second_route_directive = "Sweep"
     else:
         place_directive = args.place_directive or "ExtraTimingOpt"
-        route_directive = args.route_directive
+        route_directive = args.route_directive or (
+            VCU118_VECTOR_ROUTE_DIRECTIVE if vcu118_vector else "AggressiveExplore"
+        )
         second_route_directive = args.second_route_directive
 
     # build_step.tcl runs the phys-opt sweeps itself; ``Sweep`` only labels their
@@ -3748,6 +3768,18 @@ Examples:
         print("# Profiling counters included (PERF_COUNTERS generic)")
     if args.debug_ila:
         print("# Fetch ILA: FROST_DEBUG_FETCH_ILA mirrors + one ILA on main_clock")
+    if vcu118_vector:
+        print(
+            "# Vector unit included (VLEN 256, misa.V advertised, SLR1 pblock); "
+            "load software with --vector or "
+            f"FROST_CPU_CLK_HZ={VCU118_VECTOR_CLOCK_FREQ}"
+        )
+    if vcu118_vector and "synth" not in steps_to_run:
+        print(
+            "# Note: --vector takes effect at synthesis and selects the SLR1 "
+            "floorplan on opt/place and vector routing/phys-opt settings; "
+            "match the checkpoint's synthesis option"
+        )
     print(f"# UltraScale: {'Yes' if is_ultrascale else 'No'}")
     directives_summary = [
         f"{s}={d}" for s, d in step_directives.items() if d != "Default"
@@ -3786,7 +3818,11 @@ Examples:
             "# Note: --place-directive is ignored for x3; "
             "use --directives to customize the placer sweep."
         )
-    if board_name == "x3" and args.route_directive != "AggressiveExplore":
+    if (
+        board_name == "x3"
+        and args.route_directive is not None
+        and args.route_directive != "AggressiveExplore"
+    ):
         print(
             "# Note: --route-directive is ignored for x3; "
             "use --route-directives to restrict the router sweep."

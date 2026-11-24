@@ -89,6 +89,19 @@ VECTOR_RESULT_CONTROL_INSNS = {
     "fp-widen": 0x42A0_2557,  # vmv.x.s a0, v10 in the widening FP trace
     "permutes": 0x42B0_2557,  # vmv.x.s a0, v11 in the permutes trace
     "reductions": 0x4320_2557,  # vmv.x.s a0, v18 in the reductions trace
+    "carry-borrow": 0x4330_2557,  # vmv.x.s a0, v19 in the carry/borrow trace
+    "mask-ops": 0x4350_2557,  # vmv.x.s a0, v21 in the mask-register ops trace
+    "int-mul-add": 0x4370_2557,  # vmv.x.s a0, v23 in the integer multiply-add trace
+    "int-vx-merge": 0x4340_2557,  # vmv.x.s a0, v20 in the integer scalar/merge trace
+    "segment-matrix": 0x43D0_2557,  # vmv.x.s a0, v29 in the generated segment matrix trace
+    "zvfhmin": 0x4210_2557,  # vmv.x.s a0, v1 in the Zvfhmin FP16 conversion trace
+    "zvbb": 0x4220_2557,  # vmv.x.s a0, v2 in the Zvbb bit-manipulation trace
+    "zvbc-zvkned-zvkg": 0x4230_2557,  # vmv.x.s a0, v3 in the Zvbc/Zvkned/Zvkg trace
+    "zvknhb": 0x4240_2557,  # vmv.x.s a0, v4 in the Zvknhb SHA-2 trace
+    "zvfh-arith": 0x4250_2557,  # vmv.x.s a0, v5 in the Zvfh arith/FMA trace
+    "zvfh-misc-red": 0x4260_2557,  # vmv.x.s a0, v6 in the Zvfh cmp/misc/red trace
+    "zvfh-widen": 0x4270_2557,  # vmv.x.s a0, v7 in the Zvfh widening FP trace
+    "zvfh-cvt": 0x4280_2557,  # vmv.x.s a0, v8 in the Zvfh conversion trace
 }
 
 # frost_rvfi_dii's error_flags bits.

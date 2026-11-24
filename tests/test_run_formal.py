@@ -1037,8 +1037,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "if_fault_ras_veto.sby",
         "Fetch-faulted IF packets never carry a predicted-taken flag or operate "
-        "the return-address stack",
-        tasks=("bmc", "cover", "prove"),
+        "the return-address stack, and intact if_stage makes the slot-2 veto redundant",
+        tasks=("bmc", "cover", "prove", "prove_slot2_veto_redundant"),
     ),
     FormalTarget(
         "mispredict_capture.sby",
@@ -1106,6 +1106,12 @@ FORMAL_TARGETS = [
         "Data-MMU registered packets, one-cycle bypass, invalidation and preceding LQ "
         "look-ahead agree across arbitrary issue, flush and TLB answers",
         tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "dmmu_bypass.sby",
+        "Sum-addressed DTLB selection and S2 results agree with an ordinary lookup, "
+        "including a replay through the real S1 port",
+        tasks=("prove", "bmc", "cover"),
     ),
     FormalTarget(
         "dmmu_va_next.sby",
@@ -1289,8 +1295,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "dtlb_entry_verdict.sby",
         "Registered DTLB entry validity, permissions and whole-leaf PMA verdicts "
-        "against the data lookup for an arbitrary access",
-        tasks=("prove", "cover"),
+        "against the data lookup for an arbitrary access on two DDR maps",
+        tasks=("prove", "cover", "prove_256m", "cover_256m"),
     ),
     FormalTarget(
         "l2tlb.sby",
@@ -2060,7 +2066,18 @@ FORMAL_TARGETS = [
     FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo commit and flush integration, including FP dispatch done repair",
-        tasks=("bmc", "cover", "cover_alu_issue", "fp_repair_bmc"),
+        tasks=(
+            "bmc",
+            "cover",
+            "cover_alu_issue",
+            "fp_repair_bmc",
+            "bmc_depth6",
+            "bmc_wakeup_depth6",
+            "fp_repair_bmc_depth6",
+            "cover_depth6",
+            "cover_wakeup_depth6",
+            "cover_fu_depth6",
+        ),
     ),
     FormalTarget(
         "tomasulo_wrapper_commit_bus.sby",
@@ -3568,6 +3585,10 @@ SBY_TASKS = [
     ("cover_direct", "Direct-fetch responses coincident with clears and errors"),
     ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
+    (
+        "prove_slot2_veto_redundant",
+        "Unbounded induction that intact if_stage makes the slot-2 fetch-fault veto redundant",
+    ),
     ("prove_copy", "Staged address copies sample identical inputs on every edge"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
     ("prove_vector", "Unbounded proof with vector state enabled"),
@@ -3644,6 +3665,11 @@ SBY_TASKS = [
     (
         "cover_soc",
         "SoC burst and ID capacity, allocator wrap, reordered replies, drain, and reuse",
+    ),
+    ("prove_256m", "Inductive entry verdict checks on a 256 MiB DDR map"),
+    (
+        "cover_256m",
+        "Reach a gigapage crossing the DDR limit and an NC load at the disabled alias",
     ),
     ("bmc_64g", "Bounded physical-address check at a 64 GiB DDR capacity"),
     ("bmc_128g", "Bounded physical-address check at a 128 GiB DDR capacity"),
@@ -3872,6 +3898,30 @@ SBY_TASKS = [
     (
         "fp_repair_bmc",
         "Bounded model checking with production FP dispatch done repair enabled",
+    ),
+    (
+        "bmc_depth6",
+        "Depth-6 bounded model checking of station and wrapper assertions with abstract leaf FUs",
+    ),
+    (
+        "bmc_wakeup_depth6",
+        "Depth-6 bounded model checking of early-load wakeup merger assertions with abstract leaf FUs",
+    ),
+    (
+        "fp_repair_bmc_depth6",
+        "Depth-6 bounded model checking with FP dispatch done repair enabled and abstract leaf FUs",
+    ),
+    (
+        "cover_depth6",
+        "Cover search for frames 4 and 5 in the abstract-FU depth-6 environment",
+    ),
+    (
+        "cover_wakeup_depth6",
+        "Cover search for queue overlap, recovery, ALU CDB, and wakeup merge in the narrowed depth-6 wakeup environment",
+    ),
+    (
+        "cover_fu_depth6",
+        "Cover search for multi-cycle abstracted MUL and FP engine completions reaching the CDB with FU test ports tied to zero",
     ),
     (
         "cover_alu_issue",
@@ -9670,7 +9720,7 @@ def test_rs_payload_twin_assertion_groups(
         "memory_map -keepdc",
         "opt_clean",
         "setundef -zero -init",
-        "select -assert-count 104 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 112 t:$check r:FLAVOR=assume %i",
         "select -assert-count 175 t:$check r:FLAVOR=assert %i",
         "select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2",
         "select -set operands c:p_twin_operand_*",
@@ -9737,7 +9787,7 @@ def test_rs_payload_twin_assertion_groups(
 
     if not source:
         hashes = {
-            "rs_payload_twin.sby": "1e0b82aeab6501b385f689282c457e55c0d49e12d3ed446b75ecb25227f95b14",
+            "rs_payload_twin.sby": "d09dccd46f90225774a5c354cd7b7347cd24963d12ffac1f4316830d898ad625",
             "rs_payload_twin_formal.sv": "bf55b92f3eb8eda22aef16b2268c2a1c1f458f946711b536cdc397fbb008ae61",
             "free_undefined.ys": "d9383d13eaa8e490ab3671853c1390d92160abbfa19ca0d93fdf40138549e7d6",
         }

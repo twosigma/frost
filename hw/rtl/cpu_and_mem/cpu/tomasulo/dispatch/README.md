@@ -31,7 +31,10 @@ FP-compute ops (bound for FP_RS) and vector instructions stay out of slot 2;
 FP loads and stores go to MEM_RS and may use either slot. The instruction
 aligner advances past slot 1 alone when the next instruction is an
 FP-compute op, so that op arrives later as slot 1. Dispatch backs this up by
-treating an FP-compute slot 2 as absent, so slot 1 fires alone.
+treating an FP-compute slot 2, or (with `VECTOR=1`) a vector slot 2, as absent
+so slot 1 fires alone. With `REGISTERED_QUEUE_CLASSES=1`, dispatch also takes
+pre-registered slot-1 station selects and vector restart permissions from the
+decoded queue.
 
 Slot 2's room checks account for slot 1. The ROB check always uses
 `i_rob_full_for_2`. A station, the LQ, or the SQ uses its "full for 2" status
@@ -122,8 +125,9 @@ ID pre-decodes each instruction's station (`rs_type`); the
 Dispatch emits one packet per station for each slot and sets
 `valid` only on the selected one.
 
-JAL, WFI, MRET, SRET, and DRET have no station (`rs_type == RS_NONE`) and
-allocate only a ROB entry. JAL is done at allocation, since its link
+JAL, WFI, MRET, SRET, DRET, and (with `VECTOR=1`) `VTOX`, `VTOF`, `VARITH_F`,
+`VARITH_C`, `VLOAD`, and `VSTORE` have no station (`rs_type == RS_NONE`) and
+allocate a ROB entry (plus a VMT entry for `VLOAD` and `VSTORE`). JAL is done at allocation, since its link
 address and target are known then. WFI and the xRETs are also done at
 allocation and wait at the ROB head in the serializing FSM (see "Serializing
 instructions" in the same overview, and in the

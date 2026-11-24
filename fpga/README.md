@@ -82,6 +82,7 @@ the CPU starts when the board's image-reset timer expires (see the
 | `--expected-build-config-sha256 HASH` | With `--skip-build`, require the configuration hash reported by `--build-only` |
 | `--vlen BITS` | Override `VEC_VLEN` for vector-width applications (`128`, `256`, or `512`; `vec_state_test` also accepts `0` for scalar) |
 | `--vec-advertise` / `--no-vec-advertise` | Override `VEC_ADVERTISE` (`1` or `0`) for `vec_state_test` |
+| `--vector` / `--no-vector` | Target an opt-in VCU118 vector image: selects its CPU clock, enables vector-unit applications, defaults `VEC_VLEN=256` and `VEC_ADVERTISE=1`, and advertises V in the `linux_boot` device tree (default: on for X3, off for VCU118) |
 
 `--debug` and `--skip-build` apply to single-ELF applications, not the
 composite `linux_boot` and `opensbi_smoke` images. `--skip-build` does not
@@ -127,6 +128,19 @@ X3 and VCU118 perform plain misaligned loads and stores to cached DDR in
 hardware by default. `./fpga/build/build.py vcu118 --no-misaligned-hw`
 disables the engine at synthesis. Those accesses then trap for firmware
 to handle. The `misaligned_test` program requires the engine.
+
+## Vector unit
+
+X3 always includes the 256-bit vector unit with `misa.V` advertised. VCU118
+leaves the vector unit off by default; `./fpga/build/build.py vcu118 --vector`
+enables it (`VLEN=256`, `VECTOR=1`, `VECTOR_ADVERTISE=1`), places
+`gen_vector_unit.u_vec_unit` in its own SLR1 pblock (`pblock_vec_slr1`, via
+`boards/vcu118/constr/vcu118_vector.xdc`), selects the matching VCU118
+vector clock configuration in the MMCM, DDR block design, and boot ROM, and
+runs `AggressiveExplore` first-pass routing followed by up to three
+improving `AggressiveExplore` physical-optimization passes after routing. Load
+software and run regressions against that FPGA image with `--vector`.
+See the [VCU118 guide](../boards/vcu118/README.md).
 
 ## Profiling counters
 
@@ -361,9 +375,12 @@ On X3, `vec_crypto_exec_test` uses cached DDR for its vector operands.
 To place the program in cached DDR as well, select the stage with
 `./fpga/hw_regression.py --board x3 --loader-extra=--ddr vec_crypto_exec_test`.
 `vec_state_test` is registered for both X3 and VCU118 and compiles with each
-board's RTL vector width and advertisement state by default. Pass `--vlen`
-(and `--vec-advertise` or `--no-vec-advertise` for `vec_state_test`) on
-`hw_regression.py` to match an FPGA image built with different vector
+board's RTL vector width and advertisement state by default. Pass `--vector`
+with `--board vcu118` when targeting an opt-in VCU118 vector image; the
+runner adds the vector-unit stages, uses the vector build's CPU clock, and
+forwards `--vector` to `load_software.py` and the CoreMark-PRO sweep. Pass
+`--vlen` (and `--vec-advertise` or `--no-vec-advertise` for `vec_state_test`)
+on `hw_regression.py` to match an FPGA image built with different vector
 settings; the runner forwards `--vlen` only to vector-width stages and
 `--vec-advertise` / `--no-vec-advertise` only to `vec_state_test`, and rejects
 `--vlen 0` alongside vector-unit-only stages.
@@ -563,7 +580,8 @@ The declaration-message guards apply to top-level synthesis for every board.
 The shared build script sets them after vendor IP out-of-context synthesis
 runs finish, before synthesizing FROST's top. The [strict elaboration
 check](../tests/README.md#strict-systemverilog-elaboration) also checks the
-X3 vector configuration and simulation vector lengths 128, 256, and 512.
+X3 and opt-in VCU118 vector configurations and simulation vector lengths 128,
+256, and 512.
 
 To add a board, follow the
 [board checklist](../boards/README.md#adding-support-for-new-boards). To add an

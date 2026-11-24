@@ -332,9 +332,8 @@ this connection. A 2 MiB PMA device window in `pma_device_page_ok` in
 
 FROST has no PMP. The root APLIC window is hidden from Linux by the device
 tree, but hardware does not prevent supervisor software from accessing it.
-The same applies to machine-level IMSIC pages. The address lock prevents
-software from changing the MSI destinations; it does not restrict access to
-the root domain's other registers. SoC integration remains separate work.
+The same applies to machine-level IMSIC pages. The address lock prevents software from changing the MSI destinations; it does
+not restrict access to the root domain's other registers.
 
 ## Device tree
 

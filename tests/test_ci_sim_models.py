@@ -16,19 +16,35 @@
 """Check run-local simulator selection, compatibility, and failure visibility."""
 
 from collections import Counter
+from collections.abc import Iterator
 import json
+import os
 from pathlib import Path
+import re
+import shlex
+import shutil
 import subprocess
 import sys
 
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+from ci_matrix import expand_matrix
 import ci_sim_models as models
-from ci_sim_plan import cocotb_jobs, parse_vectors, plan
+from ci_sim_plan import (
+    aperture_tests,
+    cocotb_jobs,
+    config_for,
+    parse_vectors,
+    plan,
+    registry_tests,
+)
 from ci_verilator import job_matrix
 from rvv_ci import matrix
+from test_native_sim import UNSEEDED_COCOTB_STRIP_ENV
+from test_run_cocotb import TEST_REGISTRY, CocotbRunConfig
 from test_rvv_ci import job_condition
+from test_testrig import DEFAULT_DDR_CAPACITY_LOG2_BYTES, simulator_config, wfi
 
 WORKFLOW = models.ROOT / ".github/workflows/ci.yml"
 CONSUMER_JOBS = (
@@ -93,8 +109,12 @@ def test_shared_models_match_the_consumers() -> None:
     assert not consumers["test-testrig"]["3"]["shared"]
     assert len(consumers["test-testrig"]["3"]["local"]) == 1
     for width in ("128", "256", "512"):
-        entry = consumers["test-testrig-vector"][width]
-        assert not entry["shared"] and len(entry["local"]) == 1
+        core_entry = consumers["test-testrig-vector"][f"{width}/core"]
+        seg_entry = consumers["test-testrig-vector"][f"{width}/segment"]
+        ext_entry = consumers["test-testrig-vector"][f"{width}/ext"]
+        assert len(core_entry["shared"]) == 1 and not core_entry["local"]
+        assert seg_entry == core_entry
+        assert ext_entry == core_entry
     assert len(consumers["test-native"]["live"]["shared"]) == 1
     assert len(consumers["test-native"]["live"]["local"]) == 1
 
@@ -210,8 +230,9 @@ def test_planner_cli_outputs_valid_github_step_outputs(
         assert 1 <= len(sim_matrix["include"]) <= 256
 
 
-def test_runtime_inputs_and_build_modes() -> None:
-    """Separate runtime draws from assertion, geometry and instrumentation modes."""
+def test_runtime_inputs_and_build_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Separate runtime draws from assertion, geometry, visibility and instrumentation modes."""
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 8, raising=False)
     env = {
         "FROST_VERILATOR_EXTRA_ARGS": (
             "-GDDR_MODEL_LATENCY=12 --assert -GDDR_MODEL_LATENCY=60"
@@ -232,10 +253,15 @@ def test_runtime_inputs_and_build_modes() -> None:
                 "FROST_COCOTB_MEM_CONFIG": "ddr",
                 "FROST_COVERAGE_FILE": "other.dat",
                 "FROST_TESTRIG_VECTOR_RESULT_CONTROL": "state",
+                "FROST_FULL_VISIBILITY": "0",
+                "FROST_HANG_PROBE": "",
+                "FROST_RETIRE_TRACE": "0",
+                "FROST_VERILATOR_THREADS": "1",
             },
         )
         == base
     )
+    assert models.settings("frost", {**env, "FROST_HANG_PROBE": "   "}) == base
     for name, value in (
         ("FROST_VERILATOR_EXTRA_ARGS", "-GDDR_MODEL_LATENCY=32'h10"),
         ("FROST_VERILATOR_EXTRA_ARGS", "--no-assert"),
@@ -247,12 +273,52 @@ def test_runtime_inputs_and_build_modes() -> None:
         ("SIM_FAST_MAINT", "0"),
         ("FROST_COVERAGE", "1"),
         ("FROST_COVERAGE_TOGGLE", "1"),
+        ("FROST_FULL_VISIBILITY", "1"),
+        ("FROST_HANG_PROBE", "1"),
+        ("FROST_RETIRE_TRACE", "1"),
+        ("FROST_VERILATOR_THREADS", "4"),
         ("WAVES", "1"),
     ):
         assert models.settings("frost", {**env, name: value}) != base, name
     assert models.settings(
         "frost", {**env, "FROST_CPU_PERIOD_PS": "1500"}
     ) == models.settings("frost", {**env, "FROST_CPU_PERIOD_PS": "3000"})
+    assert models.settings(
+        "frost", {**env, "FROST_HANG_PROBE": "1"}
+    ) == models.settings("frost", {**env, "FROST_HANG_PROBE": "hang.log"})
+    # Thread count caps at NUMBER_OF_CPU_CORES and collapses to 1 when waves,
+    # coverage, full visibility, hang probe, or a unit top is selected.
+    assert models.settings(
+        "frost", {**env, "FROST_VERILATOR_THREADS": "8", "NUMBER_OF_CPU_CORES": "2"}
+    ) == models.settings("frost", {**env, "FROST_VERILATOR_THREADS": "2"})
+    assert (
+        models.settings(
+            "frost", {**env, "FROST_VERILATOR_THREADS": "4", "NUMBER_OF_CPU_CORES": "1"}
+        )
+        == base
+    )
+    for single_thread_override in (
+        {"WAVES": "1"},
+        {"FROST_COVERAGE": "1"},
+        {"FROST_FULL_VISIBILITY": "1"},
+        {"FROST_HANG_PROBE": "1"},
+    ):
+        assert models.settings(
+            "frost", {**env, **single_thread_override, "FROST_VERILATOR_THREADS": "4"}
+        ) == models.settings("frost", {**env, **single_thread_override})
+    unit_base = models.settings("cdb_arbiter", {})
+    assert (
+        models.settings(
+            "cdb_arbiter",
+            {
+                "FROST_FULL_VISIBILITY": "1",
+                "FROST_HANG_PROBE": "1",
+                "FROST_RETIRE_TRACE": "1",
+                "FROST_VERILATOR_THREADS": "4",
+            },
+        )
+        == unit_base
+    )
 
 
 def test_named_parameter_order_matches_at_planning_and_restore() -> None:
@@ -289,6 +355,9 @@ def test_named_parameter_order_matches_at_planning_and_restore() -> None:
         "binary",
         "record",
         "coverage",
+        "full_visibility",
+        "retire_trace",
+        "threads",
         "cxx",
         "missing",
     ),
@@ -324,6 +393,8 @@ def test_restore_requires_the_matching_build(
         "-Mdir",
         str(output),
         "--assert",
+        "-fico-change-detect",
+        "+define+FROST_NO_RETIRE_TRACE",
         "-j",
         "4",
         "../verif/extra.vlt",
@@ -355,6 +426,13 @@ def test_restore_requires_the_matching_build(
         record.write_text("")
     elif change == "coverage":
         args.append("--coverage-line")
+    elif change == "full_visibility":
+        args.remove("-fico-change-detect")
+        args.append("--public-flat-rw")
+    elif change == "retire_trace":
+        args.remove("+define+FROST_NO_RETIRE_TRACE")
+    elif change == "threads":
+        args.extend(["--threads", "2", "-Wno-UNOPTTHREADS"])
     elif change == "cxx":
         monkeypatch.setenv("CXXFLAGS", "-g")
     elif change == "missing":
@@ -569,3 +647,495 @@ def test_select_model_fails_visibly_when_selection_missing_or_unplanned(
     with pytest.raises(ValueError, match="unplanned simulator configuration"):
         models.select_model("frost", {**local_env, "FROST_COVERAGE": "1"})
     models.selection.cache_clear()
+
+
+def _workflow_job_threads(job: dict) -> str:
+    """Read FROST_VERILATOR_THREADS from a CI job's job-level or step env."""
+    candidates = [
+        job.get("env", {}),
+        *(step.get("env", {}) for step in job.get("steps", [])),
+    ]
+    values = [
+        str(env_map["FROST_VERILATOR_THREADS"])
+        for env_map in candidates
+        if isinstance(env_map, dict) and "FROST_VERILATOR_THREADS" in env_map
+    ]
+    assert values and len(set(values)) == 1, values
+    return values[0]
+
+
+def _workflow_runtime_cases(
+    jobs: dict, *, full: bool, toggle: bool, event: str
+) -> Iterator[tuple[str, str, list[tuple[CocotbRunConfig, dict[str, str]]]]]:
+    """Build each CI job's actual runtime environment from .github/workflows/ci.yml."""
+    if full or toggle:
+        threads = _workflow_job_threads(jobs["test-verilator"])
+        for index, row in enumerate(expand_matrix(job_matrix(coverage_only=toggle))):
+            tier, shard = row["mem_config"], row["shard"]
+            unit = shard["name"].startswith("Unit Tests")
+            covered = tier in shard["coverage"]
+            env = {
+                "FROST_COCOTB_MEM_CONFIG": tier,
+                "FROST_REQUIRE_OPENOCD": "1",
+                "FROST_DDR_MODEL_SEED": f"999-test-verilator-{index}",
+                "FROST_STARTUP_SWEEP": "0" if unit else "1",
+                "FROST_STARTUP_SEED_BASE": f"999-test-verilator-{index}",
+                "FROST_RANDOM_START_SEED": ""
+                if unit
+                else f"999-test-verilator-{index}",
+                "FROST_COVERAGE": str(int(covered)),
+                "FROST_COVERAGE_TOGGLE": str(int(unit or (toggle and covered))),
+                "FROST_VERILATOR_THREADS": threads,
+            }
+            yield (
+                "test-verilator",
+                f"{tier}/{shard['name']}",
+                [(TEST_REGISTRY[name], env) for name in registry_tests(row)],
+            )
+    if not full:
+        return
+    pa_threads = _workflow_job_threads(jobs["test-pa-width"])
+    for index, row in enumerate(
+        expand_matrix(jobs["test-pa-width"]["strategy"]["matrix"])
+    ):
+        capacity, shard = row["capacity_gib"], row["shard"]
+        unit = shard["name"] == "Unit boundaries"
+        env = {
+            "SIM_FAST_MAINT": str(int((capacity, shard["name"]) != (1, "Bare access"))),
+            "FROST_COVERAGE": str(int(capacity in shard["coverage"])),
+            "FROST_VERILATOR_THREADS": pa_threads,
+            "FROST_DDR_MODEL_SEED": f"999-test-pa-width-{index}",
+            "FROST_STARTUP_SWEEP": "0" if unit else "1",
+            "FROST_STARTUP_SEED_BASE": f"999-test-pa-width-{index}",
+            "FROST_RANDOM_START_SEED": "" if unit else f"999-test-pa-width-{index}",
+        }
+        yield (
+            "test-pa-width",
+            f"{capacity}/{shard['name']}",
+            [(TEST_REGISTRY[name], env) for name in aperture_tests(capacity, shard)],
+        )
+    default = CocotbRunConfig("cocotb_tests.test_real_program", "frost")
+    for job_name in RAW_DOCKER_CONSUMERS:
+        threads = _workflow_job_threads(jobs[job_name])
+        for index, row in enumerate(
+            expand_matrix(jobs[job_name]["strategy"]["matrix"])
+        ):
+            env = {
+                "FROST_DDR_MODEL_SEED": f"999-{job_name}-{index}",
+                "FROST_RANDOM_START_SEED": f"999-{job_name}-{index}",
+                "FROST_VERILATOR_THREADS": threads,
+            }
+            if "coverage" in row:
+                env["FROST_COVERAGE"] = str(row["coverage"])
+            yield job_name, str(index), [(default, env)]
+    tr_threads = _workflow_job_threads(jobs["test-testrig"])
+    for index, row in enumerate(
+        expand_matrix(jobs["test-testrig"]["strategy"]["matrix"])
+    ):
+        env = {
+            "FROST_STARTUP_SWEEP": "1",
+            "FROST_STARTUP_SEED_BASE": f"999-test-testrig-{index}",
+            "FROST_DDR_MODEL_SEED": f"999-test-testrig-{index}",
+            "FROST_RANDOM_START_SEED": f"999-test-testrig-{index}",
+            "FROST_COVERAGE": str(row["coverage"]),
+            "FROST_VERILATOR_THREADS": tr_threads,
+        }
+        cases: list[tuple[CocotbRunConfig, dict[str, str]]] = [
+            (simulator_config(DEFAULT_DDR_CAPACITY_LOG2_BYTES, None), env)
+        ]
+        if row["shard"] == 1:
+            cases.append(
+                (
+                    simulator_config(
+                        DEFAULT_DDR_CAPACITY_LOG2_BYTES,
+                        None,
+                        wfi_timeout_cycles=wfi.DUT_TIMEOUT_CYCLES,
+                    ),
+                    {**env, "FROST_STARTUP_SWEEP": "0"},
+                )
+            )
+        yield "test-testrig", str(row["shard"]), cases
+    if event in ("push", "pull_request"):
+        vec_threads = _workflow_job_threads(jobs["test-testrig-vector"])
+        shard_controls = {
+            "core": ("state",),
+            "segment": ("segment", "segment-matrix"),
+            "ext": (
+                "zvfhmin",
+                "zvbb",
+                "zvbc-zvkned-zvkg",
+                "zvknhb",
+                "zvfh-arith",
+                "zvfh-misc-red",
+                "zvfh-widen",
+                "zvfh-cvt",
+            ),
+        }
+        for row in expand_matrix(jobs["test-testrig-vector"]["strategy"]["matrix"]):
+            shard = row["shard"]
+            controls = shard_controls[shard]
+            env = {
+                "FROST_DDR_MODEL_SEED": "testrig-vector",
+                "FROST_RANDOM_START_SEED": "testrig-vector",
+                "COCOTB_RANDOM_SEED": "42",
+                "FROST_VERILATOR_THREADS": vec_threads,
+            }
+            cases = [
+                (simulator_config(DEFAULT_DDR_CAPACITY_LOG2_BYTES, row["vlen"]), env)
+            ]
+            if row["vlen"] == 128:
+                for selector in controls:
+                    cases.append(
+                        (
+                            simulator_config(
+                                DEFAULT_DDR_CAPACITY_LOG2_BYTES, row["vlen"]
+                            ),
+                            {**env, "FROST_TESTRIG_VECTOR_RESULT_CONTROL": selector},
+                        )
+                    )
+            yield "test-testrig-vector", f"{row['vlen']}/{shard}", cases
+    native_threads = _workflow_job_threads(jobs["test-native"])
+    native_env = {"FROST_VERILATOR_THREADS": native_threads}
+    stripped_native_env = {
+        k: v for k, v in native_env.items() if k not in UNSEEDED_COCOTB_STRIP_ENV
+    }
+    yield (
+        "test-native",
+        "live",
+        [
+            (TEST_REGISTRY["hello_world"], native_env),
+            (TEST_REGISTRY["hello_world"], stripped_native_env),
+            (TEST_REGISTRY["coremark"], stripped_native_env),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("full", "toggle", "event"),
+    [
+        (True, False, "push"),
+        (True, False, "pull_request"),
+        (False, True, "workflow_dispatch"),
+    ],
+)
+def test_plan_and_job_keys_match_for_every_ci_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full: bool,
+    toggle: bool,
+    event: str,
+) -> None:
+    """Every CI job's runtime env produces the exact key planned by ci_sim_plan.py."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    jobs = workflow["jobs"]
+    store = tmp_path / ".ci-sim-models"
+    store.mkdir()
+    monkeypatch.setattr(models, "STORE", store)
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 8, raising=False)
+
+    _, consumers = plan(full, [], toggle=toggle, event=event)
+    planned = {
+        (job, label): [models.group(cfg) for cfg in cases]
+        for job, label, cases in cocotb_jobs(
+            jobs, full=full, toggle=toggle, event=event
+        )
+    }
+    seen: set[tuple[str, str]] = set()
+    checked_cases = 0
+    for job, label, runtime_cases in _workflow_runtime_cases(
+        jobs, full=full, toggle=toggle, event=event
+    ):
+        seen.add((job, label))
+        selection = consumers[job][label]
+        (store / "selection.json").write_text(json.dumps(selection))
+        models.selection.cache_clear()
+        plan_keys = planned[(job, label)]
+        job_keys = [models.group(config_for(test, env)) for test, env in runtime_cases]
+        assert set(job_keys) == set(plan_keys), (job, label, job_keys, plan_keys)
+        if len(job_keys) == len(plan_keys):
+            assert job_keys == plan_keys, (job, label)
+        for test, env in runtime_cases:
+            run_env = {**env, **dict(test.extra_env)}
+            run_env["FROST_VERILATOR_EXTRA_ARGS"] = " ".join(
+                (
+                    *test.verilator_extra_args,
+                    run_env.get("FROST_VERILATOR_EXTRA_ARGS", ""),
+                )
+            ).strip()
+            models.select_model(test.hdl_toplevel_module, run_env)
+            key = models.group(models.settings(test.hdl_toplevel_module, run_env))
+            if key in selection["shared"]:
+                assert run_env["FROST_SIM_IMPORT"] == str(store / key)
+            else:
+                assert key in selection["local"]
+                assert "FROST_SIM_IMPORT" not in run_env
+            checked_cases += 1
+    assert seen == set(planned)
+    assert checked_cases > 0
+
+    # Non-default visibility, retire-trace, hang-probe, or thread overrides
+    # on a selective frost job must fail visibly as unplanned configurations.
+    if full:
+        plain_selection = consumers["test-arch-compliance"]["1"]
+        (store / "selection.json").write_text(json.dumps(plain_selection))
+        models.selection.cache_clear()
+        base_env = {
+            "FROST_RANDOM_START_SEED": "999-test-arch-compliance-1",
+            "FROST_COVERAGE": "0",
+            "FROST_VERILATOR_THREADS": "1",
+        }
+        models.select_model("frost", dict(base_env))
+        for override in (
+            {"FROST_FULL_VISIBILITY": "1"},
+            {"FROST_HANG_PROBE": "1"},
+            {"FROST_RETIRE_TRACE": "1"},
+            {"FROST_VERILATOR_THREADS": "2", "NUMBER_OF_CPU_CORES": "2"},
+        ):
+            with pytest.raises(ValueError, match="unplanned simulator configuration"):
+                models.select_model("frost", {**base_env, **override})
+    models.selection.cache_clear()
+
+
+# Variables referenced in tests/Makefile's Verilator-configuration lines that
+# are handled separately in ci_sim_models.py or do not affect the compiled Vtop.
+_NON_KEY_MAKEFILE_FROST_VARS = frozenset(
+    {
+        "FROST_COVERAGE_FILE",
+        "FROST_DDR_TIMING_ARGS",
+        "FROST_NO_RETIRE_TRACE",
+        "FROST_RANDOM_START",
+        "FROST_RANDOM_START_VERILATOR_SEED",
+        "FROST_RUNTIME_DDR",
+        "FROST_SELECTIVE_VISIBILITY",
+        "FROST_SIM_ASSERTIONS",
+        "FROST_SIM_EXPORT",
+        "FROST_SIM_IMPORT",
+        "FROST_SRAM_MACROS",
+        "FROST_VERILATOR_EXTRA_ARGS",
+        "FROST_VISIBILITY_CONFIG",
+    }
+)
+
+_MAKEFILE_BUILD_KNOB_PROBES: tuple[tuple[str, dict[str, str], dict[str, str]], ...] = (
+    ("WAVES", {}, {"WAVES": "1"}),
+    ("FROST_COVERAGE", {}, {"FROST_COVERAGE": "1"}),
+    (
+        "FROST_COVERAGE_TOGGLE",
+        {"FROST_COVERAGE": "1"},
+        {"FROST_COVERAGE": "1", "FROST_COVERAGE_TOGGLE": "1"},
+    ),
+    ("FROST_FULL_VISIBILITY", {}, {"FROST_FULL_VISIBILITY": "1"}),
+    ("FROST_HANG_PROBE", {}, {"FROST_HANG_PROBE": "1"}),
+    ("FROST_RETIRE_TRACE", {}, {"FROST_RETIRE_TRACE": "1"}),
+    (
+        "FROST_VERILATOR_THREADS",
+        {"NUMBER_OF_CPU_CORES": "2"},
+        {"NUMBER_OF_CPU_CORES": "2", "FROST_VERILATOR_THREADS": "2"},
+    ),
+    ("SIM_MEM_SIZE_BYTES", {}, {"SIM_MEM_SIZE_BYTES": "131072"}),
+    ("FROST_CPU_PERIOD_PS", {}, {"FROST_CPU_PERIOD_PS": "1500"}),
+    ("ENABLE_CACHED_TIER", {}, {"ENABLE_CACHED_TIER": "0"}),
+    ("DDR_MODEL_BYTES", {}, {"DDR_MODEL_BYTES": "33554432"}),
+    ("DDR_MODEL_LATENCY", {}, {"DDR_MODEL_LATENCY": "40"}),
+    ("SIM_FAST_MAINT", {}, {"SIM_FAST_MAINT": "0"}),
+    ("MEMORY_LINK_STAGES", {}, {"MEMORY_LINK_STAGES": "1"}),
+    ("MISALIGNED_HW", {}, {"MISALIGNED_HW": "0"}),
+)
+
+
+def _verilator_stub_args(tmp_path: Path) -> list[str]:
+    """Use the host Verilator if it supports -fico-change-detect, else a stub."""
+    verilator = shutil.which("verilator")
+    if verilator is not None:
+        probe = subprocess.run(
+            [verilator, "-E", "-fico-change-detect", "/dev/null"],
+            capture_output=True,
+            timeout=15,
+        )
+        if probe.returncode == 0:
+            return []
+    stub_dir = tmp_path / "verilator_stub"
+    stub_dir.mkdir(exist_ok=True)
+    stub = stub_dir / "verilator"
+    if not stub.exists():
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "--version" ]]; then echo "Verilator 5.054"; exit 0; fi\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+    return [f"VERILATOR_BIN_DIR={stub_dir}"]
+
+
+def _makefile_compile_command(tmp_path: Path, env_overrides: dict[str, str]) -> dict:
+    """Return models.compile_command() for the Verilator line tests/Makefile emits."""
+    build = tmp_path / "sim_build"
+    build.mkdir(exist_ok=True)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in models.MAKEFILE_BUILD_VARIABLES
+        and key
+        not in (
+            "FROST_FULL_VISIBILITY",
+            "FROST_HANG_PROBE",
+            "FROST_RETIRE_TRACE",
+            "FROST_VERILATOR_THREADS",
+            "FROST_RANDOM_START",
+            "FROST_RANDOM_START_SEED",
+            "FROST_DDR_TIMING_ARGS",
+            "FROST_SIM_EXPORT",
+            "FROST_SIM_IMPORT",
+            "FROST_VERILATOR_EXTRA_ARGS",
+            "NUMBER_OF_CPU_CORES",
+        )
+    }
+    env["NUMBER_OF_CPU_CORES"] = env_overrides.get("NUMBER_OF_CPU_CORES", "4")
+    env.update(env_overrides)
+    result = subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            "-f",
+            str(models.TESTS / "Makefile"),
+            f"ROOT={models.ROOT}",
+            "TOPLEVEL=frost",
+            f"SIM_BUILD={build}",
+            *_verilator_stub_args(tmp_path),
+            f"{build}/Vtop.mk",
+            "-n",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    line = next(raw for raw in result.stdout.splitlines() if " -cc --exe " in raw)
+    return models.compile_command(shlex.split(line), "")
+
+
+def _assert_makefile_frost_vars_covered() -> None:
+    """Fail if tests/Makefile reads any FROST_* build knob missing from MAKEFILE_BUILD_VARIABLES."""
+    makefile_text = (models.TESTS / "Makefile").read_text(encoding="utf-8")
+    referenced = {
+        match.group(1)
+        for line in makefile_text.splitlines()
+        if not line.lstrip().startswith("#")
+        for match in re.finditer(r"\$\((FROST_[A-Z0-9_]+)\)", line)
+    }
+    referenced.update(
+        match.group(1)
+        for line in makefile_text.splitlines()
+        if not line.lstrip().startswith("#")
+        for match in re.finditer(r"^(FROST_[A-Z0-9_]+)\s*\?=", line)
+    )
+    missing = (
+        referenced - set(models.MAKEFILE_BUILD_VARIABLES) - _NON_KEY_MAKEFILE_FROST_VARS
+    )
+    assert not missing, (
+        f"tests/Makefile uses FROST_* variables missing from "
+        f"ci_sim_models.MAKEFILE_BUILD_VARIABLES: {sorted(missing)}"
+    )
+
+
+def _assert_knob_tracked_by_settings(
+    name: str,
+    base_env: dict[str, str],
+    toggled_env: dict[str, str],
+    base_cmd: dict,
+    toggled_cmd: dict,
+) -> None:
+    """Fail if a knob changes tests/Makefile's Verilator command without changing settings()."""
+    assert toggled_cmd != base_cmd, (
+        f"{name} did not change tests/Makefile's Verilator compile_command"
+    )
+    assert name in models.MAKEFILE_BUILD_VARIABLES, (
+        f"{name} changes the Verilator build but is missing from MAKEFILE_BUILD_VARIABLES"
+    )
+    assert models.group(models.settings("frost", toggled_env)) != models.group(
+        models.settings("frost", base_env)
+    ), f"{name} changes the Verilator build but not ci_sim_models.settings()"
+
+
+def test_makefile_build_variables_cover_every_verilator_build_knob(
+    tmp_path: Path,
+) -> None:
+    """Every tests/Makefile Verilator build knob is in MAKEFILE_BUILD_VARIABLES and changes the key."""
+    _assert_makefile_frost_vars_covered()
+    assert {name for name, _, _ in _MAKEFILE_BUILD_KNOB_PROBES} == set(
+        models.MAKEFILE_BUILD_VARIABLES
+    )
+    if shutil.which("cocotb-config") is None:
+        pytest.skip("cocotb-config is not on PATH")
+    process_cpus = getattr(os, "process_cpu_count", None)
+    available_cpus = (
+        process_cpus() if process_cpus is not None else len(os.sched_getaffinity(0))
+    ) or 1
+    for name, base_env, toggled_env in _MAKEFILE_BUILD_KNOB_PROBES:
+        if name == "FROST_VERILATOR_THREADS" and available_cpus < 2:
+            continue
+        base_cmd = _makefile_compile_command(tmp_path, base_env)
+        toggled_cmd = _makefile_compile_command(tmp_path, toggled_env)
+        _assert_knob_tracked_by_settings(
+            name, base_env, toggled_env, base_cmd, toggled_cmd
+        )
+
+
+@pytest.mark.parametrize(
+    "omitted",
+    (
+        "FROST_FULL_VISIBILITY",
+        "FROST_HANG_PROBE",
+        "FROST_RETIRE_TRACE",
+        "FROST_VERILATOR_THREADS",
+        "WAVES",
+        "FROST_COVERAGE",
+        "SIM_FAST_MAINT",
+    ),
+)
+def test_missing_build_variable_fails_makefile_consistency_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, omitted: str
+) -> None:
+    """Dropping any build variable from MAKEFILE_BUILD_VARIABLES fails the consistency check."""
+    monkeypatch.setattr(os, "process_cpu_count", lambda: 8, raising=False)
+    _, base_env, toggled_env = next(
+        probe for probe in _MAKEFILE_BUILD_KNOB_PROBES if probe[0] == omitted
+    )
+    if shutil.which("cocotb-config") is not None:
+        # Note: make runs in a subprocess using real host affinity, not monkeypatched os.
+        real_cpus = len(os.sched_getaffinity(0)) or 1
+        if omitted == "FROST_VERILATOR_THREADS" and real_cpus < 2:
+            base_cmd = {"verilator": ["verilator", "-cc"]}
+            toggled_cmd = {"verilator": ["verilator", "-cc", "--threads", "2"]}
+        else:
+            base_cmd = _makefile_compile_command(tmp_path, base_env)
+            toggled_cmd = _makefile_compile_command(tmp_path, toggled_env)
+    else:
+        base_cmd = {"verilator": ["verilator", "-cc"]}
+        toggled_cmd = {"verilator": ["verilator", "-cc", f"--probe-{omitted}"]}
+
+    # With the full tuple, the check passes.
+    _assert_knob_tracked_by_settings(
+        omitted, base_env, toggled_env, base_cmd, toggled_cmd
+    )
+
+    # Removing the variable from MAKEFILE_BUILD_VARIABLES makes settings()
+    # collide with the base build and fails both checks.
+    monkeypatch.setattr(
+        models,
+        "MAKEFILE_BUILD_VARIABLES",
+        tuple(var for var in models.MAKEFILE_BUILD_VARIABLES if var != omitted),
+    )
+    assert models.group(models.settings("frost", toggled_env)) == models.group(
+        models.settings("frost", base_env)
+    )
+    with pytest.raises(AssertionError):
+        _assert_knob_tracked_by_settings(
+            omitted, base_env, toggled_env, base_cmd, toggled_cmd
+        )
+    if omitted.startswith("FROST_"):
+        with pytest.raises(AssertionError, match=omitted):
+            _assert_makefile_frost_vars_covered()

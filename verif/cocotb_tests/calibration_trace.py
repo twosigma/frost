@@ -69,11 +69,24 @@ DDR_MODEL_DEFAULTS = {
 }
 
 
+_SELECTIVE_OPTIONAL_SIGNALS: frozenset[str] = frozenset()
+
+
 def _signal(dut: Any, path: str) -> Any | None:
     """Return the signal at a dotted path, or None if the build has none."""
     handle = dut
     for part in path.split("."):
         if not hasattr(handle, part):
+            if (
+                os.environ.get("FROST_SELECTIVE_VISIBILITY") == "1"
+                and path not in _SELECTIVE_OPTIONAL_SIGNALS
+            ):
+                raise AttributeError(
+                    f"calibration_trace could not resolve {path} at {part} "
+                    "(selective-visibility frost build; list the signal in "
+                    "hw/sim/frost_cocotb_visibility.vlt or run with "
+                    "FROST_FULL_VISIBILITY=1)"
+                )
             return None
         handle = getattr(handle, part)
     return handle

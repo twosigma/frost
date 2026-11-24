@@ -169,11 +169,15 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 ## Advertised ISA
 
-The X3 device tree advertises V with Zve32x, Zve32f, Zve64x, Zve64f and
-Zve64d, and the Zvl32b, Zvl64b, Zvl128b and Zvl256b length guarantees.
-The X3 configuration sets `misa.V` and has `VLEN=256` and `ELEN=64`.
+The X3 device tree and the opt-in VCU118 vector device tree (`--vector` on
+`frost_boot_image.py` and `load_software.py`, and
+`boards/vcu118/dts/frost_vcu118_vector.dts`) advertise V with Zve32x, Zve32f,
+Zve64x, Zve64f and Zve64d, and the Zvl32b, Zvl64b, Zvl128b and Zvl256b length
+guarantees. Those builds set `misa.V` and have `VLEN=256` and `ELEN=64`.
 These entries describe the vector capabilities for Linux ISA discovery.
-The VCU118 device tree describes its scalar configuration.
+The default VCU118 device tree describes its scalar configuration. Both the
+default and `--vector` VCU118 device trees omit `svpbmt` because the VCU118's
+2 GiB DDR map has no uncached alias.
 
 The generated DTB declares the
 [implemented extensions and profile properties](../README.md#supported-risc-v-extensions),
@@ -202,12 +206,14 @@ response. Memory loads can be flushed and repeated after an interrupt or debug
 halt; the [CPU memory-type description](../hw/rtl/cpu_and_mem/cpu/README.md)
 details the ordering and retry behavior for each physical address range.
 A 2 GiB DDR aperture has no
-alias in the current physical map and rejects those DDR mappings. For wider
+alias in the current physical map and rejects those DDR mappings, so the VCU118
+device tree omits `svpbmt` and OpenSBI leaves `menvcfg.PBMTE` clear on the
+VCU118. For wider
 apertures, the top 2 GiB also has no alias. Switching between cacheable and
 uncached views requires `fence iorw, iorw; cbo.flush; fence iorw, iorw` for the
 location. The NIC's `dma-coherent` property keeps its normal DMA buffers
 cacheable; its IO register mappings exercise PBMT without using the DDR alias.
-`/proc/cpuinfo` lists `svpbmt` in its `isa` line.
+On the X3, `/proc/cpuinfo` lists `svpbmt` in its `isa` line.
 
 Ssnpm: the DTB lists `ssnpm`, so Linux 6.13 and later (`CONFIG_RISCV_ISA_SUPM`)
 offer user pointer masking (Supm): `prctl(PR_SET_TAGGED_ADDR_CTRL,
