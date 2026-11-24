@@ -147,6 +147,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_boundary", "bmc_intervening"): 19800,
     ("coherence_store_boundary", "bmc_amo_same"): 3300,
     ("coherence_store_boundary", "bmc_amo_other"): 4800,
+    ("coherence_store_boundary", "bmc_probe_kept_same"): 3600,
+    ("coherence_store_boundary", "bmc_probe_kept_other"): 6000,
     ("coherence_store_boundary", "bmc_sc"): 6000,
     ("coherence_store_home", "bmc_siblings"): 900,
     ("coherence_store_home", "bmc_siblings_second"): 900,
@@ -272,6 +274,9 @@ FORMAL_TARGETS = [
             "bmc_intervening",
             "bmc_load_same",
             "bmc_load_other",
+            "bmc_load_same_probe_launch",
+            "bmc_probe_kept_other",
+            "bmc_probe_kept_same",
             "bmc_amo_same",
             "bmc_amo_same_owner",
             "bmc_amo_same_fatal",
@@ -291,6 +296,8 @@ FORMAL_TARGETS = [
             "cover_edges_same",
             "cover_edges_same_combined",
             "cover_edges_other",
+            "cover_probe_kept_other",
+            "cover_probe_kept_same",
         ),
     ),
     FormalTarget(
@@ -453,6 +460,11 @@ FORMAL_TARGETS = [
             "coh_lq_forward_normal_prove",
             "coh_lq_busy_prove",
             "coh_lq_normal_fill_prove",
+            "coh_lq_cut_probe_launch_prove",
+            "coh_lq_forward_probe_launch_prove",
+            "coh_lq_forward_normal_probe_launch_prove",
+            "coh_lq_busy_probe_launch_prove",
+            "coh_lq_normal_fill_probe_launch_prove",
             "coh_address_class_prove",
             "coh_candidate_select_prove",
             "coh_lq_selector_prove",
@@ -2738,6 +2750,18 @@ SBY_TASKS = [
         "bmc_load_other",
         "Loads through acceptance and installation of different-sector stores.",
     ),
+    (
+        "bmc_load_same_probe_launch",
+        "Probe-cycle launches dropped beside overlapping same-sector stores.",
+    ),
+    (
+        "bmc_probe_kept_other",
+        "Kept probe-cycle reads and C2b store_ack launches beside a different-sector store.",
+    ),
+    (
+        "bmc_probe_kept_same",
+        "Kept probe-cycle reads and C2b push_prev_q sector holds beside a same-sector other-dword store.",
+    ),
     ("bmc_amo_same", "Same-sector store and AMO credit and drain through release."),
     ("bmc_amo_same_owner", "Same-sector buffered-store and atomic-owner exclusion."),
     (
@@ -2780,6 +2804,14 @@ SBY_TASKS = [
     (
         "cover_edges_other",
         "Load staging at capture, acknowledgement, promotion and drain of different-sector stores.",
+    ),
+    (
+        "cover_probe_kept_other",
+        "Reachability of kept probe-cycle reads, store_ack launches and sector holds across sectors.",
+    ),
+    (
+        "cover_probe_kept_same",
+        "Reachability of kept probe-cycle reads and store_ack sector holds across dwords in one sector.",
     ),
     ("coh_l1d_store_payload_bmc", "Ordered head payload and masked hit installation."),
     ("coh_l1d_store_grant_bmc", "Store miss byte merging against grant bytes."),
@@ -3103,6 +3135,26 @@ SBY_TASKS = [
     (
         "coh_lq_normal_fill_prove",
         "Coherent L0 fill permission agrees for both response sources.",
+    ),
+    (
+        "coh_lq_cut_probe_launch_prove",
+        "Coherent cuts block probe-cycle launches and preserve LR reservation invariants.",
+    ),
+    (
+        "coh_lq_forward_probe_launch_prove",
+        "Coherent forwarding and probe-cycle launches obey cuts and same-sector holds.",
+    ),
+    (
+        "coh_lq_forward_normal_probe_launch_prove",
+        "Coherent forwarding, Normal-cache controls and probe-cycle launches obey local invariants.",
+    ),
+    (
+        "coh_lq_busy_probe_launch_prove",
+        "Coherent capture and probe-cycle launches obey busy gating with load preparation disabled.",
+    ),
+    (
+        "coh_lq_normal_fill_probe_launch_prove",
+        "Coherent L0 fill permission agrees for both response sources with probe-cycle launches enabled.",
     ),
     (
         "coh_address_class_prove",
@@ -4861,6 +4913,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "tests/test_pa_bridge_mutation.py",
             "tests/test_predictor_mutations.py",
             "tests/test_fp_forward_wake_mutations.py",
+            "tests/test_probe_launch_mutations.py",
             "--collect-only",
             "-q",
             "-m",
@@ -5319,12 +5372,12 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_store_boundary": (
         "plain memory_map and opt: its BMC tasks run them before their setundef, its cover and sticky tasks have none",
         {
-            "bmc_four bmc_intervening bmc_load_same bmc_load_other bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_fatal bmc_sc bmc_old": [
+            "bmc_four bmc_intervening bmc_load_same bmc_load_other bmc_load_same_probe_launch bmc_probe_kept_other bmc_probe_kept_same bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_fatal bmc_sc bmc_old": [
                 "memory_map",
                 "opt",
                 "opt -fast",
             ],
-            "cover_four prove_amo_same_fatal_sticky prove_amo_other_fatal_sticky cover_load cover_amo cover_amo_same cover_amo_same_two cover_amo_other_home cover_sc cover_old cover_edges_same cover_edges_same_combined cover_edges_other": [
+            "cover_four prove_amo_same_fatal_sticky prove_amo_other_fatal_sticky cover_load cover_amo cover_amo_same cover_amo_same_two cover_amo_other_home cover_sc cover_old cover_edges_same cover_edges_same_combined cover_edges_other cover_probe_kept_other cover_probe_kept_same": [
                 "memory_map",
                 "opt",
             ],
@@ -13047,6 +13100,8 @@ def test_fatal_frame_validation(
         ("coherence_store_boundary", "bmc_intervening", 19800),
         ("coherence_store_boundary", "bmc_amo_same", 3300),
         ("coherence_store_boundary", "bmc_amo_other", 4800),
+        ("coherence_store_boundary", "bmc_probe_kept_same", 3600),
+        ("coherence_store_boundary", "bmc_probe_kept_other", 6000),
         ("coherence_store_boundary", "bmc_sc", 6000),
         ("coherence_store_home", "bmc_siblings", 900),
         ("coherence_store_home", "bmc_siblings_second", 900),
