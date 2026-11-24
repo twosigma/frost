@@ -211,34 +211,30 @@ flush remains live.
 An entry left in the BTB by a flushed instruction can cost cycles only,
 never architectural correctness, because four guards hold:
 
-- **Decode admission and branch resolution**: Only fault-free, legally
-  decoded conditional branches, JALs, and JALRs can enter early recovery;
-  allocation checks each JAL target and branch resolution checks the direction
-  and full target of every conditional branch and JALR, turning any stale
-  direction or target into a recovery redirect.
-- **Walk-past handling**: If wrong-path fetch trains an entry at the
-  interior halfword of a 32-bit instruction that is not control flow
-  (compressed, or at an odd halfword also 32-bit), the slot-1 prediction
-  pends and fetch walk-past squashes the stale target window and resteers
-  fetch once the architectural PC steps past that halfword, delivering the
-  32-bit instruction unchanged.
-- **Fault suppression**: Under Sv39 without a `satp` change, supervisor and
-  user execute permissions are disjoint. At lookup time, fetch suppresses
-  BTB predictions whenever either word of the served fetch window faults,
-  when the live fetch PC's first word faults, or while an unresolved
-  translation holds fetch, and `immu` and `fetch_provider` restrict
-  physical instruction reads to executable PMA memory (`pma_fetch_ok`,
-  excluding device and MMIO regions), delivering a fault-tagged window
-  without issuing a bus read for any non-executable or unmapped target.
-  At packet assembly, `if_stage` also clears `btb_predicted_taken` in both
-  slots whenever `fetch_fault` is set (including an upper-half 32-bit
-  instruction whose second word faults across a page boundary), so PD and
-  the return address stack take no prediction side effect from a faulted
-  packet.
-- **Invalidation events with four-cycle hold**: Every architecturally
-  fenced code or translation-space change clears every BTB valid array and
-  holds the clear for four cycles so no in-flight pre-flush update can
-  reinstall an entry from old code.
+1. Only fault-free, legally decoded conditional branches, JALs, and JALRs can
+   enter early recovery; allocation checks each JAL target and branch
+   resolution checks the direction and full target of every conditional branch
+   and JALR, turning any stale direction or target into a recovery redirect.
+2. If wrong-path fetch trains an entry at the interior halfword of a 32-bit
+   instruction that is not control flow (compressed, or at an odd halfword also
+   32-bit), the slot-1 prediction pends and fetch walk-past squashes the stale
+   target window and resteers fetch once the architectural PC steps past that
+   halfword, delivering the 32-bit instruction unchanged.
+3. Under Sv39 without a `satp` change, supervisor and user execute permissions
+   are disjoint. At lookup time, fetch suppresses BTB predictions whenever
+   either word of the served fetch window faults, when the live fetch PC's
+   first word faults, or while an unresolved translation holds fetch, and
+   `immu` and `fetch_provider` restrict physical instruction reads to
+   executable PMA memory (`pma_fetch_ok`, excluding device and MMIO regions),
+   delivering a fault-tagged window without issuing a bus read for any
+   non-executable or unmapped target. At packet assembly, `if_stage` also
+   clears `btb_predicted_taken` in both slots whenever `fetch_fault` is set
+   (including an upper-half 32-bit instruction whose second word faults across
+   a page boundary), so PD and the return address stack take no prediction side
+   effect from a faulted packet.
+4. Every architecturally fenced code or translation-space change clears every
+   BTB valid array and holds the clear for four cycles so no in-flight
+   pre-flush update can reinstall an entry from old code.
 
 The backing BTB has no clear-all input (only reset sweeps it) and can keep
 entries across redirects, traps, and fences; that is safe because PD acts
@@ -1518,41 +1514,13 @@ whether they still reach them.
 
 The fast-lookup training contract is pinned per mechanism:
 
-- **Decode admission and branch resolution**: `early_redirect_completion` and
-  `branch_prediction_resolution` formal proofs, plus `fast_btb_contract_test`
-  (entries surviving same-side M-to-M traps/returns and `mstatus` writes, with
-  the retired-PC check `next_pc_expected_q` armed and per-case reach
-  assertions).
-- **Walk-past handling**: `if_prediction_walk_past` formal proof, the
-  `pc_controller` and `if_stage` walk-past benches (including flushed
-  compressed and 32-bit interior-halfword entries with a covering phantom
-  target), live `p_held_post_prediction_pc_emits_no_real_packet` in
-  `if_stage`, `odd_halfword_pred_test`, and `fast_btb_contract_test`.
-- **Fault suppression and fault-packet veto**: `if_fault_ras_veto` formal
-  proof, `if_stage` (`test_faulting_fetch_suppresses_trained_btb_redirect`,
-  including spanning second-word faults, and
-  `test_slot2_fault_suppresses_trained_call_and_replay_ras`, covering live,
-  spanning, and stall-replayed slot-2 calls), `odd_halfword_pred_test`, and
-  live `p_prediction_pma_fault_cofactor_exact` in `if_stage`. Because slot 2
-  has no pending-prediction path and `served_fault_any` disables
-  `prediction_common` on every served-window fault, the explicit
-  `o_from_if_to_pd_2.fetch_fault` veto in packet assembly is redundant in
-  intact `if_stage` (`if_fault_ras_veto:prove_slot2_veto_redundant`) and
-  serves as a defensive guard pinned with `branch_prediction_controller`
-  abstracted by `if_fault_ras_veto:prove`; the directed test pins the
-  observable behavior of faulting slot-2 calls.
-- **Invalidation events and four-cycle hold**: `btb_invalidate_hold` formal
-  proof, `branch_predictor` and `branch_prediction_controller` benches (hold
-  length and clear-over-update priority), `btb_mode_alias_test` (bare/Sv39
-  switch), `smc_predict_test` (`FENCE.I`), `debug_progbuf_btb_test` (Debug
-  Mode), and `fast_btb_contract_test` (`SFENCE.VMA` and `satp` writes, with
-  the retired-PC check `next_pc_expected_q` and reach assertions).
-- **Backing BTB no-clear-all vetoes**: `pd_backing_redirect` formal proof
-  (`prove_indirect`), `pd_stage` bench (non-jump, illegal, fault, bubble, and
-  size-mismatch vetoes in both slots), live
-  `p_pd_redirect_registered_veto_exact` and
-  `p_pd_redirect_target_boundary_exact` in `pd_stage`, and
-  `fast_btb_contract_test`.
+| Mechanism | Proofs and tests |
+|-----------|------------------|
+| Decode admission and branch resolution | `early_redirect_completion` and `branch_prediction_resolution` formal proofs, plus `fast_btb_contract_test` (entries surviving same-side M-to-M traps/returns and `mstatus` writes, with the retired-PC check `next_pc_expected_q` armed and per-case reach assertions) |
+| Walk-past handling | `if_prediction_walk_past` formal proof, the `pc_controller` and `if_stage` walk-past benches (including flushed compressed and 32-bit interior-halfword entries with a covering phantom target), live `p_held_post_prediction_pc_emits_no_real_packet` in `if_stage`, `odd_halfword_pred_test`, and `fast_btb_contract_test` |
+| Fault suppression and fault-packet veto | `if_fault_ras_veto` formal proof, `if_stage` (`test_faulting_fetch_suppresses_trained_btb_redirect`, including spanning second-word faults, and `test_slot2_fault_suppresses_trained_call_and_replay_ras`, covering live, spanning, and stall-replayed slot-2 calls), `odd_halfword_pred_test`, and live `p_prediction_pma_fault_cofactor_exact` in `if_stage`. Because slot 2 has no pending-prediction path and `served_fault_any` disables `prediction_common` on every served-window fault, the explicit `o_from_if_to_pd_2.fetch_fault` veto in packet assembly is redundant in intact `if_stage` (`if_fault_ras_veto:prove_slot2_veto_redundant`) and serves as a defensive guard pinned with `branch_prediction_controller` abstracted by `if_fault_ras_veto:prove`; the directed test pins the observable behavior of faulting slot-2 calls |
+| Invalidation events and four-cycle hold | `btb_invalidate_hold` formal proof, `branch_predictor` and `branch_prediction_controller` benches (hold length and clear-over-update priority), `btb_mode_alias_test` (bare/Sv39 switch), `smc_predict_test` (`FENCE.I`), `debug_progbuf_btb_test` (Debug Mode), and `fast_btb_contract_test` (`SFENCE.VMA` and `satp` writes, with the retired-PC check `next_pc_expected_q` and reach assertions) |
+| Backing BTB no-clear-all vetoes | `pd_backing_redirect` formal proof (`prove_indirect`), `pd_stage` bench (non-jump, illegal, fault, bubble, and size-mismatch vetoes in both slots), live `p_pd_redirect_registered_veto_exact` and `p_pd_redirect_target_boundary_exact` in `pd_stage`, and `fast_btb_contract_test` |
 
 Most front-end modules and `cpu_ooo` glue submodules have their own cocotb
 bench, such as `branch_predictor`, `pc_controller`, `instruction_aligner`,

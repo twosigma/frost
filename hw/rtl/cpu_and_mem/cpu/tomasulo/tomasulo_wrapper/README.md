@@ -57,14 +57,19 @@ adapter wiring.
 | `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: stage a load while the memory port is busy; the wrapper may separately permit unrelated L0 hits during buffered Normal stores and older Normal reads |
 | `LQ_PROBE_LAUNCH` | 0; 1 in `cpu_ooo` when `CACHED_TIER_EN` is set | LQ `PROBE_LAUNCH`: an ordinary cached load reads memory during its store-queue probe ([load queue](../load_queue/README.md#launch-during-the-probe)) |
 | `CACHE_NORMAL_MEMORY` | 0 | Optional Normal read-cache/write-through policy; FROST enables it, excluding the debug data page |
+| `CMO_HOME` | 0 | Route cached-DDR Zicbom CMOs to the coherent hierarchy (`store_queue` `CMO_HOME`) |
+| `MEM_RESPONSE_ERRORS` | 0 | Enable memory response errors in the LQ, precise uncached stores in the SQ (`PRECISE_UNCACHED`), and uncached L0 bypass (`CACHE_UNCACHED_DATA=0`); `cpu_ooo` passes `VARIABLE_UNCACHED` |
 | `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 entries; FROST passes 512 with Normal read caching |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, `0x4000_0000` | Cached (DDR) region, for LQ and SQ tier tagging |
 | `PERF_COUNTERS` | 1 | 0 leaves out `tomasulo_perf_counters`; `o_perf_counter_data` then reads zero |
-| `VECTOR` | 0 | 1 makes the vector CSRs legal at ROB allocation while `mstatus.VS` is not Off |
+| `VECTOR` | 0 | 1 enables vector CSR legality at ROB allocation while `mstatus.VS` is not Off, runs `vsetvli`/`vsetivli`/`vsetvl` in `int_muldiv_shim` through `u_vcfg_adapter` on CDB slot 5, and exports `o_vcfg_commit` and `o_vcfg_in_flight` |
+| `VLEN` | 256 | Vector register width in bits (128, 256, or 512), passed to `int_muldiv_shim` for `vec_cfg_unit` when `VECTOR=1` |
+| `REGISTERED_SECTOR_MATCH` | 0 | Register the LQ's same-sector matches against coherent L1D store pushes and atomic state; `cpu_ooo` sets 1 |
 
-`cpu_ooo` sets `SPLIT_RS_DISPATCH=1`, `ENABLE_DISPATCH_DONE_REPAIR=1`, and
-`ROB_SHARED_LINK_BANK=1`, and passes its own values for the rest. Its
-`PERF_COUNTERS` defaults to 0; FPGA builds choose it with
+`cpu_ooo` sets `SPLIT_RS_DISPATCH=1`, `ENABLE_DISPATCH_DONE_REPAIR=1`,
+`ROB_SHARED_LINK_BANK=1`, and `REGISTERED_SECTOR_MATCH=1`, passes
+`VARIABLE_UNCACHED` to `MEM_RESPONSE_ERRORS`, and passes its own values for the
+rest. Its `PERF_COUNTERS` defaults to 0; FPGA builds choose it with
 `build.py --perf-counters`.
 
 ## Dispatch routing

@@ -386,9 +386,11 @@ Set x3 CPU setup clock uncertainty to 0.5 ns (place overconstraint)
 
     section = timing_util_summary.format_readme_utilization_section(utilization)
     assert (
-        "**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; "
+        "**Alveo X3522PV** (UltraScale+ xcux35; "
         "`ExtraNetDelay_high`/0.500 post-place report)" in section
     )
+    assert "Virtex" not in section
+    assert "MHz" not in section
 
     (work_dir / "post_place_vivado.log").write_text(
         vivado_log
@@ -402,6 +404,34 @@ Set x3 CPU setup clock uncertainty to 0.5 ns (place overconstraint)
     assert provenance in timing_util_summary.format_readme_utilization_section(
         utilization
     )
+
+
+def test_readme_utilization_uses_xcux35_and_plain_formatting() -> None:
+    """Generated README tables name UltraScale+ xcux35 without clock or em-dash."""
+    assert timing_util_summary.BOARD_INFO["x3"] == {
+        "name": "Alveo X3522PV",
+        "family": "UltraScale+",
+        "part": "xcux35",
+    }
+    section = timing_util_summary.format_readme_utilization_section(
+        {
+            "x3": {
+                "stage": "post_synth",
+                "clock_freq_mhz": 322.266,
+                "luts_used": 405631,
+                "luts_available": 1029600,
+                "luts_percent": 39.4,
+                "lut_distram_used": 30562,
+                "lut_srl_used": 1618,
+            }
+        }
+    )
+    assert "**Alveo X3522PV** (UltraScale+ xcux35; post-synthesis report)" in section
+    assert "|   LUT as Distributed RAM | 30,562 | - | - |" in section
+    assert "|   LUT as Shift Register | 1,618 | - | - |" in section
+    assert "Virtex" not in section
+    assert "MHz" not in section
+    assert "\u2014" not in section
 
 
 def test_x3_place_provenance_records_manual_bloat_targets() -> None:

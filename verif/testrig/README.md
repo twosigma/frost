@@ -469,295 +469,36 @@ legal controls. The memory trace checks traps before an access.
 [Integer](vector_source_widths_integer.S) · [Floating point](vector_source_widths_fp.S)
 · [Memory](vector_source_widths_memory.S)
 
-The `--vector-directed` option includes a state and scalar-result trace
-for `misa.V`, vector CSRs, VS state, `vsetivli`, `vsetvl`, `vcpop.m`, `vfirst.m`
-and `vfmv.f.s`. The trace
-asserts the scalar results and selected trap outcomes. The mask operations
-read five active bits from initialized mask bytes. FP extraction reads
-initialized element zero and exposes its bits in integer registers. The
-vector setup uses tail- and mask-undisturbed policies. [State and scalar results](vector_state_results.S)
+The `--vector-directed` option replays 25 directed base-V and Zfa traces (the
+directed segment trace `vector_segment.S` runs with `--vector-segments`):
 
-The fractional LMUL trace checks VL and vtype at e8/mf8, e16/mf4 and
-e32/mf2, arithmetic and a widening result. Integer reads also check
-initialized tail elements under the tail-undisturbed policy and a
-neighboring register. With the tail- and mask-agnostic policies the trace
-reads only the initialized, mask-enabled element zero. The trace also checks
-that e64/mf2 and e32/mf8 set `vill` and clear `vl`, and that a legal
-setting after each rejection clears `vill` and restores a nonzero `vl`. [Fractional LMUL](vector_fractional_lmul.S)
-
-The base FP trace checks binary32 vector adds and binary64 vector-scalar
-multiplication and division. It compares exact and rounded results, the canonical
-NaN and all five accrued exception flags. The masked add checks that the
-disabled signaling NaN leaves the flags clear and reads only the initialized,
-enabled result. [Base FP results and flags](vector_fp_results_flags.S)
-
-The Zfa half-precision constant trace checks all 32 `fli.h` encodings,
-NaN-boxed into the FP register with zero accrued flags, reserved `frm`
-independence, `mstatus.FS` dirtying from Clean, nonzero `funct3` trapping and
-`mstatus.FS` Off trapping. The vector Sail overlays enable `Zvfh` and
-`Zvfhmin` to match the `VECTOR=1` core; because Sail 0.16 gates `Zvfh` on
-`mstatus.VS != Off`, the trace keeps `VS` enabled alongside `FS` (the
-`vec_fp_test` program covers `fli.h` with `VS` Off on RTL and Spike).
-[Zfa FLI.H](vector_fli_h.S)
-
-The fused multiply-add trace checks the single-width vector-vector and
-vector-scalar forms in binary32 and binary64. A nonzero residual checks
-single rounding for a product that rounds to one on its own. The masked case
-reads only the enabled result and checks that the disabled zero-times-infinity
-element leaves the flags clear. The unmasked case checks the canonical NaN and
-the invalid flag. A halfway fused result checks rounding under RNE and RUP
-and the accrued inexact flag. [Fused multiply-add](vector_fma.S)
-
-The FP comparison trace checks vector-vector and vector-scalar predicates
-in binary32 and binary64. Mask population and first-set index expose active
-comparison bits. The trace checks the results and accrued flags for quiet
-and signaling NaNs. A masked comparison checks that a disabled NaN lane
-leaves the invalid flag clear. [FP comparisons](vector_fp_compare.S)
-
-The FP conversion trace checks conversions between floating-point and signed or
-unsigned integer values, and widening and narrowing between floating-point
-formats. It checks exact results, nearest-even rounding, truncation and
-round-to-odd narrowing through integer readouts. An overflowing narrowing
-conversion checks positive infinity and the overflow and inexact flags.
-The mask-undisturbed conversion checks the enabled result and the preserved
-masked-off element. The masked NaN leaves the invalid flag clear.
-[FP conversions](vector_fp_convert.S)
-
-The cached DDR traces check aligned vector loads and stores. Scalar stores
-initialize the load input, and integer moves expose each loaded lane. The
-store trace asserts that the vector store retires and that scalar loads read
-the expected value from every written element.
-[Cached load](vector_cached_load.S) and [cached store](vector_cached_store.S).
-
-The unit-stride memory trace checks aligned cached DDR loads and stores at
-8, 16, 32 and 64-bit element widths, both unmasked and masked, and mask loads
-and stores (`vlm.v` and `vsm.v`). It covers vector lengths below and equal to
-VLMAX, tail-undisturbed and mask-undisturbed readouts where defined,
-multi-register and fractional EMUL transfers, zero-active transfers, and a
-cached page-boundary crossing. Every vector store reads back all written bytes
-through immediate scalar loads without reading `misa`.
-[Unit-stride memory](vector_unit_stride.S)
-
-The strided memory trace checks aligned cached DDR strided loads and stores at
-8, 16, 32 and 64-bit element widths, both unmasked and masked. It covers
-positive strides above and equal to the element size, negative strides, zero
-strides through `x0` and through a zero-valued register, vector lengths below
-and equal to VLMAX, tail-undisturbed and mask-undisturbed readouts where
-defined, multi-register and fractional EMUL transfers, zero-active transfers,
-and a cached page-boundary crossing. Every strided store reads back all
-written bytes through immediate scalar loads without reading `misa`.
-[Strided memory](vector_strided.S)
-
-The indexed memory trace checks aligned cached DDR unordered and ordered
-indexed loads and stores at 8, 16, 32 and 64-bit index widths, both unmasked
-and masked. It covers matching and cross-width element and index widths
-(fractional and multi-register index EMUL), unsigned high-bit and wide index
-values, duplicate-index gathers and ordered duplicate-index store ordering,
-legal in-place gathers, vector lengths below and equal to VLMAX,
-tail-undisturbed and mask-undisturbed readouts where defined, zero-active
-transfers, and a cached page-boundary crossing. Every indexed store reads back
-all written bytes through immediate scalar loads without reading `misa`.
-[Indexed memory](vector_indexed.S)
-
-The segment memory trace checks aligned cached DDR unit-stride segment loads
-and stores (`vlseg` and `vsseg`) for two through eight fields across 8, 16, 32
-and 64-bit element widths, and strided segment loads and stores (`vlsseg` and
-`vssseg`) across all four widths, both unmasked and masked. It covers positive,
-negative and zero strides, vector lengths below and equal to VLMAX,
-tail-undisturbed and mask-undisturbed readouts where defined, multi-register
-and fractional EMUL field groups, zero-active transfers, and a cached
-page-boundary crossing inside a segment. Every segment store reads back all
-written bytes through immediate scalar loads without reading `misa`.
-[Segment memory](vector_segment.S)
-
-The fault-only-first load trace checks aligned `vle8ff.v`, `vle16ff.v`,
-`vle32ff.v` and `vle64ff.v` loads, both unmasked and masked, across the upper
-boundary of the 1 GiB cached DDR window at `0xC0000000`. It starts with a
-scalar load at `0xC0000000` to check load access-fault agreement, then checks
-later-element faults that trim `vl` while leaving post-fault lanes undisturbed
-across all four widths, multi-register and VLMAX configurations, masked-off
-faulting elements that preserve `vl`, non-faulting and zero-active loads, and
-element-zero faults that trap with `mcause`, `mtval`, `vstart` and unchanged
-`vl`, without reading `misa`. [Fault-only-first loads](vector_fof.S)
-
-The integer comparison trace checks vector, scalar and immediate predicates
-at SEW 32. It reads each active mask bit through an integer destination.
-The mask-undisturbed case checks enabled updates and preserved disabled bits.
-The SEW 64 cases read back `vtype` and check equality and ordering on
-operands with matching low halves and differing upper halves. The signed
-and unsigned ordering cases compare the same pairs, including one with
-opposite signs. [Integer comparisons](vector_int_compare.S)
-
-The widening and narrowing integer trace checks widening addition and
-subtraction, integer zero and sign extensions, narrowing logical and
-arithmetic right shifts, widening multiplication and widening
-multiply-accumulate across their supported element widths. It covers
-masked and unmasked forms, vector lengths below, equal to and zero
-relative to VLMAX, tail- and mask-undisturbed readouts, shift-amount
-masking at twice SEW without rounding or saturation, fractional and
-multi-register group multipliers, legal register overlaps and illegal
-width and group-multiplier traps.
-[Widening and narrowing integer operations](vector_int_widen_narrow.S)
-
-The fixed-point trace checks saturating addition and subtraction,
-averaging addition and subtraction, saturating fractional multiplication,
-scaling right shifts and narrowing fixed-point clips across all supported
-element widths. It covers all four fixed-point rounding modes with `vxrm`
-CSR readbacks after each write, saturation and sticky `vxsat` updates,
-rounding before saturation on narrowing clips, inactive masked and tail
-lanes leaving `vxsat` clear, vector lengths below, equal to and zero
-relative to VLMAX, tail- and mask-undisturbed readouts, fractional and
-multi-register group multipliers, legal register overlaps and illegal
-widening, narrowing and mask-register overlap traps.
-[Fixed-point operations](vector_fixed_point.S)
-
-The single-width floating-point trace checks binary32 and binary64
-addition, subtraction, reverse subtraction, multiplication, division,
-reverse division, square root, reciprocal and reciprocal-square-root
-estimates, minimum and maximum, sign injection, classification,
-floating-point merge, and scalar-vector floating-point moves. It covers
-all five rounding modes with `frm` CSR readbacks after each write across
-addition, multiplication, division, reverse division, square root and
-reciprocal estimates, all five accrued exception flags, signed-zero and
-NaN-propagation corners, improperly NaN-boxed scalars, all ten
-classification classes, masked and unmasked forms, vector lengths below,
-equal to and zero relative to VLMAX, tail- and mask-undisturbed
-readouts, fractional and multi-register group multipliers, legal
-in-place overlap and illegal single-width FP traps.
-[Single-width FP operations](vector_fp_single.S)
-
-The whole-register memory trace checks all sixteen whole-register loads
-(`vl1re`, `vl2re`, `vl4re` and `vl8re` at 8, 16, 32 and 64-bit element
-widths) and all four whole-register stores (`vs1r.v`, `vs2r.v`,
-`vs4r.v` and `vs8r.v`) in cached DDR. It covers neighboring-register
-preservation, whole-register transfers while `vtype.vill` is set,
-independence from `vl`, `vtype` and `v0`, odd-address byte-aligned
-transfers, a cached 4 KiB page-boundary crossing, Page-0 access faults
-and Page-1 faults at `0xC0000000` checking `vstart` granularity and
-resumption across all four load widths, and illegal-instruction traps
-for misaligned register groups, reserved field counts, masked forms,
-nonzero store widths and `mew = 1`. Every retiring whole-register store
-reads back all written bytes through immediate scalar loads without
-reading `misa`. [Whole-register memory](vector_whole_reg.S)
-
-The widening floating-point trace checks all eighteen binary32-to-binary64
-widening floating-point encodings: narrow-source and wide-source addition
-and subtraction (`vfwadd` and `vfwsub` in `.vv`, `.vf`, `.wv` and `.wf`),
-widening multiplication (`vfwmul.vv` and `vfwmul.vf`), and all four
-widening fused multiply-add sign forms (`vfwmacc`, `vfwnmacc`, `vfwmsac`
-and `vfwnmsac` in `.vv` and `.vf`). It covers all five rounding modes with
-`frm` CSR readbacks after each write across all sixteen rounding-capable
-encodings, subnormal binary32 widening and exact binary64 subnormal
-accumulation, signed-zero cancellation, binary64 overflow, `0 * inf + qNaN`
-and `sNaN` invalid flags, improperly NaN-boxed scalars, masked and unmasked
-forms, vector lengths below, equal to and zero relative to VLMAX, tail- and
-mask-undisturbed readouts, `mf2` through `m4` group multipliers, legal
-register overlaps and illegal widening FP traps.
-[Widening FP operations](vector_fp_widen.S)
-
-The permute trace checks slides (`vslideup.{vx,vi}`, `vslidedown.{vx,vi}`),
-slide-by-one integer and floating-point moves (`vslide1up.vx`,
-`vslide1down.vx`, `vfslide1up.vf`, `vfslide1down.vf`), register gathers
-(`vrgather.{vv,vx,vi}`, `vrgatherei16.vv`), vector compression
-(`vcompress.vm`) and whole-register moves (`vmv1r.v`, `vmv2r.v`, `vmv4r.v`,
-`vmv8r.v`) across all supported element widths. It covers `vslideup` prefix
-preservation under `tu` and `ta`, `vslidedown` 64-bit index wraparound,
-exact `VLMAX - 1` versus `VLMAX` out-of-range zeroing, zero-extended five-bit
-immediates (`uimm5` 16 and 31), `vrgatherei16` indices across all four data
-widths including indices above 255 at SEW 8 and legal `vs2 == vs1` at SEW 16,
-floating-point `sNaN` pass-through and improperly NaN-boxed scalar unboxing
-without raising flags, `vcompress.vm` with all-zero, all-ones, sparse and
-`v0` masks, `vmv<nr>r.v` independence of `vl` and `vlmul` plus self-copy,
-masked and unmasked forms, vector lengths below, equal to and zero relative
-to VLMAX, fractional and multi-register group multipliers, legal in-place
-overlaps and illegal permute overlap, alignment, range, reserved and `vill`
-traps.
-[Vector permute operations](vector_permutes.S)
-
-The reduction trace checks all sixteen base-V vector reduction encodings:
-single-width integer reductions (`vredsum`, `vredand`, `vredor`, `vredxor`,
-`vredminu`, `vredmin`, `vredmaxu` and `vredmax`), widening integer sum
-reductions (`vwredsumu` and `vwredsum`), single-width floating-point
-reductions (`vfredusum`, `vfredosum`, `vfredmin` and `vfredmax`), and
-widening floating-point sum reductions (`vfwredusum` and `vfwredosum`)
-across all supported element widths. It covers all five rounding modes with
-`frm` CSR readbacks after each write across all four floating-point sum
-reductions, strict left-to-right ordered floating-point summation, exact
-binary32 subnormal widening, signed-zero cancellation and min/max ties,
-floating-point overflow and invalid flags, masked-off lanes acting as
-identities and suppressing `fflags`, all-masked-off copy of the scalar seed
-including verbatim `sNaN` without flags, `vl == 0` leaving `vd[0]` and
-`fflags` untouched, tail-undisturbed preservation of `vd[1]`, fractional
-through `m8` group multipliers including odd scalar destinations and seeds,
-legal register overlaps including masked `vd == v0`, and illegal reduction
-width, source-overlap, `v0`-source, alignment, reserved `frm` and `vill`
-traps.
-[Vector reduction operations](vector_reductions.S)
-
-The carry and borrow trace checks all fifteen base-V integer add-with-carry
-and subtract-with-borrow encodings (`vadc.{vvm,vxm,vim}`,
-`vmadc.{vvm,vxm,vim,vv,vx,vi}`, `vsbc.{vvm,vxm}` and
-`vmsbc.{vvm,vxm,vv,vx}`) across all four element widths (`e8`, `e16`, `e32`
-and `e64`). It covers carry-in and borrow-in propagation from `v0` versus
-carry-free `vm = 1` suppression with `v0` set, sign-extended five-bit
-immediates (`-1`, `-16` and `+15`), scalar truncation of upper register bits,
-unsigned overflow and double-underflow boundaries without setting `vxsat`,
-chained 128-bit two-limb addition and subtraction, multi-byte mask reads and
-writes with tail-bit preservation, `tu` and `ta` policies, `vl == 0`,
-`vl == VLMAX`, fractional through `m8` group multipliers, legal register
-overlaps including in-place `vd == v0` mask updates and `m2` lowest-register
-overlaps, and illegal reserved `vm = 1`, reserved `.vi`, `v0`-overlap,
-alignment and `vill` traps.
-[Vector carry and borrow operations](vector_carry_borrow.S)
-
-The mask-register operations trace checks all fifteen base-V mask-register
-encodings: all eight mask-register logical operations (`vmandn.mm`,
-`vmand.mm`, `vmor.mm`, `vmxor.mm`, `vmorn.mm`, `vmnand.mm`, `vmnor.mm` and
-`vmxnor.mm`), `vcpop.m`, `vfirst.m`, `vmsbf.m`, `vmsof.m`, `vmsif.m`,
-`viota.m` and `vid.v`. It covers asymmetric truth tables across 80-bit
-(`vl = 80`) two-block spans with tail-bit preservation, `vcpop.m` and
-`vfirst.m` across 64-bit block boundaries including masked-off skipping,
-all-zero `-1` results and `vl == 0`, `vmsbf`/`vmsof`/`vmsif` with first bit
-at zero, across block 1 without retriggering, all-zero and masked-off
-no-active-bit cases with `mu` preservation, `viota.m` and `vid.v` across all
-four element widths (`e8`, `e16`, `e32` and `e64`), masked and unmasked
-forms, `tu`/`ta`, `vl == 0`, `vl == VLMAX`, fractional through `m8` group
-multipliers, legal `v0` and odd-register overlaps, and illegal reserved
-`vm = 0`, `vd == vs2`, masked `vd == v0`, nonzero `vid.v` `vs2`, alignment
-and `vill` traps.
-[Vector mask-register operations](vector_mask_ops.S)
-
-The integer multiply-add trace checks all eight base-V single-width integer
-multiply-add encodings (`vmacc`, `vnmsac`, `vmadd` and `vnmsub` in `.vv` and
-`.vx` forms) across all four element widths (`e8`, `e16`, `e32` and `e64`).
-It covers asymmetric operands that distinguish `vd` as accumulator (`vmacc`,
-`vnmsac`) from `vd` as multiplicand (`vmadd`, `vnmsub`), low-SEW wraparound
-at unsigned and signed boundaries at every width, scalar upper-bit truncation
-for `.vx` forms, masked and unmasked execution for all eight encodings,
-`tu`/`mu` preservation and `ta`/`ma` execution across multi-register
-boundaries, `vl == 0`, portable `vl == VLMAX` from `mf8` through `m8`, legal
-register overlaps (`vd == vs1`, `vd == vs2`, `vs1 == vs2`,
-`vd == vs1 == vs2` and unmasked `v0`), and illegal masked `v0`-overlap,
-register-group alignment and `vill` traps.
-[Vector integer multiply-add operations](vector_int_mul_add.S)
-
-The integer scalar and merge trace checks the remaining eighteen non-segment
-base-V single-width integer encodings: sixteen `.vx` forms (`vrsub.vx`,
-`vand.vx`, `vsll.vx`, `vsrl.vx`, `vsra.vx`, `vminu.vx`, `vmin.vx`,
-`vmaxu.vx`, `vmax.vx`, `vmulhu.vx`, `vmulh.vx`, `vmulhsu.vx`, `vdivu.vx`,
-`vdiv.vx`, `vremu.vx` and `vrem.vx`) and both remaining integer merges
-(`vmerge.vvm` and `vmerge.vxm`), across all four element widths (`e8`,
-`e16`, `e32` and `e64`). It covers scalar upper-bit truncation, shift-amount
-masking to `log2(SEW)` bits, signed versus unsigned comparison and high-half
-multiply signedness, signed and unsigned division and remainder across all
-sign combinations plus divide-by-zero and signed-minimum divided by `-1`
-overflow at every width, merge selection under alternating, all-zero and
-all-one masks, masked and unmasked `.vx` execution, `tu`/`mu` preservation
-and `ta`/`ma` execution across multi-register boundaries, `vl == 0`,
-portable `vl == VLMAX` from `mf8` through `m8`, legal register overlaps,
-and illegal masked `v0`-overlap, `vmerge` `v0`-overlap, register-group
-alignment and `vill` traps.
-[Vector integer scalar and merge operations](vector_int_vx_merge.S)
+| Trace | Instruction family and coverage |
+|-------|---------------------------------|
+| [`vector_state_results.S`](vector_state_results.S) | `misa.V`, vector CSRs, `mstatus.VS`, `vsetivli`, `vsetvl`, `vcpop.m`, `vfirst.m`, `vfmv.f.s`, and selected trap outcomes |
+| [`vector_fractional_lmul.S`](vector_fractional_lmul.S) | `vl`/`vtype` and arithmetic at `e8/mf8`, `e16/mf4`, and `e32/mf2`, widening, `tu`/`ta`/`ma` readouts, and illegal `e64/mf2` and `e32/mf8` `vill` recovery |
+| [`vector_fp_results_flags.S`](vector_fp_results_flags.S) | Single- and double-precision vector add, multiply, and divide results, canonical NaN, all five `fflags`, and masked sNaN flag suppression |
+| [`vector_fli_h.S`](vector_fli_h.S) | All 32 Zfa `fli.h` encodings, NaN-boxing, `frm` independence, `mstatus.FS` dirtying, and nonzero `funct3` / `FS = Off` traps |
+| [`vector_fma.S`](vector_fma.S) | Single-width FP32/FP64 vector-vector and vector-scalar FMA single rounding, `RNE`/`RUP` rounding, masked `0 * inf` flag suppression, and canonical NaN |
+| [`vector_fp_compare.S`](vector_fp_compare.S) | FP32/FP64 vector-vector and vector-scalar comparisons via mask readback, qNaN/sNaN flags, and masked NaN suppression |
+| [`vector_fp_convert.S`](vector_fp_convert.S) | FP/integer and widening/narrowing FP conversions, rounding modes including round-to-odd narrowing, overflow, and mask-undisturbed NaN handling |
+| [`vector_cached_load.S`](vector_cached_load.S), [`vector_cached_store.S`](vector_cached_store.S) | Aligned cached-DDR vector loads and stores with scalar initialization and readback |
+| [`vector_unit_stride.S`](vector_unit_stride.S) | Aligned cached-DDR unit-stride loads/stores (`e8..e64`, masked/unmasked) and mask transfers (`vlm.v`, `vsm.v`), fractional/multi-register EMUL, page crossings, and scalar store readbacks |
+| [`vector_strided.S`](vector_strided.S) | Aligned cached-DDR strided loads/stores (`e8..e64`) with positive, negative, and zero strides, masked/unmasked transfers, page crossings, and scalar store readbacks |
+| [`vector_indexed.S`](vector_indexed.S) | Aligned cached-DDR unordered and ordered indexed loads/stores (`8..64`-bit indices), cross-width EMUL, duplicate-index ordering, in-place gathers, page crossings, and scalar store readbacks |
+| [`vector_segment.S`](vector_segment.S) | Runs in `--vector-segments`: aligned cached-DDR unit-stride (`vlseg`/`vsseg`) and strided (`vlsseg`/`vssseg`) segment transfers for `nf = 2..8` across `e8..e64`, masked/unmasked, page crossings, and scalar store readbacks |
+| [`vector_fof.S`](vector_fof.S) | Aligned `vle{8,16,32,64}ff.v` loads at the `0xC0000000` cached-DDR upper boundary: later-element `vl` trimming, masked fault preservation, and element-0 traps |
+| [`vector_int_compare.S`](vector_int_compare.S) | Vector, scalar, and immediate integer comparisons at `SEW = 32` and `64`, mask-undisturbed preservation, and signed/unsigned ordering |
+| [`vector_int_widen_narrow.S`](vector_int_widen_narrow.S) | Widening add/sub/mul/macc, `vzext`/`vsext`, narrowing right shifts, shift-amount masking, legal overlaps, and illegal width/LMUL traps |
+| [`vector_fixed_point.S`](vector_fixed_point.S) | Saturating add/sub, averaging add/sub, `vsmul`, scaling shifts, and narrowing clips across all four `vxrm` modes, sticky `vxsat`, and overlap traps |
+| [`vector_fp_single.S`](vector_fp_single.S) | Single-width FP32/FP64 add/sub/rsub/mul/div/rdiv/sqrt/rec7/rsqrt7, min/max, sign injection, `vfclass.v`, merge, and scalar-vector moves across all five `frm` modes, `fflags`, NaN-boxing, and traps |
+| [`vector_whole_reg.S`](vector_whole_reg.S) | All 16 whole-register loads (`vl{1,2,4,8}re{8,16,32,64}`) and 4 stores (`vs{1,2,4,8}r.v`), `vill`/`vl` independence, page crossings, `vstart` fault resumption, scalar store readbacks, and illegal traps |
+| [`vector_fp_widen.S`](vector_fp_widen.S) | All 18 FP32-to-FP64 widening add/sub/mul/FMA encodings across all five `frm` modes, subnormals, overflow, NaN-boxing, overlaps, and traps |
+| [`vector_permutes.S`](vector_permutes.S) | `vslideup`/`vslidedown`, `vslide1*`/`vfslide1*`, `vrgather`/`vrgatherei16`, `vcompress.vm`, and `vmv{1,2,4,8}r.v`, out-of-range zeroing, masks, overlaps, and traps |
+| [`vector_reductions.S`](vector_reductions.S) | All 16 base-V single-width and widening integer and FP reductions across all five `frm` modes, ordered FP summation, masked identities, `vl == 0`, overlaps, and traps |
+| [`vector_carry_borrow.S`](vector_carry_borrow.S) | All 15 base-V `vadc`/`vmadc`/`vsbc`/`vmsbc` encodings across `e8..e64`, carry/borrow propagation, multi-limb chains, `tu`/`ta`, overlaps, and traps |
+| [`vector_mask_ops.S`](vector_mask_ops.S) | All 15 base-V mask-register operations (eight logical ops, `vcpop.m`, `vfirst.m`, `vmsbf.m`, `vmsof.m`, `vmsif.m`, `viota.m`, `vid.v`), multi-block masks, overlaps, and traps |
+| [`vector_int_mul_add.S`](vector_int_mul_add.S) | All 8 base-V integer multiply-add encodings (`vmacc`, `vnmsac`, `vmadd`, `vnmsub` in `.vv`/`.vx`) across `e8..e64`, wraparound, masks, overlaps, and traps |
+| [`vector_int_vx_merge.S`](vector_int_vx_merge.S) | The remaining 18 base-V single-width integer encodings (16 `.vx` ALU/mul/div/rem forms plus `vmerge.vvm` and `vmerge.vxm`) across `e8..e64`, division corners, masks, overlaps, and traps |
 
 Two reserved vector overlap encodings trap as illegal instructions in FROST
 and Spike under RVV 1.0, while Sail 0.16 allows them, so they are not
@@ -771,6 +512,10 @@ compared in TestRIG:
 
 Additional vector-extension behaviors are not compared against Sail 0.16:
 
+- `fli.h` with `mstatus.VS = Off`: the vector Sail overlays enable `Zvfh` and
+  `Zvfhmin` to match the `VECTOR=1` core, and Sail 0.16 gates `Zvfh` on
+  `mstatus.VS != Off`, so `vector_fli_h.S` keeps `VS` enabled alongside `FS`.
+  The `vec_fp_test` program covers `fli.h` with `VS = Off` on RTL and Spike.
 - `Zvkt` data-independent execution timing: Sail 0.16 is an instruction-level
   functional model and has no cycle counts, so TestRIG cannot observe timing.
   Fixed-latency, operand-independent timing is covered outside TestRIG by
@@ -797,108 +542,18 @@ Additional vector-extension behaviors are not compared against Sail 0.16:
   (`verif/cocotb_tests/vector/test_vec_crypto_exec.py`), and
   `tests/test_vector_legality_reference.py --forms crypto`.
 
-The Zvfhmin trace checks both RVA23U64 mandatory Zvfhmin half-precision
-floating-point conversion encodings (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at
-`SEW = 16`) alongside all six base-V `SEW = 16` integer/binary32 conversions
-(`vfwcvt.f.{xu,x}.v` and `vfncvt.{xu,x,rtz.xu,rtz.x}.f.w`) with no Zvfh-only
-FP16 arithmetic in the trace. It covers all five rounding modes with `frm`
-CSR readbacks across `vfncvt.f.f.w` ties, overflow (`±65536.0` and the
-`+65520.0` rounding-boundary case), exact and inexact subnormals,
-tininess-after-rounding (`0x387ff800`), underflow to zero, signed zeros,
-infinities, non-canonical quiet and signaling NaNs (`0x7e00` / `0x7fc00000`),
-accrued `fflags` exactness, scalar `Zfhmin` NaN-boxing interoperability,
-masked (`tu`/`mu` and `ta`/`ma`) execution with disabled `sNaN` flag
-suppression, `vl == 0`, portable `vl == VLMAX` from `mf4` through `m4`, legal
-register overlaps, and illegal `m8`, `e8`, `e64`, alignment, `v0`, overlap,
-reserved `frm` and `vill` traps. [Zvfhmin conversions](vector_zvfhmin.S)
+The `--vector-ext` option replays eight directed RVA23 vector extension traces:
 
-The Zvbb trace checks all sixteen RVA23U64 mandatory Zvbb (including the
-Zvkb subset) bit-manipulation mnemonics across all seventeen encoding slots:
-`vandn.{vv,vx}`, `vbrev8.v`, `vrev8.v`, `vbrev.v`, `vclz.v`, `vctz.v`,
-`vcpop.v`, `vrol.{vv,vx}`, `vror.{vv,vx}`, `vror.vi` (both `imm[5] = 0` and
-`imm[5] = 1`), and `vwsll.{vv,vx,vi}`. It covers all four legal element widths
-(`e8`, `e16`, `e32` and `e64`; `e8`, `e16` and `e32` for `vwsll`), shift and
-rotate masking modulo `SEW` and `2 * SEW`, `imm[5] = 1` rotations at `e64`,
-zero, all-ones, single-bit and high/low-word-zero corners, unsigned
-zero-extension in `vwsll`, masked and unmasked execution (`tu`/`mu` and
-`ta`/`ma`), `vl == 0`, portable `vl == VLMAX` across `mf8` through `m8`
-(`mf8` through `m4` for `vwsll`), legal in-place and upper-half overlaps, and
-illegal `vwsll` `e64`/`m8`/overlap, masked `v0`, alignment and `vill` traps.
-[Zvbb bit manipulation](vector_zvbb.S)
-
-The Zvbc, Zvkned and Zvkg trace checks all four carry-less multiply encodings
-(`vclmul.{vv,vx}` and `vclmulh.{vv,vx}` at `SEW = 64`), all eleven AES
-encodings (`vaesdm.{vv,vs}`, `vaesdf.{vv,vs}`, `vaesem.{vv,vs}`,
-`vaesef.{vv,vs}`, `vaesz.vs`, `vaeskf1.vi` and `vaeskf2.vi` at `SEW = 32`),
-and both GHASH encodings (`vgmul.vv` and `vghsh.vv` at `SEW = 32`). It covers
-masked and unmasked Zvbc execution (`tu`/`mu` and `ta`/`ma`), `vl == 0`,
-portable `VLMAX`, traps at `e8`/`e16`/`e32` and masked `v0`, full FIPS-197
-AES-128 encryption and decryption across all ten round constants, AES-256
-even/odd and out-of-range round numbers (`rnd ^ 8` and `uimm[4] = 1`),
-multi-group `.vv` versus `.vs` broadcast, NIST GCM GHASH vectors, legal
-`vstart = 4 < vl = 8` group restarts, `tu` tails, and illegal `OP-VE` SEW,
-`vm = 0`, `vl % 4 != 0`, `vstart % 4 != 0`, `EGW > VLEN * LMUL` (at
-`VLEN = 128` `e32, mf2`), `.vs` overlap, alignment and `vill` traps.
-[Zvbc, Zvkned and Zvkg crypto](vector_zvbc_zvkned_zvkg.S)
-
-The Zvknhb trace checks all three SHA-2 encodings (`vsha2ms.vv`, `vsha2cl.vv`
-and `vsha2ch.vv`) at both `SEW = 32` (SHA-256, `EGW = 128`) and `SEW = 64`
-(SHA-512, `EGW = 256` at `m2` and `m4`). It covers FIPS-180-4 SHA-256 and
-SHA-512 vectors, multi-group execution, legal `vstart = 4 < vl = 8` group
-restarts, `tu` tails, `vl == 0`, portable `VLMAX`, and illegal `e8`/`e16`,
-`vm = 0`, `vl % 4 != 0`, `vstart % 4 != 0`, `EGW > VLEN * LMUL` (at
-`VLEN = 128` `e32, mf2` and `e64, m1` with `vl != 0`), `vd == vs2`/`vs1`
-overlap, alignment and `vill` traps.
-[Zvknhb SHA-2](vector_zvknhb.S)
-
-The Zvfh single-width arithmetic and FMA trace checks twenty-nine `SEW = 16`
-modes: thirteen arithmetic, division, square-root and reciprocal-estimate
-encodings (`vfadd.{vv,vf}`, `vfsub.{vv,vf}`, `vfrsub.vf`, `vfmul.{vv,vf}`,
-`vfdiv.{vv,vf}`, `vfrdiv.vf`, `vfsqrt.v`, `vfrec7.v` and `vfrsqrt7.v`) and
-all sixteen single-width fused multiply-add encodings (`vfmacc`, `vfnmacc`,
-`vfmsac`, `vfnmsac`, `vfmadd`, `vfnmadd`, `vfmsub` and `vfnmsub` in `.vv`
-and `.vf` forms). It covers all five rounding modes with `frm` readbacks,
-FP16 subnormals, single-rounding FMA residuals, canonical `0x7e00` NaN and
-improperly NaN-boxed `.vf` scalars, all five `fflags`, masked `tu`/`mu` and
-`ta`/`ma` with disabled `sNaN` flag suppression, `vl == 0`, portable `VLMAX`,
-legal overlaps and illegal traps.
-[Zvfh single-width arithmetic and FMA](vector_zvfh_arith_fma.S)
-
-The Zvfh compare, miscellaneous and reduction trace checks thirty-three
-`SEW = 16` modes: seventeen min/max, sign-injection, classification, merge,
-move and slide-by-one encodings (`vfmin.{vv,vf}`, `vfmax.{vv,vf}`,
-`vfsgnj.{vv,vf}`, `vfsgnjn.{vv,vf}`, `vfsgnjx.{vv,vf}`, `vfclass.v`,
-`vfmerge.vfm`, `vfmv.v.f`, `vfmv.f.s`, `vfmv.s.f`, `vfslide1up.vf` and
-`vfslide1down.vf`), all ten FP16 comparisons (`vmfeq.{vv,vf}`, `vmfne.{vv,vf}`,
-`vmflt.{vv,vf}`, `vmfle.{vv,vf}`, `vmfgt.vf` and `vmfge.vf`), and all six
-FP16 reductions (`vfredusum.vs`, `vfredosum.vs`, `vfredmin.vs`, `vfredmax.vs`,
-`vfwredusum.vs` and `vfwredosum.vs`). It covers all ten `vfclass.v` classes,
-`vfmv.f.s` 64-bit NaN-boxing readback, unboxed `.vf` scalars, all five
-rounding modes with `frm` readbacks across sum reductions, strict ordered
-summation, subnormal widening, masked-off identity and verbatim `sNaN` seed
-copy, `vl == 0`, `tu` preservation, portable `VLMAX` and illegal traps.
-[Zvfh compares, misc and reductions](vector_zvfh_cmp_misc_red.S)
-
-The Zvfh widening arithmetic and FMA trace checks all eighteen FP16-to-FP32
-widening modes at `SEW = 16`: `vfwadd.{vv,vf,wv,wf}`, `vfwsub.{vv,vf,wv,wf}`,
-`vfwmul.{vv,vf}`, and `vfwmacc`, `vfwnmacc`, `vfwmsac` and `vfwnmsac` in
-`.vv` and `.vf` forms. It covers all five rounding modes with `frm`
-readbacks, subnormal FP16 widening, improperly NaN-boxed `.vf` scalars,
-masked `tu`/`mu` with disabled `sNaN` flag suppression, `vl == 0`, portable
-`VLMAX` from `mf4` through `m4`, legal upper-half overlaps and illegal
-widening traps.
-[Zvfh widening FP16 to FP32](vector_zvfh_widen.S)
-
-The Zvfh conversions trace checks the remaining nineteen FP16 conversion
-modes: thirteen at `SEW = 16` (`vfcvt.{xu,x,rtz.xu,rtz.x}.f.v`,
-`vfcvt.f.{xu,x}.v`, `vfwcvt.{xu,x,rtz.xu,rtz.x}.f.v`, `vfncvt.f.{xu,x}.w`
-and `vfncvt.rod.f.f.w`) and all six `SEW = 8` `int8 <-> FP16` modes
-(`vfwcvt.f.{xu,x}.v` and `vfncvt.{xu,x,rtz.xu,rtz.x}.f.w`). It covers all
-five rounding modes with `frm` readbacks, round-to-odd distinctness from
-standard `frm` modes including overflow and tiny subnormals, saturation and
-`NV` flags, masked `tu`/`mu` with disabled `sNaN` suppression, `vl == 0`,
-portable `VLMAX`, legal overlaps and illegal `SEW = 8` FP traps.
-[Zvfh conversions](vector_zvfh_cvt.S)
+| Trace | Extension and coverage |
+|-------|------------------------|
+| [`vector_zvfhmin.S`](vector_zvfhmin.S) | Both Zvfhmin FP16/FP32 conversions (`vfwcvt.f.f.v`, `vfncvt.f.f.w`) and all 6 base-V `SEW = 16` int16/FP32 conversions across all five `frm` modes, subnormals, overflow, NaNs, scalar `Zfhmin` NaN-boxing, and traps |
+| [`vector_zvbb.S`](vector_zvbb.S) | All 16 Zvbb/Zvkb mnemonics (17 encoding slots: `vandn`, `vbrev8`, `vrev8`, `vbrev`, `vclz`, `vctz`, `vcpop.v`, `vrol`, `vror`, `vwsll`) across `e8..e64`, shift/rotate masking, `imm[5] = 1`, overlaps, and traps |
+| [`vector_zvbc_zvkned_zvkg.S`](vector_zvbc_zvkned_zvkg.S) | All 4 Zvbc (`vclmul`/`vclmulh`), 11 Zvkned AES-128/256, and 2 Zvkg GHASH encodings, FIPS-197 and NIST GCM vectors, `vstart = 4 < vl = 8` group restarts, and `OP-VE`/EGW traps |
+| [`vector_zvknhb.S`](vector_zvknhb.S) | All 3 Zvknhb SHA-2 encodings (`vsha2ms.vv`, `vsha2cl.vv`, `vsha2ch.vv`) for SHA-256 (`SEW = 32`) and SHA-512 (`SEW = 64`), FIPS-180-4 vectors, `vstart = 4` restarts, and EGW/overlap traps |
+| [`vector_zvfh_arith_fma.S`](vector_zvfh_arith_fma.S) | 29 Zvfh `SEW = 16` modes: 13 arithmetic/div/sqrt/rec7/rsqrt7 encodings and all 16 single-width FMA encodings across all five `frm` modes, FP16 subnormals, canonical NaN, `fflags`, masks, and traps |
+| [`vector_zvfh_cmp_misc_red.S`](vector_zvfh_cmp_misc_red.S) | 33 Zvfh `SEW = 16` modes: 17 min/max/sgnj/class/merge/move/slide1, 10 comparison, and 6 reduction encodings across all 10 `vfclass.v` classes, NaN-boxing, `frm` modes, and traps |
+| [`vector_zvfh_widen.S`](vector_zvfh_widen.S) | All 18 Zvfh FP16-to-FP32 widening add/sub/mul/FMA modes across all five `frm` modes, subnormals, NaN-boxing, masks, overlaps, and traps |
+| [`vector_zvfh_cvt.S`](vector_zvfh_cvt.S) | 19 Zvfh conversion modes: 13 at `SEW = 16` (including `vfncvt.rod.f.f.w`) and all 6 `SEW = 8` int8/FP16 modes across all five `frm` modes, round-to-odd, saturation, masks, and traps |
 
 On main pushes and pull requests labelled `run-ci`, CI runs three vector
 TestRIG shards (`core`, `segment` and `ext`) at each of VLEN 128, 256 and 512,
@@ -922,17 +577,18 @@ ordering independent of `SEW`, masked/unmasked execution (`tu`/`mu` and
 stored byte, fault-only-first `vl` trimming across element 0 versus later
 elements and mid-segment boundaries, non-fault-only-first `vstart` fault
 reporting and resumption, and `nf * EMUL <= 8`, register-wrap, indexed
-`vd`-group overlap, masked `v0`, alignment and `vill` traps. Moving
-`vector_segment.S` and its `segment` control into the `segment` shard
-restores the `core` shard's replay and control timeouts to 55 and 50
-minutes. Together, `core` and `segment` retire all 627
-base-V machine encodings. The `ext` shard runs `--vector-ext` (`16m` replay /
-`11m` controls), replaying all eight RVA23 vector extension traces
+`vd`-group overlap, masked `v0`, alignment and `vill` traps. Together, `core`
+and `segment` retire all 627 base-V machine encodings. The `ext` shard runs
+`--vector-ext`, replaying all eight RVA23 vector extension traces
 (`vector_zvfhmin.S`, `vector_zvbb.S`, `vector_zvbc_zvkned_zvkg.S`,
 `vector_zvknhb.S`, `vector_zvfh_arith_fma.S`, `vector_zvfh_cmp_misc_red.S`,
 `vector_zvfh_widen.S` and `vector_zvfh_cvt.S`, with `Zvfhmin`, `Zvfh`,
 `Zvbb`, `Zvbc`, `Zvkg`, `Zvkned`, `Zvknha`, `Zvknhb` and `Zvkt` enabled in
-`sail_frost_vlen*.json`). Both
+`sail_frost_vlen*.json`). In CI, each vector TestRIG job has an 80-minute
+limit: the `core` shard allows 55 minutes for replay and 50 minutes for VLEN
+128 result controls, the `segment` shard allows 30 minutes for replay and 15
+minutes for result controls, and the `ext` shard allows 16 minutes for replay
+and 11 minutes for result controls. Both
 implementations must return every planned trace and instruction. The
 VLEN 128 `core`, `segment` and `ext` shards each reuse their simulator to flip one
 bit in a FROST integer destination in each control replay. The `core` shard

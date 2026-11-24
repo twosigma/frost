@@ -24,9 +24,14 @@ from typing import Any
 BOARD_INFO = {
     "x3": {
         "name": "Alveo X3522PV",
-        "family": "Virtex UltraScale+",
-        "part": "xcvu35p",
+        "family": "UltraScale+",
+        "part": "xcux35",
     },
+}
+
+# Display names for Vivado build stages in generated README headings.
+STAGE_LABELS = {
+    "post_synth": "post-synthesis",
 }
 
 # Delimit the generated README section.
@@ -317,22 +322,22 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
 
     def fmt_used(val: Any) -> str:
         """Format a used count with thousands separators, one decimal if fractional."""
-        if val is None or val == "—":
-            return "—"
+        if val is None or val == "-":
+            return "-"
         if isinstance(val, float):
             return f"{int(val):,}" if val == int(val) else f"{val:,.1f}"
         return f"{val:,}"
 
     def fmt_avail(val: Any) -> str:
         """Format an 'available' value with commas."""
-        if val is None or val == "—":
-            return "—"
+        if val is None or val == "-":
+            return "-"
         return f"{val:,}"
 
     def fmt_pct(val: Any) -> str:
         """Format a percentage value."""
         if val is None:
-            return "—"
+            return "-"
         return f"{val:.1f}%"
 
     for board in board_order:
@@ -342,15 +347,17 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
         util = all_util[board]
         info = BOARD_INFO[board]
 
-        fmax = util.get("clock_freq_mhz")
-        fmax_str = f" @ {fmax:.0f} MHz" if fmax else ""
-        stage = str(util.get("stage", "")).replace("_", "-")
+        board_label = " ".join(
+            part for part in (info["family"], info.get("part", "")) if part
+        )
+        raw_stage = str(util.get("stage", ""))
+        stage = STAGE_LABELS.get(raw_stage, raw_stage.replace("_", "-"))
         provenance = str(util.get("report_provenance", ""))
         report_description = " ".join(part for part in (provenance, stage) if part)
         stage_str = f"; {report_description} report" if report_description else ""
         lines.extend(
             [
-                f"**{info['name']}** ({info['family']}{fmax_str}{stage_str})",
+                f"**{info['name']}** ({board_label}{stage_str})",
                 "",
                 "| Resource | Used | Available | Util% |",
                 "|----------|-----:|----------:|------:|",
@@ -399,7 +406,7 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
 
             # Rows without capacity data show only usage.
             if avail is None:
-                lines.append(f"| {name} | {fmt_used(used)} | — | — |")
+                lines.append(f"| {name} | {fmt_used(used)} | - | - |")
             else:
                 lines.append(
                     f"| {name} | {fmt_used(used)} | {fmt_avail(avail)} | {fmt_pct(pct)} |"
