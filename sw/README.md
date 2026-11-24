@@ -62,11 +62,12 @@ that build their own flags take the names from `common/arch.mk`:
 
 ### Vector configuration
 
-The X3 includes the vector unit with `VLEN=256` and advertises it through
-`misa.V`. Its device tree lists V, Zvbb, Zvbc, Zve32f, Zve32x, Zve64d,
-Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn, Zvknc, Zvkned, Zvkng,
-Zvknha, Zvknhb, Zvkt, Zvl32b, Zvl64b, Zvl128b and Zvl256b. Vector code
-enables `mstatus.VS` before using the vector registers or CSRs.
+The X3 and the opt-in VCU118 `--vector` build include the vector unit with
+`VLEN=256` and advertise it through `misa.V`. Their device trees list V, Zvbb,
+Zvbc, Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn,
+Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, Zvl32b, Zvl64b, Zvl128b and
+Zvl256b. Vector code enables `mstatus.VS` before using the vector registers or
+CSRs.
 The `vec_smoke` and `vec_state_test` programs use `VEC_ADVERTISE` for the
 expected `misa.V` bit; the simulation runner supplies it from `VECTOR` and
 `VECTOR_ADVERTISE`. Direct builds default to advertised V for `vec_smoke`
