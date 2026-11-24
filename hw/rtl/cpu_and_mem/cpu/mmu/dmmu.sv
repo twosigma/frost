@@ -564,21 +564,13 @@ module dmmu (
 
   // For an expected sum bit T, its carry-in must be A ^ B ^ T. Its carry-out
   // must then be (A & B) | ((A ^ B) & ~T). Compare adjacent carries in
-  // parallel. Only the carry into each nine-bit VPN field comes from the
-  // lower address. Compute those three carries once for all entries.
-  logic [38:0] issue_propagate, issue_generate;
-  assign issue_propagate = i_iss_base[38:0] ^ i_iss_offset[38:0];
-  assign issue_generate  = i_iss_base[38:0] & i_iss_offset[38:0];
-  logic [2:0] vpn_carry;
-  logic carry_gen_1, carry_gen_2, carry_prop_1, carry_prop_2;
-  assign vpn_carry[0] = i_iss_base[11:0] > ~i_iss_offset[11:0];
-  assign carry_gen_1 = i_iss_base[20:12] > ~i_iss_offset[20:12];
-  assign carry_gen_2 = i_iss_base[29:21] > ~i_iss_offset[29:21];
-  assign carry_prop_1 = &issue_propagate[20:12];
-  assign carry_prop_2 = &issue_propagate[29:21];
-  assign vpn_carry[1] = carry_gen_1 || (carry_prop_1 && vpn_carry[0]);
-  assign vpn_carry[2] = carry_gen_2 || (carry_prop_2 && carry_gen_1) ||
-      (carry_prop_2 && carry_prop_1 && vpn_carry[0]);
+  // parallel across bits 1..8 of each nine-bit VPN field, and check bit 0
+  // directly against the issue-VA adder's sum bit (equivalent to checking
+  // its carry-in against the lower address's carry-out).
+  logic [38:12] issue_propagate;
+  logic [37:12] issue_generate;
+  assign issue_propagate = i_iss_base[38:12] ^ i_iss_offset[38:12];
+  assign issue_generate  = i_iss_base[37:12] & i_iss_offset[37:12];
 
   logic [Entries-1:0] issue_match, issue_winner, entry_clean, mega_or_giga, giga;
   for (genvar e = 0; e < Entries; e++) begin : gen_issue_match
@@ -586,9 +578,9 @@ module dmmu (
     for (genvar f = 0; f < 3; f++) begin : gen_field
       localparam int unsigned Bit = 12 + 9 * f;
       wire [8:0] tag = entry_vpn[e][9*f+:9];
-      wire [8:0] carry_in = issue_propagate[Bit+:9] ^ tag;
+      wire [7:0] carry_in = issue_propagate[Bit+1+:8] ^ tag[8:1];
       wire [7:0] carry_out = issue_generate[Bit+:8] | (issue_propagate[Bit+:8] & ~tag[7:0]);
-      assign field_eq[f] = carry_in == {carry_out, vpn_carry[f]};
+      assign field_eq[f] = (iss_in.va[Bit] == tag[0]) && (carry_in == carry_out);
     end
     assign giga[e] = entry_level[e] == 2'd2;
     assign mega_or_giga[e] = giga[e] || entry_level[e] == 2'd1;

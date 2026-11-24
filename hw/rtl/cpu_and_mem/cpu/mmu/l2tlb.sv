@@ -128,7 +128,7 @@ module l2tlb #(
     S_FL_CMP  // flush: compare, clear, and read the next set
   } state_e;
 
-  state_e state_q;
+  (* fsm_encoding = "one_hot" *) state_e state_q;
 
   initial begin
     if (SETS < 2 || (SETS & (SETS - 1)) != 0) $fatal(1, "l2tlb: SETS must be a power of two >= 2");
@@ -219,11 +219,17 @@ module l2tlb #(
   // ---------------------------------------------------------------------------
   // Lookup compare (state S_CMP)
   // ---------------------------------------------------------------------------
-  logic [WAYS-1:0] way_hit;
+  // Keep the per-set valid mux separate from the BRAM tag/ASID compare so both
+  // run in parallel and combine in one final gate.
+  (* keep = "true" *)logic [WAYS-1:0] way_valid;
+  (* keep = "true" *)logic [WAYS-1:0] way_tag_asid_ok;
+  (* keep = "true" *)logic [WAYS-1:0] way_hit;
   always_comb begin
     for (int w = 0; w < WAYS; w++) begin
-      way_hit[w] = valid_q[w][set_q] && (ent_tag(rd_q[w]) == vpn_q[VpnBits-1:SetBits]) &&
+      way_valid[w] = valid_q[w][set_q];
+      way_tag_asid_ok[w] = (ent_tag(rd_q[w]) == vpn_q[VpnBits-1:SetBits]) &&
           (ent_g(rd_q[w]) || (ent_asid(rd_q[w]) == asid_q));
+      way_hit[w] = way_valid[w] && way_tag_asid_ok[w];
     end
   end
   logic any_hit;
@@ -307,11 +313,12 @@ module l2tlb #(
   // ---------------------------------------------------------------------------
   // Flush compare (state S_FL_CMP)
   // ---------------------------------------------------------------------------
+  // Clearing an already-invalid bit is a no-op, so fl_kill does not read
+  // valid_q back through the set mux.
   logic [WAYS-1:0] fl_kill;
   always_comb begin
     for (int w = 0; w < WAYS; w++) begin
-      fl_kill[w] = valid_q[w][set_q] &&
-          (!fl_q.use_va || ent_tag(rd_q[w]) == fl_q.vpn[VpnBits-1:SetBits]) &&
+      fl_kill[w] = (!fl_q.use_va || ent_tag(rd_q[w]) == fl_q.vpn[VpnBits-1:SetBits]) &&
           (!fl_q.use_asid || (ent_asid(rd_q[w]) == fl_q.asid && !ent_g(rd_q[w])));
     end
   end
@@ -342,7 +349,7 @@ module l2tlb #(
   logic [WayBits-1:0] rr_q;
   always_comb begin
     victim = rr_q;
-    for (int w = WAYS - 1; w >= 0; w--) if (!valid_q[w][set_q]) victim = WayBits'(w);
+    for (int w = WAYS - 1; w >= 0; w--) if (!way_valid[w]) victim = WayBits'(w);
   end
 
   // ---------------------------------------------------------------------------
