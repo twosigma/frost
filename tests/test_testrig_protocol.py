@@ -597,13 +597,13 @@ def test_lq_probe_launch_defaults_agree() -> None:
     )
     for rel_path in enabled_tops:
         source = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
-        assert re.search(
-            r"\bparameter\s+bit\s+LQ_PROBE_LAUNCH\s*=\s*1'b1\b", source
-        ), f"{rel_path} must default LQ_PROBE_LAUNCH to 1'b1"
+        assert re.search(r"\bparameter\s+bit\s+LQ_PROBE_LAUNCH\s*=\s*1'b1\b", source), (
+            f"{rel_path} must default LQ_PROBE_LAUNCH to 1'b1"
+        )
 
-    cpu_ooo_src = (
-        REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv"
-    ).read_text(encoding="utf-8")
+    cpu_ooo_src = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text(
+        encoding="utf-8"
+    )
     assert ".LQ_PROBE_LAUNCH(LQ_PROBE_LAUNCH && CACHED_TIER_EN)" in cpu_ooo_src
 
     disabled_units = (
@@ -623,9 +623,9 @@ def test_lq_probe_launch_defaults_agree() -> None:
     )
     for rel_path, param_name in disabled_units:
         source = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
-        assert re.search(
-            rf"\bparameter\s+bit\s+{param_name}\s*=\s*1'b0\b", source
-        ), f"{rel_path} must keep {param_name} defaulting to 1'b0"
+        assert re.search(rf"\bparameter\s+bit\s+{param_name}\s*=\s*1'b0\b", source), (
+            f"{rel_path} must keep {param_name} defaulting to 1'b0"
+        )
 
     subsystem = (REPO_ROOT / "boards/xilinx_frost_subsystem.sv").read_text(
         encoding="utf-8"

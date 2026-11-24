@@ -139,7 +139,7 @@ module coherence_store_boundary_formal #(
   logic l1_write_inflight;
   // C2b: decouple buffered store_ack (l1_write_inflight && l1_write_done)
   // from bus-busy while holding the port for atomic writes.
-  wire  l1_write_busy = l1_write_inflight && !l1_write_done;
+  wire l1_write_busy = l1_write_inflight && !l1_write_done;
   logic local_owner;
   logic lq_coherent_arm_valid;
   riscv_pkg::fu_complete_t lq_fu_complete;
@@ -1446,10 +1446,8 @@ module coherence_store_boundary_formal #(
         sector_held_second_ack_q <= 0;
       end else begin
         probe_verdict_q <= probe_fire;
-        if (lq_mem_read_en && read_count_q != 2'd3)
-          read_count_q <= read_count_q + 2'd1;
-        if (probe_fire && !sq_empty && acknowledged_q >= 1)
-          probe_after_s0_q <= 1'b1;
+        if (lq_mem_read_en && read_count_q != 2'd3) read_count_q <= read_count_q + 2'd1;
+        if (probe_fire && !sq_empty && acknowledged_q >= 1) probe_after_s0_q <= 1'b1;
         if (probe_fire && !sq_empty && acknowledged_q >= 1 && store_ack_cycle)
           probe_store_ack_q <= 1'b1;
         if (probe_verdict_q && probe_after_s0_q && !lq_fu_complete.valid &&
@@ -1458,16 +1456,16 @@ module coherence_store_boundary_formal #(
         if (probe_verdict_q && probe_store_ack_q && !lq_fu_complete.valid &&
             !lq_l0_hit && !rt_lq_mem_read_valid)
           probe_kept_ack_q <= 1'b1;
-        if (probe_kept_q && rt_lq_mem_read_valid)
-          resp_after_verdict_q <= 1'b1;
+        if (probe_kept_q && rt_lq_mem_read_valid) resp_after_verdict_q <= 1'b1;
         if (lq_l0_hit) l0_hit_seen_q <= 1'b1;
-        if (store_ack_cycle && $past(ordinary_write) &&
-            $past(rt_data_mem_addr[31:5]) == address0[31:5] &&
-            addressed_q && !load_update_q && read_count_q == 0 &&
-            !lq_mem_read_en && !lq_sq_check_valid && !lq_fu_complete.valid) begin
+        if (store_ack_cycle && $past(
+                ordinary_write
+            ) && $past(
+                rt_data_mem_addr[31:5]
+            ) == address0[31:5] && addressed_q && !load_update_q && read_count_q == 0 &&
+                !lq_mem_read_en && !lq_sq_check_valid && !lq_fu_complete.valid) begin
           sector_held_on_ack_q <= 1'b1;
-          if (accepted_q == 2 && acknowledged_q == 1)
-            sector_held_second_ack_q <= 1'b1;
+          if (accepted_q == 2 && acknowledged_q == 1) sector_held_second_ack_q <= 1'b1;
         end
         p_probe_kept_launch : cover (probe_fire && !sq_empty && acknowledged_q >= 1);
         p_probe_kept_verdict : cover (probe_kept_q);
@@ -1483,8 +1481,7 @@ module coherence_store_boundary_formal #(
             cover (probe_kept_ack_q && (resp_after_verdict_q || rt_lq_mem_read_valid) &&
                    read_count_q == 2'd1 && !l0_hit_seen_q);
           p_probe_sector_hold_store_ack : cover (sector_held_on_ack_q);
-          if (SECTOR_CASE == 0)
-            p_probe_sector_hold_second_ack : cover (sector_held_second_ack_q);
+          if (SECTOR_CASE == 0) p_probe_sector_hold_second_ack : cover (sector_held_second_ack_q);
         end
       end
     end
