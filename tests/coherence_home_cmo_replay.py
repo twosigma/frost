@@ -23,8 +23,36 @@ import time
 from pathlib import Path
 
 DRIVER = "verilog_defines -D COHERENCE_HOME_CMO_WITNESS"
+SLANG_DRIVER = "-DCOHERENCE_HOME_CMO_WITNESS"
+SLANG_FAST_COVER = "-DCOHERENCE_HOME_CMO_FAST_COVER"
 REACHED = re.compile(r"Reached cover statement in step (\d+) at [^:]+: (\S+)")
 UNREACHED = re.compile(r"Unreached cover statement at [^:]+: (\S+)")
+
+
+def strip_witness_driver(script: str) -> tuple[str, int]:
+    """Remove the single witness-driver define and return the script and expected cover count."""
+    lines = script.splitlines()
+    if DRIVER in lines:
+        if lines.count(DRIVER) != 1 or any(SLANG_DRIVER in line for line in lines):
+            raise ValueError("Expected exactly one CMO witness driver define")
+        lines.remove(DRIVER)
+        return "\n".join(lines) + "\n", 4
+
+    slang_hits = 0
+    fast_cover = False
+    updated: list[str] = []
+    for line in lines:
+        tokens = line.split()
+        if tokens and tokens[0] == "read_slang" and SLANG_DRIVER in tokens:
+            slang_hits += tokens.count(SLANG_DRIVER)
+            fast_cover = fast_cover or SLANG_FAST_COVER in tokens
+            line = " ".join(tok for tok in tokens if tok != SLANG_DRIVER)
+        elif SLANG_DRIVER in line:
+            raise ValueError("Unexpected CMO witness driver define outside read_slang")
+        updated.append(line)
+    if slang_hits != 1:
+        raise ValueError("Expected exactly one CMO witness driver define")
+    return "\n".join(updated) + "\n", 5 if fast_cover else 4
 
 
 def primary_inputs(trace: Path, names: set[str], last: int) -> str:
@@ -80,19 +108,16 @@ def witness_traces(engine: Path) -> dict[str, tuple[int, Path]]:
     return witnesses
 
 
-def undriven_model(driven: Path, dest: Path, deadline: float) -> Path:
+def undriven_model(driven: Path, dest: Path, deadline: float) -> tuple[Path, int]:
     """Rebuild the same SBY model with only the witness-driver define removed."""
     shutil.copytree(driven / "src", dest / "src")
     model = dest / "model"
     model.mkdir()
+    expected_goals = 4
     for stage in ("design", "design_prep", "design_smt2"):
         script = (driven / "model" / f"{stage}.ys").read_text()
         if stage == "design":
-            lines = script.splitlines()
-            if lines.count(DRIVER) != 1:
-                raise ValueError("Expected exactly one CMO witness driver define")
-            lines.remove(DRIVER)
-            script = "\n".join(lines) + "\n"
+            script, expected_goals = strip_witness_driver(script)
         path = model / f"{stage}.ys"
         path.write_text(script)
         subprocess.run(
@@ -101,7 +126,7 @@ def undriven_model(driven: Path, dest: Path, deadline: float) -> Path:
             check=True,
             timeout=deadline - time.monotonic(),
         )
-    return model / "design_smt2.smt2"
+    return model / "design_smt2.smt2", expected_goals
 
 
 def run_cover(sby: Path, task: str, timeout: int, work: Path) -> None:
@@ -117,14 +142,19 @@ def run_cover(sby: Path, task: str, timeout: int, work: Path) -> None:
     replay_witnesses(driven, work, deadline)
 
 
+def cover_goals(metadata: str) -> set[str]:
+    """Extract the smtbmc cover identifiers (named labels or source spans) from SMT2 metadata."""
+    return set(re.findall(r"^; yosys-smt2-cover \d+ (?:\S+ )?(\S+)$", metadata, re.M))
+
+
 def replay_witnesses(driven: Path, work: Path, deadline: float) -> None:
-    """Replay the guided run's four traces using only the undriven primary inputs."""
+    """Replay the guided run's traces using only the undriven primary inputs."""
     witnesses = witness_traces(driven / "engine_0")
-    model = undriven_model(driven, work / "undriven", deadline)
+    model, expected_goals = undriven_model(driven, work / "undriven", deadline)
     metadata = model.read_text()
-    goals = set(re.findall(r"^; yosys-smt2-cover \d+ \S+ (\S+)$", metadata, re.M))
+    goals = cover_goals(metadata)
     inputs = set(re.findall(r"^; yosys-smt2-input (\S+) \d+$", metadata, re.M))
-    if len(goals) != 4 or witnesses.keys() != goals:
+    if len(goals) != expected_goals or witnesses.keys() != goals:
         raise ValueError(f"Expected a witness for each undriven home cover: {goals}")
 
     for goal, (step, trace) in witnesses.items():
