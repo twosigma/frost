@@ -269,9 +269,12 @@ module coherent_hart_cache #(
       .i_ready(i_c_ready),
       .o_payload(o_c)
   );
+  // Each D source holds its offer from Demand or SendD until acceptance.
   coherence_d_arbiter #(
       .WIDTH((ADDR_WIDTH + 312)),
-      .PORTS(Ports)
+      .PORTS(Ports),
+      .HOLD_VALID(1),
+      .BYPASS_IDLE(1)
   ) demands (
       .i_clk(i_clk),
       .i_rst(i_rst),

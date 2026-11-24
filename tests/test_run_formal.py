@@ -746,6 +746,7 @@ FORMAL_TARGETS = [
             "coh_arbiter_prove",
             "coh_arbiter24_prove",
             "coh_arbiter_held_prove",
+            "coh_arbiter_bypass_prove",
             "coh_reader_prove",
             "coh_reader_cover",
             "coh_reader_slot1_prove",
@@ -3424,6 +3425,10 @@ SBY_TASKS = [
     (
         "coh_arbiter_held_prove",
         "Captured arbitration validity matches held source offers.",
+    ),
+    (
+        "coh_arbiter_bypass_prove",
+        "Idle pass-through arbitration preserves payloads and hold contracts.",
     ),
     (
         "coh_if_pair_cover",
