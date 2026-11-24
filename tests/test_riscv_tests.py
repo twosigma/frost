@@ -490,6 +490,30 @@ def run_benchmark_tests(
 # =============================================================================
 
 
+@pytest.mark.parametrize(
+    ("mem_config", "env", "expected"),
+    (
+        ("bram", "p", set(ISA_TEST_SUITES)),
+        ("ddr", "p", set(ISA_TEST_SUITES)),
+        ("ddr", "v", set(V_ENV_SUITES)),
+    ),
+)
+def test_riscv_tests_ci_coverage(mem_config: str, env: str, expected: set[str]) -> None:
+    """Every supported ISA suite reaches CI in each applicable tier and env."""
+    import yaml  # type: ignore[import-untyped]
+
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    jobs = workflow["jobs"]["test-riscv-tests"]["strategy"]["matrix"]["include"]
+    selected = [
+        suite
+        for job in jobs
+        if job["mem_config"] == mem_config and job["env"] == env
+        for suite in job["suites"].split()
+    ]
+    assert len(selected) == len(set(selected))
+    assert set(selected) == expected
+
+
 @pytest.mark.cocotb
 @pytest.mark.slow
 class TestRiscvTests:
