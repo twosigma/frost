@@ -25,6 +25,8 @@ import yaml  # type: ignore[import-untyped]
 import ci_reuse
 import sby_config
 from test_fp_forward_wake_mutations import MUTATIONS as FP_FORWARD_WAKE_MUTATIONS
+from test_lq_port1_amo_mutations import LQ_PROOF as PORT1_AMO_LQ_PROOF
+from test_lq_port1_amo_mutations import MUTATIONS as LQ_PORT1_AMO_MUTATIONS
 from test_pa_bridge_mutation import PROOF as PA_BRIDGE_PROOF
 from test_predictor_mutations import MUTATIONS
 from test_probe_launch_mutations import BOUNDARY_PROOF as PROBE_BOUNDARY_PROOF
@@ -35,6 +37,15 @@ FIXTURE_PROOFS = {
     "tests/test_pa_bridge_mutation.py::test_wide_bridge_rejects_32_bit_offset": (
         PA_BRIDGE_PROOF
     ),
+    "tests/test_lq_port1_amo_mutations.py::test_lq_port1_amo_prove_rejects_dropped_fence": (
+        PORT1_AMO_LQ_PROOF
+    ),
+    **{
+        f"tests/test_lq_port1_amo_mutations.py::test_lq_port1_amo_exclusive_rejects_fault[{case}]": (
+            PORT1_AMO_LQ_PROOF
+        )
+        for case in LQ_PORT1_AMO_MUTATIONS
+    },
     "tests/test_probe_launch_mutations.py::test_probe_zero_hold_removed_rejected": (
         PROBE_LQ_PROOF
     ),

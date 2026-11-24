@@ -308,19 +308,36 @@ def test_home_cmo_replay_staging_and_key(tmp_path: Path) -> None:
         p.resolve() for p in sby_config.proof_inputs(staged)
     }
     assert sby_config.cmo_replay_helper(staged, "coh_home_cmo_cover") == helper
+    assert sby_config.cmo_replay_helper(staged, "coh_home_cmo_fast_cover") == helper
     assert sby_config.cmo_replay_helper(staged, "coh_home_control_prove") is None
+    assert (
+        sby_config.cmo_replay_helper(staged, "coh_home_control_ultra_fast_prove")
+        is None
+    )
 
     cover = "coherence_home_coh_home_cmo_cover"
+    fast_cover = "coherence_home_coh_home_cmo_fast_cover"
     control = "coherence_home_coh_home_control_prove"
-    cover_key, control_key = formal_key(root, cover), formal_key(root, control)
+    ultra_fast = "coherence_home_coh_home_control_ultra_fast_prove"
+    cover_key, fast_cover_key, control_key, ultra_fast_key = (
+        formal_key(root, cover),
+        formal_key(root, fast_cover),
+        formal_key(root, control),
+        formal_key(root, ultra_fast),
+    )
     with helper.open("a") as stream:
         stream.write("# changed replay\n")
     assert formal_key(root, cover) != cover_key
+    assert formal_key(root, fast_cover) != fast_cover_key
     assert formal_key(root, control) == control_key
+    assert formal_key(root, ultra_fast) == ultra_fast_key
     helper.unlink()
     with pytest.raises(ci_reuse.ReuseKeyError, match="missing formal replay helper"):
         formal_key(root, cover)
+    with pytest.raises(ci_reuse.ReuseKeyError, match="missing formal replay helper"):
+        formal_key(root, fast_cover)
     assert formal_key(root, control) == control_key
+    assert formal_key(root, ultra_fast) == ultra_fast_key
 
 
 def test_store_completion_projection_staging_and_keys(tmp_path: Path) -> None:

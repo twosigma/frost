@@ -1626,11 +1626,11 @@ def proof_inputs(path: Path) -> list[Path]:
 
 
 def cmo_replay_helper(path: Path, task: str | None = None) -> Path | None:
-    """Locate the Python runner needed by the CMO cover or its whole-script fixture."""
+    """Locate the Python runner needed by a CMO cover or its whole-script fixture."""
     if path.name != "coherence_home.sby":
         return None
-    cover = "coh_home_cmo_cover"
-    if task == cover or (task is None and cover in source(path).tasks):
+    covers = {"coh_home_cmo_cover", "coh_home_cmo_fast_cover"}
+    if task in covers or (task is None and bool(covers & set(source(path).tasks))):
         return path.parent.parent / "tests" / "coherence_home_cmo_replay.py"
     return None
 
