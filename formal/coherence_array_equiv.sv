@@ -119,6 +119,7 @@ module coherence_array_equiv #(
       .i_hp_addr,
       .o_hp_ready(),
       .o_hp_hit(),
+      .o_hp_dword(),
       .o_hp_data()
   );
 

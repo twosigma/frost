@@ -475,20 +475,22 @@ module coherence_l1d #(
   logic [2:0] s2_slot_q, s3_slot_q, s4_slot_q;
   logic [ADDR_WIDTH-1:5] s2_line_q, s3_line_q;
   logic [7:0] path_owned, path_select_owned;
-  logic [63:0] path_data;
-  logic prev_idle_q, first_lookup, shadow_now, shadow_q, path_hit_q, shadow_req, shadow_skip;
+  logic [63:0] path_dword, path_data;
+  logic prev_idle_q, first_lookup, shadow_now, shadow_q, path_hit_q, shadow_path_hit, shadow_req,
+      shadow_skip;
   logic demand_report, path_queue_push, path_queue_pop;
   logic [1:0] path_queue_valid_q, path_queue_valid_next;
   logic [1:0][ADDR_WIDTH-6:0] path_queue_q, path_queue_next;
 
   assign read_failure = grant_accept && grant_read_failure;
+  assign shadow_path_hit = path_hit_q || (s3_valid_q && path_hit && s3_slot_q == selected_read_q);
   // A shadow lookup answers nothing when the hit path or the tags hit.
-  assign shadow_skip = shadow_q && (path_hit_q || array_hit);
+  assign shadow_skip = shadow_q && (shadow_path_hit || array_hit);
   assign read_hit = active && ((phase_q == LookupWait && array_valid &&
       operation_q == ReadOp && selected_kind_q != ReadAMO && array_hit && !shadow_q) ||
       phase_q == LocalReadReady);
   assign read_miss = active && phase_q == LookupWait && array_valid &&
-      operation_q == ReadOp && !(shadow_q && path_hit_q) &&
+      operation_q == ReadOp && !(shadow_q && shadow_path_hit) &&
       (selected_kind_q == ReadAMO || !array_hit);
   // Endpoint 0's reads (LR, AMO, and loads with one endpoint) answer after
   // installation.
@@ -516,6 +518,30 @@ module coherence_l1d #(
   assign install_read = active && update_ready && install_read_q;
   assign read_fill = grant_answer || install_read;
 
+  // When the output register can accept and no buffered ready read waits,
+  // bypass a stage-3 hit-path hit, fill answer or controller hit straight to
+  // the output register and retire its slot directly in read_flags.
+  logic rd_out_free, bypass_cand_path, bypass_cand_fill, bypass_cand_hit, bypass_cand;
+  logic bypass_path_s3, bypass_fill, bypass_hit, bypass_valid;
+  logic [2:0] hit_read_slot, bypass_id;
+  logic [63:0] bypass_data;
+  assign hit_read_slot = phase_q == LocalReadReady ? atomic_read_q : selected_read_q;
+  assign rd_out_free = (!o_read_valid || i_read_ready) && !rd_response;
+  assign bypass_cand_path = s3_valid_q && path_hit;
+  assign bypass_cand_fill = !bypass_cand_path && read_fill;
+  assign bypass_cand_hit = !bypass_cand_path && !bypass_cand_fill && read_hit;
+  assign bypass_cand = bypass_cand_path || bypass_cand_fill || bypass_cand_hit;
+  assign bypass_path_s3 = rd_out_free && bypass_cand_path;
+  assign bypass_fill = rd_out_free && bypass_cand_fill;
+  assign bypass_hit = rd_out_free && bypass_cand_hit;
+  assign bypass_valid = rd_out_free && bypass_cand;
+  assign bypass_id = bypass_cand_path ? s3_slot_q :
+      bypass_cand_fill ? fill_read_slot : hit_read_slot;
+  assign bypass_data = bypass_cand_path ? path_dword :
+      bypass_cand_fill ? grant_q.data[64*rd_addr_q[fill_read_slot][4:3]+:64] :
+      (phase_q == LocalReadReady ? image_q[64*atomic_addr_q[4:3]+:64] :
+       array_data[64*rd_addr_q[selected_read_q][4:3]+:64]);
+
   coherence_read_flags read_flags (
       .i_valid(rd_valid_q),
       .i_miss(rd_miss_q),
@@ -523,14 +549,14 @@ module coherence_l1d #(
       .i_error(rd_error_q),
       .i_allocate_valid(i_read_valid),
       .i_allocate_id(i_read_id),
-      .i_response_valid((!o_read_valid || i_read_ready) && rd_response),
-      .i_response_id(rd_result),
+      .i_response_valid((!o_read_valid || i_read_ready) && (rd_response || bypass_cand)),
+      .i_response_id(rd_response ? rd_result : bypass_id),
       .i_failure_valid(fail_clear_q),
       .i_failure_id(fail_clear_slot_q),
       .i_failure_error(fail_error_q),
-      .i_hit_valid(read_hit),
-      .i_hit_id(phase_q == LocalReadReady ? atomic_read_q : selected_read_q),
-      .i_fill_valid(read_fill),
+      .i_hit_valid(read_hit && !bypass_hit),
+      .i_hit_id(hit_read_slot),
+      .i_fill_valid(read_fill && !bypass_fill),
       .i_fill_id(fill_read_slot),
       .i_answer_mask((grant_service ? grant_attached : 8'd0) | merge_hit_slots),
       .i_miss_valid(read_miss && !wait_attach),
@@ -707,13 +733,13 @@ module coherence_l1d #(
     perf_raw.miss = perf_access && !perf_hit;
     perf_raw.miss_outstanding = perf_outstanding;
     perf_raw.hit_under_miss = perf_hit && perf_outstanding != 0;
-    perf_raw.path_hit = s4_valid_q;
-    perf_raw.path_hit_under_miss = s4_valid_q && perf_outstanding != 0;
+    perf_raw.path_hit = s3_valid_q && path_hit;
+    perf_raw.path_hit_under_miss = s3_valid_q && path_hit && perf_outstanding != 0;
     perf_raw.writeback = active && phase_q == Freeze &&
           wb_freeze_ready[freeze_slot_q] && !freeze_maintenance_q;
     perf_raw.slot_full_stall = active && phase_q == LookupWait && array_valid &&
           (operation_q == StoreOp || operation_q == ReadOp) && !array_hit &&
-          !(shadow_q && path_hit_q) &&
+          !(shadow_q && shadow_path_hit) &&
           (!Multi ? (request_live || !wb_free) : operation_q == StoreOp ?
            (request_live || !ep0_wb_ok || store_same_line_q) :
            selected_kind_q == ReadLR ?
@@ -2198,7 +2224,8 @@ module coherence_l1d #(
           lookup_addr_q[5+:MergeBlockBits] == wb_addr[slot][5+:MergeBlockBits];
   end
   assign merge_path_next = (path_take ? 8'd1 << path_id_q : 8'd0) |
-      (s2_valid_q ? 8'd1 << s2_slot_q : 8'd0) | (s3_valid_q && path_hit ? 8'd1 << s3_slot_q : 8'd0);
+      (s2_valid_q ? 8'd1 << s2_slot_q : 8'd0) |
+      (s3_valid_q && path_hit && !bypass_path_s3 ? 8'd1 << s3_slot_q : 8'd0);
   always_ff @(posedge i_clk) begin
     merge_blocked_q <= merge_blocked;
     for (int slot = 0; slot < 8; slot++)
@@ -2541,7 +2568,7 @@ module coherence_l1d #(
   assign look_retry = look_read_turn_q && rd_load_miss &&
       (!array_hit || array_state != coherence_pkg::Modified);
   assign read_yield_look = active && phase_q == LookupWait && array_valid &&
-      operation_q == ReadOp && selected_kind_q == ReadLoad && !(shadow_q && path_hit_q) &&
+      operation_q == ReadOp && selected_kind_q == ReadLoad && !(shadow_q && shadow_path_hit) &&
       !array_hit && !same_line && look_available && !look_read_turn_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -2641,7 +2668,7 @@ module coherence_l1d #(
         local_hit_q <= array_hit && array_state == coherence_pkg::Modified;
         local_conflict_q <= request_live || same_line || lookup_wb_conflict ||
             pending_q || store_push;
-        if (operation_q == ReadOp && selected_kind_q == ReadAMO && !(shadow_q && path_hit_q))
+        if (operation_q == ReadOp && selected_kind_q == ReadAMO && !(shadow_q && shadow_path_hit))
           rd_local_retry_q[selected_read_q] <= array_hit && array_state == coherence_pkg::Modified;
       end
       // A new read clears its slot's flag from the buffered write's mask, a
@@ -2709,6 +2736,7 @@ module coherence_l1d #(
       .i_hp_addr(path_addr_q),
       .o_hp_ready(path_ready),
       .o_hp_hit(path_hit),
+      .o_hp_dword(path_dword),
       .o_hp_data(path_data)
   );
 
@@ -2746,7 +2774,7 @@ module coherence_l1d #(
     assign grant_capture = grant_answer_slots[slot] ||
         (install_read && acquisition_read_q == 3'(slot));
     assign array_capture = active && phase_q == LookupWait && array_valid &&
-        capture_array_read && !(shadow_q && path_hit_q) && selected_kind_q != ReadAMO &&
+        capture_array_read && !(shadow_q && shadow_path_hit) && selected_kind_q != ReadAMO &&
         array_hit && ((selected_read_q == 3'(slot) && !shadow_q) || merge_hit_slots[slot]);
     assign local_capture = active && phase_q == LocalReadReady && atomic_read_q == 3'(slot);
     assign controller_capture = grant_capture || array_capture || local_capture;
@@ -2788,7 +2816,7 @@ module coherence_l1d #(
                   AtomicWriteOp, MaintOp, SCOp: begin
               end
               default:
-              if (!(shadow_q && path_hit_q) && selected_kind_q != ReadAMO && array_hit &&
+              if (!(shadow_q && shadow_path_hit) && selected_kind_q != ReadAMO && array_hit &&
                   ((selected_read_q == 3'(slot) && !shadow_q) || merge_hit_slots[slot]))
                 reference_data = array_data[64*rd_addr_q[slot][4:3]+:64];
             endcase
@@ -2850,7 +2878,7 @@ module coherence_l1d #(
     end else begin
       s2_valid_q <= path_take;
       s3_valid_q <= s2_valid_q;
-      s4_valid_q <= s3_valid_q && path_hit;
+      s4_valid_q <= s3_valid_q && path_hit && !bypass_path_s3;
     end
     s2_slot_q <= path_id_q;
     s2_line_q <= path_addr_q[ADDR_WIDTH-1:5];
@@ -2859,12 +2887,11 @@ module coherence_l1d #(
     s4_slot_q <= s3_slot_q;
   end
   // The hit path holds a slot from its stage-3 hit until its answer. Read
-  // selection leaves out only the stage-4 slot, from the stage registers, so a
-  // read selected in its stage-3 cycle reaches its first lookup in stage 4
-  // after a hit, or out of the hit path after a miss.
+  // selection leaves out both stage-3 hits and stage-4 slots, from the stage
+  // registers, so a bypassed stage-3 hit is never selected by the controller.
   assign path_owned = (s3_valid_q && path_hit ? 8'd1 << s3_slot_q : 8'd0) |
       (s4_valid_q ? 8'd1 << s4_slot_q : 8'd0);
-  assign path_select_owned = s4_valid_q ? 8'd1 << s4_slot_q : 8'd0;
+  assign path_select_owned = path_owned;
   // A read's first Lookup cycle decides from the stage registers whether its
   // lookup is a shadow, since the array takes the request flags in that cycle.
   assign first_lookup = phase_q == Lookup && prev_idle_q && operation_q == ReadOp;
@@ -2929,7 +2956,7 @@ module coherence_l1d #(
 `ifdef FORMAL
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
-      c_path_answer : cover (s4_valid_q);
+      c_path_answer : cover (s4_valid_q || bypass_path_s3);
       c_path_shadow_skip : cover (active && phase_q == LookupWait && array_valid &&
           operation_q == ReadOp && shadow_skip);
       c_path_shadow_miss : cover (active && phase_q == Acquire && shadow_q);
@@ -2960,7 +2987,7 @@ module coherence_l1d #(
     end else begin
       if (path_req_q) sim_path_offers <= sim_path_offers + 1;
       if (path_take) sim_path_takes <= sim_path_takes + 1;
-      if (s4_valid_q) sim_path_hits <= sim_path_hits + 1;
+      if (s3_valid_q && path_hit) sim_path_hits <= sim_path_hits + 1;
       if (path_offer && !path_ready) sim_path_refused <= sim_path_refused + 1;
       if (first_lookup && shadow_now) sim_shadows <= sim_shadows + 1;
       if (active && phase_q == LookupWait && array_valid && operation_q == ReadOp && shadow_skip)
@@ -3020,7 +3047,7 @@ module coherence_l1d #(
               ProbeOp, GrantOp, LookaheadOp, TwinOp, AtomicWriteOp, MaintOp, SCOp: begin
               end
               default: begin
-                if (!(shadow_q && path_hit_q) && selected_kind_q != ReadAMO &&
+                if (!(shadow_q && shadow_path_hit) && selected_kind_q != ReadAMO &&
                     !array_hit && Multi && !same_line) begin
                   if (selected_kind_q == ReadLR) acq_ep_choice[choice] = '0;
                   else if (load_ep_free && !load_block && !acquisition_block &&
@@ -3509,12 +3536,16 @@ module coherence_l1d #(
         atomic_granted_q <= 1'b0;
       end
       if (!o_read_valid || i_read_ready) begin
-        o_read_valid <= rd_response;
+        o_read_valid <= rd_response || bypass_cand;
         if (rd_response) begin
           o_read_id <= rd_result;
           o_read_data <= rd_data_q[rd_result];
           o_read_error <= rd_error_q[rd_result];
           rd_response_rr_q <= rd_result + 1'b1;
+        end else if (bypass_cand) begin
+          o_read_id <= bypass_id;
+          o_read_data <= bypass_data;
+          o_read_error <= 1'b0;
         end
       end
       if (|i_write_mask) begin
@@ -3791,7 +3822,7 @@ module coherence_l1d #(
                 // A shadow lookup whose read the hit path holds answers
                 // nothing and decides nothing from its kind: the hit path
                 // answers, and the slot may hold a new read by now.
-                if (shadow_q && path_hit_q) begin
+                if (shadow_q && shadow_path_hit) begin
                   phase_q <= Idle;
                 end else if (selected_kind_q == ReadAMO) begin
                   phase_q <= LocalCheck;
@@ -4037,6 +4068,9 @@ module coherence_l1d #(
     if ((!o_read_valid || i_read_ready) && rd_response) begin
       reference_ready_next[rd_result] = 1'b0;
       reference_valid_next[rd_result] = 1'b0;
+    end else if (bypass_valid) begin
+      reference_ready_next[bypass_id] = 1'b0;
+      reference_valid_next[bypass_id] = 1'b0;
     end
     if (i_read_valid) begin
       reference_valid_next[i_read_id] = 1'b1;
@@ -4060,7 +4094,7 @@ module coherence_l1d #(
             default: begin
               if (shadow_skip) begin
               end else if (rd_kind_q[selected_read_q] != ReadAMO && array_hit) begin
-                reference_ready_next[selected_read_q] = 1'b1;
+                if (!bypass_hit) reference_ready_next[selected_read_q] = 1'b1;
                 // A load's hit answers every unowned, unwaiting load of its
                 // sector that held its read a cycle earlier.
                 if (rd_kind_q[selected_read_q] == ReadLoad && !merge_blocked_q)
@@ -4074,11 +4108,12 @@ module coherence_l1d #(
             end
           endcase
         end
-        LocalReadReady: reference_ready_next[atomic_read_q] = 1'b1;
+        LocalReadReady: if (!bypass_hit) reference_ready_next[atomic_read_q] = 1'b1;
         Lookup:
         if (operation_q == GrantOp && grant_ep_q != '0 && !selected_grant_store &&
             !grant_answered_q) begin
-          if (!ld_prefetch_q[grant_ep_q]) reference_ready_next[ld_read_q[grant_ep_q]] = 1'b1;
+          if (!ld_prefetch_q[grant_ep_q] && !bypass_fill)
+            reference_ready_next[ld_read_q[grant_ep_q]] = 1'b1;
           for (int slot = 0; slot < 8; slot++)
             if (Multi && rd_wait_q[slot] && !rd_wait_release_q[slot] &&
                 rd_wait_ep_q[slot] == grant_ep_q && rd_kind_q[slot] == ReadLoad &&
@@ -4087,7 +4122,7 @@ module coherence_l1d #(
         end
         UpdateWait:
         if (array_ready && operation_q == GrantOp && grant_ep_q == '0 &&
-            !selected_grant_store && !acquisition_sc_q)
+            !selected_grant_store && !acquisition_sc_q && !bypass_fill)
           reference_ready_next[acquisition_read_q] = 1'b1;
         default: begin
         end
@@ -4758,11 +4793,13 @@ module coherence_l1d #(
 `endif
 `endif
 `ifdef COHERENCE_L1D_ANSWER_CHECKS
-  logic [7:0] f_answer_failure, f_answer_completion, f_answer_held_q, f_answer_check_q;
+  logic [7:0] f_answer_failure, f_answer_bypass, f_answer_completion, f_answer_held_q;
+  logic [7:0] f_answer_check_q, f_answer_bypassed_q;
   logic [7:0] f_answer_hold_at_alloc, f_answer_hold_now;
   logic [63:0] f_answer_data_q[8];
   assign f_answer_failure = fail_clear_q ? 8'd1 << fail_clear_slot_q : 8'd0;
-  assign f_answer_completion = rd_complete & ~f_answer_failure;
+  assign f_answer_bypass = bypass_valid ? 8'd1 << bypass_id : 8'd0;
+  assign f_answer_completion = (rd_complete | f_answer_bypass) & ~f_answer_failure;
   always_comb begin
     f_answer_hold_at_alloc = '0;
     f_answer_hold_now = '0;
@@ -4793,7 +4830,8 @@ module coherence_l1d #(
       8'd1 << (phase_q == LocalReadReady ? atomic_read_q : selected_read_q) : 8'd0;
   assign f_answer_src[1] = read_fill ? 8'd1 << fill_read_slot : 8'd0;
   assign f_answer_src[2] = f_answer_failure;
-  assign f_answer_src[3] = s4_valid_q ? 8'd1 << s4_slot_q : 8'd0;
+  assign f_answer_src[3] = (s4_valid_q ? 8'd1 << s4_slot_q : 8'd0) |
+      (bypass_path_s3 ? 8'd1 << s3_slot_q : 8'd0);
   assign f_answer_src[4] = grant_service ? grant_attached : 8'd0;
   assign f_answer_src[5] = merge_hit_slots;
   always_comb begin
@@ -4811,8 +4849,11 @@ module coherence_l1d #(
           !(rd_addr_q[slot][ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5] &&
             rd_kind_q[slot] == ReadLoad && operation_q == ReadOp &&
             selected_read_q != 3'(slot));
-      f_answer_bad_data[slot] = f_answer_check_q[slot] && rd_valid_q[slot] &&
-          !(rd_ready_q[slot] && rd_data_q[slot] == f_answer_data_q[slot]);
+      f_answer_bad_data[slot] = f_answer_check_q[slot] &&
+          (f_answer_bypassed_q[slot] ?
+           !(o_read_valid && o_read_id == 3'(slot) && o_read_data == f_answer_data_q[slot]) :
+           (rd_valid_q[slot] &&
+            !(rd_ready_q[slot] && rd_data_q[slot] == f_answer_data_q[slot])));
       f_answer_bad_grant[slot] = grant_answer_slots[slot] && !(rd_kind_q[slot] == ReadLoad &&
           rd_addr_q[slot][ADDR_WIDTH-1:5] == grant_q.addr[ADDR_WIDTH-1:5] &&
           !grant_q.error && grant_q.opcode != coherence_pkg::GrantFail);
@@ -4824,7 +4865,7 @@ module coherence_l1d #(
   end
   always_ff @(posedge i_clk) begin
     if (sim_reset_seen_q && !i_rst && active) begin
-      p_answer_once : assert ((rd_complete & ~(rd_valid_q & ~rd_ready_q)) == '0);
+      p_answer_once : assert (((rd_complete | f_answer_bypass) & ~(rd_valid_q & ~rd_ready_q)) == '0);
       p_answer_single_source : assert (f_answer_multi == '0);
       // The hit path's answer is ordered at its stage-2 array read, which
       // starts only outside probe service, so a probe may arrive before the
@@ -4856,6 +4897,7 @@ module coherence_l1d #(
         f_answer_held_q[slot] <= f_answer_hold_at_alloc[slot];
       else if (!f_answer_hold_now[slot]) f_answer_held_q[slot] <= 1'b0;
       f_answer_check_q[slot] <= !i_rst && (grant_answer_slots[slot] || merge_hit_slots[slot]);
+      f_answer_bypassed_q[slot] <= !i_rst && bypass_valid && bypass_id == 3'(slot);
       f_answer_path_next_q[slot] <= !i_rst && merge_path_next[slot];
       f_answer_data_q[slot] <= grant_answer_slots[slot] ?
           grant_q.data[64*rd_addr_q[slot][4:3]+:64] : array_data[64*rd_addr_q[slot][4:3]+:64];
@@ -4965,7 +5007,11 @@ module coherence_l1d #(
         p_store_data_7 : assert (reply_q.data[8*f_byte+:8] == f_byte_q);
       // A hit-path answer for the sector holds the byte as of its stage-1
       // edge, which writes nothing to its set; the line was installed by then.
-      if (f_path4_q) p_store_data_path : assert (path_data[8*f_byte[2:0]+:8] == f_path4_byte_q);
+      if (f_path4_q || (f_path3_q && path_hit && f_path3_known_q))
+        p_store_data_path :
+        assert ((!f_path4_q || path_data[8*f_byte[2:0]+:8] == f_path4_byte_q) &&
+                (!(f_path3_q && path_hit && f_path3_known_q) ||
+                 path_dword[8*f_byte[2:0]+:8] == f_path3_byte_q));
       if (f_path4_any_q) p_store_data_path_known : assert (f_path4_known_q);
       cover (tail_q && probe_capture && probe_in.addr[ADDR_WIDTH-1:5] == tail_addr[ADDR_WIDTH-1:5]);
       cover (tail_q && o_fatal && o_fatal_addr == acquisition_q.addr);
