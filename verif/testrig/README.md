@@ -27,6 +27,8 @@ conformance bugs fixed for
 | [`rvfi_dii.py`](rvfi_dii.py) | RVFI-DII packet formats |
 | [`preamble.py`](preamble.py) | Instructions FROST runs after each reset, before a test |
 | [`atomics.py`](atomics.py) | Random A-extension tests (see [The A extension](#the-a-extension)) |
+| [`fp_ext.py`](fp_ext.py) | Random scalar FP (F, D, Zfhmin, and Zfa) tests (see [Scalar floating point and Zcb](#scalar-floating-point-and-zcb)) |
+| [`compressed_mops.py`](compressed_mops.py) | Random Zcb, Zcmop, Zimop, and Zihintntl tests (see [Scalar floating point and Zcb](#scalar-floating-point-and-zcb)) |
 | [`mmu.py`](mmu.py) | Random Sv39 MMU, ASID, SFENCE.VMA, and Sstvala tests (see [Sv39 MMU, cache-block operations, and Sstvala](#sv39-mmu-cache-block-operations-and-sstvala)) |
 | [`cmo.py`](cmo.py) | Random Zicbom, Zicboz, Zicbop, Zawrs, device-window, and Sstvala tests (see [Sv39 MMU, cache-block operations, and Sstvala](#sv39-mmu-cache-block-operations-and-sstvala)) |
 | [`vector.py`](vector.py) | Random vector-instruction tests (see [The vector extension](#the-vector-extension)) |
@@ -59,6 +61,8 @@ repository root:
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200         # A-extension tests
 ./scripts/frost.py run python3 tests/test_testrig.py --mmu 40              # Sv39 MMU, ASID, and SFENCE.VMA tests
 ./scripts/frost.py run python3 tests/test_testrig.py --cmo 80              # CMO, prefetch, Zawrs, and Sstvala tests
+./scripts/frost.py run python3 tests/test_testrig.py --fp-ext 60 --test-length 250  # Scalar FP (F, D, Zfhmin, and Zfa) tests
+./scripts/frost.py run python3 tests/test_testrig.py --zcb 50              # Zcb, Zcmop, Zimop, and Zihintntl tests
 ./scripts/frost.py run python3 tests/test_testrig.py --wfi                 # Directed WFI waits, wakes, and traps
 ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf           # deterministic counter controls
 ./scripts/frost.py run python3 tests/test_testrig.py --vector 12 \
@@ -120,8 +124,12 @@ The fixture uses `i_clk` for the CPU and SoC and requires
 `platform_top` integration.
 
 CI runs four scalar TestRIG jobs in parallel. Each draws its own 100 sequences per
-template, 200 A-extension tests, 40 Sv39 MMU tests, and 80 CMO and Sstvala
-tests. The first job also runs the directed `--wfi` traces. Each job simulates
+template, 200 A-extension tests, 40 Sv39 MMU tests, 80 CMO and Sstvala
+tests, 60 scalar FP tests (`--fp-ext 60 --test-length 250`), and 50 Zcb, Zcmop,
+Zimop, and Zihintntl tests (`--zcb 50 --test-length 200`). Shard 1 also replays
+`verif/testrig/traces` and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and
+`--wfi`; shard 3 runs the startup assertion controls
+(`tests/random_start_sweep.py --require-controls`). Each job simulates
 the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 [tests/README.md](../../tests/README.md#environment-and-output)).
 
@@ -136,7 +144,7 @@ the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--wfi` | off | Replay directed WFI traces with a bounded DUT wait and Sail reply normalisation |
 | `--crypto` | off | Replay this many scalar cryptography tests |
 | `--zcb` | off | Replay this many Zcb, Zcmop, Zimop, and Zihintntl tests |
-| `--fp-ext` | off | Replay this many Zfhmin and Zfa tests |
+| `--fp-ext` | off | Replay this many scalar FP (F, D, Zfhmin, and Zfa) tests |
 | `--svinval` | off | Replay this many random Svinval tests (`verif/testrig/svinval.py`) instead of the templates |
 | `--sscofpmf` | off | Replay the deterministic counter-control trace (`verif/testrig/sscofpmf/controls.S`); `--trace` overrides the trace path |
 | `--vector` | off | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
@@ -389,6 +397,42 @@ from `sail_frost.json`.
 
 The tests come from a seed: `--seed` repeats a run, and without it the runner
 picks one and prints it. They are written to `tests/testrig_logs/atomics/`.
+
+## Scalar floating point and Zcb
+
+QuickCheckVEngine's `float`, `float64`, `double`, and `double64` templates
+initialize FP registers to zero and do not emit Zfhmin or Zfa instructions.
+Its `compressed` template does not emit Zcb, Zcmop, Zimop, or Zihintntl
+encodings. `--fp-ext N` replays N tests from [`fp_ext.py`](fp_ext.py), and
+`--zcb N` replays N tests from [`compressed_mops.py`](compressed_mops.py).
+
+Each `--fp-ext` test enables `mstatus.FS` Dirty, initializes a cached-DDR base
+in `x9`, and mixes F, D, Zfhmin, and Zfa operations across corner, subnormal,
+signed-zero, infinity, NaN, and improperly NaN-boxed operands in all five
+rounding modes and `DYN`. Because neither Sail 0.16 nor FROST carries FP
+destination registers on RVFI-DII, every FP destination is moved to an integer
+register with `fmv.x.d` to compare all 64 bits including NaN boxing, `fflags`
+is read and cleared after each operation, and FP stores are checked through
+RVFI store records and integer readbacks. Each test also exercises reserved
+rounding modes, `fcvtmod.w.d` with rounding modes other than `rtz`, misaligned
+FP loads and stores, and unimplemented half-precision encodings that trap as
+illegal instructions.
+
+Each `--zcb` test initializes `x1..x15` with corner and random 64-bit values
+and places two 8-byte-aligned cached-DDR bases in `x8` and `x9`. It mixes all
+RV64 Zcb loads, stores, unary transforms, and `c.mul` with every `c.mop.n`,
+`mop.r.n`, `mop.rr.n`, `ntl.*`, `c.ntl.*`, integer ALU traffic, and reserved
+neighbor encodings that trap.
+
+Scalar FP and Zcb exclusions in the Sail 0.16 comparison:
+
+| Exclusion | Reason |
+|-----------|--------|
+| FP destination register RVFI channel | Sail 0.16 and FROST do not carry FP register writebacks on RVFI-DII; `--fp-ext` observes every FP result through `fmv.x.d`, `fflags`, and store records |
+| Scalar `Zfh` arithmetic, comparisons, FMA, and `fclass.h` | FROST implements `Zfhmin` rather than full scalar `Zfh`, so `sail_frost.json` keeps `Zfh` disabled even though Sail 0.16 supports it; unimplemented `Zfh` encodings are checked as illegal-instruction traps |
+| `fli.h` in scalar TestRIG | Under the Zfa specification `fli.h` requires `Zfh` or `Zvfh`; the scalar TestRIG build disables both `Zfh` and `V`, so `fli.h` traps as an illegal instruction on both implementations |
+| `fmvh.x.d` and `fmvp.d.x` | RV32-only Zfa double-precision register-pair moves do not apply on RV64 |
+| Hardware misaligned FP and Zcb loads/stores (`Zicclsm`) | TestRIG builds omit `ma_engine` because the recorder sees no retirement for hardware misaligned accesses; `sail_frost.json` disables `Zicclsm` so misaligned accesses trap as address-misaligned on both implementations |
 
 ## The vector extension
 
@@ -982,14 +1026,17 @@ CI's TestRIG jobs replays all of them before its random run.
 | [`hpm_counters.S`](traces/hpm_counters.S) | Writable machine counter 3, zero-only machine counter/selector 31, and absent user alias 9 |
 | [`imsic_window_load.S`](traces/imsic_window_load.S) | An aligned doubleword load in the IMSIC window reaches the TestRIG device RAM without an access fault |
 | [`instret_nops.S`](traces/instret_nops.S) | NOP and C.NOP count in `minstret` |
+| [`lr_reserved_rs2.S`](traces/lr_reserved_rs2.S) | Reserved `LR.W`/`LR.D` encodings with nonzero `rs2` trap as illegal without creating a reservation; legal `rs2 = 0` forms still pair with `SC` |
 | [`lrsc_amo.S`](traces/lrsc_amo.S) | AMOs to the first two doublewords of the reserved line cancel the reservation; an AMO to the next line preserves it |
 | [`lrsc_jump.S`](traces/lrsc_jump.S) | A JAL, JALR, or taken branch between LR and SC keeps the reservation |
 | [`lrsc_older_store.S`](traces/lrsc_older_store.S) | An older store to the other word of the reserved doubleword drains before LR and permits the following SC |
 | [`pte_nonleaf_dau.S`](traces/pte_nonleaf_dau.S) | A non-leaf PTE with D, A, or U set raises a page fault |
+| [`svinval_sstc.S`](traces/svinval_sstc.S) | Svinval encodings, `mstatus.TVM`/U-mode legality, reserved `SYSTEM` `funct3=000` fields, and Sstc `stimecmp` gating across `menvcfg.STCE` and `mcounteren.TM` |
 | [`svpbmt_pbmte.S`](traces/svpbmt_pbmte.S) | PBMTE readback and PBMT page faults; Sail does not check the uncached alias transport or cache coherence |
 | [`svnapot_leaf.S`](traces/svnapot_leaf.S) | A 64 KiB NAPOT leaf (N, PPN[3:0] = 1000) translates two of its pages with PPN[3:0] = VA[15:12]; N with another PPN[3:0], in a 2 MiB leaf or in a pointer is a page fault |
 | [`ssu64xl_uxl.S`](traces/ssu64xl_uxl.S) | `mstatus.UXL`/`SXL` and `sstatus.UXL` read 2 and keep 2 when written with 3, 0 and 1 (UXLEN is 64) |
 | [`ssnpm_pmm.S`](traces/ssnpm_pmm.S) | `senvcfg.PMM` WARL (01 keeps the old value); with MPRV and MPP = U, tagged loads, stores and AMOs under Bare (PMLEN 16 and 7) and Sv39, masked faults with the transformed `mtval`, and no masking with MXR set or PMM = 00 |
 | [`sstvala_illegal.S`](traces/sstvala_illegal.S) | Illegal 32-bit and 16-bit instructions write their instruction bits to `mtval` and `stval` |
 | [`zawrs_ops.S`](traces/zawrs_ops.S) | `wrs.sto` and `wrs.nto` retire in M, S, and U modes and preserve an active `LR.D` reservation |
+| [`zcb_zimop_zcmop_ntl.S`](traces/zcb_zimop_zcmop_ntl.S) | Zcb, Zcmop, Zimop, and Zihintntl encodings in M-mode compared with Sail, plus reserved neighboring encodings that stay illegal |
 | [`zicbom_ops.S`](traces/zicbom_ops.S) | `cbo.clean`, `cbo.flush`, and `cbo.inval` across cached DDR, low BRAM, device windows, and unmapped addresses, with `CBIE`/`CBCFE` WARL checks |

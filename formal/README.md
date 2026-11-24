@@ -83,7 +83,8 @@ runner repeats a local solver search step for step in about 1.2 times its
 time, and runner speed varies by up to 1.8 times between runs.
 `coh_l1d_stream_cover` has 20 minutes at depth 80, including serialization
 of its four eight-endpoint witnesses.
-`line_client_link`'s four BMC tasks have 70 minutes.
+`line_client_link:line_link0_bmc` has 88 minutes, and `line_link1_bmc`,
+`line_link1_four_bmc`, and `line_link1_eight_bmc` have 70 minutes each.
 `coherence_array:coh_array_port_bmc` has 40 minutes and
 `coh_array4_port_bmc` has 100 minutes at depth 24. The L1D, store and
 hit-port allowances match in the SBY configurations and the runner.
@@ -158,18 +159,18 @@ state are those of the other tasks. The preparation script checks that
 both eight-bit byte constants remain and that the bounded models have
 no assumptions. No case assumes a result from another case.
 
-CI assigns the CSR profiling-on, CSR profiling-off and reorder-buffer tasks
-to separate jobs with 120-minute limits. These jobs also run selected
+CI assigns the CSR profiling-on, CSR profiling-off, and reorder-buffer tasks
+to separate jobs with 124-, 120-, and 125-minute limits. These jobs also run selected
 local-atomic tasks, and the CSR profiling-on job runs the L1D local ownership
 proofs. The hart maintenance proof, its ownership induction, the scripted
 and store-free eight-endpoint L1D stream control BMCs, and their independent
 unbounded payload proof share a job with a 335-minute limit.
 The free-input stream BMC with stores shares a 330-minute job with the
-four-way hit-port array BMC. The four-record boundary BMC and the
-intervening-load boundary BMC each have a 330-minute job of their own.
+four-way hit-port array BMC. The four-record boundary BMC has a 360-minute
+job of its own, and the intervening-load boundary BMC has a 350-minute job.
 
 The L1D control job runs `coh_l1d_bmc` alone with a 200-minute limit, and
-the L1D multi-endpoint job runs `coh_l1d_multi_bmc` alone with a 330-minute
+the L1D multi-endpoint job runs `coh_l1d_multi_bmc` alone with a 349-minute
 limit. The zero-line and full-line control jobs run `coh_l1d_zero_bmc` and
 `coh_l1d_full_bmc` alone with 200-minute limits, the zero-line and full-line
 multi-endpoint jobs run `coh_l1d_zero_multi_bmc` and `coh_l1d_full_multi_bmc`
@@ -205,9 +206,10 @@ and exactly one CI job per task.
 
 The 42-cycle scripted stream checks are also partitioned: `coh_l1d_stream_bmc`
 keeps every assertion except four wide payload identities and holds, which
-`coh_l1d_stream_hold_bmc` checks. Both retain the original scripted model,
-interface assumptions, depth 42 and 3,600-second limit, with no assumptions
-between groups. Fast tests enforce that match and complete property coverage.
+`coh_l1d_stream_hold_bmc` checks. Both keep the original scripted model,
+interface assumptions, and depth 42, with no assumptions between groups;
+`coh_l1d_stream_bmc` has a 5,100-second limit and `coh_l1d_stream_hold_bmc`
+has a 3,600-second limit. Fast tests enforce that match and complete property coverage.
 The hold task uses CaDiCaL in a parallel 75-minute job; the control task stays
 in the hart maintenance job with BMC3's default solver.
 
@@ -235,10 +237,10 @@ for that on a runner 1.8 times slower than a typical one. The store-home job run
 choices for each of four bounded schedules, plus four covers, within
 240 minutes. Each bounded case has a 15-minute allowance. Two
 coherent-array equivalence jobs run
-the `coherence_array_equiv` tasks, the five four-way tasks in one and the
-other eight in the other, each with a 120-minute limit. The Coherence job
+the `coherence_array_equiv` tasks: the five four-way tasks in a 150-minute
+job and the other eight in a 133-minute job. The Coherence job
 runs the other coherence tasks, including the hart maintenance covers
-and the reset-state lemma induction, with a 300-minute limit. The home
+and the reset-state lemma induction, with a 330-minute limit. The home
 tasks run in two jobs: the default home tasks in a 355-minute job and
 the `FAST_TAG_LAUNCH=1` home tasks in a 140-minute job.
 Ten jobs split the rest: Vector (the vector CSR
@@ -434,7 +436,7 @@ and `p_pd_slot2_cond_branch_predecode_exact` enabled.
 | --- | --- |
 | `branch_prediction_alias` | The slot-1/slot-2 alias output computed from the base PC equals the generic computation under the fetch stage's base+2/base+4 wiring. Only this output is compared |
 | `branch_prediction_disable` | The prediction-use gates for both slots (including `i_pending_prediction_blocks_slot1` on slot 1), slot 2's target select, and the metadata next state equal the reference equations, disabling prediction blocks both the live and the staged path, and the slot-2 targets' relations to the pending PC equal direct compares |
-| `btb_invalidate_hold` | Unbounded induction over `branch_prediction_controller` and `branch_predictor` (at `BTB_INDEX_BITS=2` with arbitrary over-approximating RAM reads) with arbitrary updates and lookups: `i_btb_invalidate` holds `btb_invalidate_active` high for four cycles, clears every slot-1 and slot-2 valid array and registered slot-2 valid flop, and forces all slot-1 and slot-2 lookups to miss even when updates arrive before or during every cycle of the hold; covers witness dropped updates on all four hold cycles and a post-hold update installing cleanly |
+| `btb_invalidate_hold` | Unbounded induction over `branch_prediction_controller` and `branch_predictor` (at `BTB_INDEX_BITS=2` with arbitrary over-approximating RAM reads) with arbitrary updates and lookups: `i_btb_invalidate` holds `btb_invalidate_active` high for four cycles, clears every slot-1 and slot-2 valid array and registered slot-2 valid flop, and forces all slot-1 and slot-2 lookups to miss even when updates arrive before or during every cycle of the hold; covers witness dropped updates on all four hold cycles and a post-hold update installing |
 | `slot2_prediction_capture` | A staged candidate and its payload share the first-stall capture edge and remain stable during the stall. Replay requests need a valid capture, consumption requires release, and reset or recovery cancels the capture. Assumes an initial reset; packet ownership is supplied by IF's replay input |
 | `backing_btb` | At 8 entries in two and four ways, with arbitrary lookups, packets, updates, refreshes and resets after an initial reset: each slot's hit, size, return type and target equal a lookup of a mirror of the sets at the slot's own PC, so both lookup images and the update array match every write, image 1 one set ahead; a slot 2 in the word after the last set and every read during reset or the sweep miss; a request in stage B holds its set's current value and one in stage C its current entries; a refresh changes only replacement state; and every cleared set holds each valid tag once. The `prove` tasks prove the training invariants for all reachable states, with training reading the mirror in place of the update array. The `size_select` tasks (one step, two and four ways, no reset qualifier) check that slot 2's hit, size, return type and target, formed for each size of slot 1 and selected by the packet's size, equal the single reduction over the ways at slot 2's halfword that they replace, and that each size's return type and target equal that reduction at that size, for every value of the tag, payload and request registers and every packet. A fetch redirect drops both the outstanding read and the held read. |
 | `branch_prediction_resolution` | A one-step combinational comparison checks that two arbitrary predictions of the same issued conditional branch or JALR produce the same ROB update identity, outcome and target. Each wrong direction or taken target requests recovery. Direct predictions use ID’s comparison against the PC-relative target. Covers reach both direction changes, a wrong indirect target, distinct unused targets on a correctly predicted fall-through, and both surviving and discarded issues under partial recovery. A trap, return or fence flush suppresses every issue. A checkpointed issue names a checkpoint below `NumCheckpoints`. |
@@ -1207,7 +1209,7 @@ cycles, which clears arbitrary memory history.
    top-level `LogSeverity::Header` numbers, script-include banners and
    end-of-script completion in `model/design.headers` against the task's parsed
    command list so output from `log -stderr` or RTL `$display` can neither
-   satisfy nor break the cross-check; the 29 headerless forms (`select`,
+   satisfy nor break the cross-check; the 30 headerless forms (`select`,
    `setattr`, `connect`, `delete`, `chformal`, `chtype`, `rename`, `design`,
    `cd`, `log`, `verilog_defines` and `read -define`), `chparam` without
    derived AST elaboration, individual files inside `read_slang`, and pass

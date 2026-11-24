@@ -1035,7 +1035,7 @@ suite skips cases whose AVL times SEW exceeds VLEN.
 
 CI skips Zifencei in BRAM, because ordinary stores cannot reach the separate
 instruction BRAM (the runner reports it as SKIP there, so `--all --mem-config
-bram` still ends cleanly), and F and D in DDR, to save runner time; the BRAM jobs
+bram` passes), and F and D in DDR, to save runner time; the BRAM jobs
 cover FPU conformance. The F and D tests that do not fit low BRAM (the larger
 `*_b8` and `*_b9` arithmetic sets) and those above 5,000 cases (the `*_b1`
 fused multiply-adds and the `*_b11` adds and subtracts) therefore run only
@@ -1180,7 +1180,7 @@ files across 665 instruction forms. The classes are `float` (1,243),
 and SM3/SM4 configurations. The narrowing and widening floating-point
 conversions each include the raw operands from both V and Zvfhmin.
 
-The generator now starts a separate process for each instruction form. Each
+The generator starts a separate process for each instruction form. Each
 form starts its own TestFloat operand sequence, so selecting a form alone
 produces the same data as selecting it in a full run. The earlier generator
 shared TestFloat state across forms, and its operand data varied from run
@@ -1611,6 +1611,8 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --vector 12 \
   --vector-source-widths --vector-directed --seed 42 --vlen 256
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
+./scripts/frost.py run python3 tests/test_testrig.py --fp-ext 60 --test-length 250
+./scripts/frost.py run python3 tests/test_testrig.py --zcb 50
 ./scripts/frost.py run python3 tests/test_testrig.py --wfi
 ```
 
@@ -1942,7 +1944,7 @@ has a 20-minute timeout in both SBY and the runner.
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to
 `tests/results.xml`. A `test_run_cocotb.py` run passes only if the simulator
-exits cleanly and writes a fresh report with at least one test and no
+exits with status 0 and writes a fresh report with at least one test and no
 failures. Before running a runner any way other than the `cocotb` and
 `pytest` shortcuts, clean `tests/` yourself
 (`./scripts/frost.py run make -C tests clean`). If `doctor` reports a missing
@@ -2096,6 +2098,8 @@ all of them.
 | `lq_coherence_port` | `cover_dma_write_replays_load` | A DMA write invalidates a line that an executed, unretired load read, and the load is flagged for replay |
 | `lq_coherence_port` | `cover_dma_write_replays_pending_observation` | The same, for a load whose observation is still in the port's pipeline register |
 | `lq_coherence_port` | `cover_dma_admission_waits_for_atomic` | A DMA write's admission waits for an AMO or LR between its read and its write |
+| `lq_coherence_port` | `cover_dma_admission_clean` | A DMA write's admission finds its line clean |
+| `lq_coherence_port` | `cover_dma_admission_held` | A DMA write's admission finds its line held |
 | `lq_coherence_port` | `cover_dma_admission_waits_for_sc` | A DMA write's admission waits for an SC at the ROB head or still draining |
 | `lq_coherence_port` | `cover_sc_held_by_dma_write` | An SC at the ROB head waits because a DMA write holds its line |
 | `load_queue` | `cover_dma_write_clears_reservation` | A DMA write to the reserved line cancels the LR reservation |
@@ -2197,9 +2201,9 @@ and Fast Python Tests jobs locally.
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
-| TestRIG vector | One job each at VLEN 128, 256 and 512 on main pushes and pull requests labelled `run-ci`. Each compares seeded integer traces and directed source-width, vector state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride memory, strided memory, indexed memory, segment memory, fault-only-first load, integer comparison, widening and narrowing integer, fixed-point, single-width FP, whole-register memory, widening FP, permute and reduction traces against Sail |
+| TestRIG vector | Two jobs (`core` and `segment`) at each of VLEN 128, 256, and 512 (six jobs total) on main pushes and pull requests labelled `run-ci`. Across both shards, each vector length compares 12 seeded vector traces, source-width and directed vector traces (state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride, strided, indexed, fault-only-first, integer comparison, carry/borrow, mask-register, integer multiply-add, integer scalar/merge, widening and narrowing integer, fixed-point, single-width FP, whole-register, widening FP, permute, reduction, and `vector_segment.S` plus five generated segment matrix traces) against Sail, plus VLEN 128 result-control checks |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
-| TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, and `--cmo 80`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
+| TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, `--cmo 80`, `--fp-ext 60`, and `--zcb 50`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | Formal verification | The 57 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home (two jobs), coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), frontend and predictor, block proofs, floating-point and vector memory, ROB retirement successor, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |

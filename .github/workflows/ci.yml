@@ -910,9 +910,11 @@ jobs:
   # scalar cryptography sequences, deterministic counter controls, and WFI traces.
   # Every shard then draws its own random sequences, 100 per template, from the
   # engine's templates, and its own random A-extension (verif/testrig/atomics.py),
-  # Sv39 MMU (verif/testrig/mmu.py), and CMO/Sstvala (verif/testrig/cmo.py)
-  # sequences, whose seeds the log prints. A mismatch is shrunk to a short
-  # counterexample in the uploaded artifact, which --trace replays.
+  # Sv39 MMU (verif/testrig/mmu.py), CMO/Sstvala (verif/testrig/cmo.py), scalar
+  # FP (verif/testrig/fp_ext.py), and Zcb/Zcmop/Zimop/Zihintntl
+  # (verif/testrig/compressed_mops.py) sequences, whose seeds the log prints. A
+  # mismatch is shrunk to a short counterexample in the uploaded artifact, which
+  # --trace replays.
   test-testrig:
     name: TestRIG (FROST vs Sail / ${{ matrix.shard }}/4)
     permissions:
@@ -993,6 +995,20 @@ jobs:
         run: |
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --cmo 80 --continue-on-fail
+
+      - name: Compare FROST with Sail on random scalar FP sequences
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --fp-ext 60 --test-length 250 \
+              --continue-on-fail --log-dir tests/testrig_logs/fp-ext
+
+      - name: Compare FROST with Sail on random Zcb, Zcmop, Zimop, and Zihintntl sequences
+        if: ${{ !cancelled() }}
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --zcb 50 --test-length 200 \
+              --continue-on-fail --log-dir tests/testrig_logs/zcb
 
       - name: Compare FROST with Sail on directed WFI traces
         if: ${{ !cancelled() && matrix.shard == 1 }}

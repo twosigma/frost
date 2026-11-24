@@ -30,8 +30,15 @@ per-class signals (conditional branch, JAL, indirect) feed only
 ## Decoded bundle queue
 
 The queue holds decoded bundles from ID until dispatch takes them. Its depth
-is the `DECODED_QUEUE_DEPTH` parameter, default `riscv_pkg::DecodedQueueDepth`
-(4). A nonzero depth must be a power of two of at least 2. Depth 0 removes the
+is the `DEPTH` parameter (module default `4`; wired from `cpu_ooo`'s
+`DECODED_QUEUE_DEPTH`, default `riscv_pkg::DecodedQueueDepth` = 4). The
+remaining parameters have module defaults `WIDTH = 32`, `SHADOW_WIDTH = 1`,
+`SPLIT_SHADOW_STALL = 0`, and `STALL_LATE_COPIES = 1`
+(`decoded_bundle_queue.sv`); `cpu_ooo.sv` overrides all four
+(`WIDTH = 2 * $bits(decoded_packet)`,
+`SHADOW_WIDTH = 2 * $bits(producer_ctrl) + $bits(producer_vlc) + 1`,
+`SPLIT_SHADOW_STALL = 1`, and
+`STALL_LATE_COPIES = riscv_pkg::FetchPaHoldCopies`). A nonzero depth must be a power of two of at least 2. Depth 0 removes the
 queue: ID feeds dispatch directly, dispatch back-pressure stalls the front
 end, and ID replays its held bundle when the stall clears. One exception
 applies in that mode: if an unrelated stall already held ID when a CSR
