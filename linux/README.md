@@ -169,10 +169,12 @@ directly through Sstc (`stimecmp`) instead of an SBI call.
 
 ## Advertised ISA
 
-The X3 device tree advertises V with Zve32x, Zve32f, Zve64x, Zve64f and
-Zve64d, and the Zvl32b, Zvl64b, Zvl128b and Zvl256b length guarantees.
-The X3 configuration sets `misa.V` and has `VLEN=256` and `ELEN=64`.
-These entries describe the vector capabilities for Linux ISA discovery.
+The X3 device tree advertises V with Zvbb, Zvbc, Zve32f, Zve32x, Zve64d,
+Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn, Zvknc, Zvkned, Zvkng,
+Zvknha, Zvknhb, Zvkt, and the Zvl32b, Zvl64b, Zvl128b and Zvl256b length
+guarantees. The X3 configuration sets `misa.V` and has `VLEN=256` and
+`ELEN=64`. These entries describe the vector capabilities for Linux ISA
+discovery.
 The VCU118 device tree describes its scalar configuration and omits `svpbmt`
 because its 2 GiB DDR map has no uncached alias.
 

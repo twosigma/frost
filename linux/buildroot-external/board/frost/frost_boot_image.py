@@ -103,11 +103,17 @@ CBOZ_BLOCK_BYTES = 64
 CBOP_BLOCK_BYTES = 64
 ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_ssu64xl_svade_svinval_svnapot_svpbmt_svvptc"
 
-# X3 implements V with ELEN 64 and VLEN 256, and its 1 GiB DDR map carries an
+# X3 implements V with ELEN 64, VLEN 256 and its vector sub-extensions
+# (Zvfhmin, Zvfh, Zvbb/Zvkb, Zvbc, Zvkned, Zvknha, Zvknhb, Zvkg, Zvkt and the
+# NIST aggregates Zvkn, Zvknc and Zvkng), and its 1 GiB DDR map carries an
 # uncached alias for Svpbmt. VCU118 is scalar and its 2 GiB DDR map has no
 # uncached alias, so the VCU118 device tree omits svpbmt.
 X3_VECTOR_EXTENSIONS = (
-    "zve32x", "zve32f", "zve64x", "zve64f", "zve64d",
+    "zvbb", "zvbc",
+    "zve32f", "zve32x", "zve64d", "zve64f", "zve64x",
+    "zvfh", "zvfhmin",
+    "zvkb", "zvkg", "zvkn", "zvknc", "zvkned", "zvkng", "zvknha", "zvknhb",
+    "zvkt",
     "zvl32b", "zvl64b", "zvl128b", "zvl256b",
 )  # fmt: skip
 X3_ISA_EXTENSIONS = (
