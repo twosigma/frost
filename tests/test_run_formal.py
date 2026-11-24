@@ -1652,6 +1652,8 @@ FORMAL_TARGETS = [
             "bmc",
             "cover",
             "prove_pre_match",
+            "prove_port1_amo",
+            "cover_port1_amo",
             "bmc_no_prepare_busy",
             "cover_no_prepare_busy",
             "bmc_probe_launch",
@@ -3846,6 +3848,14 @@ SBY_TASKS = [
         "Unbounded equivalence of split load-queue pre-issue match registers",
     ),
     (
+        "prove_port1_amo",
+        "Unbounded exclusivity of load-queue port-1 AMO writes against L0 hits and SQ forwards",
+    ),
+    (
+        "cover_port1_amo",
+        "Reachability of load-queue port-1 AMO writes, L0 hits, and post-AMO SQ forwards",
+    ),
+    (
         "prove_unrestricted",
         "Unbounded observation tracking with only initial reset assumed",
     ),
@@ -4926,6 +4936,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "tests/test_predictor_mutations.py",
             "tests/test_fp_forward_wake_mutations.py",
             "tests/test_probe_launch_mutations.py",
+            "tests/test_lq_port1_amo_mutations.py",
             "--collect-only",
             "-q",
             "-m",
@@ -4986,6 +4997,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             assert shard_name == "Frontend and predictor", node
         if node.startswith("tests/test_fp_forward_wake_mutations.py::"):
             assert shard_name == "Floating-point and vector memory", node
+        if node.startswith("tests/test_lq_port1_amo_mutations.py::"):
+            assert shard_name == "Load queue", node
         selected_by_shard[shard_name].append(node)
         if node.startswith("tests/test_run_formal.py::") and "[" in node:
             test_id = node.split("[", 1)[1].rstrip("]")

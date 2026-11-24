@@ -219,6 +219,15 @@ every supported extension and privilege mode.
 | **Zcmop**        | Compressed may-be-operations `c.mop.n`, which write no register |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **V**            | Vector extension, VLEN 256: integer, fixed-point, floating-point, mask and permutation instructions and every vector load and store form |
+| **Zvfhmin**      | Vector half-precision floating-point conversions (`vfwcvt.f.f.v`, `vfncvt.f.f.w`) |
+| **Zvfh**         | Vector half-precision floating-point arithmetic, compares, reductions, moves and conversions at SEW 16 |
+| **Zvbb, Zvkb**   | Vector basic bit-manipulation (`vandn`, `vbrev`, `vbrev8`, `vrev8`, `vclz`, `vctz`, `vcpop`, `vrol`, `vror`, `vwsll`) and its cryptography subset (`Zvkb`) |
+| **Zvbc**         | Vector carry-less multiplication (`vclmul`, `vclmulh`) at SEW 64 |
+| **Zvkned**       | Vector AES encryption/decryption rounds and key schedules (`vaes*`) |
+| **Zvknha, Zvknhb** | Vector SHA-256 (SEW 32) and SHA-512 (SEW 64) compression and message schedules (`vsha2*`) |
+| **Zvkg**         | Vector GCM/GMAC carry-less multiply-accumulate (`vghsh.vv`, `vgmul.vv`) |
+| **Zvkt**         | Data-independent execution latency for the Zvkt vector instructions |
+| **Zvkn, Zvknc, Zvkng** | Vector NIST cryptography suites (`Zvkn` = `Zvkned` + `Zvknhb` + `Zvkb` + `Zvkt`, `Zvknc` = `Zvkn` + `Zvbc`, `Zvkng` = `Zvkn` + `Zvkg`) |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
 | **Zihpm**        | Performance counters `hpmcounter3`-`10`, gated by `mcounteren`/`scounteren` |

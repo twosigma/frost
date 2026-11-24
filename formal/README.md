@@ -255,8 +255,9 @@ tasks, `vec_vtype_tracker`, `vec_lmul_legality_equiv` and `vec_vmu`, 126
 minutes), two Line client links jobs (98 and 80 minutes), Memory
 management (the page table
 walker, TLBs, instruction and data MMUs and interrupt controllers, 120), Load
-queue (the seven `load_queue` tasks, 135: their SBY allowances, about 2.2
-times each task's time on a development host, sum to 125 minutes), Load queue
+queue (the nine `load_queue` tasks and the port-1 AMO mutation checks, 150:
+their SBY allowances, about 2.2 times each task's time on a development host,
+sum to 135 minutes, plus setup and mutation headroom), Load queue
 blocks (its helper blocks, its AMO datapath and the range holds at its
 address-update port, 77: about 2.2 times their 30 minutes on a development
 host, plus setup), Frontend and predictor (branch prediction hand-off, release,
@@ -286,10 +287,14 @@ BMC depth. Restoring the BMC to depth 120 is an open
 [verification item](../ROADMAP.md#verification).
 
 The CI jobs collect `tests/test_run_formal.py`,
-`tests/test_pa_bridge_mutation.py`, and `tests/test_probe_launch_mutations.py`
+`tests/test_pa_bridge_mutation.py`, `tests/test_predictor_mutations.py`,
+`tests/test_fp_forward_wake_mutations.py`,
+`tests/test_probe_launch_mutations.py`, and
+`tests/test_lq_port1_amo_mutations.py`
 through `./scripts/frost.py run pytest` with `-m formal` and a task filter. The
-two AXI address-truncation mutation checks run in the Other tasks job, and the
-four probe-launch/C2b mutation checks run in Store boundary probe launch same.
+two AXI address-truncation mutation checks run in the Other tasks job, the
+four probe-launch/C2b mutation checks run in Store boundary probe launch same,
+and the port-1 AMO mutation checks run in Load queue.
 To inspect a job's selection without
 running the solver, add `--collect-only -q` and its `-k` filter. The
 `./scripts/frost.py pytest` shortcut collects only cocotb tests.
@@ -724,7 +729,7 @@ the failing assertion.
 
 | Target | Checks |
 | --- | --- |
-| `load_queue` | Allocation and back-pressure, dependency cleanup, memory issue, router cancellation, staged AMOs, and CDB broadcast, with busy-port load preparation on and off (`*_no_prepare_busy`). Uses the module defaults (`lq_prematch_cofactors` and `lq_ram_payload` check the CPU's pre-issue compares and store forwarding) and assumes each address update follows its look-ahead, live entries hold distinct ROB tags, and no allocation arrives while the registered full flags it exports are set, which `dispatch_admission` proves of dispatch. The queue checks that those flags never show room it does not have, so no allocation reaches a full queue. `bmc_probe_launch` and `cover_probe_launch` enable forwarding and `PROBE_LAUNCH=1`, checking dropped-response isolation, verdict transitions, and the direct `cbo.zero` pending-twin/block-invalidation hold via `p_probe_block_inval_no_launch`, `p_probe_zero_twin_no_launch`, and sole-blocker covers. `prove_pre_match` proves the split pre-issue match registers equal a direct registered compare |
+| `load_queue` | Allocation and back-pressure, dependency cleanup, memory issue, router cancellation, staged AMOs, and CDB broadcast, with busy-port load preparation on and off (`*_no_prepare_busy`). Uses the module defaults (`lq_prematch_cofactors` and `lq_ram_payload` check the CPU's pre-issue compares and store forwarding) and assumes each address update follows its look-ahead, live entries hold distinct ROB tags, and no allocation arrives while the registered full flags it exports are set, which `dispatch_admission` proves of dispatch. The queue checks that those flags never show room it does not have, so no allocation reaches a full queue. `bmc_probe_launch` and `cover_probe_launch` enable forwarding and `PROBE_LAUNCH=1`, checking dropped-response isolation, verdict transitions, and the direct `cbo.zero` pending-twin/block-invalidation hold via `p_probe_block_inval_no_launch`, `p_probe_zero_twin_no_launch`, and sole-blocker covers. `prove_pre_match` proves the split pre-issue match registers equal a direct registered compare. `prove_port1_amo` proves by unbounded 1-step induction at `DEPTH=4`, `L0_CACHE_DEPTH=8`, `PROBE_LAUNCH=1`, and `ENABLE_SQ_FORWARD_FAST_PATH=1` under the ROB's in-order allocation, in-order retirement, and early-recovery flush contract that port-1 AMO write completion (`amo_data_wr_fire`) never coincides with an L0 cache hit (`cache_hit_fast_path`) or a store-queue forward (`sq_do_forward`), via `p_amo_port1_exclusive`. `cover_port1_amo` reaches a port-1 L0 cache hit, a port-1 AMO write while a younger address-valid load waits on `older_amo_block_q`, and a port-1 store-queue forward after that AMO write without a full flush |
 | `load_queue_amo_compute` | AMO capture of operands and memory tier, the result of every AMO except MIN and MAX (which `load_queue` checks), kill on reset or flush, coherence blocking, and stable write data, over 4 cycles. See below |
 | `lq_alloc_mask` | The parallel first and second allocation masks equal the reference search and capacity checks at depths 4, 8, and 16 |
 | `lq_cached_flags` | Cached-slot invalidation and LR-suppression next state equals the reference priority equations |

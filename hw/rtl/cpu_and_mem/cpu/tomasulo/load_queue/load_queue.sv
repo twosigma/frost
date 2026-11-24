@@ -1431,6 +1431,7 @@ module load_queue #(
 
 `ifdef FORMAL
 `ifndef F_LQ_RAM_PAYLOAD_PROOF
+`ifndef F_LQ_PORT1_AMO_PROOF
   // Compare against an unsplit qualified match for arbitrary tag, valid,
   // reset, and full-flush inputs, including illegal issue sequences.
   logic [DEPTH-1:0] f_pre_match_unsplit_q;
@@ -1457,8 +1458,9 @@ module load_queue #(
     else f_pre_match_unsplit_q <= f_pre_match_direct & {DEPTH{i_pre_issue_needs_lq}};
     if (f_pre_match_initialized) assert (addr_update_pre_match_q == f_pre_match_unsplit_q);
   end
-`endif
+`endif  // F_LQ_PORT1_AMO_PROOF
 `endif  // F_LQ_RAM_PAYLOAD_PROOF
+`endif
 
   // Register ROB-head matching for timing. Head priority prevents starvation
   // behind a staged load waiting on a younger store (load queue README,
@@ -6597,6 +6599,254 @@ module load_queue #(
 
 `endif  // LQ_AMO_COMPUTE_LOCAL_PROOF
 `endif  // F_LQ_PREMATCH_ONLY
+`ifdef F_LQ_PORT1_AMO_PROOF
+  // Unbounded proof of port-1 AMO/L0-hit/SQ-forward exclusivity under the
+  // ROB's in-order allocation, in-order retirement, and early-recovery flush
+  // contract.
+  localparam int unsigned FRobDepth = 1 << ReorderBufferTagWidth;
+  localparam int unsigned FRobCountW = ReorderBufferTagWidth + 1;
+
+  initial assume (!i_rst_n);
+
+  reg f_past_valid;
+  initial f_past_valid = 1'b0;
+  always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  always @(posedge i_clk) begin
+    if (f_past_valid) assume (i_rst_n);
+  end
+
+  // Ghost ROB window [f_rob_head_q, f_rob_head_q + f_rob_count_q).
+  (* anyconst *) logic [ReorderBufferTagWidth-1:0] f_rob_start;
+  logic [ReorderBufferTagWidth-1:0] f_rob_head_q;
+  logic [FRobCountW-1:0] f_rob_count_q;
+  logic f_dep_head_valid_q;
+  logic [1:0] f_dep_head_retire_q;
+
+  (* anyseq *) logic [1:0] f_rob_retire_n;
+  (* anyseq *) logic [1:0] f_rob_alloc_n;
+
+  wire [ReorderBufferTagWidth-1:0] f_rob_tail =
+      f_rob_head_q + f_rob_count_q[ReorderBufferTagWidth-1:0];
+  wire [ReorderBufferTagWidth-1:0] f_flush_age = i_flush_tag - f_rob_head_q;
+
+  logic [ReorderBufferTagWidth-1:0] f_pre_issue_rob_tag_q;
+  logic f_pre_issue_needs_lq_q;
+  always @(posedge i_clk) begin
+    f_pre_issue_rob_tag_q  <= i_pre_issue_rob_tag;
+    f_pre_issue_needs_lq_q <= i_pre_issue_needs_lq;
+  end
+
+  // Cover trackers: a port-1 AMO write while a younger load waits on the
+  // older-AMO fence, followed without a full flush by a port-1 SQ forward,
+  // plus a port-1 L0 cache hit under the same ROB contract.
+  logic f_amo_wr_with_younger_seen_q;
+  wire f_younger_load_blocked = |(lq_valid & ~lq_is_amo & lq_addr_valid & older_amo_block_q);
+  wire f_amo_wr_port1_fire = amo_data_wr_fire && !i_flush_all && lq_data_we[1];
+
+  always @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      f_rob_head_q                 <= f_rob_start;
+      f_rob_count_q                <= '0;
+      f_dep_head_valid_q           <= 1'b0;
+      f_dep_head_retire_q          <= 2'd0;
+      f_amo_wr_with_younger_seen_q <= 1'b0;
+    end else if (i_flush_all) begin
+      f_rob_head_q                 <= '0;
+      f_rob_count_q                <= '0;
+      f_dep_head_valid_q           <= 1'b0;
+      f_dep_head_retire_q          <= 2'd0;
+      f_amo_wr_with_younger_seen_q <= 1'b0;
+    end else if (i_flush_en) begin
+      f_rob_head_q        <= f_rob_head_q;
+      f_rob_count_q       <= {1'b0, f_flush_age} + FRobCountW'(1);
+      f_dep_head_valid_q  <= 1'b1;
+      f_dep_head_retire_q <= 2'd0;
+      if (f_amo_wr_port1_fire && f_younger_load_blocked) f_amo_wr_with_younger_seen_q <= 1'b1;
+    end else begin
+      f_rob_head_q        <= f_rob_head_q + ReorderBufferTagWidth'(f_rob_retire_n);
+      f_rob_count_q       <= f_rob_count_q - FRobCountW'(f_rob_retire_n) +
+                             FRobCountW'(f_rob_alloc_n);
+      f_dep_head_valid_q  <= 1'b1;
+      f_dep_head_retire_q <= f_rob_retire_n;
+      if (f_amo_wr_port1_fire && f_younger_load_blocked) f_amo_wr_with_younger_seen_q <= 1'b1;
+    end
+  end
+
+  // Environment assumptions (ROB ordering + standard LQ input contracts).
+  always_comb begin
+    if (i_rst_n) begin
+      assume (i_rob_head_tag == f_rob_head_q);
+      // Partial flush on load_queue is early misprediction recovery (wrapper).
+      if (i_flush_en && !i_flush_all) begin
+        assume (i_early_recovery_flush);
+        assume ({1'b0, f_flush_age} < f_rob_count_q);
+      end
+      if (!i_flush_all && !i_flush_en) begin
+        assume (f_rob_retire_n <= 2'd2);
+        assume (f_rob_alloc_n <= 2'd2);
+        assume (FRobCountW'(f_rob_retire_n) <= f_rob_count_q);
+        assume ((f_rob_count_q + FRobCountW'(f_rob_alloc_n)) <= FRobCountW'(FRobDepth));
+        for (int unsigned i = 0; i < DEPTH; i++) begin
+          if (lq_valid[i]) begin
+            assume ({1'b0, ReorderBufferTagWidth'(lq_rob_tag[i] - f_rob_head_q)} >=
+                    FRobCountW'(f_rob_retire_n));
+          end
+        end
+        if (slot1_alloc_en) begin
+          assume (f_rob_alloc_n >= 2'd1);
+          assume (i_alloc.rob_tag == f_rob_tail);
+        end
+        if (slot2_alloc_en) begin
+          assume (f_rob_alloc_n == 2'd2);
+          assume (i_alloc_2.rob_tag == (f_rob_tail + ReorderBufferTagWidth'(1)));
+        end
+      end
+      if (i_addr_update.valid) begin
+        assume (f_pre_issue_needs_lq_q);
+        assume (i_addr_update.rob_tag == f_pre_issue_rob_tag_q);
+      end
+      assume (!i_sq_forward.can_forward || i_sq_forward.match);
+      if (i_mem_read_valid) begin
+        if (i_mem_read_is_cached) assume (cs_valid[i_mem_read_id]);
+        else assume (mem_outstanding || drop_mem_response_pending);
+      end
+      if (!o_fu_complete.valid) assume (!i_result_accepted);
+    end
+  end
+
+  // Aggregated inductive invariants (single-cell checks independent of DEPTH).
+  logic f_port1_rob_invariants;
+  logic f_port1_dep_invariants;
+  logic f_port1_stage_invariants;
+  logic f_port1_amo_tracker_invariants;
+  always_comb begin
+    f_port1_rob_invariants =
+        (f_rob_count_q <= FRobCountW'(FRobDepth)) &&
+        ((f_rob_count_q + FRobCountW'(f_dep_head_retire_q)) <= FRobCountW'(FRobDepth)) &&
+        (!f_dep_head_valid_q ? (lq_valid == '0) :
+         ((dep_head_q + ReorderBufferTagWidth'(f_dep_head_retire_q)) == f_rob_head_q)) &&
+        $onehot0(rob_head_match_q);
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (lq_valid[i]) begin
+        f_port1_rob_invariants &=
+            ({1'b0, ReorderBufferTagWidth'(lq_rob_tag[i] - f_rob_head_q)} < f_rob_count_q);
+      end
+      for (int unsigned j = i + 1; j < DEPTH; j++) begin
+        if (lq_valid[i] && lq_valid[j]) begin
+          f_port1_rob_invariants &= (lq_rob_tag[i] != lq_rob_tag[j]);
+        end
+      end
+    end
+
+    f_port1_dep_invariants =
+        ((dep_replaced_oh & sq_check_in_flight_mask) == '0) &&
+        ((dep_replaced_oh & lq_issued) == '0) &&
+        ((dep_replaced_oh & lq_data_valid) == '0) &&
+        ((dep_replaced_oh & lq_addr_valid) == '0) &&
+        ((dep_replaced_oh & addr_update_pre_match_q) == '0) &&
+        (f_dep_head_valid_q || (addr_update_pre_match_q == '0));
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      f_port1_dep_invariants &= (older_amo_block_q[i] == (|older_amo_dep_q[i])) &&
+          (!older_amo_block_q[i] || issue_block_q[i]);
+      if (lq_valid[i] && !lq_addr_valid[i] && dep_identity_valid_q[i] && f_dep_head_valid_q) begin
+        f_port1_dep_invariants &= (addr_update_pre_match_q[i] ==
+            (f_pre_issue_needs_lq_q && (lq_rob_tag[i] == f_pre_issue_rob_tag_q)));
+      end
+      for (int unsigned j = 0; j < DEPTH; j++) begin
+        if (lq_valid[i] && lq_valid[j] && dep_identity_valid_q[i] && dep_identity_valid_q[j] &&
+            lq_is_amo[j] && !lq_data_valid[j] &&
+            is_older_than(lq_rob_tag[j], lq_rob_tag[i], f_rob_head_q)) begin
+          f_port1_dep_invariants &= older_amo_dep_q[i][j];
+        end
+      end
+    end
+
+    f_port1_stage_invariants =
+        (sq_check_pending_copy == {3{sq_check_pending}}) &&
+        (sq_check_in_flight_mask == (sq_check_pending ? (DEPTH'(1) << sq_check_idx) : '0)) &&
+        (sq_check_pending || !probe_launched_q);
+    if (sq_check_pending) begin
+      f_port1_stage_invariants &=
+          lq_valid[sq_check_idx] && !lq_data_valid[sq_check_idx] &&
+          dep_identity_valid_q[sq_check_idx] &&
+          (lq_is_amo[sq_check_idx] == sq_check_is_amo_q) &&
+          (lq_rob_tag[sq_check_idx] == sq_check_rob_tag_q) &&
+          (sq_check_is_cached_region == is_cached_addr(sq_check_addr_q)) &&
+          (lq_issued[sq_check_idx] == probe_launched_q) &&
+          (!probe_launched_q || !sq_check_is_amo_q);
+    end
+
+    f_port1_amo_tracker_invariants =
+        ((amo_state == AMO_IDLE) || (amo_state == AMO_WRITE_ACTIVE) ||
+         (amo_state == AMO_COMPUTE)) &&
+        (!(&cs_valid) || cached_launch_hold_q) &&
+        (probe_launched_q ? $onehot(cs_spec) : (cs_spec == '0));
+    if (amo_state != AMO_IDLE) begin
+      f_port1_amo_tracker_invariants &=
+          lq_valid[amo_entry_idx] && lq_is_amo[amo_entry_idx] &&
+          !lq_data_valid[amo_entry_idx] && lq_issued[amo_entry_idx] &&
+          dep_identity_valid_q[amo_entry_idx] &&
+          (lq_rob_tag[amo_entry_idx] == f_rob_head_q);
+    end
+    if (mem_outstanding) begin
+      f_port1_amo_tracker_invariants &=
+          lq_valid[fast_idx] && lq_issued[fast_idx] && !lq_data_valid[fast_idx] &&
+          dep_identity_valid_q[fast_idx] &&
+          (lq_is_amo[fast_idx] == fast_is_amo) &&
+          (lq_rob_tag[fast_idx] == fast_rob_tag) &&
+          (!fast_is_amo || ((fast_rob_tag == f_rob_head_q) && (amo_state == AMO_IDLE))) &&
+          ((amo_state == AMO_IDLE) || (fast_idx != amo_entry_idx)) &&
+          !(sq_check_pending && (sq_check_idx == fast_idx));
+    end
+    for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+      if (cs_spec[sl]) begin
+        f_port1_amo_tracker_invariants &=
+            cs_valid[sl] && !cs_drop[sl] && !cs_is_amo[sl] &&
+            probe_launched_q && sq_check_pending && (cs_idx[sl] == sq_check_idx);
+      end
+      if (cs_valid[sl] && !cs_drop[sl]) begin
+        f_port1_amo_tracker_invariants &=
+            lq_valid[cs_idx[sl]] && lq_issued[cs_idx[sl]] && !lq_data_valid[cs_idx[sl]] &&
+            dep_identity_valid_q[cs_idx[sl]] &&
+            (lq_is_amo[cs_idx[sl]] == cs_is_amo[sl]) &&
+            (lq_rob_tag[cs_idx[sl]] == cs_rob_tag[sl]) &&
+            (!cs_is_amo[sl] ||
+             (!cs_spec[sl] && (cs_rob_tag[sl] == f_rob_head_q) && (amo_state == AMO_IDLE))) &&
+            ((amo_state == AMO_IDLE) || (cs_idx[sl] != amo_entry_idx)) &&
+            (cs_spec[sl] || !(sq_check_pending && (sq_check_idx == cs_idx[sl]))) &&
+            (!mem_outstanding || (cs_idx[sl] != fast_idx));
+      end
+      for (int sl2 = sl + 1; sl2 < int'(CachedSlots); sl2++) begin
+        if (cs_valid[sl] && !cs_drop[sl] && cs_valid[sl2] && !cs_drop[sl2]) begin
+          f_port1_amo_tracker_invariants &= (cs_idx[sl] != cs_idx[sl2]);
+        end
+      end
+    end
+  end
+
+  always_comb begin
+    if (i_rst_n) begin
+      p_amo_port1_exclusive :
+      assert (!(amo_data_wr_fire && (cache_hit_fast_path || sq_do_forward)));
+      p_amo_port1_rob_invariants : assert (f_port1_rob_invariants);
+      p_amo_port1_dep_invariants : assert (f_port1_dep_invariants);
+      p_amo_port1_stage_invariants : assert (f_port1_stage_invariants);
+      p_amo_port1_tracker_invariants : assert (f_port1_amo_tracker_invariants);
+    end
+  end
+
+  always_comb begin
+    if (i_rst_n) begin
+      cover_amo_port1_wr_with_younger_load :
+      cover (f_amo_wr_port1_fire && f_younger_load_blocked);
+      cover_amo_port1_then_sq_forward :
+      cover (f_amo_wr_with_younger_seen_q && sq_do_forward && !i_flush_all && lq_data_we[1]);
+      cover_amo_port1_l0_hit :
+      cover (cache_hit_fast_path && !i_flush_all && lq_data_we[1]);
+    end
+  end
+`endif  // F_LQ_PORT1_AMO_PROOF
 `endif  // FORMAL
 
 `ifndef SYNTHESIS

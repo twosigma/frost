@@ -103,12 +103,18 @@ CBOZ_BLOCK_BYTES = 64
 CBOP_BLOCK_BYTES = 64
 ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_ssu64xl_svade_svinval_svnapot_svpbmt_svvptc"
 
-# X3 implements V with ELEN 64 and VLEN 256, and its 1 GiB DDR map carries an
+# X3 implements V with ELEN 64, VLEN 256 and its vector sub-extensions
+# (Zvfhmin, Zvfh, Zvbb/Zvkb, Zvbc, Zvkned, Zvknha, Zvknhb, Zvkg, Zvkt and the
+# NIST aggregates Zvkn, Zvknc and Zvkng), and its 1 GiB DDR map carries an
 # uncached alias for Svpbmt. Default VCU118 builds are scalar; opt-in VCU118
 # --vector builds enable V with ELEN 64 and VLEN 256. Both VCU118 builds share
 # the 2 GiB DDR map with no uncached alias, so VCU118 device trees omit svpbmt.
 X3_VECTOR_EXTENSIONS = (
-    "zve32x", "zve32f", "zve64x", "zve64f", "zve64d",
+    "zvbb", "zvbc",
+    "zve32f", "zve32x", "zve64d", "zve64f", "zve64x",
+    "zvfh", "zvfhmin",
+    "zvkb", "zvkg", "zvkn", "zvknc", "zvkned", "zvkng", "zvknha", "zvknhb",
+    "zvkt",
     "zvl32b", "zvl64b", "zvl128b", "zvl256b",
 )  # fmt: skip
 X3_ISA_EXTENSIONS = (
@@ -121,8 +127,17 @@ X3_ISA_EXTENSIONS = (
 X3_ISA_STRING = "rv64imafdcv_" + "_".join(X3_ISA_EXTENSIONS[7:])
 VCU118_ISA_EXTENSIONS = tuple(ext for ext in ISA_EXTENSIONS if ext != "svpbmt")
 VCU118_ISA_STRING = "rv64imafdc_" + "_".join(VCU118_ISA_EXTENSIONS[6:])
-VCU118_VECTOR_ISA_EXTENSIONS = tuple(
-    ext for ext in X3_ISA_EXTENSIONS if ext != "svpbmt"
+# Keep the opt-in VCU118 vector extension list separate from X3_VECTOR_EXTENSIONS on purpose.
+VCU118_VECTOR_EXTENSIONS = (
+    "zve32x", "zve32f", "zve64x", "zve64f", "zve64d",
+    "zvl32b", "zvl64b", "zvl128b", "zvl256b",
+)  # fmt: skip
+VCU118_VECTOR_ISA_EXTENSIONS = (
+    *VCU118_ISA_EXTENSIONS[:6],
+    "v",
+    *VCU118_ISA_EXTENSIONS[6 : VCU118_ISA_EXTENSIONS.index("smaia")],
+    *VCU118_VECTOR_EXTENSIONS,
+    *VCU118_ISA_EXTENSIONS[VCU118_ISA_EXTENSIONS.index("smaia") :],
 )
 VCU118_VECTOR_ISA_STRING = "rv64imafdcv_" + "_".join(VCU118_VECTOR_ISA_EXTENSIONS[7:])
 

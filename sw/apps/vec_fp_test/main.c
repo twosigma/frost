@@ -2783,6 +2783,93 @@ static void fp_csr_accesses(unsigned long status)
     VT_CSR_WRITE(mstatus, status);
 }
 
+/* Zfa FLI.H (funct7 1111010, rs2 00001, funct3 000) is required when Zvfh is
+ * implemented. Check all 32 NaN-boxed half-precision constants, fflags, frm
+ * independence, FS dirtying, VS=Off legality, FS=Off trapping, and reserved
+ * funct3 trapping. */
+#define FLI_H_WORD(idx, f3, rd)                                                                    \
+    ((0x7au << 25) | (1u << 20) | (((unsigned) (idx)) << 15) | (((unsigned) (f3)) << 12) |         \
+     (((unsigned) (rd)) << 7) | 0x53u)
+
+#define CHECK_FLI_H(idx, h16)                                                                      \
+    do {                                                                                           \
+        uint64_t fli_val;                                                                          \
+        VT_CSR_WRITE(fflags, 0);                                                                   \
+        __asm__ volatile(".word %1\nfmv.x.d %0, f11"                                               \
+                         : "=r"(fli_val)                                                           \
+                         : "i"(FLI_H_WORD((idx), 0, 11))                                           \
+                         : "f11", "memory");                                                       \
+        VT_EQ(fli_val, 0xffffffffffff0000ull | (uint64_t) (h16), "FLI.H constant " #idx);          \
+        VT_EQ(VT_CSR_READ(fflags), 0, "FLI.H raises no flags");                                    \
+        VT_EQ(vt_trap_count, 0, "FLI.H does not trap");                                            \
+    } while (0)
+
+static void check_fli_h(unsigned long status)
+{
+    uint64_t value;
+    VT_CSR_WRITE(mstatus, status);
+    VT_CSR_WRITE(frm, 0);
+    CHECK_FLI_H(0, 0xbc00u);
+    CHECK_FLI_H(1, 0x0400u);
+    CHECK_FLI_H(2, 0x0100u);
+    CHECK_FLI_H(3, 0x0200u);
+    CHECK_FLI_H(4, 0x1c00u);
+    CHECK_FLI_H(5, 0x2000u);
+    CHECK_FLI_H(6, 0x2c00u);
+    CHECK_FLI_H(7, 0x3000u);
+    CHECK_FLI_H(8, 0x3400u);
+    CHECK_FLI_H(9, 0x3500u);
+    CHECK_FLI_H(10, 0x3600u);
+    CHECK_FLI_H(11, 0x3700u);
+    CHECK_FLI_H(12, 0x3800u);
+    CHECK_FLI_H(13, 0x3900u);
+    CHECK_FLI_H(14, 0x3a00u);
+    CHECK_FLI_H(15, 0x3b00u);
+    CHECK_FLI_H(16, 0x3c00u);
+    CHECK_FLI_H(17, 0x3d00u);
+    CHECK_FLI_H(18, 0x3e00u);
+    CHECK_FLI_H(19, 0x3f00u);
+    CHECK_FLI_H(20, 0x4000u);
+    CHECK_FLI_H(21, 0x4100u);
+    CHECK_FLI_H(22, 0x4200u);
+    CHECK_FLI_H(23, 0x4400u);
+    CHECK_FLI_H(24, 0x4800u);
+    CHECK_FLI_H(25, 0x4c00u);
+    CHECK_FLI_H(26, 0x5800u);
+    CHECK_FLI_H(27, 0x5c00u);
+    CHECK_FLI_H(28, 0x7800u);
+    CHECK_FLI_H(29, 0x7c00u);
+    CHECK_FLI_H(30, 0x7c00u);
+    CHECK_FLI_H(31, 0x7e00u);
+
+    /* FLI.H ignores reserved frm values. */
+    VT_CSR_WRITE(frm, 7);
+    __asm__ volatile(".word %1\nfmv.x.d %0, f11"
+                     : "=r"(value)
+                     : "i"(FLI_H_WORD(16, 0, 11))
+                     : "f11", "memory");
+    VT_EQ(value, 0xffffffffffff3c00ull, "FLI.H ignores reserved frm");
+    VT_EQ(vt_trap_count, 0, "FLI.H with reserved frm does not trap");
+    VT_CSR_WRITE(frm, 0);
+
+    /* FLI.H dirties mstatus.FS from Clean and executes when mstatus.VS is Off. */
+    VT_CSR_WRITE(mstatus, (status & ~(VT_MSTATUS_FS | VT_MSTATUS_VS)) | (2ul << 13));
+    __asm__ volatile(".word %1\nfmv.x.d %0, f11"
+                     : "=r"(value)
+                     : "i"(FLI_H_WORD(0, 0, 11))
+                     : "f11", "memory");
+    VT_EQ(value, 0xffffffffffffbc00ull, "FLI.H executes with VS Off");
+    VT_EQ((VT_CSR_READ(mstatus) >> 13) & 3, 3, "FLI.H dirties FS from Clean");
+    VT_EQ((VT_CSR_READ(mstatus) >> 9) & 3, 0, "FLI.H leaves VS Off");
+
+    /* FS Off and nonzero funct3 both raise illegal-instruction traps. */
+    VT_CSR_WRITE(mstatus, status & ~VT_MSTATUS_FS);
+    ILLEGAL(FLI_H_WORD(16, 0, 11));
+    VT_CSR_WRITE(mstatus, status);
+    ILLEGAL(FLI_H_WORD(16, 1, 11));
+    ILLEGAL(FLI_H_WORD(16, 7, 11));
+}
+
 static void special_cases(void)
 {
     uint64_t value;
@@ -2832,6 +2919,7 @@ static void special_cases(void)
     VT_EQ((VT_CSR_READ(mstatus) >> 9) & 3, 3, "vector FP dirties VS");
     fs_changes(status);
     fp_csr_accesses(status);
+    check_fli_h(status);
     VT_CSR_WRITE(mstatus, status & ~VT_MSTATUS_FS);
     ILLEGAL(0x00202073); /* csrrs zero, frm, zero */
     ILLEGAL(0x00305073); /* csrrwi zero, fcsr, 0 */

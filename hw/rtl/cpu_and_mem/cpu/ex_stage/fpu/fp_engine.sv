@@ -110,7 +110,7 @@ module fp_engine (
     CL_CLASS,
     CL_SGNJ,
     CL_MVXF,    // FMV.X.W, FMV.X.D, FMV.X.H
-    CL_MVFX,    // FMV.W.X, FMV.D.X, FMV.H.X, and Zfa FLI.S, FLI.D
+    CL_MVFX,    // FMV.W.X, FMV.D.X, FMV.H.X, and Zfa FLI.S, FLI.D, FLI.H
     CL_RND      // Zfa FROUND, FROUNDNX
   } op_class_e;
 
@@ -119,7 +119,7 @@ module fp_engine (
     logic       src_d;  // FP source operands are double precision
     logic       dst_d;  // FP result is double precision
     logic       src_h;  // FP source operand is half precision (FCVT.*.H, FMV.X.H)
-    logic       dst_h;  // FP result is half precision (FCVT.H.*, FMV.H.X)
+    logic       dst_h;  // FP result is half precision (FCVT.H.*, FMV.H.X, FLI.H)
     logic       neg_b;  // FSUB: negate operand 2
     logic       neg_p;  // FNMSUB, FNMADD: negate the product
     logic       neg_c;  // FMSUB, FNMADD: negate the addend
@@ -405,6 +405,11 @@ module fp_engine (
         d.alt   = 1'b1;
         d.dst_d = 1'b1;
       end
+      riscv_pkg::FLI_H: begin
+        d.cls   = CL_MVFX;
+        d.alt   = 1'b1;
+        d.dst_h = 1'b1;
+      end
       riscv_pkg::FMINM_S: begin
         d.cls = CL_MINMAX;
         d.alt = 1'b1;
@@ -549,8 +554,10 @@ module fp_engine (
 
   // Zfa FLI constants: -1, the minimum normal, 2^-16, 2^-15, 2^-8, 2^-7,
   // 2^-4, 2^-3, 0.25, 0.3125, 0.375, 0.4375, 0.5, 0.625, 0.75, 0.875, 1,
-  // 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 8, 16, 128, 256, 2^15, 2^16, +inf, NaN.
-  function automatic logic [63:0] fli_value(input logic [4:0] idx, input logic is_d);
+  // 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 8, 16, 128, 256, 2^15, 2^16 (+inf in H),
+  // +inf, NaN.
+  function automatic logic [63:0] fli_value(input logic [4:0] idx, input logic is_d,
+                                            input logic is_h);
     logic signed [7:0] e;
     logic [1:0] m;
     begin
@@ -578,11 +585,21 @@ module fp_engine (
       if ((idx >= 5'd8 && idx <= 5'd19) || idx == 5'd21) m = idx[1:0];
       if (idx == 5'd22) m = 2'b10;
       if (is_d) fli_value = {idx == 5'd0, 11'(12'sd1023 + 12'(e)), m, 50'b0};
+      else if (is_h) fli_value = {48'hFFFF_FFFF_FFFF, idx == 5'd0, 5'(9'sd15 + 9'(e)), m, 8'b0};
       else fli_value = {32'hFFFF_FFFF, idx == 5'd0, 8'(9'sd127 + 9'(e)), m, 21'b0};
       case (idx)
-        5'd1: fli_value = is_d ? 64'h0010_0000_0000_0000 : 64'hFFFF_FFFF_0080_0000;
-        5'd30: fli_value = is_d ? 64'h7FF0_0000_0000_0000 : 64'hFFFF_FFFF_7F80_0000;
-        5'd31: fli_value = is_d ? 64'h7FF8_0000_0000_0000 : 64'hFFFF_FFFF_7FC0_0000;
+        5'd1:
+        fli_value = is_d ? 64'h0010_0000_0000_0000 :
+                    is_h ? 64'hFFFF_FFFF_FFFF_0400 : 64'hFFFF_FFFF_0080_0000;
+        5'd2: if (is_h) fli_value = 64'hFFFF_FFFF_FFFF_0100;
+        5'd3: if (is_h) fli_value = 64'hFFFF_FFFF_FFFF_0200;
+        5'd29: if (is_h) fli_value = 64'hFFFF_FFFF_FFFF_7C00;
+        5'd30:
+        fli_value = is_d ? 64'h7FF0_0000_0000_0000 :
+                    is_h ? 64'hFFFF_FFFF_FFFF_7C00 : 64'hFFFF_FFFF_7F80_0000;
+        5'd31:
+        fli_value = is_d ? 64'h7FF8_0000_0000_0000 :
+                    is_h ? 64'hFFFF_FFFF_FFFF_7E00 : 64'hFFFF_FFFF_7FC0_0000;
         default: ;
       endcase
     end
@@ -2502,7 +2519,7 @@ module fp_engine (
       opa_q <= i_src1;
       opb_q <= i_src2;
       opc_q <= i_src3;
-      fli_q <= fli_value(i_fli_index, i_op == riscv_pkg::FLI_D);
+      fli_q <= fli_value(i_fli_index, i_op == riscv_pkg::FLI_D, i_op == riscv_pkg::FLI_H);
     end
     if (state_q == ST_DEC1) begin
       // Only operand A can be half precision (the Zfhmin conversions).
