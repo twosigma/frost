@@ -65,9 +65,9 @@ module cpu_ooo #(
     // independently of this profiling option.
     parameter int unsigned PERF_COUNTERS = 0,
     // Sets of the second-level TLB in front of the walker (four ways each:
-    // 128 sets are 512 entries). Zero removes it and sends every L1 miss to
+    // 512 sets are 2,048 entries). Zero removes it and sends every L1 miss to
     // the walker.
-    parameter int unsigned L2TLB_SETS = 128,
+    parameter int unsigned L2TLB_SETS = 512,
     // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
     // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
     parameter bit VECTOR = 1'b0,

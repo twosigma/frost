@@ -687,7 +687,7 @@ out-of-range leaf PPNs), non-canonical virtual addresses, and the `mstatus.TVM`
 and `mstatus.TSR` trap-intercept bits. Strands run across M (`MPRV=1`), S, and
 U modes, delegate traps selectively to S-mode, read `mtval`/`stval`,
 `mepc`/`sepc`, and `mcause`/`scause` into integer registers, switch ASIDs
-without `SFENCE.VMA` while spilling the 16-entry L1 DTLB into the 512-entry L2
+without `SFENCE.VMA` while spilling the 16-entry L1 DTLB into the 2,048-entry L2
 TLB and wrapping the 32-entry superpage side array, and mutate cached PTEs
 followed by all four `SFENCE.VMA` forms (`(x0, x0)`, `(va, x0)`, `(x0, asid)`,
 `(va, asid)`).

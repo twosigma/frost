@@ -22,7 +22,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `if_stage/` | Fetch PC control, branch prediction, instruction alignment |
 | `pd_stage/` | Slot-1 instruction from the native word or its predecoded RVC expansion, early source fields, the PD branch redirect |
 | `id_stage/` | Decode for both slots |
-| `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), 512-entry second-level TLB with a 32-entry superpage side array, shared page-table walker |
+| `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), 2,048-entry second-level TLB with a 32-entry superpage side array, shared page-table walker |
 | `misaligned/` | Misaligned-access engine (`ma_engine`) and its checks (`ma_pkg`) |
 | `csr/` | CSR file; CSR instructions execute at commit |
 | `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry, and the no-CSR take that starts the misaligned-access engine |
@@ -606,17 +606,18 @@ raises a page fault for software to handle. SFENCE.VMA, `satp` accesses, and
 flight and clear the walker's pointer cache; which TLB entries they remove
 is described under "Address-space IDs and SFENCE.VMA" below.
 
-A 4-way, 128-set second-level TLB (`l2tlb.sv`, 512 entries, 2 MiB of 4 KiB
+A 4-way, 512-set second-level TLB (`l2tlb.sv`, 2,048 entries, 8 MiB of 4 KiB
 pages, block RAM) sits between the two MMUs and the walker. An L1 TLB miss
-that hits there is answered two cycles after the request fires, in place of
+that hits there is answered two cycles after the request fires, with the
+request port ready again on the response cycle, in place of
 a walk of one to three dependent line reads; a miss reaches the walker one
 cycle later than it would without the array. It stores the clean 4 KiB
 translations that the walker returns. Clean 2 MiB and 1 GiB leaves go to a
 32-entry fully associative superpage side array beside it (`SP_ENTRIES`):
 tags, ASIDs, global bits and levels in flops, compared level-masked in the
 same cycle as the block RAM ways, and PPNs and permissions in distributed RAM,
-read in the next cycle, so a superpage hit answers three cycles after the
-request fires for any page of its region. Neither array holds negative
+read in the same compare cycle, so a superpage hit also answers two cycles after
+the request fires for any page of its region. Neither array holds negative
 entries, so a PTE that changes from invalid to valid is seen without
 SFENCE.VMA (Svvptc). SUM and MXR stay out of the entries, so toggling them
 needs no flush. `cpu_ooo` takes `L2TLB_SETS` (0 removes both arrays; any
@@ -648,7 +649,7 @@ its own ASID, or a global entry under any ASID.
   at the head until they have arrived. The ROB exports the head's filter for
   the length of the SFENCE window.
 - In the second-level TLB, a page flush (with or without an ASID) reads one
-  set, an ASID flush without a page scans all 128 sets, and flush-all clears
+  set, an ASID flush without a page scans all 512 sets, and flush-all clears
   the valid bits in one cycle. The superpage
   side array applies the flush's filter to all its entries in the flush's
   first cycle; a page flush removes the superpage whose region holds the page.

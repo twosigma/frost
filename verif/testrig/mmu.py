@@ -16,7 +16,7 @@
 
 Sail walks memory on every translated access and treats SFENCE.VMA as a
 privilege check, whereas FROST caches translations across its L1 ITLB, L1 DTLB,
-512-entry L2 TLB, 32-entry superpage side array, and upper-level walk cache.
+2,048-entry L2 TLB, 32-entry superpage side array, and upper-level walk cache.
 The two agree whenever each non-zero ASID names one page-table hierarchy and
 every modification of an already-valid PTE is paired with a matching
 SFENCE.VMA, while invalid-to-valid upgrades need no fence under Svvptc.
@@ -898,7 +898,7 @@ class Generator:
         insns += load_u64(TMP_A, make_satp(0x1234, ROOT_B, mode=bad_mode))
         insns += [csrw("satp", TMP_A), csrr(self._res(), "satp")]
 
-        # Spill the 16-entry L1 DTLB into the 512-entry L2 TLB across 18 pages,
+        # Spill the 16-entry L1 DTLB into the 2,048-entry L2 TLB across 18 pages,
         # touching the seeded marker pages first so they evict from L1 into L2.
         seeded = list(range(SEEDED_POOL_PAGES))
         rng.shuffle(seeded)
