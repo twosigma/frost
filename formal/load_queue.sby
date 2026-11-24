@@ -6,6 +6,8 @@ cover_no_prepare_busy queue no_prepare_busy
 bmc_probe_launch queue probe_launch
 cover_probe_launch queue probe_launch
 prove_pre_match
+prove_port1_amo port1_amo
+cover_port1_amo port1_amo
 
 [options]
 # Allowances are about 2.2 times each task's time on a development host
@@ -17,6 +19,8 @@ cover: timeout 600
 cover_no_prepare_busy: timeout 600
 cover_probe_launch: timeout 600
 prove_pre_match: timeout 300
+prove_port1_amo: timeout 300
+cover_port1_amo: timeout 300
 bmc: mode bmc
 # Limit depth for runtime; the four cached-load slots make the model large.
 bmc: depth 10
@@ -33,6 +37,10 @@ cover_probe_launch: mode cover
 cover_probe_launch: depth 20
 prove_pre_match: mode prove
 prove_pre_match: depth 3
+prove_port1_amo: mode prove
+prove_port1_amo: depth 1
+cover_port1_amo: mode cover
+cover_port1_amo: depth 14
 
 [engines]
 smtbmc boolector
@@ -53,12 +61,20 @@ prove_pre_match: read -sv coherent_lq_issue_selector.sv
 prove_pre_match: read -sv coherent_lq_candidate_select.sv
 prove_pre_match: read -formal -sv coherent_lq_address_store.sv
 prove_pre_match: read -formal -D F_LQ_PREMATCH_ONLY -sv load_queue.sv
+port1_amo: read -sv coherent_lq_issue_selector.sv
+port1_amo: read -sv coherent_lq_candidate_select.sv
+port1_amo: read -formal -sv coherent_lq_address_store.sv
+port1_amo: read -formal -DSYNTHESIS -DF_LQ_PREMATCH_ONLY -DF_LQ_PORT1_AMO_PROOF -sv load_queue.sv
 no_prepare_busy: chparam -set PREPARE_LOAD_WHILE_BUSY 0 load_queue
 probe_launch: chparam -set PROBE_LAUNCH 1 -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
+port1_amo: chparam -set DEPTH 4 -set PROBE_LAUNCH 1 -set ENABLE_SQ_FORWARD_FAST_PATH 1 -set L0_CACHE_DEPTH 8 load_queue
 hierarchy -top load_queue
 script free_undefined.ys
-prep -top load_queue
+~port1_amo: prep -top load_queue
+port1_amo: prep -flatten -top load_queue
 prove_pre_match: select -assert-none t:$assume
+port1_amo: select -assert-count 5 t:$check r:FLAVOR=assert %i load_queue/p_amo_port1_* %i
+port1_amo: select -assert-count 3 t:$check r:FLAVOR=cover %i load_queue/cover_amo_port1_* %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
