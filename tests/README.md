@@ -1173,7 +1173,9 @@ writes those checks into the program. By default the finished program runs on
 Spike. The frost image supplies the pinned tools in `/opt/riscv-vector-tests`.
 [Upstream suite](https://github.com/chipsalliance/riscv-vector-tests)
 
-`--rtl` selects the core's vector ISA. Each vector length has 3,017 generated
+`--rtl` selects the extensions in the core's vector ISA that the pinned
+generator supports (`V`, `Zvfhmin`, `Zvfh`, `Zvbb`, `Zvbc`, `Zvkg`, `Zvkned`,
+and `Zvknha`; the generator omits `Zvknhb`). Each vector length has 3,017 generated
 files across 665 instruction forms. The classes are `float` (1,243),
 `integer` (1,043), `load-store` (487), `mask-permute-reduce` (163), `bitmanip`
 (63) and `crypto` (18). The Spike selection also includes the upstream bfloat16
@@ -2198,7 +2200,7 @@ and Fast Python Tests jobs locally.
 | Cocotb unit benches (two jobs of about equal duration, split by the `cocotb_unit_a` and `cocotb_unit_b` marks), DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke and reset, cache counters over OpenOCD | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 128 GiB, with the Yosys jobs covering the 1 GiB default |
 | Architecture compliance | BRAM and DDR, in groups of extensions, including CMO's Zicboz `cbo.zero` case in both tiers; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards; only the I B C group in BRAM collects coverage; a fast check compares the workflow's groups with the runner's supported extensions |
-| riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
+| riscv-tests | Physical mode in BRAM and DDR (including `rv64mzicbo`), user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build; a fast check compares the workflow's suites with the runner's supported suites |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
 | TestRIG vector | Two jobs (`core` and `segment`) at each of VLEN 128, 256, and 512 (six jobs total) on main pushes and pull requests labelled `run-ci`. Across both shards, each vector length compares 12 seeded vector traces, source-width and directed vector traces (state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride, strided, indexed, fault-only-first, integer comparison, carry/borrow, mask-register, integer multiply-add, integer scalar/merge, widening and narrowing integer, fixed-point, single-width FP, whole-register, widening FP, permute, reduction, and `vector_segment.S` plus five generated segment matrix traces) against Sail, plus VLEN 128 result-control checks |

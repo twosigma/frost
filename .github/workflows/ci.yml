@@ -714,12 +714,12 @@ jobs:
       matrix:
         include:
           - label: all suites
-            suites: rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64uzba rv64uzbb rv64uzbc rv64uzbs rv64uzbkb rv64mi rv64si
+            suites: rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64uzba rv64uzbb rv64uzbc rv64uzbs rv64uzbkb rv64mi rv64si rv64mzicbo
             mem_config: bram
             env: p
             coverage: 1
           - label: all suites
-            suites: rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64uzba rv64uzbb rv64uzbc rv64uzbs rv64uzbkb rv64mi rv64si
+            suites: rv64ui rv64um rv64ua rv64uc rv64uf rv64ud rv64uzba rv64uzbb rv64uzbc rv64uzbs rv64uzbkb rv64mi rv64si rv64mzicbo
             mem_config: ddr
             env: p
             coverage: 0
