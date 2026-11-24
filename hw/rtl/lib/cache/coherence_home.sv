@@ -34,7 +34,7 @@ module coherence_home #(
     // PREFETCH_SLOTS); zero shares every slot.
     parameter int unsigned PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
     parameter bit ULTRA = 1'b1,
-    // An engine's demand lookup reads its set's ways beside the tag read
+    // An engine lookup that needs data reads its set's ways beside the tag read
     // (coherence_home_array, UltraRAM only); 0 reads the hit row after the
     // decision.
     parameter bit PARALLEL_READ = 1'b1,
@@ -196,7 +196,7 @@ module coherence_home #(
   (* max_fanout = 64 *) logic run;
   logic fatal_event, work_valid, work_error;
   logic [ADDR_WIDTH-1:0] work_addr_out;
-  logic work_prefetch, work_cmo;
+  logic work_prefetch, work_cmo, work_no_spec;
   logic array_init_done, direct_tag_valid;
   logic array_req_valid, array_req_spec;
   logic [ADDR_WIDTH-1:0] array_req_addr;
@@ -262,9 +262,10 @@ module coherence_home #(
   logic [ADDR_WIDTH+10:0] ack_out;
   coh_g_t result;
   logic array_response, array_hit, array_available, array_claim;
-  // Parallel reads: an engine's demand lookup asks for one (lookup_spec), the
-  // response reports it in flight (array_spec), and the engine whose resident
-  // decision needs data takes it (engine_take_spec).
+  // Parallel reads: an engine lookup that needs data asks for one
+  // (lookup_spec / array_req_spec), the response reports it in flight
+  // (array_spec), and the engine whose resident decision needs data takes it
+  // (engine_take_spec).
   logic lookup_spec, array_spec;
   logic [RESULTS-1:0] engine_take_spec;
   logic [TokenBits-1:0] array_token, array_data_token, array_updated_token, array_query_token;
@@ -330,7 +331,7 @@ module coherence_home #(
   // acceptance and its response, so the room flags registered from the
   // live flags are exact at the decision but for slots freed meanwhile.
   logic lookup_prefetch_q, lookup_fill_q, prefetch_fill_q, prefetch_room_q, wb_two_free_q;
-  logic [RESULTS-1:0] engine_prefetch_q, engine_nofill_q;
+  logic [RESULTS-1:0] engine_prefetch_q, engine_no_spec_q, engine_nofill_q;
   // Zicbom (cbo.clean, cbo.flush, cbo.inval on one line; see the cache
   // README, Zicbom write-back). lookup_cmo_q: the lookup in progress is a
   // CMO's, captured with its token as lookup_prefetch_q is. A CMO never takes
@@ -503,6 +504,10 @@ module coherence_home #(
         opcode == coherence_pkg::ReadOnceIF || opcode == coherence_pkg::ReadOncePTW ||
         opcode == coherence_pkg::DMARead;
   endfunction
+  function automatic logic no_spec_opcode(input logic [3:0] opcode);
+    no_spec_opcode = opcode == coherence_pkg::Prefetch || opcode == coherence_pkg::DMAWrite ||
+        coherence_pkg::is_cmo(opcode);
+  endfunction
   // Reset clears the home at its flops. A stop reaches internal work and
   // outputs through this flop, so no selection or payload path starts at the
   // fatal logic. A home failure stops the home on the edge that sets o_fatal.
@@ -554,6 +559,7 @@ module coherence_home #(
       .o_work_addr(work_addr_out),
       .o_work_prefetch(work_prefetch),
       .o_work_cmo(work_cmo),
+      .o_work_no_spec(work_no_spec),
       .o_accepted,
       .o_accepted_opcode,
       .o_accepted_q,
@@ -672,9 +678,10 @@ module coherence_home #(
 `endif
         .o_fatal(engine_fatal[engine])
     );
-    // The engine's work is a prefetch, and that prefetch may not allocate a
-    // fill: registered with the work, so the tag decision and the victim
-    // terms read one flop per engine.
+    // The engine's work is a prefetch, a no-data lookup (prefetch, DMAWrite
+    // or Zicbom), a prefetch that may not allocate a fill, or a Zicbom CMO:
+    // registered with the work, so the tag decision, parallel-read request
+    // and victim terms read one flop per engine.
     if (FAST_TAG_LAUNCH) begin : gen_engine_fast
       wire engine_direct_lookup = direct_tag_valid && work_buffer == ResultBits'(engine);
       assign engine_lookup_ready = tag_ready[engine] || engine_direct_lookup;
@@ -682,11 +689,13 @@ module coherence_home #(
         if (i_rst) begin
           engine_counted_q[engine]  <= 1'b0;
           engine_prefetch_q[engine] <= 1'b0;
+          engine_no_spec_q[engine]  <= 1'b0;
           engine_nofill_q[engine]   <= 1'b0;
           engine_cmo_q[engine]      <= 1'b0;
         end else if (work_valid && work_buffer == ResultBits'(engine)) begin
           engine_counted_q[engine]  <= work_counted;
           engine_prefetch_q[engine] <= work_prefetch;
+          engine_no_spec_q[engine]  <= work_no_spec;
           engine_nofill_q[engine]   <= work_nofill;
           engine_cmo_q[engine]      <= work_cmo;
         end
@@ -701,11 +710,13 @@ module coherence_home #(
         if (i_rst) begin
           engine_counted_q[engine]  <= 1'b0;
           engine_prefetch_q[engine] <= 1'b0;
+          engine_no_spec_q[engine]  <= 1'b0;
           engine_nofill_q[engine]   <= 1'b0;
           engine_cmo_q[engine]      <= 1'b0;
         end else if (work_valid && work_buffer == ResultBits'(engine)) begin
           engine_counted_q[engine]  <= work_counted;
           engine_prefetch_q[engine] <= work.opcode == coherence_pkg::Prefetch;
+          engine_no_spec_q[engine]  <= no_spec_opcode(work.opcode);
           engine_nofill_q[engine]   <= work_nofill;
           engine_cmo_q[engine]      <= coherence_pkg::is_cmo(work.opcode);
         end
@@ -865,7 +876,7 @@ module coherence_home #(
     assign array_req_valid = (tag_request_valid && run) || direct_tag_valid;
     assign array_req_addr = !tag_request_valid ? work_addr_out : tag_request.addr;
     assign array_req_token = !tag_request_valid ? TokenBits'(work_buffer) : tag_request.token;
-    assign array_req_spec = !tag_request_valid ? (PARALLEL_READ && !work_prefetch) : lookup_spec;
+    assign array_req_spec = !tag_request_valid ? (PARALLEL_READ && !work_no_spec) : lookup_spec;
 `ifndef SYNTHESIS
     assign f_array_busy_q = array_busy_q;
     assign f_other_tag_valid = other_tag_valid;
@@ -1002,10 +1013,10 @@ module coherence_home #(
     end
   end
   assign o_prefetch_room = prefetch_room_q;
-  // A demand engine's lookup reads its set's ways in parallel; a prefetch
-  // reads no data.
+  // An engine lookup that needs data reads its set's ways in parallel; a
+  // prefetch, DMAWrite or Zicbom lookup reads no data.
   assign lookup_spec = PARALLEL_READ && int'(tag_request.token) < RESULTS &&
-      !engine_prefetch_q[ResultBits'(tag_request.token)];
+      !engine_no_spec_q[ResultBits'(tag_request.token)];
   // Way exclusion uses the registered set comparisons below. The array reads
   // it in selection and response cycles, when the query has held since the
   // edge before, and no fill is allocated and no put accepted on that edge
@@ -2711,8 +2722,19 @@ module coherence_home #(
         assert (int'(engine_tid[engine]) < COMPLETIONS &&
             engine_opcode[engine] == waiting_opcode[CompletionBits'(engine_tid[engine])]);
         assert (engine_prefetch_q[engine] == (engine_opcode[engine] == coherence_pkg::Prefetch));
+        assert (engine_no_spec_q[engine] == no_spec_opcode(engine_opcode[engine]));
         assert (engine_cmo_q[engine] == coherence_pkg::is_cmo(engine_opcode[engine]));
         if (engine_nofill_q[engine]) assert (engine_prefetch_q[engine]);
+      end
+      if (tag_request_valid && run) begin
+        if (int'(tag_request.token) < RESULTS)
+          assert (lookup_spec == (PARALLEL_READ && !no_spec_opcode(
+              engine_opcode[ResultBits'(tag_request.token)]
+          )));
+          else assert (!lookup_spec);
+      end
+      if (direct_tag_valid) begin
+        assert (array_req_spec == (PARALLEL_READ && !no_spec_opcode(work.opcode)));
       end
       for (int fill = 0; fill < FILLS; fill++)
       if (fill_prefetch_q[fill] && fill_phase_q[fill] != FillFree) assert (!fill_write_q[fill]);
@@ -3108,12 +3130,14 @@ module coherence_home #(
     end
 `endif
 `ifdef COHERENCE_HOME_FAST_COVER
-    // Direct tag launch fires for ordinary demands, prefetches and CMOs, and
-    // yields to the tag arbiter when another client or a tag write holds it.
+    // Direct tag launch fires for data-reading demands, prefetches, DMAWrites
+    // and CMOs, and yields to the tag arbiter when another client or a tag
+    // write holds it.
     if (!i_rst) begin
-      cover (direct_tag_valid);
-      cover (direct_tag_valid && work_prefetch);
-      cover (direct_tag_valid && work_cmo);
+      cover (direct_tag_valid && array_req_spec);
+      cover (direct_tag_valid && work_prefetch && !array_req_spec);
+      cover (direct_tag_valid && work.opcode == coherence_pkg::DMAWrite && !array_req_spec);
+      cover (direct_tag_valid && work_cmo && !array_req_spec);
       cover (run && work_valid && !work_error && !direct_tag_valid &&
              (tag_request_valid || f_other_tag_valid || !f_direct_array_ready));
     end

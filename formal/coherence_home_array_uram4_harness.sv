@@ -211,6 +211,8 @@ module coherence_home_array_uram4_harness #(
       p_uram4_open_valid : assert ((dut.read_open_q & ~dut.read_valid_q) == '0);
       p_uram4_final_open_after_stall :
       assert (!dut.read_open_q[DATA_READ_LATENCY] || f_resp_stalled_q);
+      p_uram4_resp_spec_excludes_final :
+      assert (!(o_resp_spec && dut.read_open_q[DATA_READ_LATENCY]));
     end
 
     if (i_rst) begin
@@ -232,7 +234,12 @@ module coherence_home_array_uram4_harness #(
         f_open_q[stage] <= f_open_q[stage-1] && !dut.resolve;
         f_expected_q[stage] <= f_expected_q[stage-1];
       end
-      if (f_check_q[DATA_READ_LATENCY] && !f_open_q[DATA_READ_LATENCY]) begin
+      if (f_known_q && dut.resolve && o_resp_spec && dut.set_q == f_set)
+        p_uram4_open_spec :
+        assert (|(f_check_q[DATA_READ_LATENCY-1:0] & f_open_q[DATA_READ_LATENCY-1:0]));
+      if (f_check_q[DATA_READ_LATENCY] &&
+          (!f_open_q[DATA_READ_LATENCY] ||
+           (dut.resolve && o_resp_spec && i_resp_keep && o_resp_way == f_way))) begin
         p_uram4_read_valid : assert (o_read_valid);
         p_uram4_read_byte : assert (o_read_data[8*f_byte+:8] == f_expected_q[DATA_READ_LATENCY]);
       end

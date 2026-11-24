@@ -766,9 +766,11 @@ The home's probe, tag, update, result and PutAck arbiters use their captured
 selection for validity. Each selected source holds its offer through acceptance.
 An idle engine that receives `i_work_valid` without an error offers its tag
 lookup on that dispatch cycle and holds the offer in `Lookup` until the tag
-arbiter accepts it. With `PARALLEL_READ`, a demand engine's lookup requests a
-parallel read of its set's ways (`i_req_spec`), while a prefetch lookup reads
-tags alone; a resident decision that needs data takes the parallel read
+arbiter accepts it. With `PARALLEL_READ`, an engine lookup that needs data
+requests a parallel read of its set's ways (`i_req_spec`), while a prefetch,
+`DMAWrite`, or Zicbom (`CleanBlock`, `FlushBlock`, `InvalBlock`) lookup reads
+tags alone on both the tag-arbiter path and the `FAST_TAG_LAUNCH` direct-launch
+path; a resident decision that needs data takes the parallel read
 (`o_take_spec` / `i_resp_keep`) and skips the row-read port. A hit service with
 no probe (`GetS`, `LoadReserved`, `GetM`, `GetMZero`) offers a quick result to
 the result arbiter in the cycle its row data arrives and enters `Result`
@@ -814,11 +816,12 @@ An unresolved parallel-read stage blocks data writes to its set until the
 response keeps the selected way (`i_resp_keep`), drops the read, or the stage
 expires.
 An open parallel read can be kept only before stage `DATA_READ_LATENCY`.
-An open read at that output stage has no successor and produces no valid
-data. Reaching it open requires a stalled Reply. The home drives response
-ready with `run`, which stays low after a stop until reset clears the read
-pipeline. A clocked assertion checks that the home never keeps an open read
-at the output stage.
+`o_resp_spec` is restricted to open stages `0` through `DATA_READ_LATENCY - 1`;
+an open read at output stage `DATA_READ_LATENCY` has no successor, produces no
+valid data, and drops. Reaching stage `DATA_READ_LATENCY` open requires a
+stalled Reply. The home drives response ready with `run`, which stays low after
+a stop until reset clears the read pipeline. A clocked assertion checks that
+the home never keeps an open read at the output stage.
 The home control proofs check the keep invariant with `p_keep_before_final`
 in the composed home, where a stop holds until reset.
 In `ULTRA` builds without `FROST_SRAM_MACROS`, way selection reads the tag
