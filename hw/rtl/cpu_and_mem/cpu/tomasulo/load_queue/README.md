@@ -24,6 +24,7 @@ extracts and sign-extends bytes, halfwords and words from a 64-bit beat.
 
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
+| `CACHE_NORMAL_MEMORY` | 0; 1 in FROST | Allow L0 caching of Normal write-through memory (excluding the debug data page) |
 | `DEPTH` | `riscv_pkg::LqDepth` (8) | Queue entries |
 | `L0_CACHE_DEPTH` | `riscv_pkg::LqL0Depth` (128) | L0 entries (see [L0 cache](#l0-cache)) |
 | `ENABLE_L0_FAST_PATH` | 1 | Complete loads from the L0 |
@@ -31,7 +32,11 @@ extracts and sign-extends bytes, halfwords and words from a 64-bit beat.
 | `PREPARE_LOAD_WHILE_BUSY` | `riscv_pkg::PrepareLoadWhileBusy` (1) | Stage the next load while the memory port is busy |
 | `PREISSUE_CANDIDATES`, `PREISSUE_SEL_WIDTH` | 0, 2; 1, 3 in the core | Select one of 2^`PREISSUE_SEL_WIDTH` look-ahead matches and register it (early load wakeup) |
 | `PREISSUE_READY_PICK`, `PREISSUE_RS_DEPTH` | 0, 8; 1, 8 in the core | Compare RS entry tags first, then select a match using each candidate's ready vector |
+| `MEM_RESPONSE_ERRORS` | 0; 1 in the SoC | Capture memory read and AMO-write bus errors into `cdb_stage` so the ROB raises an access fault |
+| `CACHE_UNCACHED_DATA` | 1; 0 in the SoC | Allow L0 caching of uncached local-BRAM reads; with 0, uncached AXI reads bypass the L0 |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, 1 GiB | Cached (DDR) region |
+| `REGISTERED_SECTOR_MATCH` | 0; 1 in the core | Register each entry's same-sector matches against coherent L1D holders and store pushes (described below) |
+| `STORE_STRB_PMA_CHECKED` | 0; 1 in `tomasulo_wrapper` | Producer qualifies `i_cache_store_strb` with the store address's PMA |
 | `PROBE_LAUNCH` | 0; 1 in the core when `CACHED_TIER_EN` is set | An ordinary cached load reads memory in its probe cycle ([Launch during the probe](#launch-during-the-probe)) |
 
 FROST passes a 512-entry L0 when Normal read caching is enabled; the raw LQ

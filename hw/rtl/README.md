@@ -506,7 +506,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation only: 1 delays local instruction AXI responses to exercise variable fetch latency |
 | `frost.sv` | `L1D_NUM_MSHR` | `8` | L1D request endpoints, 1 to 8: one for stores, LR and atomics, the rest for load misses in flight |
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
-| `frost.sv` | `VECTOR` / `VLEN` | `0` / `256` | 1 builds the vector state: `mstatus.VS` and the vector CSRs; `VLEN` is the vector register width, 128, 256 or 512 bits ([CPU README](cpu_and_mem/cpu/README.md#vector-state)) |
+| `frost.sv` | `VECTOR` / `VLEN` | `0` / `256` | 1 builds the RV64V vector unit (VRF, integer, floating-point and crypto execution units, VIQ, VMT, VMU, `vec_cfg_unit`, legality checks, `mstatus.VS` and vector CSRs); `VLEN` is the vector register width, 128, 256 or 512 bits ([CPU README](cpu_and_mem/cpu/README.md#vector-state)) |
 | `frost.sv` | `VECTOR_ADVERTISE` | `0` | 1 requires `VECTOR=1` and sets `misa.V`; X3 enables both with `VLEN=256`, and VCU118 enables both with `--vector`. Software enables the vector state through `mstatus.VS` |
 | `frost.sv` | `MISALIGNED_HW` | `0` | Enables hardware completion of plain misaligned loads and stores to cached DDR. Requires `ENABLE_CACHED_TIER`. The X3, VCU118 and simulation defaults enable it ([CPU README](cpu_and_mem/cpu/README.md#misaligned-accesses)) |
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
