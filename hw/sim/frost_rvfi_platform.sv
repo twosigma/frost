@@ -63,7 +63,7 @@ module frost_rvfi_platform #(
     // line in a single beat.
     parameter int unsigned L2_LINE_BYTES = 64,
     // Direct tag launch in the coherent home (coherence_home FAST_TAG_LAUNCH).
-    parameter bit HOME_FAST_TAG_LAUNCH = 1'b0,
+    parameter bit HOME_FAST_TAG_LAUNCH = 1'b1,
     // Accepted for the production interface; this fixture has no cluster
     // memory and so no links between it and the hart.
     parameter int unsigned MEMORY_LINK_STAGES = 0,

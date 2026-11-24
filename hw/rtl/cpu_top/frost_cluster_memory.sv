@@ -32,7 +32,7 @@ module frost_cluster_memory #(
     parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     parameter int unsigned L2_LINE_BYTES = 64,
     // Direct tag launch in the coherent home (coherence_home FAST_TAG_LAUNCH).
-    parameter bit HOME_FAST_TAG_LAUNCH = 1'b0,
+    parameter bit HOME_FAST_TAG_LAUNCH = 1'b1,
     parameter int unsigned SIM_FAST_MAINT = 0,
     // The hart's uncached instruction fetch block (cpu_memory_fabric
     // FETCH_BYTES).

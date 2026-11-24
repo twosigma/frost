@@ -1152,11 +1152,11 @@ async def l1d_miss_l2_hit_round_trip_latency(dut: Any) -> None:
     assert direct_d_seen == fast
     assert direct_tag_seen == fast
     assert home_d_to_tag == (1 if fast else 3)
-    assert home_d_to_grant == (11 if fast else 13)
+    assert home_d_to_grant == (10 if fast else 12)
     if links == 0 and misses == 1:
-        # Endpoint 0 answers after L1D installation: 29 cycles off, 27 on (-2).
-        assert round_trip == (27 if fast else 29)
+        # Endpoint 0 answers after L1D installation: 27 cycles off, 25 on (-2).
+        assert round_trip == (25 if fast else 27)
     elif links == 0 and misses >= 2:
         # Nonzero load endpoints answer on the grant's first lookup cycle:
-        # 24 cycles off, 22 on (-2).
-        assert round_trip == (22 if fast else 24)
+        # 22 cycles off, 20 on (-2).
+        assert round_trip == (20 if fast else 22)

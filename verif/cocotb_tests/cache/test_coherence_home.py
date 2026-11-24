@@ -2032,9 +2032,9 @@ class SpecMonitor:
         found = set()
         rows = self.rows[start:]
         for i, row in enumerate(rows):
-            if not (row["spec_cycle"] and row["query"] == block):
+            if not (row["spec_cycle"] and row["req_block"] == block):
                 continue
-            target = row["set"]
+            target = row["request_set"]
             if not row["spec_fire"]:
                 found.add("read_yields_to_update")
             same = [r for r in rows if r["update"] and r["update_set"] == target]
@@ -2248,9 +2248,10 @@ async def fast_tag_launch_cuts_hit_round_trip_by_two_cycles(dut: Any) -> None:
     else:
         assert "direct_d" not in events and "direct_tag" not in events
         assert d_to_tag == 3
-    # Verify exact end-to-end home grant latency (2 cycles saved when fast=1).
+    # Verify exact end-to-end home grant latency (2 cycles saved when fast=1;
+    # same-cycle parallel read saves 1 further cycle on UltraRAM hits).
     if ultra and parallel:
-        assert d_to_grant == (11 if fast else 13)
+        assert d_to_grant == (10 if fast else 12)
     elif ultra and not parallel:
         assert d_to_grant == (16 if fast else 18)
     else:
