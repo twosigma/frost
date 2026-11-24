@@ -204,7 +204,7 @@ module coherence_home_array_uram4_harness #(
       if (dut.spec_cycle) p_uram4_spec_no_read : assert (!dut.read_fire);
       if (dut.spec_fire)
         p_uram4_spec_no_write :
-        assert (!(dut.update_fire && i_update_has_data && dut.write_set == dut.set_q));
+        assert (!(dut.update_fire && i_update_has_data && dut.write_set == dut.tag_raddr));
       if (dut.update_fire && i_update_has_data)
         p_uram4_open_no_write : assert (f_open_set_match == '0);
       p_uram4_one_open : assert ($countones(dut.read_open_q) <= 1);
@@ -225,7 +225,7 @@ module coherence_home_array_uram4_harness #(
         f_value_q <= i_update_data[8*f_byte+:8];
       end
       f_check_q[0] <= f_known_q &&
-          ((dut.read_fire && dut.read_row == f_row) || (dut.spec_fire && dut.set_q == f_set));
+          ((dut.read_fire && dut.read_row == f_row) || (dut.spec_fire && dut.tag_raddr == f_set));
       f_open_q[0] <= dut.spec_fire;
       f_expected_q[0] <= f_value_q;
       for (int stage = 1; stage <= DATA_READ_LATENCY; stage++) begin

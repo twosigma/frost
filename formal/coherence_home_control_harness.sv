@@ -281,11 +281,10 @@ module coherence_home_control_harness #(
     home.array.gen_tag_ultra.tags.read_valid_pipe[0]
   };
   wire [UltraDataLatency:0] f_ultra_stage_valid = home.array.read_valid_q & ~home.array.read_open_q;
-  wire [3:0][2:0] f_ultra_stage_token = {
+  wire [2:0][2:0] f_ultra_stage_token = {
     home.array.read_token_q[6],
     home.array.read_token_q[5],
-    home.array.read_token_q[4],
-    home.array.read_token_q[3]
+    home.array.read_token_q[4]
   };
   wire [1:0][3:0] f_ultra_spec_wait = {home.f_spec_wait_q[1], home.f_spec_wait_q[0]};
   wire [2:0][1:0] f_ultra_comp_buf = {
@@ -316,7 +315,7 @@ module coherence_home_control_harness #(
       for (int put = 0; put < 2; put++) assert (int'(home.put_way_q[put]) < WAYS);
       if (home.run && home.array.FoldSelect)
         p_ultra_open_before_reply :
-        assert (home.array.read_open_q[UltraDataLatency:UltraTagLatency] == '0);
+        assert (home.array.read_open_q[UltraDataLatency:UltraTagLatency+1] == '0);
       p_ultra_grant_next_range : assert (int'(home.completions.grant_next_q) < 3);
       if (home.completions.grant_selected_q) begin
         p_ultra_grant_slot_range : assert (int'(home.completions.grant_slot_q) < 3);
@@ -328,8 +327,8 @@ module coherence_home_control_harness #(
       if (home.completions.buffer_owned_q[slot]) assert (int'(f_ultra_comp_buf[slot]) < 3);
       for (int engine = 0; engine < 2; engine++) begin
         if (home.f_spec_wait_valid_q[engine]) begin
-          assert (int'(f_ultra_spec_wait[engine]) <= 3);
-          assert (f_ultra_stage_valid[3+int'(f_ultra_spec_wait[engine])] &&
+          assert (int'(f_ultra_spec_wait[engine]) <= 2);
+          assert (f_ultra_stage_valid[4+int'(f_ultra_spec_wait[engine])] &&
               f_ultra_stage_token[f_ultra_spec_wait[engine][1:0]] == 3'(engine));
         end
       end
