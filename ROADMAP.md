@@ -606,7 +606,7 @@ and targeted microbenchmarks give these items:
    buffered hits. In simulation with the DDR-boot build of `store_fill_bench`
    and a fixed 80-cycle DDR model, a sequential `sd` stream over 64 KiB takes
    28.3 cycles per 64 bytes cold and 14.9 cycles after the L2 warm-up. A
-   streaming copy spends about 24% of its cycles stalled on store-queue
+   streaming copy spends about 32% of its cycles stalled on store-queue
    capacity;
    streaming scale, add and triad loops spend less than 0.3%. Taking
    ownership of a single 32-byte sector without fetching its 64-byte home
@@ -693,8 +693,8 @@ and targeted microbenchmarks give these items:
    stream keep more lines in flight. Dependent loads are also slower than
    through the previous hierarchy: in simulation an L2 hit takes 28 cycles
    against 23 and a DRAM miss about 4 cycles more. In a serial pointer
-   chase, a working set that overflows the L1D into the L2 adds about 22
-   cycles per step, and one that overflows the L2 adds about 36 more. The
+   chase, a working set that overflows the L1D into the L2 adds about 23
+   cycles per step, and one that overflows the L2 adds about 35 more. The
    L1D answers a load from its grant, and registered stages and arbitration
    add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
