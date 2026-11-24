@@ -2086,6 +2086,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "continuity", "cover"),
     ),
     FormalTarget(
+        "fetch_parcel_queue.sby",
+        "Decoupled front-end parcel queue preserves FIFO parcel order, metadata "
+        "ownership, 0-cycle empty and partial bypass, stop-fetch headroom, and flush clearing",
+        tasks=("bmc", "cover"),
+    ),
+    FormalTarget(
         "prediction_metadata_tracker.sby",
         "Prediction validity and payloads stay with the matching packet",
         tasks=("bmc", "cover", "prove"),

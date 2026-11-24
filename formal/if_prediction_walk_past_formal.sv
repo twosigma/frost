@@ -65,8 +65,10 @@ module if_prediction_walk_past_formal (
   (* anyseq *) logic i_instr_fault1_page;
 
 `ifndef PREDICTOR_FETCH_CONTRACT
-  initial begin
-    assume (i_reset);
+  logic f_init_reset_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    f_init_reset_q <= 1'b1;
+    if (!f_init_reset_q) assume (i_reset);
   end
 `endif
 
@@ -328,88 +330,86 @@ module if_prediction_walk_past_formal (
   );
 
 `ifdef PREDICTOR_FETCH_CONTRACT
-  // Relate the bytes and their sideband at each place that can keep slot 1
-  // across clocks, including the parked packet while fetch is stalled.
+  // Relate the parcel bytes and their predecode sideband fields across every
+  // occupied entry of the decoupled parcel queue.
+  localparam int unsigned FParcelBits =
+      16 + 4 + 2 + 5 + 3 + 23 + 2 + 2 + 2 + 3 + (riscv_pkg::PhysAddrBits - 1);
+
+  function automatic logic parcel_sideband_ok(input logic [FParcelBits-1:0] raw);
+    logic [15:0] hw;
+    logic [riscv_pkg::ImemSidebandWidth-1:0] sb;
+    begin
+      hw = raw[FParcelBits-1-:16];
+      sb = riscv_pkg::imem_make_sideband({16'h0, hw});
+      parcel_sideband_ok =
+          (raw[FParcelBits-17] == sb[riscv_pkg::ImemSbAllowsSlot2AfterLo]) &&
+          (raw[FParcelBits-21-:2] == sb[riscv_pkg::ImemSbRvcSourceHotLoLsb+:2]) &&
+          (raw[FParcelBits-23-:5] == sb[riscv_pkg::ImemSbRvcBits24To20LoLsb+:5]) &&
+          (raw[FParcelBits-28-:3] == sb[riscv_pkg::ImemSbRvcRs1RestLoLsb+:3]) &&
+          (raw[FParcelBits-31-:23] == sb[riscv_pkg::ImemSbRvcExtraLoLsb+:23]);
+    end
+  endfunction
+
   logic checked_edge = 1'b0;
-  logic [31:0] snapshot_word, buffer_word, saved_expansion, decoded_saved;
-  logic [riscv_pkg::ImemSidebandWidth-1:0] snapshot_sideband, buffer_sideband;
-  logic [15:0] saved_parcel;
-  logic [31:0] saved_instruction;
-  logic snapshot_valid, buffer_live, packet_valid, saved_illegal, decoded_illegal;
-  logic buffer_has_live_source = 1'b0;
-  logic snapshot_has_live_source = 1'b0;
-  logic capture_snapshot;
-  logic buffer_write, use_saved, preserve_pending;
-  assign snapshot_valid = u_if_stage.c_ext_state_inst.saved_values_valid;
-  assign snapshot_word = u_if_stage.c_ext_state_inst.effective_instr_saved;
-  assign snapshot_sideband = u_if_stage.c_ext_state_inst.sideband_saved;
-  assign capture_snapshot = u_if_stage.c_ext_state_inst.capture_valid_stall_values;
-  assign buffer_live = u_if_stage.use_instr_buffer && !u_if_stage.sel_nop &&
-                       !u_if_stage.fetch_fault_live[2];
-  assign use_saved = u_if_stage.c_ext_state_inst.use_saved_values;
-  assign preserve_pending = u_if_stage.c_ext_state_inst.capture_pending_prediction_buffer;
-  assign buffer_write = !u_if_stage.c_ext_state_inst.i_stall &&
-      (u_if_stage.c_ext_state_inst.i_fetch_progress || use_saved) &&
-      u_if_stage.c_ext_state_inst.buffer_word_is_pc_reg &&
-      (!u_if_stage.c_ext_state_inst.i_any_holdoff_safe || preserve_pending) &&
-      !u_if_stage.c_ext_state_inst.i_flush &&
-      !u_if_stage.c_ext_state_inst.pending_prediction_target_holdoff_needs_buffer &&
-      (!u_if_stage.c_ext_state_inst.i_prediction_holdoff || preserve_pending) &&
-      !u_if_stage.c_ext_state_inst.prediction_reset_buffer_state &&
-      (!u_if_stage.c_ext_state_inst.i_pending_prediction_active || preserve_pending);
-  assign buffer_word = u_if_stage.instr_buffer;
-  assign buffer_sideband = u_if_stage.instr_buffer_sideband;
-  assign packet_valid = u_if_stage.if_stage_stall_registered && !u_if_stage.sel_nop_saved &&
-                        !u_if_stage.u_fetch_fault_sc.saved[2];
-  assign saved_parcel = u_if_stage.u_raw_parcel_sc.saved;
-  assign saved_instruction = saved_parcel[1:0] != 2'b11 ? decoded_saved :
-                             u_if_stage.u_assembled_instr_sc.saved;
-  assign saved_illegal = u_if_stage.rvc_extra_saved[22];
-  assign saved_expansion = {
-    u_if_stage.rvc_extra_saved[21:15],
-    u_if_stage.bits24_20_predecoded_saved,
-    u_if_stage.rs1_rest_predecoded_saved[2:1],
-    u_if_stage.source_hot_predecoded_saved[1:0],
-    u_if_stage.rs1_rest_predecoded_saved[0],
-    u_if_stage.rvc_extra_saved[14:0]
-  };
-  rvc_decompressor saved_decoder (
-      .i_instr_compressed(saved_parcel),
-      .o_instr_expanded(decoded_saved),
-      .o_is_compressed(),
-      .o_illegal(decoded_illegal)
-  );
+  logic [3:0][3:0] queue_slot_valid_q = '0;
+  logic queue_source_ok;
+  logic queue_sideband_ok;
+
+  always_comb begin
+    logic [3:0] q_head;
+    logic [3:0] q_tail;
+    logic [4:0] q_cnt;
+    q_head = u_if_stage.u_parcel_queue.head_q;
+    q_tail = u_if_stage.u_parcel_queue.tail_q;
+    q_cnt  = u_if_stage.u_parcel_queue.count_q;
+
+    queue_source_ok = (q_cnt <= 5'd16) && (q_tail == (q_head + q_cnt[3:0]));
+    for (int b = 0; b < 4; b++) begin
+      queue_source_ok = queue_source_ok &&
+          (u_if_stage.u_parcel_queue.rd_row_q[b] ==
+           (q_head[3:2] + ((2'(b) < q_head[1:0]) ? 2'd1 : 2'd0))) &&
+          (u_if_stage.u_parcel_queue.wr_row_q[b] ==
+           (q_tail[3:2] + ((2'(b) < q_tail[1:0]) ? 2'd1 : 2'd0)));
+    end
+    for (int k = 0; k < 16; k++) begin
+      logic [3:0] idx;
+      idx = q_head + 4'(k);
+      if (5'(k) < q_cnt) begin
+        queue_source_ok = queue_source_ok && queue_slot_valid_q[idx[1:0]][idx[3:2]];
+      end
+    end
+
+    queue_sideband_ok = 1'b1;
+    for (int b = 0; b < 4; b++) begin
+      for (int r = 0; r < 4; r++) begin
+        if (queue_slot_valid_q[b][r]) begin
+          queue_sideband_ok = queue_sideband_ok &&
+              parcel_sideband_ok(u_if_stage.u_parcel_queue.ring_q[b][r][FParcelBits-1:0]);
+        end
+      end
+    end
+  end
+
   always @(posedge i_clk) begin
     checked_edge <= 1'b1;
-    if (i_reset) begin
-      snapshot_has_live_source <= 1'b0;
-      buffer_has_live_source   <= 1'b0;
+    if (i_reset || u_if_stage.pqueue_flush) begin
+      queue_slot_valid_q <= '0;
     end else begin
-      if (capture_snapshot) snapshot_has_live_source <= !u_if_stage.use_instr_buffer;
-      if (buffer_write)
-        buffer_has_live_source <= use_saved ?
-          snapshot_has_live_source : !u_if_stage.use_instr_buffer;
+      for (int b = 0; b < 4; b++) begin
+        if (u_if_stage.u_parcel_queue.bank_we[b]) begin
+          queue_slot_valid_q[b][u_if_stage.u_parcel_queue.wr_row_q[b]] <= 1'b1;
+        end
+      end
     end
     if (checked_edge) begin
-      if (snapshot_valid && snapshot_has_live_source)
-        p_snapshot_sideband :
-        assert (snapshot_sideband == riscv_pkg::imem_make_sideband(snapshot_word));
-      c_buffered_compressed : cover (buffer_live && u_if_stage.raw_parcel[1:0] != 2'b11);
-      c_parked_compressed : cover (packet_valid && saved_parcel[1:0] != 2'b11);
-      p_buffer_source_on_use : assert (!buffer_live || buffer_has_live_source);
-      if (buffer_has_live_source)
-        p_buffer_sideband : assert (buffer_sideband == riscv_pkg::imem_make_sideband(buffer_word));
-      if (packet_valid) begin
-        p_parked_sources :
-        assert ({
-            u_if_stage.source_hot_predecoded_saved, u_if_stage.rs1_rest_predecoded_saved,
-            u_if_stage.bits24_20_predecoded_saved
-        } == {saved_instruction[21], saved_instruction[17:16], saved_instruction[19:18],
-              saved_instruction[15], saved_instruction[24:20]});
-      end
-      if (packet_valid && saved_parcel[1:0] != 2'b11)
-        p_parked_expansion :
-        assert ({saved_expansion, saved_illegal} == {decoded_saved, decoded_illegal});
+      p_queue_source_on_use : assert (queue_source_ok);
+      p_queue_sideband : assert (queue_sideband_ok);
+      c_queued_compressed :
+      cover (!from_if_to_pd.sel_nop && !from_if_to_pd.fetch_fault &&
+             (u_if_stage.u_parcel_queue.count_q != '0) && (from_if_to_pd.raw_parcel[1:0] != 2'b11));
+      c_bypass_compressed :
+      cover (!from_if_to_pd.sel_nop && !from_if_to_pd.fetch_fault &&
+             (u_if_stage.u_parcel_queue.count_q == '0) && (from_if_to_pd.raw_parcel[1:0] != 2'b11));
     end
   end
 `endif
@@ -417,129 +417,69 @@ module if_prediction_walk_past_formal (
 endmodule : if_prediction_walk_past_formal
 
 // verilog_lint: waive module-filename
-module branch_predictor #(
+module fetch_btb_2w #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned BTB_INDEX_BITS = 8
 ) (
-    input  logic            i_clk,
-    input  logic            i_rst,
-    input  logic [XLEN-1:0] i_pc,
-    output logic            o_btb_hit,
-    output logic            o_predicted_taken,
-    output logic [XLEN-1:0] o_predicted_target,
-    output logic            o_btb_compressed,
-    output logic            o_btb_is_call,
-    output logic            o_btb_is_return,
-    input  logic [XLEN-1:0] i_pc_2_lookup_base,
-    input  logic [XLEN-1:0] i_pc_2_base,
-    input  logic            i_pc_2_use_alt,
-    output logic            o_predicted_taken_2_plus2,
-    output logic            o_predicted_taken_2_plus4,
-    output logic            o_btb_compressed_2_plus2,
-    output logic            o_btb_compressed_2_plus4,
-    output logic            o_btb_hit_2_plus2,
-    output logic            o_btb_hit_2_plus4,
-    output logic            o_btb_hit_2,
-    output logic            o_predicted_taken_2,
-    output logic [XLEN-1:0] o_predicted_target_2,
-    output logic            o_btb_compressed_2,
-    output logic            o_btb_is_call_2,
-    output logic            o_btb_is_return_2,
-    output logic            o_btb_entry_is_return_2,
-    output logic [XLEN-1:0] o_predicted_target_2_plus2,
-    output logic [XLEN-1:0] o_predicted_target_2_plus4,
-    output logic            o_btb_entry_is_return_2_plus2,
-    output logic            o_btb_entry_is_return_2_plus4,
-    input  logic [XLEN-1:0] i_pending_prediction_pc,
-    input  logic [XLEN-1:0] i_pending_prediction_prev_pc,
-    input  logic [XLEN-1:0] i_pending_prediction_prev_native_pc,
-    output logic [     4:0] o_slot2_plus2_covered_rel_pending,
-    output logic [     4:0] o_slot2_plus2_zero_rel_pending,
-    output logic [     4:0] o_slot2_plus4_rel_pending,
-    input  logic            i_update,
-    input  logic [XLEN-1:0] i_update_pc,
-    input  logic [XLEN-1:0] i_update_target,
-    input  logic            i_update_taken,
-    input  logic            i_update_compressed,
-    input  logic            i_update_call,
-    input  logic            i_update_return,
-    input  logic            i_early_update_active,
-    input  logic [XLEN-1:0] i_early_update_pc,
-    input  logic            i_early_update_taken,
-    input  logic [XLEN-1:0] i_late_update_pc,
-    input  logic            i_late_update_taken,
-    input  logic            i_invalidate_all
+    input  logic                      i_clk,
+    input  logic                      i_rst,
+    input  logic [          XLEN-1:0] i_pc,
+    input  logic [BTB_INDEX_BITS-2:0] i_pc_even_idx,
+    output logic                      o_taken,
+    output logic [               1:0] o_taken_pos,
+    output logic [          XLEN-1:0] o_target,
+    output logic                      o_compressed,
+    output logic                      o_is_call,
+    output logic                      o_is_return,
+    output logic                      o_is_span,
+    output logic                      o_w0_hit,
+    output logic                      o_w1_hit,
+    input  logic                      i_update,
+    input  logic [          XLEN-1:0] i_update_pc,
+    input  logic [          XLEN-1:0] i_update_target,
+    input  logic                      i_update_taken,
+    input  logic                      i_update_compressed,
+    input  logic                      i_update_call,
+    input  logic                      i_update_return,
+    input  logic                      i_early_update_active,
+    input  logic [          XLEN-1:0] i_early_update_pc,
+    input  logic                      i_early_update_taken,
+    input  logic [          XLEN-1:0] i_late_update_pc,
+    input  logic                      i_late_update_taken,
+    input  logic                      i_invalidate_all
 );
-  (* anyseq *) logic f_hit, f_taken, f_comp, f_call, f_ret;
+  (* anyseq *) logic f_taken, f_comp, f_call, f_ret, f_w0, f_w1;
+  (* anyseq *) logic [1:0] f_pos;
   (* anyseq *) logic [XLEN-2:0] f_target_hw;
-  (* anyseq *) logic f_hit_p2, f_hit_p4, f_taken_p2, f_taken_p4;
-  (* anyseq *) logic f_comp_p2, f_comp_p4, f_call_p2, f_call_p4, f_ret_p2, f_ret_p4;
-  (* anyseq *) logic [XLEN-2:0] f_target_p2_hw, f_target_p4_hw;
 
-  assign o_btb_hit = f_hit;
-  assign o_predicted_taken = f_hit && f_taken;
-  assign o_predicted_target = {f_target_hw, 1'b0};
-  assign o_btb_compressed = f_comp;
-  assign o_btb_is_call = f_hit && f_call;
-  assign o_btb_is_return = f_hit && f_ret;
-
-  assign o_btb_hit_2_plus2 = f_hit_p2;
-  assign o_btb_hit_2_plus4 = f_hit_p4;
-  assign o_predicted_taken_2_plus2 = f_hit_p2 && f_taken_p2;
-  assign o_predicted_taken_2_plus4 = f_hit_p4 && f_taken_p4;
-  assign o_btb_compressed_2_plus2 = f_comp_p2;
-  assign o_btb_compressed_2_plus4 = f_comp_p4;
-  assign o_predicted_target_2_plus2 = {f_target_p2_hw, 1'b0};
-  assign o_predicted_target_2_plus4 = {f_target_p4_hw, 1'b0};
-  assign o_btb_entry_is_return_2_plus2 = f_ret_p2;
-  assign o_btb_entry_is_return_2_plus4 = f_ret_p4;
-
-  assign o_btb_hit_2 = i_pc_2_use_alt ? o_btb_hit_2_plus4 : o_btb_hit_2_plus2;
-  assign o_predicted_taken_2 = i_pc_2_use_alt ? o_predicted_taken_2_plus4 :
-                                                o_predicted_taken_2_plus2;
-  assign o_predicted_target_2 = i_pc_2_use_alt ? o_predicted_target_2_plus4 :
-                                                 o_predicted_target_2_plus2;
-  assign o_btb_compressed_2 = i_pc_2_use_alt ? o_btb_compressed_2_plus4 : o_btb_compressed_2_plus2;
-  assign o_btb_entry_is_return_2 = i_pc_2_use_alt ? o_btb_entry_is_return_2_plus4 :
-                                                    o_btb_entry_is_return_2_plus2;
-  assign o_btb_is_call_2 = o_btb_hit_2 && (i_pc_2_use_alt ? f_call_p4 : f_call_p2);
-  assign o_btb_is_return_2 = o_btb_hit_2 && o_btb_entry_is_return_2;
-
-  assign o_slot2_plus2_covered_rel_pending = {
-    o_predicted_target_2_plus2 == i_pending_prediction_pc,
-    o_predicted_target_2_plus2[XLEN-1:1] < i_pending_prediction_pc[XLEN-1:1],
-    o_predicted_target_2_plus2[XLEN-1:1] > i_pending_prediction_pc[XLEN-1:1],
-    o_predicted_target_2_plus2 == i_pending_prediction_prev_pc,
-    o_predicted_target_2_plus2 == i_pending_prediction_prev_native_pc
-  };
-  assign o_slot2_plus2_zero_rel_pending = 5'b00000;
-  assign o_slot2_plus4_rel_pending = {
-    o_predicted_target_2_plus4 == i_pending_prediction_pc,
-    o_predicted_target_2_plus4[XLEN-1:1] < i_pending_prediction_pc[XLEN-1:1],
-    o_predicted_target_2_plus4[XLEN-1:1] > i_pending_prediction_pc[XLEN-1:1],
-    o_predicted_target_2_plus4 == i_pending_prediction_prev_pc,
-    o_predicted_target_2_plus4 == i_pending_prediction_prev_native_pc
-  };
-endmodule : branch_predictor
+  assign o_taken      = f_taken;
+  assign o_taken_pos  = f_pos;
+  assign o_target     = {f_target_hw, 1'b0};
+  assign o_compressed = f_comp;
+  assign o_is_call    = f_taken && f_call;
+  assign o_is_return  = f_taken && f_ret;
+  assign o_is_span    = f_taken && (f_pos == 2'd3) && !f_comp;
+  assign o_w0_hit     = f_w0;
+  assign o_w1_hit     = f_w1;
+endmodule : fetch_btb_2w
 
 // verilog_lint: waive module-filename
-module direction_predictor #(
+module fetch_dir_4b #(
     parameter int unsigned XLEN     = riscv_pkg::XLEN,
-    parameter int unsigned BIM_BITS = 10
+    parameter int unsigned BIM_BITS = riscv_pkg::BpDirIdxBits
 ) (
     input  logic                i_clk,
     input  logic                i_rst,
     input  logic [    XLEN-1:0] i_pc,
-    output logic                o_taken,
-    output logic [BIM_BITS-1:0] o_pred_idx,
+    input  logic [BIM_BITS-3:0] i_pc_even_dir_idx,
+    output logic [         3:0] o_taken,
     input  logic                i_update_valid,
     input  logic [BIM_BITS-1:0] i_update_idx,
     input  logic                i_update_taken
 );
-  (* anyseq *) logic f_taken;
+  (* anyseq *) logic [3:0] f_taken;
   assign o_taken = f_taken;
-  assign o_pred_idx = i_pc[BIM_BITS:1];
-endmodule : direction_predictor
+endmodule : fetch_dir_4b
 
 // verilog_lint: waive module-filename
 module return_address_stack #(
@@ -593,6 +533,11 @@ module backing_btb #(
     output logic [                     1:0][TARGET_BITS-2:0] o_target,
     output logic [                     1:0]                  o_slot2_return_by_size,
     output logic [                     1:0][TARGET_BITS-2:0] o_slot2_target_by_size,
+    input  logic [                XLEN-1:0]                  i_win_pc = '0,
+    output logic [                     3:0]                  o_win_hit,
+    output logic [                     3:0]                  o_win_compressed,
+    output logic [                     3:0]                  o_win_return,
+    output logic [                     3:0][TARGET_BITS-2:0] o_win_target,
     input  logic                                             i_update,
     input  logic [                XLEN-1:0]                  i_update_pc,
     input  logic [                XLEN-1:0]                  i_update_target,
@@ -603,6 +548,8 @@ module backing_btb #(
 );
   (* anyseq *) logic [1:0] f_hit, f_comp, f_ret, f_ret_by_size;
   (* anyseq *) logic [1:0][TARGET_BITS-2:0] f_target, f_target_by_size;
+  (* anyseq *) logic [3:0] f_win_hit, f_win_comp, f_win_ret;
+  (* anyseq *) logic [3:0][TARGET_BITS-2:0] f_win_target;
   assign o_hit = f_hit;
   assign o_compressed = f_comp;
   // Slot 2's type and target are the entries at the packet's size, as in
@@ -611,6 +558,10 @@ module backing_btb #(
   assign o_target = {f_target_by_size[i_packet_compressed], f_target[0]};
   assign o_slot2_return_by_size = f_ret_by_size;
   assign o_slot2_target_by_size = f_target_by_size;
+  assign o_win_hit = f_win_hit;
+  assign o_win_compressed = f_win_comp;
+  assign o_win_return = f_win_ret;
+  assign o_win_target = f_win_target;
 endmodule : backing_btb
 `endif
 

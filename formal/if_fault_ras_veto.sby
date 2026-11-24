@@ -19,34 +19,19 @@ smtbmc boolector
 
 [script]
 read_verilog -D SYNTHESIS -sv riscv_pkg.sv
-read_verilog -D SYNTHESIS -sv stall_capture_reg.sv
-read_verilog -D SYNTHESIS -sv prediction_metadata_tracker.sv
-read_verilog -D SYNTHESIS -sv slot2_prediction_capture.sv
-read_verilog -D SYNTHESIS -sv served_window_coverage.sv
-redundant: read_verilog -D SYNTHESIS -sv c_ext_state.sv
-redundant: read_verilog -D SYNTHESIS -sv instruction_aligner.sv
-redundant: read_verilog -D SYNTHESIS -sv control_flow_tracker.sv
-redundant: read_verilog -D SYNTHESIS -sv pc_reg_precompute.sv
-redundant: read_verilog -D SYNTHESIS -sv pc_increment_calculator.sv
-redundant: read_verilog -D SYNTHESIS -sv pc_controller.sv
-redundant: read_verilog -D SYNTHESIS -sv branch_prediction_controller.sv
+read_verilog -D SYNTHESIS -sv sdp_dist_ram.sv
+read_verilog -D SYNTHESIS -sv fetch_parcel_queue.sv
+read_verilog -D SYNTHESIS -sv fetch_pc_decoupled.sv
 veto: read_verilog -formal -D SYNTHESIS -D IF_FAULT_RAS_VETO_PROOF -sv if_stage.sv
 redundant: read_verilog -formal -D SYNTHESIS -D IF_SLOT2_VETO_REDUNDANT_PROOF -sv if_stage.sv
 hierarchy -top if_stage
-veto: delete t:branch_prediction_controller t:pc_controller t:immu t:fetch_redirect t:c_ext_state t:instruction_aligner t:served_window_coverage t:pd_target_candidate t:backing_btb t:tage_predictor t:ittage_predictor
-redundant: delete t:immu t:fetch_redirect t:pd_target_candidate t:backing_btb t:tage_predictor t:ittage_predictor t:branch_predictor t:direction_predictor t:return_address_stack
+delete t:fetch_btb_2w t:fetch_dir_4b t:return_address_stack t:immu t:backing_btb t:tage_predictor t:ittage_predictor
 script free_undefined.ys
 setattr -unset dont_touch *
 setattr -mod -unset keep_hierarchy *
-redundant: flatten
-redundant: select -assert-count 1 w:u_slot2_prediction_capture.valid_q
-redundant: select -assert-count 1 w:u_fetch_fault_2_sc.saved
-redundant: connect -nomap -set f_slot2_cap_valid_q u_slot2_prediction_capture.valid_q
-redundant: connect -nomap -set f_slot2_fault_saved u_fetch_fault_2_sc.saved
 setundef -undriven -anyseq
-veto: prep -flatten -top if_stage
-redundant: prep -top if_stage
-veto: select -assert-count 8 t:$check r:FLAVOR=assert %i
+prep -flatten -top if_stage
+veto: select -assert-count 7 t:$check r:FLAVOR=assert %i
 veto: select -assert-count 4 t:$check r:FLAVOR=cover %i
 redundant: select -assert-count 5 t:$check r:FLAVOR=assert %i
 redundant: select -assert-count 1 t:$check r:FLAVOR=assume %i
@@ -54,16 +39,8 @@ redundant: select -assert-none t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
-../hw/rtl/lib/stall_capture_reg.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/slot2_prediction_capture.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/served_window_coverage.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_ext_state.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/instruction_aligner.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_parcel_queue.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_pc_decoupled.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv
 free_undefined.ys

@@ -8,49 +8,29 @@ bmc: mode bmc
 bmc: depth 12
 continuity: mode bmc
 continuity: depth 8
+continuity: aigsmt boolector
 cover: mode cover
 cover: depth 10
 
 [engines]
-smtbmc boolector
+~continuity: smtbmc boolector
+continuity: abc bmc3 -c
 
 [script]
-read -formal -sv riscv_pkg.sv
-read -sv stall_capture_reg.sv
-read -sv control_flow_tracker.sv
-read -sv pc_reg_precompute.sv
-read -sv -D SYNTHESIS pc_increment_calculator.sv
-read -sv fetch_redirect.sv
-read -sv pd_target_candidate.sv
-read -sv served_window_coverage.sv
-read -sv slot2_prediction_capture.sv
-read -sv -D SYNTHESIS instruction_aligner.sv
-read -sv -D SYNTHESIS pc_controller.sv
-read -sv -D SYNTHESIS c_ext_state.sv
-read -sv -D SYNTHESIS prediction_metadata_tracker.sv
-read -sv -D SYNTHESIS branch_prediction_controller.sv
-~continuity: read -formal -D SYNTHESIS -D IF_WALK_PAST_PROOF -sv if_stage.sv
-continuity: read -formal -D SYNTHESIS -D IF_WALK_PAST_PROOF -D IF_CONTINUITY_PROOF -sv if_stage.sv
-read -formal -sv if_prediction_walk_past_formal.sv
+~continuity: read_slang --top if_prediction_walk_past_formal --single-unit -DSYNTHESIS -DIF_WALK_PAST_PROOF riscv_pkg.sv sdp_dist_ram.sv fetch_parcel_queue.sv fetch_pc_decoupled.sv if_stage.sv if_prediction_walk_past_formal.sv
+continuity: read_slang --top if_prediction_walk_past_formal --single-unit -DSYNTHESIS -DIF_WALK_PAST_PROOF -DIF_CONTINUITY_PROOF riscv_pkg.sv sdp_dist_ram.sv fetch_parcel_queue.sv fetch_pc_decoupled.sv if_stage.sv if_prediction_walk_past_formal.sv
 hierarchy -top if_prediction_walk_past_formal
 script free_undefined.ys
-prep -top if_prediction_walk_past_formal
+setattr -unset dont_touch *
+setattr -mod -unset keep_hierarchy *
+setundef -undriven -anyseq
+prep -flatten -top if_prediction_walk_past_formal
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
-../hw/rtl/lib/stall_capture_reg.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_redirect.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/pd_target_candidate.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/served_window_coverage.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/slot2_prediction_capture.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/instruction_aligner.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_ext_state.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_parcel_queue.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_pc_decoupled.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv
 if_prediction_walk_past_formal.sv
 free_undefined.ys
