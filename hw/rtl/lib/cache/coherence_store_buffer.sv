@@ -85,6 +85,9 @@ module coherence_store_buffer #(
     output logic o_twin_pending,
     output logic o_twin_alloc,
     output logic [1:0] o_twin_index,
+`ifdef SNAPSHOT_OWNER_PROOF
+    output logic [1:0] o_f_next,
+`endif
     output logic [ADDR_WIDTH-1:0] o_twin_addr
 );
   logic [1:0] next_q, youngest;
@@ -117,6 +120,9 @@ module coherence_store_buffer #(
   assign o_twin_alloc = twin_pending && o_count < 4;
   assign o_twin_index = next_q;
   assign o_twin_addr = twin_addr_q;
+`ifdef SNAPSHOT_OWNER_PROOF
+  assign o_f_next = next_q;
+`endif
   // Credit reserves for an arriving write without comparing its address.
   // A pop supplies no speculative credit. A zero write's twin holds the
   // credit until it allocates.

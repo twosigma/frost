@@ -36,11 +36,17 @@ module sdp_block_ram #(
     input logic [ADDR_WIDTH-1:0] i_write_address,
     input logic [ADDR_WIDTH-1:0] i_read_address,
     input logic [DATA_WIDTH-1:0] i_write_data,
+`ifdef SNAPSHOT_OWNER_PROOF
+    output logic [(2**ADDR_WIDTH)*DATA_WIDTH-1:0] o_f_ram,
+`endif
     output logic [DATA_WIDTH-1:0] o_read_data
 );
 
   localparam int unsigned RamDepth = 2 ** ADDR_WIDTH;
 `ifdef FROST_SRAM_MACROS
+`ifdef SNAPSHOT_OWNER_PROOF
+  assign o_f_ram = '0;
+`endif
   frost_sram_1w1r #(
       .ADDR_WIDTH    (ADDR_WIDTH),
       .DATA_WIDTH    (DATA_WIDTH),
@@ -81,6 +87,11 @@ module sdp_block_ram #(
 
   // The read register permits block RAM inference.
   always_ff @(posedge i_clk) o_read_data <= ram[i_read_address];
+`ifdef SNAPSHOT_OWNER_PROOF
+  for (genvar row = 0; row < RamDepth; row++) begin : gen_f_ram
+    assign o_f_ram[row*DATA_WIDTH+:DATA_WIDTH] = ram[row];
+  end
+`endif
 `endif
 
 endmodule : sdp_block_ram

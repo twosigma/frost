@@ -81,6 +81,18 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
     input logic [WayBits-1:0] i_f_way,
     input logic [SetBits-1:0] i_f_set,
 `endif
+`ifdef SNAPSHOT_OWNER_PROOF
+    output logic [WAYS*Sets*(ADDR_WIDTH-SetBits-OffsetBits+3)-1:0] o_f_tags,
+    output logic [3:0] o_f_arr_phase,
+    output logic [SetBits-1:0] o_f_init_set,
+    output logic [SetBits-1:0] o_f_set,
+    output logic [ADDR_WIDTH-SetBits-OffsetBits-1:0] o_f_tag,
+    output logic o_f_visit,
+    output logic [WayBits-1:0] o_f_visit_way,
+    output logic [ADDR_WIDTH-SetBits-OffsetBits+2:0] o_f_tag_rdata0,
+    output logic o_f_early_reply,
+    output logic [WAYS-1:0] o_f_exclude,
+`endif
     output logic o_resp_valid,
     input logic i_resp_ready,
     output logic o_resp_hit,
@@ -295,11 +307,17 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
         .i_write_address(phase_q == Init ? init_set_q : plru_we ? set_q : replacement_set),
         .i_read_address(tag_raddr),
         .i_write_data(plru_write[node]),
+`ifdef SNAPSHOT_OWNER_PROOF
+        .o_f_ram(),
+`endif
         .o_read_data(plru_read[node])
     );
   end
 
   if (ULTRA) begin : gen_tag_ultra
+`ifdef SNAPSHOT_OWNER_PROOF
+    assign o_f_tags = '0;
+`endif
     logic [WAYS*TagEntryBits-1:0] row;
     sdp_packed_tag_uram #(
         .ADDR_WIDTH(RowBits),
@@ -334,6 +352,9 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
           .i_write_address(tag_waddr),
           .i_read_address(tag_raddr),
           .i_write_data(tag_wdata),
+`ifdef SNAPSHOT_OWNER_PROOF
+          .o_f_ram(o_f_tags[way*Sets*TagEntryBits+:Sets*TagEntryBits]),
+`endif
           .o_read_data(tag_rdata[way])
       );
     end
@@ -346,6 +367,17 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
   assign o_resp_no_bank = !bank_owner_q && !tags_only_q;
 `ifdef STORE_BANK_PROOF
   assign o_f_store_tags = phase_q == Tags && o_resp_no_bank;
+`endif
+`ifdef SNAPSHOT_OWNER_PROOF
+  assign o_f_arr_phase = phase_q;
+  assign o_f_init_set = init_set_q;
+  assign o_f_set = set_q;
+  assign o_f_tag = tag_q;
+  assign o_f_visit = visit_q;
+  assign o_f_visit_way = visit_way_q;
+  assign o_f_tag_rdata0 = tag_rdata[0];
+  assign o_f_early_reply = early_reply;
+  assign o_f_exclude = exclude_q;
 `endif
   wire [SetBits-1:0] hp_set = i_hp_addr[OffsetBits+:SetBits];
   // A hit-port read never shares an edge with a write to its set (a macro
@@ -376,6 +408,9 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
           .i_write_address(tag_waddr),
           .i_read_address(hp_set),
           .i_write_data(tag_wdata),
+`ifdef SNAPSHOT_OWNER_PROOF
+          .o_f_ram(),
+`endif
           .o_read_data(copy_rdata[way])
       );
     end

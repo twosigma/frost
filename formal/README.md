@@ -212,7 +212,7 @@ model as the scheduled local cover, complementary assertion selections,
 and exactly one CI job per task.
 
 The 42-cycle scripted stream checks are also partitioned: `coh_l1d_stream_bmc`
-keeps every assertion except four wide payload identities and holds, which
+keeps every assertion except five wide payload identities and holds, which
 `coh_l1d_stream_hold_bmc` checks. Both retain the original scripted model,
 interface assumptions and depth 42. Both use BMC3 with CaDiCaL. The control
 task has 5,100 seconds in the hart maintenance job. The hold task has
@@ -220,19 +220,23 @@ task has 5,100 seconds in the hart maintenance job. The hold task has
 selections cover the full model and that neither assumes the other's facts.
 
 The free-input, no-store stream checks use the same partition at depth 24:
-`coh_l1d_stream_free_nostore_hold_bmc` checks those four payload holds in a
+`coh_l1d_stream_free_nostore_hold_bmc` checks those five payload holds in a
 parallel 75-minute job, and `coh_l1d_stream_free_nostore_bmc` keeps every
 other assertion in the hart maintenance job. Both retain the original
 no-store input constraint and 3,600-second limit. The fast model tests cover
 both stream variants and reject extra assumptions, cutpoints and input ties.
 
-The independent `coh_l1d_stream_outlier_prove` also proves all four shared
+The independent `coh_l1d_stream_outlier_prove` also proves all five shared
 payload assertions without a depth bound. Its free-input, stores-enabled
 model includes the scripted and no-store specializations; none of the BMCs
 assumes its facts. Each stream control BMC retains 327 assertions, and the
-payload tasks retain the complementary four. Count guards require all 331
+payload tasks retain the complementary five. Count guards require all 332
 checks before selection. The control BMCs and unbounded control proof
-include the absorbed-PutM ownership, snapshot image and held-reply checks.
+include the absorbed-PutM ownership, snapshot-image control and held-reply
+checks; `coh_l1d_stream_snapshot_prove` proves the absorbed-PutM ownership
+lemma on the identical stream model using only the read ownership lemmas from
+`coh_l1d_stream_owned_prove`, and `coh_l1d_snapshot_cover` exercises the
+StoreConditional grant ordering constraint and snapshot probe paths.
 Fast tests pin the complete contracts, source
 specialization, registration, shard membership and allowances.
 

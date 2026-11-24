@@ -481,9 +481,11 @@ FORMAL_TARGETS = [
             "coh_l1d_stream_free_nostore_bmc",
             "coh_l1d_stream_free_nostore_hold_bmc",
             "coh_l1d_stream_owned_prove",
+            "coh_l1d_stream_snapshot_prove",
             "coh_l1d_stream_prove",
             "coh_l1d_stream_outlier_prove",
             "coh_l1d_stream_cover",
+            "coh_l1d_snapshot_cover",
             "coh_l1d_turn_cover",
             "coh_l1d_local_prove",
             "coh_l1d_local_multi_prove",
@@ -2378,12 +2380,16 @@ SBY_TASKS = [
         "Unbounded: read-slot ownership, the selected read's kind and shadow lookups with eight endpoints, by induction.",
     ),
     (
+        "coh_l1d_stream_snapshot_prove",
+        "Unbounded: absorbed-PutM ownership disjointness with eight endpoints, by induction.",
+    ),
+    (
         "coh_l1d_stream_prove",
         "Unbounded: most control assertions with eight endpoints, arbitrary inputs and stores.",
     ),
     (
         "coh_l1d_stream_outlier_prove",
-        "Independent unbounded grant multiplexer, image, load payload and reply hold checks for the stream BMCs.",
+        "Independent unbounded grant multiplexer, image, load payload, reply hold and snapshot data checks for the stream BMCs.",
     ),
     (
         "coh_l1d_stream_free_nostore_bmc",
@@ -2394,6 +2400,10 @@ SBY_TASKS = [
         "Payload identities and holds with arbitrary inputs and no stores through all 24 cycles.",
     ),
     ("coh_l1d_stream_cover", "Two speculative endpoints and demand attachment."),
+    (
+        "coh_l1d_snapshot_cover",
+        "StoreConditional grant ordering against live writebacks and snapshot probe lookups.",
+    ),
     ("coh_l1d_turn_cover", "A demand retry between buffered load grants."),
     (
         "pf_pause_prove",
@@ -4596,8 +4606,10 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         ]
         + [
             "coh_l1d_stream_owned_prove",
+            "coh_l1d_stream_snapshot_prove",
             "coh_l1d_stream_prove",
             "coh_l1d_stream_outlier_prove",
+            "coh_l1d_snapshot_cover",
             "coh_l1d_stream_free_bmc",
             "coh_l1d_stream_bmc",
             "coh_l1d_stream_hold_bmc",
@@ -5085,7 +5097,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_l1d": (
         "converted in its own commit; its conflict tasks cut every flop, then run opt -full and sat",
         {
-            "coh_l1d_perf_prove coh_l1d_bmc coh_l1d_multi_bmc coh_l1d_stream_bmc coh_l1d_stream_hold_bmc coh_l1d_stream_free_nostore_bmc coh_l1d_stream_free_nostore_hold_bmc coh_l1d_stream_free_bmc coh_l1d_stream_outlier_prove coh_l1d_stream_owned_prove coh_l1d_stream_prove coh_l1d_stream_cover coh_l1d_turn_cover coh_l1d_cover coh_l1d_path_cover coh_l1d_put_select_prove coh_l1d_data_bmc coh_l1d_data1_bmc coh_l1d_data2_bmc coh_l1d_data3_bmc coh_l1d_store_payload_bmc coh_l1d_store_grant_bmc coh_l1d_store_multi_payload_bmc coh_l1d_store_multi_grant_bmc coh_l1d_multi_data0_bmc coh_l1d_multi_data1_bmc coh_l1d_multi_data2_bmc coh_l1d_multi_data3_bmc coh_l1d_ways_data_bmc coh_l1d_answer_bmc coh_l1d_stream_answer_bmc coh_l1d_local_prove coh_l1d_local_multi_prove coh_l1d_local_owned_prove coh_l1d_local_multi_owned_prove coh_l1d_local_ways_owned_prove coh_l1d_local_sector_prove coh_l1d_local_multi_sector_prove coh_l1d_local_ways_sector_prove coh_l1d_local_cover coh_l1d_local_data_bmc coh_l1d_local_hold_bmc coh_l1d_local_control_bmc coh_l1d_local_ways_prove coh_l1d_zero_bmc coh_l1d_zero_multi_bmc coh_l1d_zero_payload_bmc coh_l1d_zero_cover coh_l1d_zero_lookahead_cover coh_l1d_zero_stream_hint_bmc coh_l1d_zero_stream_line_bmc coh_l1d_zero_stream_upper_ep0_bmc coh_l1d_zero_stream_upper_ep1_read_bmc coh_l1d_zero_stream_upper_ep1_store_bmc coh_l1d_zero_stream_upper_ep1_lookahead_bmc coh_l1d_zero_stream_upper_ep1_prefetch_bmc coh_l1d_zero_stream_upper_ep1_rest_bmc coh_l1d_zero_stream_upper_ep2_bmc coh_l1d_zero_progress_cover coh_l1d_zero_stream_bmc coh_l1d_zero_request_cover coh_l1d_full_bmc coh_l1d_full_multi_bmc coh_l1d_full_payload_bmc coh_l1d_full_cover coh_l1d_full_lookahead_cover coh_l1d_withdraw_full_bmc coh_l1d_withdraw_zero_bmc coh_l1d_withdraw_full_payload_bmc coh_l1d_withdraw_zero_payload_bmc coh_l1d_withdraw_full_cover coh_l1d_full_hold_cover coh_l1d_buffer_contract_bmc": [
+            "coh_l1d_perf_prove coh_l1d_bmc coh_l1d_multi_bmc coh_l1d_stream_bmc coh_l1d_stream_hold_bmc coh_l1d_stream_free_nostore_bmc coh_l1d_stream_free_nostore_hold_bmc coh_l1d_stream_free_bmc coh_l1d_stream_outlier_prove coh_l1d_stream_owned_prove coh_l1d_stream_snapshot_prove coh_l1d_stream_prove coh_l1d_stream_cover coh_l1d_snapshot_cover coh_l1d_turn_cover coh_l1d_cover coh_l1d_path_cover coh_l1d_put_select_prove coh_l1d_data_bmc coh_l1d_data1_bmc coh_l1d_data2_bmc coh_l1d_data3_bmc coh_l1d_store_payload_bmc coh_l1d_store_grant_bmc coh_l1d_store_multi_payload_bmc coh_l1d_store_multi_grant_bmc coh_l1d_multi_data0_bmc coh_l1d_multi_data1_bmc coh_l1d_multi_data2_bmc coh_l1d_multi_data3_bmc coh_l1d_ways_data_bmc coh_l1d_answer_bmc coh_l1d_stream_answer_bmc coh_l1d_local_prove coh_l1d_local_multi_prove coh_l1d_local_owned_prove coh_l1d_local_multi_owned_prove coh_l1d_local_ways_owned_prove coh_l1d_local_sector_prove coh_l1d_local_multi_sector_prove coh_l1d_local_ways_sector_prove coh_l1d_local_cover coh_l1d_local_data_bmc coh_l1d_local_hold_bmc coh_l1d_local_control_bmc coh_l1d_local_ways_prove coh_l1d_zero_bmc coh_l1d_zero_multi_bmc coh_l1d_zero_payload_bmc coh_l1d_zero_cover coh_l1d_zero_lookahead_cover coh_l1d_zero_stream_hint_bmc coh_l1d_zero_stream_line_bmc coh_l1d_zero_stream_upper_ep0_bmc coh_l1d_zero_stream_upper_ep1_read_bmc coh_l1d_zero_stream_upper_ep1_store_bmc coh_l1d_zero_stream_upper_ep1_lookahead_bmc coh_l1d_zero_stream_upper_ep1_prefetch_bmc coh_l1d_zero_stream_upper_ep1_rest_bmc coh_l1d_zero_stream_upper_ep2_bmc coh_l1d_zero_progress_cover coh_l1d_zero_stream_bmc coh_l1d_zero_request_cover coh_l1d_full_bmc coh_l1d_full_multi_bmc coh_l1d_full_payload_bmc coh_l1d_full_cover coh_l1d_full_lookahead_cover coh_l1d_withdraw_full_bmc coh_l1d_withdraw_zero_bmc coh_l1d_withdraw_full_payload_bmc coh_l1d_withdraw_zero_payload_bmc coh_l1d_withdraw_full_cover coh_l1d_full_hold_cover coh_l1d_buffer_contract_bmc": [
                 "memory_map",
                 "opt",
                 "opt -fast",
@@ -10661,7 +10673,7 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
     hold = l1d_task_config(f"coh_l1d_{prefix}_hold_bmc")
     holds = (
         "c:p_grant_mux_exact c:p_local_image_stable "
-        "c:p_load_payload_held c:p_reply_hold"
+        "c:p_load_payload_held c:p_reply_hold c:p_snapshot_credit_data"
     )
     common = [
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
@@ -10670,14 +10682,14 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
     commands = {
         "hold": common
         + [
-            "select -assert-count 331 t:$check r:FLAVOR=assert %i",
-            f"select -assert-count 4 {holds}",
-            f"chformal -assert -remove t:$check r:FLAVOR=assert %i {holds} %u %u %u %d",
-            "select -assert-count 4 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 332 t:$check r:FLAVOR=assert %i",
+            f"select -assert-count 5 {holds}",
+            f"chformal -assert -remove t:$check r:FLAVOR=assert %i {holds} %u %u %u %u %d",
+            "select -assert-count 5 t:$check r:FLAVOR=assert %i",
         ],
         "bmc": common
         + [
-            "select -assert-count 331 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 332 t:$check r:FLAVOR=assert %i",
             f"chformal -assert -remove {holds}",
             "select -assert-count 327 t:$check r:FLAVOR=assert %i",
         ],
@@ -10894,24 +10906,44 @@ def test_local_sector_lemma_models_match() -> None:
 
 
 def test_stream_owned_lemma_model_matches() -> None:
-    """Require the stream ownership lemmas' model to match their consumer's."""
+    """Require the stream ownership and snapshot lemmas' models to match their consumer's."""
     owned = l1d_task_config("coh_l1d_stream_owned_prove")
+    snapshot = l1d_task_config("coh_l1d_stream_snapshot_prove")
     proof = l1d_task_config("coh_l1d_stream_prove")
-    assert owned.keys() == proof.keys()
+    assert owned.keys() == snapshot.keys() == proof.keys()
     for section in owned.keys() - {"[options]", "[engines]", "[script]"}:
-        assert owned[section] == proof[section]
+        assert owned[section] == snapshot[section] == proof[section]
     model = [line for line in owned["[script]"] if not assertion_command(line)]
+    assert model == [
+        line for line in snapshot["[script]"] if not assertion_command(line)
+    ]
     assert model == [line for line in proof["[script]"] if not assertion_command(line)]
     assert "read -formal -sv coherence_request_endpoint.sv" in model
     assert (
         "read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF "
-        "coherence_read_payload.sv coherence_l1d.sv"
+        "-D SNAPSHOT_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv"
+    ) in model
+    assert "read -sv -D SNAPSHOT_OWNER_PROOF coherence_store_buffer.sv" in model
+    assert (
+        "read -sv -D SNAPSHOT_OWNER_PROOF sdp_block_ram.sv sdp_packed_tag_uram.sv "
+        "sdp_ram_byte_en.sv coherence_array.sv"
     ) in model
     lemmas = "c:p_owned_* c:p_selected_kind c:p_path_shadowed"
-    # The lemma task proves its lemmas from the design alone.
+    # The read ownership task proves its lemmas from the design alone.
     assert [line for line in owned["[script]"] if assertion_command(line)] == [
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %d",
         "select -assert-count 18 t:$check r:FLAVOR=assert %i",
+    ]
+    # The snapshot ownership task assumes only the read ownership lemmas.
+    assert [line for line in snapshot["[script]"] if assertion_command(line)] == [
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+        "a:src=*coherence_request_endpoint.sv:* %i",
+        f"select -assert-count 18 t:$check r:FLAVOR=assert %i {lemmas} %u %u %i",
+        f"chformal -assert2assume {lemmas}",
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+        "c:p_snapshot_absorbed_clean c:p_snapshot_put_owner c:p_snap_* %u %u %d",
+        "select -assert-count 53 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 1 c:p_snapshot_absorbed_clean t:$check %i r:FLAVOR=assert %i",
     ]
     proof_commands = [line for line in proof["[script]"] if assertion_command(line)]
     assert (
@@ -10919,9 +10951,15 @@ def test_stream_owned_lemma_model_matches() -> None:
         in proof_commands
     )
     assert f"chformal -assert2assume {lemmas}" in proof_commands
-    options = dict(line.split(maxsplit=1) for line in owned["[options]"])
-    options.setdefault("expect", "PASS")
-    assert options == {
+    assert (
+        "select -assert-count 1 c:p_snapshot_absorbed_clean t:$check %i r:FLAVOR=assert %i"
+        in proof_commands
+    )
+    assert "chformal -assert2assume c:p_snapshot_absorbed_clean" in proof_commands
+    assert "chformal -assert -remove c:p_snap_*" in proof_commands
+    owned_options = dict(line.split(maxsplit=1) for line in owned["[options]"])
+    owned_options.setdefault("expect", "PASS")
+    assert owned_options == {
         "mode": "prove",
         "depth": "8",
         "timeout": "1200",
@@ -10929,6 +10967,16 @@ def test_stream_owned_lemma_model_matches() -> None:
         "expect": "PASS",
     }
     assert owned["[engines]"] == ["smtbmc boolector"]
+    snap_options = dict(line.split(maxsplit=1) for line in snapshot["[options]"])
+    snap_options.setdefault("expect", "PASS")
+    assert snap_options == {
+        "mode": "prove",
+        "depth": "3",
+        "timeout": "600",
+        "aigsmt": "boolector",
+        "expect": "PASS",
+    }
+    assert snapshot["[engines]"] == ["smtbmc boolector"]
 
 
 @pytest.mark.parametrize(
@@ -10995,23 +11043,23 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",
     ]
-    script += ["select -assert-count 331 t:$check r:FLAVOR=assert %i"]
+    script += ["select -assert-count 332 t:$check r:FLAVOR=assert %i"]
     if outlier or hold:
         if hold:
             script += [
-                "select -assert-count 4 c:p_grant_mux_exact c:p_local_image_stable "
-                "c:p_load_payload_held c:p_reply_hold"
+                "select -assert-count 5 c:p_grant_mux_exact c:p_local_image_stable "
+                "c:p_load_payload_held c:p_reply_hold c:p_snapshot_credit_data"
             ]
         script += [
             "chformal -assert -remove t:$check r:FLAVOR=assert %i "
             "c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held "
-            "c:p_reply_hold %u %u %u %d",
-            "select -assert-count 4 t:$check r:FLAVOR=assert %i",
+            "c:p_reply_hold c:p_snapshot_credit_data %u %u %u %u %d",
+            "select -assert-count 5 t:$check r:FLAVOR=assert %i",
         ]
     else:
         script += [
             "chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable "
-            "c:p_load_payload_held c:p_reply_hold",
+            "c:p_load_payload_held c:p_reply_hold c:p_snapshot_credit_data",
             "select -assert-count 327 t:$check r:FLAVOR=assert %i",
         ]
     if task.startswith("coh_l1d_stream_free_nostore_"):
