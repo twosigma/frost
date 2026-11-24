@@ -248,7 +248,7 @@ every supported extension and privilege mode.
 | **Smaia, Ssaia** | AIA CSRs and machine/supervisor IMSIC files with 63 identities |
 | **Sscofpmf**     | HPM counter overflow (OF, `scountovf`, local counter-overflow interrupt 13) and MINH/SINH/UINH privilege filtering on counters 3..10 |
 | **Ssnpm**        | Pointer masking for U-mode (`senvcfg.PMM`, PMLEN 7 and 16): explicit scalar U-mode accesses, including AMOs, LR/SC and CBOs, ignore the top PMLEN address bits (sign-extended under Sv39, zero-extended under Bare). Vector memory execution applies the same transform to each element address. |
-| **Supm**         | Scalar U-mode pointer masking supplied by Ssnpm when the execution environment enables it; the supplied Linux image does not expose the tagged-address ABI |
+| **Supm**         | U-mode pointer masking supplied by Ssnpm and exposed by the pinned Debian 7.3 Linux kernel (`CONFIG_RISCV_ISA_SUPM`) through `prctl(PR_SET_TAGGED_ADDR_CTRL)` |
 | **Sstvala**      | An illegal-instruction exception writes the faulting instruction's bits to `mtval` or `stval`, a compressed instruction's 16 bits zero-extended; an instruction or data access, misaligned or page fault, a failed bus response included, writes the faulting virtual address |
 | **Ssu64xl**      | UXLEN is 64: `mstatus.UXL` and `sstatus.UXL` read 2 and cannot change |
 | **Svade**        | Software-managed accessed and dirty bits: an access that needs one set raises a page fault |
@@ -457,7 +457,7 @@ the image.
 | | pip / setuptools / wheel | 26.2.2 / 84.2.1 / 0.48.0 |
 | **Build** | CMake / Meson / Ninja | 4.4.4 / 1.12.1 / 1.13.2 |
 | | Buildroot / OpenSBI | 2026.08.1 / 1.9 |
-| | Debian Linux kernel | 6.12.113-1 (`6.12.113+deb13-riscv64`) |
+| | Debian Linux kernel | 7.3.4-1~bpo13+1 (`7.3.4+deb13-riscv64`, trixie-backports) |
 | **Testbench** | Cocotb / pytest / pytest-cov | 2.1.0 / 9.1.1 / 7.1.0 |
 | **Simulator** | Verilator / QEMU | 5.054 / 11.1.2 |
 | | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` |

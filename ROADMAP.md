@@ -8,8 +8,8 @@ set the direction of this roadmap. The sections are in priority order.
 FROST is working toward the RVA23 profile without the hypervisor extension:
 the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
 The mandatory scalar and supervisor extensions are implemented in hardware,
-though the supplied Linux image does not expose the `Supm` tagged-address
-ABI. Two larger pieces come before the second hart:
+and the supplied Linux image exposes the `Supm` tagged-address ABI. Two
+larger pieces come before the second hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb and Zvkt. The optional
   cryptography extensions include Zvbc and Zvkng. The vector length
@@ -87,7 +87,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zcb | Implemented | `riscv-arch-test` (`C`), `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
 | Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, `vec_fp_test`, TestRIG (`--fp-ext`, `vector_fli_h.S`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
 | Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
-| Supm | Scalar hardware support through Ssnpm; the supplied Linux image does not expose the tagged-address ABI | `pm_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `pm_mode_select.sby`, `coherent_store_pma_twin.sby` |
+| Supm | Implemented through Ssnpm (`senvcfg.PMM`, PMLEN 7 and 16) and exposed by the pinned Debian 7.3 Linux kernel (`CONFIG_RISCV_ISA_SUPM`) through `prctl(PR_SET_TAGGED_ADDR_CTRL)` | `pm_test`, `frost_supm_probe`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `pm_mode_select.sby`, `coherent_store_pma_twin.sby` |
 | Zifencei | Implemented | `riscv-arch-test` (`Zifencei`), `smc_fencei_test`, `ddr_smc_test`, TestRIG, `coherent_hart_cache.sby` |
 | Ss1p13 | Implemented | `riscv-tests` (`rv64si`), `smode_test`, `umode_test`, `vm_test`, TestRIG, `csr_file.sby`, `trap_unit.sby` |
 | Svbare | Implemented | `pa_width_test`, `pma_fault_test`, TestRIG, `immu_bare.sby`, `dmmu_twin.sby` |
