@@ -2683,3 +2683,120 @@ def test_validate_prebuilt_vector_contract_rejects_bad_configs(tmp_path: Path) -
                 app_name="vec_state_test",
                 make_vars={"EXTRA_CFLAGS": "-DVEC_VLEN=0 -DVEC_ADVERTISE=0"},
             )
+
+
+def test_vcu118_vector_loader_options_and_clocks(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Opt-in VCU118 --vector selects 162.5 MHz, VLEN 256, misa.V, vector apps, and V DTB."""
+    # Default VCU118 remains scalar at 200 MHz with no vector-unit apps.
+    assert loader.board_clock_freq("vcu118", {}) == (200_000_000, False)
+    assert loader.board_vector_config("vcu118") == (0, False)
+    assert not (set(loader.valid_apps_for_board("vcu118")) & loader.VECTOR_UNIT_APPS)
+
+    # Opt-in VCU118 vector selects 162.5 MHz, VLEN 256, advertised V, and vector apps.
+    assert loader.board_clock_freq("vcu118", {}, vector=True) == (162_500_000, False)
+    assert loader.board_clock_freq(
+        "vcu118", {"FROST_CPU_CLK_HZ": "162500000"}, vector=True
+    ) == (162_500_000, True)
+    assert loader.board_clock_freq("vcu118", {"FROST_CPU_CLK_HZ": "162500000"}) == (
+        162_500_000,
+        True,
+    )
+    assert loader.board_vector_config("vcu118", vector=True) == (256, True)
+    assert loader.VECTOR_UNIT_APPS <= set(
+        loader.valid_apps_for_board("vcu118", vector=True)
+    )
+    with pytest.raises(ValueError, match="fixed CPU clock"):
+        loader.board_clock_freq(
+            "vcu118", {"FROST_CPU_CLK_HZ": "200000000"}, vector=True
+        )
+    with pytest.raises(ValueError, match="fixed CPU clock"):
+        loader.board_clock_freq(
+            "vcu118", {"FROST_CPU_CLK_HZ": "162500000"}, vector=False
+        )
+
+    # CLI builds vector apps and vec_state_test at 162.5 MHz with VLEN=256, VEC_ADVERTISE=1.
+    monkeypatch.delenv("FROST_CPU_CLK_HZ", raising=False)
+    monkeypatch.delenv("EXTRA_CFLAGS", raising=False)
+    monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a, **k: {})
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    monkeypatch.setattr(loader, "_linux_boot_preflight", lambda: None)
+
+    for argv, expected_clock, expected_cflags, expected_vector in (
+        (["vcu118", "hello_world", "--vector", "--build-only"], 162_500_000, {}, True),
+        (
+            ["vcu118", "vec_arith_test", "--vector", "--build-only"],
+            162_500_000,
+            {},
+            True,
+        ),
+        (
+            ["vcu118", "vec_state_test", "--vector", "--build-only"],
+            162_500_000,
+            {"EXTRA_CFLAGS": "-DVEC_VLEN=256 -DVEC_ADVERTISE=1"},
+            True,
+        ),
+        (
+            ["vcu118", "vec_fp_test", "--vector", "--build-only"],
+            162_500_000,
+            {"EXTRA_CFLAGS": "-DVEC_VLEN=256"},
+            True,
+        ),
+        (["vcu118", "linux_boot", "--vector", "--build-only"], 162_500_000, {}, True),
+        (["vcu118", "linux_boot", "--build-only"], 200_000_000, {}, False),
+    ):
+        seen: list[tuple[int, dict[str, str], bool]] = []
+
+        def capture_compile(*args: Any, **kwargs: Any) -> bool:
+            seen.append((args[2], args[4], bool(kwargs.get("vector", False))))
+            return True
+
+        with monkeypatch.context() as mp:
+            mp.setattr(loader, "compile_app_for_board", capture_compile)
+            mp.setattr(sys, "argv", ["load_software.py", *argv])
+            loader.main()
+        assert seen == [(expected_clock, expected_cflags, expected_vector)]
+
+    # compile_app_for_board exports FROST_LINUX_VECTOR=1 for vcu118 vector and 0 for scalar.
+    for vector_flag, expected_env in ((False, "0"), (True, "1")):
+        captured_envs: list[dict[str, str]] = []
+
+        def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            captured_envs.append(dict(kwargs["env"]))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(loader.subprocess, "run", fake_run)
+        monkeypatch.setattr(Path, "exists", lambda _self: True)
+        monkeypatch.setenv("FROST_LINUX_VECTOR", "1" if not vector_flag else "0")
+        assert loader.compile_app_for_board(
+            "linux_boot",
+            ROOT / "sw/apps/linux_boot",
+            162_500_000 if vector_flag else 200_000_000,
+            10800,
+            ddr_bytes=1 << 31,
+            board="vcu118",
+            vector=vector_flag,
+        )
+        assert captured_envs[-1]["FROST_LINUX_BOARD"] == "vcu118"
+        assert captured_envs[-1]["FROST_LINUX_VECTOR"] == expected_env
+        assert captured_envs[-1]["FPGA_CPU_CLK_FREQ"] == str(
+            162_500_000 if vector_flag else 200_000_000
+        )
+
+    # Error paths: x3 --no-vector, scalar vcu118 + vector app, --list-targets --vector.
+    for bad_argv, expected_err in (
+        (
+            ["x3", "hello_world", "--no-vector"],
+            "--no-vector is only supported for vcu118",
+        ),
+        (["vcu118", "vec_arith_test"], "vec_arith_test is not supported on vcu118"),
+        (["vcu118", "--list-targets", "--vector"], "cannot be combined"),
+    ):
+        monkeypatch.setattr(sys, "argv", ["load_software.py", *bad_argv])
+        with pytest.raises(SystemExit) as stopped:
+            loader.main()
+        assert stopped.value.code == 2
+        assert expected_err in capsys.readouterr().err

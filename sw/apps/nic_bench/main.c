@@ -27,7 +27,7 @@
  * ring: every TX descriptor points at one prepared buffer, RX
  * descriptors follow the producer index, every frame's length and outcome are
  * checked, and one frame in SAMPLE_EVERY is compared byte for byte. The
- * result reports frames, elapsed time on the 200 MHz timebase, and rates in
+ * result reports frames, elapsed time on the CPU timebase, and rates in
  * Gb/s: frame bytes (no preamble, FCS or gap) and wire bytes (+24 per frame).
  * The 10GBASE-R MAC rate is 10 Gb/s on the wire.
  *
@@ -42,10 +42,14 @@
 #include "trap.h"
 #include "uart.h"
 
-#define TIMEBASE_HZ 200000000u
-#define WAIT_READY 20000000u
-#define WAIT_CARRIER 400000000u
-#define STALL_TICKS (2u * TIMEBASE_HZ) /* abort a run that moves nothing for 2 s */
+#ifndef FPGA_CPU_CLK_FREQ
+#define FPGA_CPU_CLK_FREQ 200000000ull
+#endif
+#define TIMEBASE_HZ ((uint64_t) (FPGA_CPU_CLK_FREQ))
+#define TIMEBASE_KHZ ((TIMEBASE_HZ >= 1000ull) ? (TIMEBASE_HZ / 1000ull) : 1ull)
+#define WAIT_READY ((uint32_t) (TIMEBASE_HZ / 10u))
+#define WAIT_CARRIER ((uint32_t) (2u * TIMEBASE_HZ))
+#define STALL_TICKS (2ull * TIMEBASE_HZ) /* abort a run that moves nothing for 2 s */
 
 #define DDR_SCRATCH 0x81800000u
 #ifdef NIC_BENCH_QUICK
@@ -193,7 +197,7 @@ static void snapshot(struct counters *c)
 
 static void print_rate(const char *what, uint64_t bits, uint64_t ticks)
 {
-    uint64_t mbps = ticks ? bits * (TIMEBASE_HZ / 1000000u) / ticks : 0; /* bits per us */
+    uint64_t mbps = ticks ? bits * TIMEBASE_KHZ / (ticks * 1000ull) : 0; /* bits per us */
     uart_printf("%s %u.%03u Gb/s", what, (uint32_t) (mbps / 1000u), (uint32_t) (mbps % 1000u));
 }
 
@@ -302,7 +306,7 @@ static int run(uint32_t len, uint32_t n)
                 len,
                 got,
                 n,
-                (uint32_t) (ticks / (TIMEBASE_HZ / 1000000u)));
+                (uint32_t) (ticks * 1000ull / TIMEBASE_KHZ));
     print_rate("frame", frame_bits, ticks);
     uart_printf(", ");
     print_rate("wire", wire_bits, ticks);

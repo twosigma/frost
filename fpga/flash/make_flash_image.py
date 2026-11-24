@@ -66,6 +66,8 @@ PARTITIONS = [
     },
 ]
 
+VECTOR_DTB_FILE = "boards/vcu118/frost_vector.dtb"
+
 
 def make_header(load_addr: int, entry_addr: int, payload_len: int, crc32: int) -> bytes:
     """Encode the fixed boot-stage image header."""
@@ -83,13 +85,20 @@ def make_header(load_addr: int, entry_addr: int, payload_len: int, crc32: int) -
 
 
 def build_flash_image(
-    repo_root: Path, output_path: Path, components: dict[str, Path] | None = None
+    repo_root: Path,
+    output_path: Path,
+    components: dict[str, Path] | None = None,
+    *,
+    vector: bool = False,
 ) -> None:
     """Pack validated payloads into four nonoverlapping flash partitions."""
     image = bytearray(b"\xff" * 0x400000)
     for part in PARTITIONS:
         name = str(part["name"])
-        source = (components or {}).get(name, repo_root / str(part["default_file"]))
+        default_file = (
+            VECTOR_DTB_FILE if name == "DTB" and vector else str(part["default_file"])
+        )
+        source = (components or {}).get(name, repo_root / default_file)
         payload = source.read_bytes()
         capacity = {"FSBL": 0x13C00, "DTB": 0x20000}.get(name, 0x100000 - HEADER_SIZE)
         if not 0 < len(payload) <= capacity:
@@ -119,6 +128,11 @@ def main() -> None:
     parser.add_argument("--opensbi", type=Path)
     parser.add_argument("--dtb", type=Path)
     parser.add_argument("--uboot", type=Path)
+    parser.add_argument(
+        "--vector",
+        action="store_true",
+        help="Use the opt-in VCU118 vector DTB (boards/vcu118/frost_vector.dtb) when --dtb is omitted",
+    )
     args = parser.parse_args()
     components = {
         name: path
@@ -131,7 +145,12 @@ def main() -> None:
         if path is not None
     }
     try:
-        build_flash_image(Path(__file__).resolve().parents[2], args.output, components)
+        build_flash_image(
+            Path(__file__).resolve().parents[2],
+            args.output,
+            components,
+            vector=args.vector,
+        )
     except (ValueError, OSError) as error:
         parser.error(str(error))
 

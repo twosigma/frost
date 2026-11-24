@@ -19,6 +19,19 @@ BUILD_DIR ?= $(CURDIR)/build
 SOURCE_DIR := $(BUILD_DIR)/source
 OUTPUT_DIR := $(BUILD_DIR)/out
 JOBS ?= 8
+VECTOR ?= 0
+
+ifeq ($(VECTOR),1)
+VCU118_CLK_ARG := FPGA_CPU_CLK_FREQ=162500000
+VCU118_DTS := ../../boards/vcu118/dts/frost_vcu118_vector.dts
+VCU118_DTB := ../../boards/vcu118/frost_vector.dtb
+else ifeq ($(VECTOR),0)
+VCU118_CLK_ARG :=
+VCU118_DTS := ../../boards/vcu118/dts/frost_vcu118.dts
+VCU118_DTB := ../../boards/vcu118/frost.dtb
+else
+$(error VECTOR must be 0 or 1 (got '$(VECTOR)'))
+endif
 
 .PHONY: all clean
 all: u-boot.bin
@@ -53,12 +66,12 @@ clean:
 
 .PHONY: firmware dtb
 firmware: all dtb
-	$(MAKE) -C ../apps/bootrom RISCV_PREFIX="$(CROSS_COMPILE)"
-	$(MAKE) -C ../apps/fsbl RISCV_PREFIX="$(CROSS_COMPILE)"
+	$(MAKE) -C ../apps/bootrom RISCV_PREFIX="$(CROSS_COMPILE)"$(if $(VCU118_CLK_ARG), $(VCU118_CLK_ARG))
+	$(MAKE) -C ../apps/fsbl RISCV_PREFIX="$(CROSS_COMPILE)"$(if $(VCU118_CLK_ARG), $(VCU118_CLK_ARG))
 	python3 ../../linux/opensbi_build.py --out "$(BUILD_DIR)/opensbi" \
 	  --cross "$(CROSS_COMPILE)" --jobs $(JOBS)
 
 
-dtb: ../../boards/vcu118/frost.dtb
-../../boards/vcu118/frost.dtb: ../../boards/vcu118/dts/frost_vcu118.dts
+dtb: $(VCU118_DTB)
+$(VCU118_DTB): $(VCU118_DTS)
 	dtc -I dts -O dtb -o "$@" "$<"

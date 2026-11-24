@@ -45,19 +45,29 @@ def test_recursive_filelist_is_an_error(tmp_path: Path) -> None:
 
 
 def test_vector_views_cover_build_and_simulation_settings() -> None:
-    """Vector branches elaborate at the board and registered simulation lengths."""
-    hardware, *simulations = slang.vector_cases()
+    """Vector branches elaborate for both boards and the simulation lengths."""
+    x3, vcu118, *simulations = slang.vector_cases()
     board = (slang.ROOT / "boards/x3/x3_frost.sv").read_text()
     registry = (slang.ROOT / "tests/test_run_cocotb.py").read_text()
     board_vlen = re.search(r"\.VLEN\((\d+)\)", board)
     assert board_vlen is not None
     assert ".VECTOR(1'b1)" in board
-    assert dict(hardware.parameters)["VLEN"] == board_vlen[1]
-    assert hardware.name.startswith("synthesis/")
-    assert "-DFROST_XILINX_PRIMS" in hardware.units[0].options
+    assert dict(x3.parameters)["VLEN"] == board_vlen[1]
+    for hardware in (x3, vcu118):
+        assert hardware.name.startswith("synthesis/")
+        assert "-DFROST_XILINX_PRIMS" in hardware.units[0].options
+    assert "-DFROST_DDR_CAPACITY_LOG2_BYTES=31" in vcu118.units[0].options
+    assert {
+        "CLK_FREQ_HZ": "162500000",
+        "VLEN": "256",
+        "L1I_CACHE_BYTES": "32768",
+        "L2_CACHE_BYTES": "4194304",
+        "ENABLE_1G_ETH": "1",
+        "VECTOR_ADVERTISE": "1",
+    }.items() <= dict(vcu118.parameters).items()
     lengths = set(re.findall(r'"-GVLEN=(\d+)"', registry))
     assert {dict(case.parameters)["VLEN"] for case in simulations} == lengths
-    for case in (hardware, *simulations):
+    for case in (x3, vcu118, *simulations):
         assert case.top == "frost"
         assert dict(case.parameters)["VECTOR"] == "1"
 
