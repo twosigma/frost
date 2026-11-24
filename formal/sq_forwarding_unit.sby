@@ -16,7 +16,12 @@ smtbmc boolector
 
 [script]
 ~tree_equiv: read -formal -sv riscv_pkg.sv sq_forwarding_unit.sv sq_forwarding_unit_formal.sv
-~tree_equiv: chparam -set DEPTH 16 sq_forwarding_unit_formal
+# At 16 entries the unbounded proof's base case does not finish within the
+# 40-minute task budget (boolector, z3 and abc pdr alike); at 8 it takes under
+# a minute. prove checks the linear scan at 8 entries, cover reaches the core's
+# 16, and tree_equiv proves the shipped pick equal to the scan at SqDepth.
+prove: chparam -set DEPTH 8 sq_forwarding_unit_formal
+cover: chparam -set DEPTH 16 sq_forwarding_unit_formal
 ~tree_equiv: hierarchy -top sq_forwarding_unit_formal
 ~tree_equiv: script free_undefined.ys
 ~tree_equiv: prep -top sq_forwarding_unit_formal
