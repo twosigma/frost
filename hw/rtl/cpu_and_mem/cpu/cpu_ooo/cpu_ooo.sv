@@ -832,10 +832,9 @@ module cpu_ooo #(
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
   // Registered translation-invalidate pulse from csr_file: every satp access,
   // and an mstatus write only when it changes MPRV, or MPP under MPRV. Through
-  // tlb_invalidate it drops the IMMU's registered result and the DMMU's
-  // last-page buffer and discards the walk in flight; TLB entries leave
-  // through tlb_flush. The ROB serializer handles
-  // pipeline recovery separately.
+  // tlb_invalidate it clears the IMMU result, suppresses direct DMMU hits
+  // and discards the walk in flight. TLB entries leave through tlb_flush.
+  // The ROB serializer handles pipeline recovery separately.
   logic csr_translation_flush_req;
   // Registered pulse beside it for a satp root switch or MPRV change: the
   // TLBs drop every entry. A satp write that keeps the root (an ASID change)

@@ -566,16 +566,23 @@ VA-placeholder select and the neighbor-miss flag) form their clear, capture or h
 the crossing and the next-page verdict first, and take the first-word fault
 and the superpage successor in one final LUT each.
 
-The data MMU caches the last clean page translation and its permissions.
-A matching eligible access enters the result stage in one cycle. Other
-accesses use the lookup stage followed by the result stage. Reset, full flush,
-translation disable and TLB invalidation clear the last-page buffer.
-Each DTLB entry also exports its VPN, leaf level, stored PPN and high-PPN
-flag. It registers load and store permission for the effective data privilege,
-SUM and MXR. Outside translation invalidation, a matching permission context
-qualifies global entries and entries tagged with the live ASID. The next edge
-refreshes permissions when the context changes. A fill registers the permissions and PMA
-of the incoming entry together.
+On Sv39 issue the data MMU compares the address base and offset with all
+16 DTLB tags. For each nine-bit VPN field the stored tag determines the
+carry required at every bit. Adjacent carry checks run in parallel, with
+one shared carry into each field. The leaf level selects which fields must
+match. The lowest matching slot has the same priority as the S1 lookup.
+
+A clean, uniform hit enters S2 directly if the skid is empty and S1 is
+empty or killed. Its PPN comes from the winning entry, with VPN offset
+bits substituted for a superpage. Permission or PMA refusals, mixed
+superpages, noncanonical addresses and trapping misalignment resolve in
+S1. A refill on the issue edge also sends the operation through S1 so it
+sees the replacement. Translation invalidation suppresses direct hits.
+
+Each entry stores load and store permission for the effective data
+privilege, SUM and MXR. The live ASID selects local and global entries.
+A permission-context change suppresses direct hits until the next edge
+refreshes the verdicts. A fill registers its permissions and PMA together.
 
 S1 checks PMA at the translated 4 KiB page base. Every 4 KiB entry therefore
 qualifies its registered device and atomic flags for the whole leaf. A superpage
@@ -868,8 +875,8 @@ pipeline flush follows one cycle after that. It is the same FENCE-class flush
 that FENCE.I uses, so it also drops the fetch provider's buffered lines. Across those two cycles `cpu_ooo` blocks trap,
 Debug Mode, and xRET takes and ignores exceptions, so no younger instruction
 can overwrite the CSR write or act on the old translation. Separately,
-`csr_file` raises a one-cycle translation-changed pulse (it drops the MMUs'
-registered results and discards the walker's walk) for every `satp` access, and
+`csr_file` raises a one-cycle translation-changed pulse (it suppresses direct data
+hits, clears the instruction result and discards the walker's walk) for every `satp` access, and
 for an `mstatus` write only when MPRV changes (or MPP while MPRV is set). A
 second pulse asks the TLBs to drop every entry when the `satp` root changes
 under the same ASID, or MPRV changes. SUM and MXR changes keep the TLB entries

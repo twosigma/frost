@@ -277,8 +277,8 @@ every supported extension and privilege mode.
   instruction and data TLBs backed by a 512-entry second-level TLB and a
   32-entry superpage array, and nine-bit ASIDs with global pages and
   selective `sfence.vma`. Intra-page instruction translation uses the
-  live page offset without a fetch bubble; eligible data accesses use a
-  last-page translation bypass.
+  live page offset without a fetch bubble. Eligible loads and stores can
+  bypass the lookup stage on a hit in any data TLB entry.
 - Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB
   L1I, 128 KiB L1D, and 2 MiB L2, all four-way, and a 512-entry L0 cache in the
   load queue. The L1D holds 32-byte sectors in I, S or M states, with eight
