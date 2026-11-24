@@ -700,8 +700,8 @@ async def atomic_latency_controls(dut: Any) -> None:
 
 
 @cocotb.test()
-async def reader_downgrade_sc_latency(dut: Any) -> None:
-    """Measure successful SC after a coherent reader downgrades its sector."""
+async def snapshot_sc_latency(dut: Any) -> None:
+    """Check that a DMA snapshot preserves LR and the sector's write permission."""
     s = System(dut)
     address = 0x80000000
     cache = dut.hart.gen_coherent_tier.hart_cache.l1d
@@ -750,9 +750,9 @@ async def reader_downgrade_sc_latency(dut: Any) -> None:
     assert await s.dma(address) & ((1 << 64) - 1) == 11
     assert "request" not in events
     assert await s.until_write(0x40000028) == 0
-    assert acquisitions == 1
+    assert acquisitions == 0
     dut._log.info(
-        "ATOMIC_TIMING reader_downgrade_sc request_to_retirement=%d protection=%d total=%d",
+        "ATOMIC_TIMING snapshot_sc request_to_retirement=%d protection=%d total=%d",
         events["retire"] - events["request"],
         events["guard_end"] - events["guard_start"],
         s.cycle,

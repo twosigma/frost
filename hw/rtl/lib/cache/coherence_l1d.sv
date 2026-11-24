@@ -322,7 +322,7 @@ module coherence_l1d #(
   logic store_read_turn_q, read_waiting_q;
   logic read_service_waiting, load_grant_eligible;
   logic [31:0] update_mask_q;
-  logic array_skip_data, array_no_bank, array_resp_no_bank, array_data_valid;
+  logic array_skip_data, array_no_bank, array_resp_no_bank, array_data_valid, array_home_current;
 `ifdef STORE_BANK_PROOF
   // Follow one arbitrary byte from the physical row capture through the
   // scratch image, until a real row or an overwrite supplies that byte.
@@ -365,6 +365,8 @@ module coherence_l1d #(
   (* max_fanout = 32 *) logic probe_absorbed_q;
   (* max_fanout = 32 *) logic probe_put_q;
   logic probe_capture, probe_launch, probe_reply_eligible;
+  logic probe_snapshot, probe_dirty, probe_tag_write, victim_dirty;
+  logic [1:0] probe_state;
   logic local_ready, local_turn_q, probe_priority;
   logic [1:0] read_probe_count_q;
   logic [ADDR_WIDTH-1:0] array_request_addr;
@@ -1167,6 +1169,9 @@ module coherence_l1d #(
       (store_pop && operation_q == StoreOp && store_continue));
   assign store_acquire = active && phase_q == Acquire &&
       (operation_q == StoreOp || operation_q == LookaheadOp) && acquire_ready;
+`ifdef SNAPSHOT_OWNER_PROOF
+  logic [1:0] f_store_next;
+`endif
   coherence_store_buffer #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .TAG_BITS(TAG_BITS),
@@ -1211,6 +1216,9 @@ module coherence_l1d #(
       .o_twin_pending(store_twin_pending),
       .o_twin_alloc(store_twin_alloc),
       .o_twin_index(store_twin_index),
+`ifdef SNAPSHOT_OWNER_PROOF
+      .o_f_next(f_store_next),
+`endif
       .o_twin_addr(store_twin_addr)
   );
   assign pending_q = store_count != 0;
@@ -1347,6 +1355,14 @@ module coherence_l1d #(
   (* keep = "true" *) wire lookup_atomic_set;
   assign lookup_atomic_set =
       lookup_addr_q[5+:SetBits] == atomic_addr_q[5+:SetBits];
+  assign probe_snapshot = probe_q.opcode == coherence_pkg::ProbeSnapshot;
+  assign probe_dirty = array_hit && array_state == coherence_pkg::Modified &&
+      !(probe_snapshot && array_home_current);
+  assign probe_state = !array_hit || probe_q.opcode == coherence_pkg::ProbeInvalidate ?
+      coherence_pkg::Invalid : probe_snapshot ? array_state : coherence_pkg::Shared;
+  assign probe_tag_write = probe_snapshot ? probe_dirty && !probe_absorbed_q :
+      array_hit && array_state != probe_state;
+  assign victim_dirty = !array_hit && array_state == coherence_pkg::Modified && !array_home_current;
   assign probe_reply_eligible = probe_q.opcode != coherence_pkg::ProbeInvalidate ||
       cut_phase_q == CutDone;
   // Prepare the reply's set condition independently of the home's R readiness.
@@ -1357,8 +1373,7 @@ module coherence_l1d #(
     if (active) begin
       case (phase_q)
         LookupWait: if (array_valid && operation_q == ProbeOp) begin
-          if (array_hit && !(array_state == coherence_pkg::Shared &&
-              probe_q.opcode == coherence_pkg::ProbeRead)) probe_reply_start = 1'b0;
+          if (probe_tag_write) probe_reply_start = 1'b0;
           else if (probe_absorbed_q) probe_reply_start = 1'b0;
           else if (probe_reply_eligible) probe_reply_start = 1'b1;
         end
@@ -2650,6 +2665,21 @@ module coherence_l1d #(
     end
   end
 
+`ifdef SNAPSHOT_OWNER_PROOF
+  localparam int unsigned FArrSets = CACHE_BYTES / (32 * WAYS);
+  localparam int unsigned FArrSetBits = $clog2(FArrSets);
+  localparam int unsigned FArrTagBits = ADDR_WIDTH - FArrSetBits - 5;
+  localparam int unsigned FArrEntryBits = FArrTagBits + 3;
+  logic [WAYS*FArrSets*FArrEntryBits-1:0] f_arr_tags;
+  logic [3:0] f_arr_phase;
+  logic [FArrSetBits-1:0] f_arr_init_set, f_arr_set;
+  logic [FArrTagBits-1:0] f_arr_tag;
+  logic f_arr_visit;
+  logic [WayBits-1:0] f_arr_visit_way;
+  logic [FArrEntryBits-1:0] f_arr_tag_rdata0;
+  logic f_arr_early_reply;
+  logic [WAYS-1:0] f_arr_exclude;
+`endif
   coherence_array #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(32),
@@ -2670,6 +2700,8 @@ module coherence_l1d #(
       .i_req_way(maint_way_q),
       .i_req_skip_data_on_hit(array_skip_data),
       .i_req_data_if_modified(probe_launch || operation_q == ProbeOp),
+      .i_req_snapshot(probe_launch ?
+          probe_in.opcode == coherence_pkg::ProbeSnapshot : probe_snapshot),
       // A CPU read uses data only on a hit; its miss decision follows the
       // tag result. A grant needs the replaced line's data only to freeze a
       // Modified victim.
@@ -2687,6 +2719,18 @@ module coherence_l1d #(
       .o_f_row_tainted(f_row_tainted),
       .o_f_store_tags(f_store_tags),
 `endif
+`ifdef SNAPSHOT_OWNER_PROOF
+      .o_f_tags(f_arr_tags),
+      .o_f_arr_phase(f_arr_phase),
+      .o_f_init_set(f_arr_init_set),
+      .o_f_set(f_arr_set),
+      .o_f_tag(f_arr_tag),
+      .o_f_visit(f_arr_visit),
+      .o_f_visit_way(f_arr_visit_way),
+      .o_f_tag_rdata0(f_arr_tag_rdata0),
+      .o_f_early_reply(f_arr_early_reply),
+      .o_f_exclude(f_arr_exclude),
+`endif
       .o_resp_valid(array_valid),
       .i_resp_ready(phase_q == LookupWait),
       .o_resp_hit(array_hit),
@@ -2694,6 +2738,7 @@ module coherence_l1d #(
       .o_resp_way(array_way),
       .o_resp_addr(array_addr),
       .o_resp_state(array_state),
+      .o_resp_home_current(array_home_current),
       .o_resp_data_valid(array_data_valid),
       .o_resp_data(array_data),
       .i_update_valid(active && phase_q == Update),
@@ -2701,6 +2746,7 @@ module coherence_l1d #(
       .i_update_addr(update_addr_q),
       .i_update_way(way_q),
       .i_update_state(state_q),
+      .i_update_home_current(operation_q == ProbeOp && probe_snapshot),
       .i_update_insert(operation_q == GrantOp || operation_q == TwinOp),
       .i_update_touch(grant_touch_q),
       .i_update_mask(update_mask_q),
@@ -2743,6 +2789,8 @@ module coherence_l1d #(
     logic controller_capture, capture_valid;
     (* keep = "true" *) logic [3:0] capture_select;
     logic [63:0] capture_data, capture_next;
+    // UpdateWait cannot offer an update. The array's idle output then
+    // gives the same answer as lookup readiness for this read capture.
     assign grant_capture = grant_answer_slots[slot] ||
         (install_read && acquisition_read_q == 3'(slot));
     assign array_capture = active && phase_q == LookupWait && array_valid &&
@@ -3665,13 +3713,10 @@ module coherence_l1d #(
             update_mask_q <= operation_q == ProbeOp ? '0 : '1;
             case (operation_q)
               ProbeOp: begin
-                reply_q.state <= array_hit && probe_q.opcode == coherence_pkg::ProbeRead ?
-                    coherence_pkg::Shared : coherence_pkg::Invalid;
-                reply_q.opcode <= ((array_hit && array_state ==
-                    coherence_pkg::Modified) || probe_absorbed_q) ?
+                reply_q.state <= probe_state;
+                reply_q.opcode <= probe_dirty || probe_absorbed_q ?
                     coherence_pkg::ProbeData : coherence_pkg::ProbeAck;
-                reply_q.data_valid <= (array_hit && array_state ==
-                    coherence_pkg::Modified) || probe_absorbed_q;
+                reply_q.data_valid <= probe_dirty || probe_absorbed_q;
                 reply_q.data <= probe_absorbed_q ? probe_put.data : array_data;
 `ifdef STORE_BANK_PROOF
                 f_reply_tainted <= !probe_absorbed_q && f_row_tainted;
@@ -3679,10 +3724,8 @@ module coherence_l1d #(
                 reply_q.absorbed <= probe_absorbed_q;
                 reply_q.put_id <= probe_put_q;
                 reply_q.put_epoch <= probe_q.epoch;
-                if (array_hit && !(array_state == coherence_pkg::Shared &&
-                    probe_q.opcode == coherence_pkg::ProbeRead)) begin
-                  state_q <= probe_q.opcode == coherence_pkg::ProbeInvalidate ?
-                      coherence_pkg::Invalid : coherence_pkg::Shared;
+                if (probe_tag_write) begin
+                  state_q <= probe_state;
                   phase_q <= Update;
                 end else if (probe_absorbed_q) phase_q <= ProbeAbsorb;
                 else if (probe_reply_eligible) begin
@@ -3702,7 +3745,7 @@ module coherence_l1d #(
                     for (int index = 0; index < 32; index++)
                     if (pending_mask_q[index]) image_q[8*index+:8] <= pending_data_q[8*index+:8];
                   end
-                  if (!array_hit && array_state == coherence_pkg::Modified) begin
+                  if (victim_dirty) begin
                     freeze_slot_q <= grant_ep_q == '0 ? reserved_wb_q : wb_free_slot;
                     freeze_addr_q <= array_addr;
                     freeze_data_q <= array_data;
@@ -3742,7 +3785,7 @@ module coherence_l1d #(
                 f_image_tainted <= 1'b0;
 `endif
                 state_q <= coherence_pkg::Modified;
-                if (!array_hit && array_state == coherence_pkg::Modified) begin
+                if (victim_dirty) begin
                   freeze_slot_q <= twin_wb_slot;
                   freeze_addr_q <= array_addr;
                   freeze_data_q <= array_data;
@@ -4248,11 +4291,25 @@ module coherence_l1d #(
       if (array_skip_data) assert (!probe_launch &&
           (operation_q == StoreOp || operation_q == LookaheadOp));
       if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&
-          array_hit && array_state == coherence_pkg::Modified) assert (array_data_valid);
+          array_hit && array_state == coherence_pkg::Modified)
+        p_probe_data : assert (array_data_valid == !(probe_snapshot && array_home_current));
+      if (active && phase_q == LookupWait && array_valid && operation_q == ProbeOp &&
+          probe_snapshot && probe_absorbed_q)
+        p_snapshot_put_owner : assert (!(array_hit && array_state == coherence_pkg::Modified));
+      if (active && phase_q == Update && operation_q == ProbeOp && probe_snapshot) begin
+        p_snapshot_credit_image :
+        assert (state_q == coherence_pkg::Modified && update_mask_q == 0 &&
+            reply_q.addr == update_addr_q && reply_q.state == coherence_pkg::Modified &&
+            reply_q.data_valid && !reply_q.absorbed);
+        p_snapshot_credit_data : assert (reply_q.data == image_q);
+      end
+      if (active && o_r_valid && probe_snapshot)
+        p_snapshot_hold :
+        assert (probe_valid_q && !o_p_ready && !store_pop && !o_cut_hold && phase_q == Idle);
       if (active && phase_q == LookupWait && array_valid &&
           (operation_q == GrantOp || operation_q == TwinOp) &&
           !array_hit && array_state == coherence_pkg::Modified)
-        p_grant_victim_data : assert (array_data_valid);
+        p_grant_victim_data : assert (array_data_valid == !array_home_current);
       // A shadow lookup whose read the hit path holds decides nothing from the
       // kind, and the hit path may have answered and freed the slot by then.
       if (active && phase_q == LookupWait && operation_q == ReadOp && !(shadow_q && path_hit_q))
@@ -4269,8 +4326,9 @@ module coherence_l1d #(
             ((operation_q == StoreOp || operation_q == LookaheadOp) && array_hit) ||
             (operation_q == ReadOp && (!array_hit || shadow_q)) ||
             ((operation_q == GrantOp || operation_q == TwinOp) &&
-             (array_hit || array_state != coherence_pkg::Modified)) ||
-            (operation_q == ProbeOp && (!array_hit || array_state != coherence_pkg::Modified)));
+             (array_hit || array_state != coherence_pkg::Modified || array_home_current)) ||
+            (operation_q == ProbeOp && (!array_hit || array_state != coherence_pkg::Modified ||
+                (probe_snapshot && array_home_current))));
       end
       // The hit path holds valid, unanswered load slots, one per stage. Its
       // answer is the slot's only completion, and a lookup of a slot whose
@@ -5442,6 +5500,110 @@ module coherence_l1d #(
   end
   coh_g_t f_grant;
   assign f_grant = i_g;
+`ifdef SNAPSHOT_OWNER_COVER
+  // Cover-only scenario driver exercising StoreConditional grant ordering
+  // against live writebacks and snapshot probe paths with two conflicting
+  // set-0 sectors and one set-1 sector.
+  (* anyconst *) logic [2:0] f_snap_scenario;
+  logic [1:0] f_snap_stores_q, f_snap_installs_q;
+  logic f_snap_store_offer_q, f_snap_sc_sent_q, f_snap_probe_sent_q;
+  logic f_sc_wb_same_seen_q;
+  logic f_sc_wb_match_ep0, f_sc_wb_match_grant, f_sc_wb_other_grant;
+  coh_p_t f_snap_p;
+  coh_g_t f_snap_g;
+  coh_wa_t f_snap_wa;
+  coh_u_t f_snap_u;
+  always_comb begin
+    f_sc_wb_match_ep0 = 1'b0;
+    f_sc_wb_match_grant = 1'b0;
+    f_sc_wb_other_grant = 1'b0;
+    for (int wb_slot = 0; wb_slot < 2; wb_slot++) begin
+      if (wb_live[wb_slot] &&
+          wb_addr[wb_slot][ADDR_WIDTH-1:5] == acquisition_q.addr[ADDR_WIDTH-1:5])
+        f_sc_wb_match_ep0 = 1'b1;
+      if (wb_live[wb_slot] &&
+          wb_addr[wb_slot][ADDR_WIDTH-1:5] == f_grant.addr[ADDR_WIDTH-1:5])
+        f_sc_wb_match_grant = 1'b1;
+      if (wb_live[wb_slot] &&
+          wb_addr[wb_slot][ADDR_WIDTH-1:5] != f_grant.addr[ADDR_WIDTH-1:5])
+        f_sc_wb_other_grant = 1'b1;
+    end
+    f_snap_p = '0;
+    f_snap_p.opcode = coherence_pkg::ProbeSnapshot;
+    f_snap_p.tid = 6'd2;
+    f_snap_p.addr = ADDR_WIDTH'(32'h80000000);
+    f_snap_p.size = 3'd3;
+    f_snap_p.reason = coherence_pkg::Read;
+    f_snap_g = '0;
+    f_snap_g.opcode = (acquisition_q.opcode == coherence_pkg::StoreConditional &&
+        f_snap_scenario == 3'd2) ? coherence_pkg::GrantFail : coherence_pkg::GrantM;
+    f_snap_g.tid = 6'd1;
+    f_snap_g.addr = acquisition_q.addr;
+    f_snap_wa = '0;
+    f_snap_wa.put_id = wb_live[0] ? 1'b0 : 1'b1;
+    f_snap_wa.addr = ADDR_WIDTH'(32'h80000000);
+    f_snap_u = '0;
+    f_snap_u.tid = 6'd1;
+    f_snap_u.addr = acquisition_q.addr;
+  end
+  always_ff @(posedge i_clk) begin
+    assume (i_rst == !f_past_valid);
+    assume (f_snap_scenario <= 3'd4);
+    assume (i_address == ADDR_WIDTH'(f_snap_stores_q == 2'd0 ? 32'h80000000 : 32'h80000040));
+    assume (i_sc_address == ADDR_WIDTH'(f_snap_scenario == 3'd3 ? 32'h80000020 : 32'h80000000));
+    assume (i_write_mask == (f_snap_store_offer_q ? 8'hff : 8'h00));
+    assume (i_write_data == '0 && i_write_tag == '0 && !i_write_more && !i_next_same);
+    assume (i_sc_size == 3'd3 && i_sc_tag == '0 && i_atomic_protected);
+    assume (!i_reservation_valid && i_reservation_addr == '0 && i_reservation_size == '0);
+    assume (i_sc_valid == (f_snap_scenario >= 3'd2 && f_snap_installs_q == 2'd2 &&
+        !live[0] && !f_snap_sc_sent_q));
+    assume (i_p_valid == (!f_snap_probe_sent_q &&
+        ((f_snap_scenario == 3'd0 && f_snap_installs_q == 2'd1) ||
+         (f_snap_scenario == 3'd1 && |wb_live))));
+    assume (i_p == f_snap_p);
+    assume (i_wa_valid == (f_snap_scenario == 3'd4 && f_sc_wb_same_seen_q && |wb_live));
+    assume (i_wa == f_snap_wa);
+    assume (i_g_valid == !(f_snap_scenario == 3'd4 &&
+        acquisition_q.opcode == coherence_pkg::StoreConditional &&
+        (!f_sc_wb_same_seen_q || |wb_live)));
+    assume (i_g == f_snap_g);
+    assume (i_u_valid && i_u == f_snap_u);
+    if (i_rst) begin
+      f_snap_stores_q <= '0;
+      f_snap_installs_q <= '0;
+      f_snap_store_offer_q <= 1'b0;
+      f_snap_sc_sent_q <= 1'b0;
+      f_snap_probe_sent_q <= 1'b0;
+      f_sc_wb_same_seen_q <= 1'b0;
+    end else begin
+      f_snap_store_offer_q <= !store_push && o_store_ready &&
+          (f_snap_stores_q == 2'd0 ||
+           (f_snap_scenario != 3'd0 && f_snap_stores_q == 2'd1 && f_snap_installs_q == 2'd1));
+      if (store_push) f_snap_stores_q <= f_snap_stores_q + 2'd1;
+      if (store_pop) f_snap_installs_q <= f_snap_installs_q + 2'd1;
+      if (i_sc_valid && o_sc_ready) f_snap_sc_sent_q <= 1'b1;
+      if (probe_capture) f_snap_probe_sent_q <= 1'b1;
+      if (!live[0]) f_sc_wb_same_seen_q <= 1'b0;
+      else if (acquisition_q.opcode == coherence_pkg::StoreConditional && f_sc_wb_match_ep0)
+        f_sc_wb_same_seen_q <= 1'b1;
+    end
+    if (f_past_valid && !i_rst) begin
+      c_sc_wb_same_fail : cover (i_g_valid && ep_g_ready[0] && !f_grant.error &&
+          acquisition_q.opcode == coherence_pkg::StoreConditional &&
+          f_grant.opcode == coherence_pkg::GrantFail && f_sc_wb_match_grant);
+      c_sc_wb_other_grantm : cover (i_g_valid && ep_g_ready[0] && !f_grant.error &&
+          acquisition_q.opcode == coherence_pkg::StoreConditional &&
+          f_grant.opcode == coherence_pkg::GrantM && f_sc_wb_other_grant);
+      c_sc_wb_same_wa_grantm : cover (i_g_valid && ep_g_ready[0] && !f_grant.error &&
+          acquisition_q.opcode == coherence_pkg::StoreConditional &&
+          f_grant.opcode == coherence_pkg::GrantM && f_sc_wb_same_seen_q);
+      c_snapshot_absorbed_lookup : cover (active && phase_q == LookupWait && array_valid &&
+          operation_q == ProbeOp && probe_snapshot && probe_absorbed_q);
+      c_snapshot_credit_update : cover (active && phase_q == Update && operation_q == ProbeOp &&
+          probe_snapshot);
+    end
+  end
+`endif
   // The last claim and the sector of the last scalar write.
   logic f_merge_claim_q, f_last_scalar_q;
   logic [ADDR_WIDTH-6:0] f_claim_sector_q;
@@ -5526,8 +5688,7 @@ module coherence_l1d #(
       if (atomic_q || (request_live && acquisition_q.opcode == coherence_pkg::Atomic))
         assume (i_atomic_protected);
       if (i_p_valid) begin
-        assume (probe_in.addr[4:0] == 0 && probe_in.epoch == 0 && probe_in.opcode <=
-            coherence_pkg::CheckSC);
+        assume (probe_in.addr[4:0] == 0 && probe_in.epoch == 0);
         assume (!(atomic_q && !atomic_local_q && atomic_granted_q &&
                   probe_in.addr == acquisition_q.addr));
         if (probe_in.opcode == coherence_pkg::ProbeRead && atomic_q && !atomic_local_q &&
@@ -5549,9 +5710,16 @@ module coherence_l1d #(
         else if (acquisition_q.opcode == coherence_pkg::GetM || acquisition_q.opcode ==
             coherence_pkg::Atomic)
           assume (f_grant.opcode == coherence_pkg::GrantM);
-          else if (acquisition_q.opcode == coherence_pkg::StoreConditional)
+          else if (acquisition_q.opcode == coherence_pkg::StoreConditional) begin
             assume (f_grant.opcode == coherence_pkg::GrantM || f_grant.opcode ==
                 coherence_pkg::GrantFail);
+            // The home completes or absorbs any live PutM of this sector before
+            // delivering GrantM to a StoreConditional.
+            if (f_grant.opcode == coherence_pkg::GrantM)
+              for (int wb_slot = 0; wb_slot < 2; wb_slot++)
+                assume (!(wb_live[wb_slot] &&
+                    wb_addr[wb_slot][ADDR_WIDTH-1:5] == f_grant.addr[ADDR_WIDTH-1:5]));
+          end
             else assume (f_grant.opcode == coherence_pkg::GrantS);
       end
     end
@@ -5655,5 +5823,615 @@ module coherence_l1d #(
       cover (o_sc_write_done);
     end
   end
+`ifdef SNAPSHOT_OWNER_PROOF
+  // Word-level invariants for proving absorbed-PutM ownership disjointness in
+  // the single-way stream geometry.
+  always_ff @(posedge i_clk)
+    if (!i_rst && !active) p_snap_active_sticky : assert (i_fatal_stop || o_fatal);
+
+  logic f_inv_wb_tag_disjoint;
+  logic f_inv_probe_abs_disjoint;
+  logic f_inv_ep_wb_disjoint;
+  logic f_inv_ep_tag_disjoint;
+  logic f_inv_grant_wb_disjoint;
+  logic f_inv_grant_tag_disjoint;
+  logic [3:0] f_inv_op_wb_disjoint;
+  logic [6:0] f_inv_ep_meta;
+  logic [11:0] f_inv_arr_cons;
+  logic f_inv_freeze_cons;
+  logic [7:0] f_inv_store_distinct;
+  logic f_inv_acq_cons;
+  logic [5:0] f_inv_local_cons;
+  logic [4:0] f_inv_store_buf;
+  logic [7:0] f_amo_slots;
+  logic [EpSlots-1:0] f_ep_store_active;
+  logic f_ep_has_slot;
+  logic [FArrEntryBits-1:0] f_ent;
+  logic f_is_mod;
+  logic [ADDR_WIDTH-6:0] f_sec;
+  coh_d_t f_d0, f_d_ep;
+  coh_g_t f_g_ep;
+  assign f_d0 = o_d[0];
+  always_comb begin
+    f_inv_wb_tag_disjoint = 1'b1;
+    f_inv_probe_abs_disjoint = 1'b1;
+    f_inv_ep_wb_disjoint = 1'b1;
+    f_inv_ep_tag_disjoint = 1'b1;
+    f_inv_grant_wb_disjoint = 1'b1;
+    f_inv_grant_tag_disjoint = 1'b1;
+    f_inv_op_wb_disjoint = 4'hf;
+    f_inv_ep_meta = 7'h7f;
+    f_inv_arr_cons = 12'hfff;
+    f_inv_freeze_cons = 1'b1;
+    f_inv_store_distinct = 8'hff;
+    f_inv_acq_cons = 1'b1;
+    f_inv_local_cons = 6'h3f;
+    f_inv_store_buf = 5'h1f;
+    f_amo_slots = '0;
+    f_ep_store_active = '0;
+    f_ep_has_slot = 1'b0;
+    f_ent = '0;
+    f_is_mod = 1'b0;
+    f_sec = '0;
+    f_d_ep = '0;
+    f_g_ep = '0;
+
+    // Store buffer occupancy and active store-endpoint bijection.
+    if (store_count > 3'd4) f_inv_store_buf[0] = 1'b0;
+    if (store_launch_ready_q && store_count >= 3'd4) f_inv_store_buf[0] = 1'b0;
+    if (f_store_next != 2'(store_head_index + store_count[1:0])) f_inv_store_buf[0] = 1'b0;
+    for (int i = 0; i < 4; i++) begin
+      if (store_valid[2'(store_head_index + 2'(i))] != (3'(i) < store_count))
+        f_inv_store_buf[0] = 1'b0;
+    end
+    if (store_grant_head_q !=
+        ((pending_q && store_acquired[store_head_index]) ?
+         (EpSlots'(1) << store_ep[store_head_index]) : '0))
+      f_inv_store_buf[1] = 1'b0;
+    for (int ep = 0; ep < MISSES; ep++) begin
+      f_ep_store_active[ep] = ep_store[ep] &&
+          (|f_ep_phase[ep][3:1] || (f_ep_phase[ep][4] && !ep_done_valid[ep]));
+      if (f_ep_store_active[ep]) begin
+        f_ep_has_slot = 1'b0;
+        for (int sl = 0; sl < 4; sl++)
+          if (store_valid[sl] && store_acquired[sl] && store_ep[sl] == EpBits'(ep))
+            f_ep_has_slot = 1'b1;
+        if (!f_ep_has_slot) f_inv_store_buf[3] = 1'b0;
+      end
+    end
+    for (int sl = 0; sl < 4; sl++) begin
+      if (store_valid[sl] && store_acquired[sl]) begin
+        if (!f_ep_store_active[store_ep[sl]]) f_inv_store_buf[4] = 1'b0;
+        for (int sl2 = sl + 1; sl2 < 4; sl2++)
+          if (store_valid[sl2] && store_acquired[sl2] && store_ep[sl2] == store_ep[sl])
+            f_inv_store_buf[4] = 1'b0;
+      end
+    end
+    if (active && (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze ||
+                   phase_q == Update || phase_q == UpdateWait || phase_q == Acquire)) begin
+      if (operation_q == StoreOp &&
+          !(pending_q && !store_acquired[store_head_index] && store_selected_q == store_head_index))
+        f_inv_store_buf[2] = 1'b0;
+      if (operation_q == LookaheadOp &&
+          !(pending_q && store_valid[store_selected_q] && !store_acquired[store_selected_q] &&
+            store_selected_q != store_head_index))
+        f_inv_store_buf[2] = 1'b0;
+      if (operation_q == GrantOp && selected_grant_store &&
+          !(pending_q && store_acquired[store_head_index] &&
+            store_ep[store_head_index] == grant_ep_q))
+        f_inv_store_buf[2] = 1'b0;
+    end
+    if (active && grant_retry_q) begin
+      if (!(phase_q == Idle || (operation_q == ReadOp &&
+            (phase_q == Lookup || phase_q == LookupWait || phase_q == Acquire))))
+        f_inv_store_buf[2] = 1'b0;
+      if (phase_q == Lookup && operation_q == ReadOp &&
+          !(first_lookup ? shadow_now : shadow_q) && rd_kind_q[selected_read_q] == ReadAMO)
+        f_inv_store_buf[2] = 1'b0;
+      if (phase_q == LookupWait && operation_q == ReadOp &&
+          !(shadow_q && path_hit_q) && selected_kind_q == ReadAMO)
+        f_inv_store_buf[2] = 1'b0;
+    end
+
+    // Request endpoint metadata and writeback reservation consistency.
+    if (live[0]) begin
+      if (f_d0 != acquisition_q) f_inv_ep_meta[0] = 1'b0;
+      if (acquisition_store_q != coherence_pkg::is_getm(acquisition_q.opcode))
+        f_inv_ep_meta[0] = 1'b0;
+      if (acquisition_sc_q != (acquisition_q.opcode == coherence_pkg::StoreConditional))
+        f_inv_ep_meta[0] = 1'b0;
+      if (|f_ep_phase[0][6:3]) begin
+        f_g_ep = ep_grant[0];
+        if (f_g_ep.addr != acquisition_q.addr) f_inv_ep_meta[1] = 1'b0;
+        if (!f_g_ep.error && coherence_pkg::is_grantm(f_g_ep.opcode)) begin
+          if (!(acquisition_store_q || acquisition_q.opcode == coherence_pkg::Atomic ||
+                acquisition_q.opcode == coherence_pkg::StoreConditional))
+            f_inv_ep_meta[1] = 1'b0;
+        end
+      end
+    end
+    if (active) begin
+      if (!o_fatal && wb_reserved_q != ((|f_ep_phase[0][3:1]) ||
+          (operation_q == GrantOp && grant_ep_q == '0 &&
+           (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze ||
+            phase_q == Update || phase_q == UpdateWait))))
+        f_inv_ep_meta[2] = 1'b0;
+      if (((|f_ep_phase[0][3:1]) ||
+          (operation_q == GrantOp && grant_ep_q == '0 &&
+           (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze ||
+            phase_q == Update || phase_q == UpdateWait))) && !wb_reserved_q)
+        f_inv_ep_meta[2] = 1'b0;
+      if (operation_q == GrantOp &&
+          (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze ||
+           phase_q == Update || phase_q == UpdateWait) &&
+          !(f_ep_phase[grant_ep_q][4] && !ep_done_valid[grant_ep_q]))
+        f_inv_ep_meta[3] = 1'b0;
+      for (int ep = 0; ep < MISSES; ep++)
+        if ((|f_ep_phase[ep][3:1]) && ep_done_valid[ep]) f_inv_ep_meta[3] = 1'b0;
+      if (operation_q == GrantOp &&
+          (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze ||
+           phase_q == Update)) begin
+        if (grant_q.error || grant_q.opcode == coherence_pkg::GrantFail) f_inv_ep_meta[6] = 1'b0;
+        if (grant_ep_q == '0) begin
+          if (grant_q.addr[ADDR_WIDTH-1:5] != acquisition_q.addr[ADDR_WIDTH-1:5])
+            f_inv_ep_meta[6] = 1'b0;
+          if (!grant_q.error && coherence_pkg::is_grantm(grant_q.opcode) &&
+              !(acquisition_store_q || acquisition_q.opcode == coherence_pkg::Atomic ||
+                acquisition_q.opcode == coherence_pkg::StoreConditional))
+            f_inv_ep_meta[6] = 1'b0;
+        end else begin
+          if (grant_q.addr[ADDR_WIDTH-1:5] != ld_line_q[grant_ep_q]) f_inv_ep_meta[6] = 1'b0;
+          if (!grant_q.error && coherence_pkg::is_grantm(grant_q.opcode) && !ep_store[grant_ep_q])
+            f_inv_ep_meta[6] = 1'b0;
+        end
+      end
+    end
+    if (wb_reserved_q && wb_live[reserved_wb_q]) begin
+      if (!(phase_q == Update && operation_q == GrantOp && grant_ep_q == '0 &&
+            freeze_slot_q == reserved_wb_q) &&
+          !(phase_q == UpdateWait && operation_q == GrantOp && grant_ep_q == '0))
+        f_inv_ep_meta[4] = 1'b0;
+    end
+    for (int ep = 1; ep < MISSES; ep++) begin
+      f_d_ep = o_d[ep];
+      f_g_ep = ep_grant[ep];
+      if (live[ep]) begin
+        if (f_d_ep.addr[ADDR_WIDTH-1:5] != ld_line_q[ep]) f_inv_ep_meta[5] = 1'b0;
+        if (|f_ep_phase[ep][6:3]) begin
+          if (f_g_ep.addr[ADDR_WIDTH-1:5] != ld_line_q[ep]) f_inv_ep_meta[5] = 1'b0;
+          if (!f_g_ep.error && coherence_pkg::is_grantm(f_g_ep.opcode) && !ep_store[ep])
+            f_inv_ep_meta[5] = 1'b0;
+        end
+      end
+    end
+
+    // Store and atomic endpoint distinctness and mutual exclusion.
+    if (pending_q && atomic_q) f_inv_store_distinct[0] = 1'b0;
+    if (atomic_local_q && !atomic_q) f_inv_store_distinct[1] = 1'b0;
+    if (atomic_granted_q && !atomic_q) f_inv_store_distinct[1] = 1'b0;
+    if (atomic_read_onehot_q != (8'd1 << atomic_read_q)) f_inv_store_distinct[1] = 1'b0;
+    if (atomic_q && atomic_granted_q && !atomic_local_q &&
+        (|f_ep_phase[0][3:0] || |live[EpSlots-1:1]))
+      f_inv_store_distinct[2] = 1'b0;
+    if (atomic_q && atomic_granted_q && !atomic_local_q && !atomic_written_q &&
+        !(f_ep_phase[0][4] && !done_q))
+      f_inv_store_distinct[2] = 1'b0;
+    if (atomic_write_q && !(atomic_q && atomic_granted_q && !atomic_written_q))
+      f_inv_store_distinct[2] = 1'b0;
+    if (active && operation_q == AtomicWriteOp &&
+        (phase_q == Lookup || phase_q == LookupWait || phase_q == Update ||
+         phase_q == UpdateWait) && !atomic_write_q)
+      f_inv_store_distinct[2] = 1'b0;
+    if (atomic_q && atomic_local_q &&
+        !(phase_q == LocalReadReady || phase_q == LocalWaitWrite || phase_q == LocalMerge ||
+          phase_q == LocalFail || phase_q == LocalRelease ||
+          ((phase_q == Update || phase_q == UpdateWait) && operation_q == AtomicWriteOp)))
+      f_inv_store_distinct[2] = 1'b0;
+    if ((phase_q == LocalReadReady || phase_q == LocalWaitWrite || phase_q == LocalMerge ||
+         phase_q == LocalFail || phase_q == LocalRelease) && !(atomic_q && atomic_local_q))
+      f_inv_store_distinct[2] = 1'b0;
+    if (phase_q == LocalFail && (atomic_granted_q || atomic_write_q))
+      f_inv_store_distinct[2] = 1'b0;
+    if (phase_q == LocalRelease && (atomic_write_q || (atomic_granted_q && !atomic_written_q)))
+      f_inv_store_distinct[2] = 1'b0;
+    if (phase_q == LocalMerge && !atomic_write_q) f_inv_store_distinct[2] = 1'b0;
+    if (operation_q == GrantOp && (phase_q == Lookup || phase_q == LookupWait ||
+        phase_q == Freeze || phase_q == Update || phase_q == UpdateWait) &&
+        atomic_q && atomic_granted_q)
+      f_inv_store_distinct[2] = 1'b0;
+    if (atomic_q && !atomic_local_q &&
+        (!atomic_sc_q || live[0] || (phase_q == Acquire && operation_q == SCOp))) begin
+      if (|live[EpSlots-1:1]) f_inv_store_distinct[3] = 1'b0;
+    end
+    if (live[0] && (acquisition_q.opcode == coherence_pkg::Atomic ||
+                    acquisition_q.opcode == coherence_pkg::StoreConditional)) begin
+      if (|live[EpSlots-1:1] || !atomic_q || atomic_local_q) f_inv_store_distinct[4] = 1'b0;
+      if (acquisition_q.opcode == coherence_pkg::Atomic && atomic_sc_q)
+        f_inv_store_distinct[4] = 1'b0;
+      if (acquisition_q.opcode == coherence_pkg::StoreConditional && (!atomic_sc_q || !sc_home_q))
+        f_inv_store_distinct[4] = 1'b0;
+    end
+    if (atomic_q && live[0] && (atomic_local_q ||
+        (atomic_sc_q ? (!sc_home_q || acquisition_q.opcode != coherence_pkg::StoreConditional) :
+                       acquisition_q.opcode != coherence_pkg::Atomic)))
+      f_inv_store_distinct[5] = 1'b0;
+    if (active && (phase_q == Lookup || phase_q == LookupWait || phase_q == LocalCheck) &&
+        operation_q == SCOp) begin
+      if (!atomic_q || !atomic_sc_q || atomic_local_q || sc_home_q || live[0])
+        f_inv_store_distinct[5] = 1'b0;
+    end
+    for (int ep = 1; ep < MISSES; ep++) begin
+      if (live[ep] && ep_store[ep]) begin
+        for (int other = ep + 1; other < MISSES; other++)
+          if (live[other] && ep_store[other]) f_inv_store_distinct[6] = 1'b0;
+        if (live[0] && (acquisition_store_q || acquisition_q.opcode == coherence_pkg::Atomic ||
+                        acquisition_q.opcode == coherence_pkg::StoreConditional)) begin
+          if (acquisition_q.addr[ADDR_WIDTH-1:5] == ld_line_q[ep])
+            f_inv_store_distinct[6] = 1'b0;
+        end
+      end
+    end
+    if (active && phase_q != Idle && (operation_q == StoreOp || operation_q == LookaheadOp) &&
+        atomic_q)
+      f_inv_store_distinct[7] = 1'b0;
+    if (active && phase_q != Idle && operation_q == LookaheadOp && borrowed_live)
+      f_inv_store_distinct[7] = 1'b0;
+
+    // AMO read-slot exclusivity and hit-path kind disjointness.
+    for (int sl = 0; sl < 8; sl++) begin
+      f_amo_slots[sl] = rd_valid_q[sl] && !rd_ready_q[sl] && rd_kind_q[sl] == ReadAMO;
+      if (f_amo_slots[sl]) begin
+        if (!amo_waiting || !atomic_read_waiting) f_inv_local_cons[0] = 1'b0;
+        if (atomic_q) begin
+          if (atomic_sc_q) f_inv_local_cons[1] = 1'b0;
+          if (atomic_local_q) begin
+            if (!(phase_q == LocalReadReady && atomic_read_q == 3'(sl)))
+              f_inv_local_cons[1] = 1'b0;
+          end else begin
+            if (!(rd_owned_q[sl] ||
+                  (phase_q == Acquire && operation_q == ReadOp && selected_read_q == 3'(sl))))
+              f_inv_local_cons[1] = 1'b0;
+          end
+        end
+      end
+    end
+    if ($countones(f_amo_slots) > 1) f_inv_local_cons[1] = 1'b0;
+    if (active && operation_q == ReadOp &&
+        ((phase_q == LookupWait && selected_kind_q == ReadAMO && !(shadow_q && path_hit_q)) ||
+         (phase_q == LocalCheck))) begin
+      if (atomic_q || selected_kind_q != ReadAMO || rd_kind_q[selected_read_q] != ReadAMO ||
+          !rd_valid_q[selected_read_q] || rd_ready_q[selected_read_q])
+        f_inv_local_cons[2] = 1'b0;
+    end
+    if (active && operation_q == ReadOp && phase_q == Lookup &&
+        !(first_lookup ? shadow_now : shadow_q) && rd_kind_q[selected_read_q] == ReadAMO) begin
+      if (atomic_q) f_inv_local_cons[2] = 1'b0;
+    end
+    if (path_req_q && rd_valid_q[path_id_q] && !rd_ready_q[path_id_q] &&
+        rd_kind_q[path_id_q] == ReadAMO)
+      f_inv_local_cons[2] = 1'b0;
+    if (s2_valid_q && rd_valid_q[s2_slot_q] && !rd_ready_q[s2_slot_q] &&
+        rd_kind_q[s2_slot_q] == ReadAMO)
+      f_inv_local_cons[2] = 1'b0;
+    if (active && operation_q == ReadOp && (phase_q == Lookup || phase_q == LookupWait) &&
+        shadow_q && !path_hit_q && rd_kind_q[selected_read_q] == ReadAMO)
+      f_inv_local_cons[2] = 1'b0;
+
+    // Acquire preconditions.
+    if (active && phase_q == Acquire) begin
+      if (acq_ep_q == '0 && (!wb_free || live[0])) f_inv_acq_cons = 1'b0;
+      if (operation_q == StoreOp) begin
+        if (acq_ep_q != '0 || request_live || atomic_q) f_inv_acq_cons = 1'b0;
+        f_ent = f_arr_tags[lookup_addr_q[5+:FArrSetBits]*FArrEntryBits+:FArrEntryBits];
+        if (f_ent[FArrTagBits+:2] == 2'b11 &&
+            f_ent[FArrTagBits-1:0] == lookup_addr_q[ADDR_WIDTH-1:5+FArrSetBits])
+          f_inv_acq_cons = 1'b0;
+        for (int ep = 1; ep < MISSES; ep++)
+          if (live[ep] && ep_store[ep] && ld_line_q[ep] == lookup_addr_q[ADDR_WIDTH-1:5])
+            f_inv_acq_cons = 1'b0;
+      end else if (operation_q == LookaheadOp) begin
+        if (acq_ep_q == '0 || borrowed_live || atomic_q) f_inv_acq_cons = 1'b0;
+        f_ent = f_arr_tags[lookup_addr_q[5+:FArrSetBits]*FArrEntryBits+:FArrEntryBits];
+        if (f_ent[FArrTagBits+:2] == 2'b11 &&
+            f_ent[FArrTagBits-1:0] == lookup_addr_q[ADDR_WIDTH-1:5+FArrSetBits])
+          f_inv_acq_cons = 1'b0;
+        if (live[0] && acquisition_q.addr[ADDR_WIDTH-1:5] == lookup_addr_q[ADDR_WIDTH-1:5])
+          f_inv_acq_cons = 1'b0;
+      end else if (operation_q == SCOp) begin
+        if (acq_ep_q != '0 || !atomic_q || !atomic_sc_q || atomic_local_q || !sc_home_q ||
+            any_live)
+          f_inv_acq_cons = 1'b0;
+      end else if (operation_q == ReadOp && acq_ep_q == '0) begin
+        if (selected_kind_q != rd_kind_q[selected_read_q]) f_inv_acq_cons = 1'b0;
+        if (selected_kind_q == ReadAMO) begin
+          if (!atomic_q || atomic_sc_q || atomic_local_q || any_live) f_inv_acq_cons = 1'b0;
+          f_ent = f_arr_tags[lookup_addr_q[5+:FArrSetBits]*FArrEntryBits+:FArrEntryBits];
+          if (f_ent[FArrTagBits+:2] == 2'b11 &&
+              f_ent[FArrTagBits-1:0] == lookup_addr_q[ADDR_WIDTH-1:5+FArrSetBits])
+            f_inv_acq_cons = 1'b0;
+        end else begin
+          if (atomic_q && atomic_sc_q) f_inv_acq_cons = 1'b0;
+        end
+      end
+    end
+
+    // Local atomic and twin-line consistency.
+    if (!TwinLine && (twin_fill_q || operation_q == TwinOp)) f_inv_local_cons[3] = 1'b0;
+    if (active && ((phase_q == LocalCheck && local_hit_q) ||
+                   phase_q == LocalReadReady || phase_q == LocalWaitWrite ||
+                   phase_q == LocalMerge)) begin
+      f_ent = f_arr_tags[update_addr_q[5+:FArrSetBits]*FArrEntryBits+:FArrEntryBits];
+      if (!(f_arr_phase == 4'd1 && f_ent[FArrTagBits+:2] == 2'b11 &&
+            f_ent[FArrTagBits-1:0] == update_addr_q[ADDR_WIDTH-1:5+FArrSetBits]))
+        f_inv_local_cons[4] = 1'b0;
+    end
+    if (active && phase_q == LocalCheck && !local_hit_q && operation_q == ReadOp) begin
+      f_ent = f_arr_tags[lookup_addr_q[5+:FArrSetBits]*FArrEntryBits+:FArrEntryBits];
+      if (f_ent[FArrTagBits+:2] == 2'b11 &&
+          f_ent[FArrTagBits-1:0] == lookup_addr_q[ADDR_WIDTH-1:5+FArrSetBits])
+        f_inv_local_cons[4] = 1'b0;
+    end
+    if (active && (phase_q == Lookup || phase_q == LookupWait) && operation_q == StoreOp) begin
+      if (lookup_addr_q[ADDR_WIDTH-1:5] != pending_addr_q[ADDR_WIDTH-1:5])
+        f_inv_local_cons[5] = 1'b0;
+    end
+
+    // Controller and array phase consistency.
+    if (phase_q > LocalFail || f_arr_phase > 4'd5) f_inv_arr_cons[4] = 1'b0;
+    if (active && phase_q == LookupWait && !(o_fatal && operation_q == AtomicWriteOp)) begin
+      if (f_arr_phase == 4'd0 || f_arr_phase == 4'd1 || f_arr_phase == 4'd5)
+        f_inv_arr_cons[0] = 1'b0;
+      if (!f_arr_visit && {f_arr_tag, f_arr_set} != lookup_addr_q[ADDR_WIDTH-1:5])
+        f_inv_arr_cons[0] = 1'b0;
+      if (operation_q != MaintOp && f_arr_visit) f_inv_arr_cons[0] = 1'b0;
+      if (f_arr_phase == 4'd2 &&
+          f_arr_tag_rdata0 != f_arr_tags[f_arr_set*FArrEntryBits+:FArrEntryBits])
+        f_inv_arr_cons[1] = 1'b0;
+      if ((f_arr_phase == 4'd3 || f_arr_phase == 4'd4) && !f_arr_visit) begin
+        f_ent = f_arr_tags[f_arr_set*FArrEntryBits+:FArrEntryBits];
+        if (array_hit != (f_ent[FArrTagBits+:2] != 2'b00 && f_ent[FArrTagBits-1:0] == f_arr_tag))
+          f_inv_arr_cons[2] = 1'b0;
+        if (array_state != f_ent[FArrTagBits+:2]) f_inv_arr_cons[2] = 1'b0;
+        if (array_addr[ADDR_WIDTH-1:5] != {f_ent[FArrTagBits-1:0], f_arr_set})
+          f_inv_arr_cons[2] = 1'b0;
+      end
+      if ((f_arr_phase == 4'd3 || f_arr_phase == 4'd4) && f_arr_visit) begin
+        f_ent = f_arr_tags[f_arr_set*FArrEntryBits+:FArrEntryBits];
+        if (array_state != f_ent[FArrTagBits+:2]) f_inv_arr_cons[2] = 1'b0;
+        if (array_addr[ADDR_WIDTH-1:5] != {f_ent[FArrTagBits-1:0], f_arr_set})
+          f_inv_arr_cons[2] = 1'b0;
+      end
+    end
+    if (active && phase_q == LookupWait && o_fatal && operation_q == AtomicWriteOp &&
+        f_arr_phase == 4'd1 && array_valid)
+      f_inv_arr_cons[0] = 1'b0;
+    if (active && (phase_q == Freeze || phase_q == Update || phase_q == LocalCheck ||
+                   phase_q == LocalReadReady || phase_q == LocalWaitWrite ||
+                   phase_q == LocalMerge || phase_q == LocalFail || phase_q == LocalRelease ||
+                   phase_q == ProbeAbsorb)) begin
+      if (f_arr_phase != 4'd1 || array_valid) f_inv_arr_cons[3] = 1'b0;
+    end
+    if (active && phase_q == Update && operation_q == ProbeOp && update_mask_q != '0)
+      f_inv_arr_cons[3] = 1'b0;
+    if (active && (phase_q == Idle || phase_q == Lookup || phase_q == ProbeReply ||
+                   phase_q == Acquire)) begin
+      if ((f_arr_phase != 4'd0 && f_arr_phase != 4'd1 && f_arr_phase != 4'd5) || array_valid)
+        f_inv_arr_cons[8] = 1'b0;
+    end
+    if (active && phase_q == UpdateWait) begin
+      if ((f_arr_phase != 4'd1 && f_arr_phase != 4'd5) || array_valid) f_inv_arr_cons[9] = 1'b0;
+    end
+    if (active && phase_q == LookupWait && f_arr_phase == 4'd2 && array_valid)
+      f_inv_arr_cons[10] = 1'b0;
+    if (active && phase_q == LookupWait && f_arr_phase == 4'd3 &&
+        (array_valid != f_arr_early_reply))
+      f_inv_arr_cons[11] = 1'b0;
+    if (active && phase_q == LookupWait && f_arr_phase == 4'd4 && !array_valid)
+      f_inv_arr_cons[11] = 1'b0;
+    if (active && phase_q == LookupWait && operation_q == GrantOp) begin
+      if (f_arr_phase == 4'd2 && f_arr_exclude != '0) f_inv_arr_cons[6] = 1'b0;
+      if ((f_arr_phase == 4'd3 || f_arr_phase == 4'd4) && !array_available)
+        f_inv_arr_cons[6] = 1'b0;
+    end
+    if (active && (phase_q == Lookup || phase_q == LookupWait) && operation_q == ProbeOp) begin
+      if (lookup_addr_q[ADDR_WIDTH-1:5] != probe_q.addr[ADDR_WIDTH-1:5])
+        f_inv_arr_cons[5] = 1'b0;
+    end
+    if (active && (phase_q == Lookup || phase_q == LookupWait) && operation_q == GrantOp) begin
+      if (lookup_addr_q[ADDR_WIDTH-1:5] != grant_q.addr[ADDR_WIDTH-1:5])
+        f_inv_arr_cons[6] = 1'b0;
+      if (grant_ep_q == '0 && !wb_reserved_q) f_inv_arr_cons[6] = 1'b0;
+      if (grant_ep_q != '0 && !wb_free) f_inv_arr_cons[6] = 1'b0;
+    end
+    if (maint_q && store_launch_ready_q) f_inv_arr_cons[7] = 1'b0;
+    if (active && (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze ||
+                   phase_q == Update || phase_q == UpdateWait) && operation_q == MaintOp) begin
+      if (!maint_q || pending_q || atomic_q || any_live) f_inv_arr_cons[7] = 1'b0;
+      if ((phase_q == Lookup || phase_q == LookupWait) && !wb_free) f_inv_arr_cons[7] = 1'b0;
+    end
+
+    // Freeze and Update consistency.
+    if (int'(way_q) >= WAYS || int'(maint_way_q) >= WAYS || int'(f_arr_visit_way) >= WAYS ||
+        int'(array_way) >= WAYS)
+      f_inv_freeze_cons = 1'b0;
+    if (active && phase_q == Freeze) begin
+      if (!(operation_q == GrantOp || operation_q == MaintOp)) f_inv_freeze_cons = 1'b0;
+      if (wb_live[freeze_slot_q]) f_inv_freeze_cons = 1'b0;
+      if (operation_q == GrantOp && grant_ep_q == '0) begin
+        if (!wb_reserved_q || freeze_slot_q != reserved_wb_q) f_inv_freeze_cons = 1'b0;
+      end else begin
+        if (wb_reserved_q && freeze_slot_q == reserved_wb_q) f_inv_freeze_cons = 1'b0;
+      end
+      if (operation_q == MaintOp) begin
+        if (!(state_q == coherence_pkg::Shared &&
+              update_addr_q[ADDR_WIDTH-1:5] == freeze_addr_q[ADDR_WIDTH-1:5]))
+          f_inv_freeze_cons = 1'b0;
+      end else if (operation_q == GrantOp) begin
+        if (!(update_addr_q[5+:FArrSetBits] == freeze_addr_q[5+:FArrSetBits] &&
+              update_addr_q[ADDR_WIDTH-1:5] != freeze_addr_q[ADDR_WIDTH-1:5] &&
+              update_addr_q[ADDR_WIDTH-1:5] == grant_q.addr[ADDR_WIDTH-1:5] &&
+              (state_q == coherence_pkg::Modified) ==
+              (!grant_q.error && coherence_pkg::is_grantm(grant_q.opcode))))
+          f_inv_freeze_cons = 1'b0;
+      end
+    end
+    if (active && phase_q == Update && state_q == coherence_pkg::Modified) begin
+      if (operation_q == GrantOp) begin
+        if (!(!grant_q.error && coherence_pkg::is_grantm(grant_q.opcode) &&
+              update_addr_q[ADDR_WIDTH-1:5] == grant_q.addr[ADDR_WIDTH-1:5]))
+          f_inv_freeze_cons = 1'b0;
+      end else if (operation_q == StoreOp || operation_q == AtomicWriteOp ||
+                   operation_q == ProbeOp) begin
+        f_ent = f_arr_tags[update_addr_q[5+:FArrSetBits]*FArrEntryBits+:FArrEntryBits];
+        if (!(f_ent[FArrTagBits+:2] == 2'b11 &&
+              f_ent[FArrTagBits-1:0] == update_addr_q[ADDR_WIDTH-1:5+FArrSetBits]))
+          f_inv_freeze_cons = 1'b0;
+      end else begin
+        f_inv_freeze_cons = 1'b0;
+      end
+    end
+
+    // Writeback, Modified-tag and ownership disjointness.
+    for (int set_i = 0; set_i < FArrSets; set_i++) begin
+      f_ent = f_arr_tags[set_i*FArrEntryBits+:FArrEntryBits];
+      f_is_mod = (f_ent[FArrTagBits+:2] == 2'b11) &&
+          (f_arr_phase != 4'd0 || set_i < int'(f_arr_init_set));
+      f_sec = {f_ent[FArrTagBits-1:0], FArrSetBits'(set_i)};
+      for (int s = 0; s < 2; s++) begin
+        if (wb_live[s] && f_is_mod && f_sec == wb_addr[s][ADDR_WIDTH-1:5]) begin
+          if (!(phase_q == Update &&
+                (operation_q == GrantOp || operation_q == MaintOp) &&
+                freeze_slot_q == 1'(s) &&
+                freeze_addr_q[ADDR_WIDTH-1:5] == f_sec &&
+                (operation_q == MaintOp ?
+                  (state_q == coherence_pkg::Shared && update_addr_q[ADDR_WIDTH-1:5] == f_sec) :
+                  (update_addr_q[5+:FArrSetBits] == FArrSetBits'(set_i) &&
+                   update_addr_q[ADDR_WIDTH-1:5] != f_sec))))
+            f_inv_wb_tag_disjoint = 1'b0;
+        end
+      end
+      if (operation_q == ProbeOp && probe_absorbed_q &&
+          (phase_q == Lookup || phase_q == LookupWait) &&
+          f_is_mod && f_sec == probe_q.addr[ADDR_WIDTH-1:5])
+        f_inv_probe_abs_disjoint = 1'b0;
+      if (live[0] && |f_ep_phase[0][3:1] &&
+          (acquisition_store_q || acquisition_q.opcode == coherence_pkg::Atomic)) begin
+        if (f_is_mod && f_sec == acquisition_q.addr[ADDR_WIDTH-1:5])
+          f_inv_ep_tag_disjoint = 1'b0;
+      end
+      for (int ep = 1; ep < MISSES; ep++) begin
+        if (live[ep] && ep_store[ep] && |f_ep_phase[ep][3:1]) begin
+          if (f_is_mod && f_sec == ld_line_q[ep]) f_inv_ep_tag_disjoint = 1'b0;
+        end
+      end
+      if (operation_q == GrantOp && !grant_q.error && coherence_pkg::is_grantm(grant_q.opcode) &&
+          !acquisition_sc_q &&
+          (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze) &&
+          f_is_mod && f_sec == grant_q.addr[ADDR_WIDTH-1:5])
+        f_inv_grant_tag_disjoint = 1'b0;
+    end
+    for (int s = 0; s < 2; s++) begin
+      if (wb_live[s]) begin
+        if (live[0] && |f_ep_phase[0][3:1] &&
+            (acquisition_store_q || acquisition_q.opcode == coherence_pkg::Atomic) &&
+            acquisition_q.addr[ADDR_WIDTH-1:5] == wb_addr[s][ADDR_WIDTH-1:5])
+          f_inv_ep_wb_disjoint = 1'b0;
+        f_g_ep = ep_grant[0];
+        if (live[0] && f_ep_phase[0][3] && acquisition_sc_q &&
+            !ep_fail[0] && coherence_pkg::is_grantm(f_g_ep.opcode) &&
+            acquisition_q.addr[ADDR_WIDTH-1:5] == wb_addr[s][ADDR_WIDTH-1:5])
+          f_inv_ep_wb_disjoint = 1'b0;
+        for (int ep = 1; ep < MISSES; ep++) begin
+          if (live[ep] && ep_store[ep] && |f_ep_phase[ep][3:1] &&
+              ld_line_q[ep] == wb_addr[s][ADDR_WIDTH-1:5])
+            f_inv_ep_wb_disjoint = 1'b0;
+        end
+        if (operation_q == GrantOp && !grant_q.error && coherence_pkg::is_grantm(grant_q.opcode) &&
+            (phase_q == Lookup || phase_q == LookupWait || phase_q == Freeze ||
+             phase_q == Update) &&
+            grant_q.addr[ADDR_WIDTH-1:5] == wb_addr[s][ADDR_WIDTH-1:5])
+          f_inv_grant_wb_disjoint = 1'b0;
+        if ((operation_q == StoreOp || operation_q == LookaheadOp ||
+             (operation_q == ReadOp &&
+              (phase_q == Lookup ?
+               (rd_kind_q[selected_read_q] == ReadAMO && !(first_lookup ? shadow_now : shadow_q)) :
+               phase_q == LookupWait ?
+               (selected_kind_q == ReadAMO && !(shadow_q && path_hit_q)) :
+               selected_kind_q == ReadAMO))) &&
+            (phase_q == Lookup || phase_q == LookupWait || phase_q == LocalCheck ||
+             phase_q == Acquire) &&
+            lookup_addr_q[ADDR_WIDTH-1:5] == wb_addr[s][ADDR_WIDTH-1:5])
+          f_inv_op_wb_disjoint[0] = 1'b0;
+        if (phase_q != Update && look_snapshot_valid_q) begin
+          for (int sl = 0; sl < 4; sl++)
+            if (store_valid[sl] && store_addr[sl][ADDR_WIDTH-1:5] == wb_addr[s][ADDR_WIDTH-1:5] &&
+                !look_owner_conflict_q[sl])
+              f_inv_op_wb_disjoint[1] = 1'b0;
+        end
+        if (phase_q != Update && phase_q != UpdateWait && look_valid_q &&
+            look_addr_q[ADDR_WIDTH-1:5] == wb_addr[s][ADDR_WIDTH-1:5])
+          f_inv_op_wb_disjoint[2] = 1'b0;
+        if (phase_q == UpdateWait && operation_q == StoreOp && tail_q && tail_checked_q &&
+            !tail_wb_blocked_q && tail_addr[ADDR_WIDTH-1:5] == wb_addr[s][ADDR_WIDTH-1:5])
+          f_inv_op_wb_disjoint[3] = 1'b0;
+      end
+    end
+  end
+  always_ff @(posedge i_clk)
+    if (!i_rst && active) begin
+      if (phase_q == LookupWait && array_valid && operation_q == ProbeOp && probe_absorbed_q)
+        p_snapshot_absorbed_clean : assert (!(array_hit && array_state == coherence_pkg::Modified));
+      p_snap_wb_tag : assert (f_inv_wb_tag_disjoint);
+      p_snap_probe_abs : assert (f_inv_probe_abs_disjoint);
+      p_snap_ep_wb : assert (f_inv_ep_wb_disjoint);
+      p_snap_ep_tag : assert (f_inv_ep_tag_disjoint);
+      p_snap_grant_wb : assert (f_inv_grant_wb_disjoint);
+      p_snap_grant_tag : assert (f_inv_grant_tag_disjoint);
+      p_snap_op_wb_0 : assert (f_inv_op_wb_disjoint[0]);
+      p_snap_op_wb_1 : assert (f_inv_op_wb_disjoint[1]);
+      p_snap_op_wb_2 : assert (f_inv_op_wb_disjoint[2]);
+      p_snap_op_wb_3 : assert (f_inv_op_wb_disjoint[3]);
+      p_snap_ep_meta_0 : assert (f_inv_ep_meta[0]);
+      p_snap_ep_meta_1 : assert (f_inv_ep_meta[1]);
+      p_snap_ep_meta_2 : assert (f_inv_ep_meta[2]);
+      p_snap_ep_meta_3 : assert (f_inv_ep_meta[3]);
+      p_snap_ep_meta_4 : assert (f_inv_ep_meta[4]);
+      p_snap_ep_meta_5 : assert (f_inv_ep_meta[5]);
+      p_snap_ep_meta_6 : assert (f_inv_ep_meta[6]);
+      p_snap_arr_cons_0 : assert (f_inv_arr_cons[0]);
+      p_snap_arr_cons_1 : assert (f_inv_arr_cons[1]);
+      p_snap_arr_cons_2 : assert (f_inv_arr_cons[2]);
+      p_snap_arr_cons_3 : assert (f_inv_arr_cons[3]);
+      p_snap_arr_cons_4 : assert (f_inv_arr_cons[4]);
+      p_snap_arr_cons_5 : assert (f_inv_arr_cons[5]);
+      p_snap_arr_cons_6 : assert (f_inv_arr_cons[6]);
+      p_snap_arr_cons_7 : assert (f_inv_arr_cons[7]);
+      p_snap_arr_cons_8 : assert (f_inv_arr_cons[8]);
+      p_snap_arr_cons_9 : assert (f_inv_arr_cons[9]);
+      p_snap_arr_cons_10 : assert (f_inv_arr_cons[10]);
+      p_snap_arr_cons_11 : assert (f_inv_arr_cons[11]);
+      p_snap_freeze_cons : assert (f_inv_freeze_cons);
+      p_snap_store_distinct_0 : assert (f_inv_store_distinct[0]);
+      p_snap_store_distinct_1 : assert (f_inv_store_distinct[1]);
+      p_snap_store_distinct_2 : assert (f_inv_store_distinct[2]);
+      p_snap_store_distinct_3 : assert (f_inv_store_distinct[3]);
+      p_snap_store_distinct_4 : assert (f_inv_store_distinct[4]);
+      p_snap_store_distinct_5 : assert (f_inv_store_distinct[5]);
+      p_snap_store_distinct_6 : assert (f_inv_store_distinct[6]);
+      p_snap_store_distinct_7 : assert (f_inv_store_distinct[7]);
+      p_snap_acq_cons : assert (f_inv_acq_cons);
+      p_snap_local_cons_0 : assert (f_inv_local_cons[0]);
+      p_snap_local_cons_1 : assert (f_inv_local_cons[1]);
+      p_snap_local_cons_2 : assert (f_inv_local_cons[2]);
+      p_snap_local_cons_3 : assert (f_inv_local_cons[3]);
+      p_snap_local_cons_4 : assert (f_inv_local_cons[4]);
+      p_snap_local_cons_5 : assert (f_inv_local_cons[5]);
+      p_snap_store_buf_0 : assert (f_inv_store_buf[0]);
+      p_snap_store_buf_1 : assert (f_inv_store_buf[1]);
+      p_snap_store_buf_2 : assert (f_inv_store_buf[2]);
+      p_snap_store_buf_3 : assert (f_inv_store_buf[3]);
+      p_snap_store_buf_4 : assert (f_inv_store_buf[4]);
+    end
+`endif
 `endif
 endmodule
