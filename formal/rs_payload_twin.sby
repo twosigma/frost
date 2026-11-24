@@ -95,7 +95,7 @@ setundef -zero -init
 # Every task keeps all wrapper assumptions.
 # Includes 4 checkpoint-ID bounds per wrapper (save, free, free_2, restore).
 select -assert-count 112 t:$check r:FLAVOR=assume %i
-select -assert-count 177 t:$check r:FLAVOR=assert %i
+select -assert-count 175 t:$check r:FLAVOR=assert %i
 select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2
 select -set operands c:p_twin_operand_*
 select -set cmo c:p_twin_cmo_*
@@ -111,7 +111,7 @@ bmc_cdb_2: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_cdb_2 %
 bmc_commit: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_twin_commit_comb %d
 cmo: chformal -assert -remove t:$check r:FLAVOR=assert %i @commit_and_cmo %d
 bmc_operands: chformal -assert -remove t:$check r:FLAVOR=assert %i @operands %d
-bmc: select -assert-count 154 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 152 t:$check r:FLAVOR=assert %i
 packet_only: select -assert-count 1 t:$check r:FLAVOR=assert %i
 cmo: select -assert-count 4 t:$check r:FLAVOR=assert %i
 bmc_operands: select -assert-count 16 t:$check r:FLAVOR=assert %i

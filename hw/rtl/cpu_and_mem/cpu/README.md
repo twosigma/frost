@@ -595,10 +595,10 @@ neither enters the adder's operands.
 The 16-entry ITLB and the data side's 16-entry DTLB share one read-only
 page-table walker in `cpu_ooo`. Inside `dmmu.sv`, a 2-way, 128-set (256-entry,
 1 MiB) distributed-RAM S1 4 KiB translation cache sits alongside the DTLB on
-the S1 lookup stage: clean 4 KiB leaves evicted from the 16-entry DTLB resolve
-in S1 without requesting the L2 TLB or walker, check live permissions and
-Svpbmt/PMA attributes, and promote back into the DTLB on the following cycle so
-returning working sets regain cycle-0 issue bypass. Selective page flushes
+the S1 lookup stage: clean 4 KiB leaves returned by the walker fill the DTLB
+and register into the S1 cache one cycle later, so leaves evicted from the
+16-entry DTLB resolve in S1 without requesting the L2 TLB or walker while
+checking live permissions and Svpbmt/PMA attributes. Selective page flushes
 clear the addressed set; ASID-only and full flushes clear the S1 cache valid
 bits in one cycle. `walk_request_select` picks the requester from
 registered state: the data side while its S1 holds an op without a walk, the
@@ -615,9 +615,8 @@ is described under "Address-space IDs and SFENCE.VMA" below.
 
 A 4-way, 512-set second-level TLB (`l2tlb.sv`, 2,048 entries, 8 MiB of 4 KiB
 pages, block RAM) sits between the two MMUs and the walker. While idle with no
-real walk request, `cpu_ooo` drives a speculative pre-read from the data MMU's
-next S1 candidate (skid entry, else live issue) or, when none is present, from
-the registered fetch PC. When the following cycle's walk request matches that
+real walk request, `cpu_ooo` drives a speculative pre-read from the registered
+fetch PC. When the following cycle's walk request matches that
 pre-read's VPN and ASID, a hit answers one cycle after the request fires and a
 miss reaches the walker on the request cycle itself; otherwise a hit answers
 two cycles after the request fires and a miss reaches the walker one cycle

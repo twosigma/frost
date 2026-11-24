@@ -10775,7 +10775,7 @@ def test_rs_payload_twin_assertion_groups(
             head_dir_train_early head_branch_taken_early head_next_dir_train_early
             head_next_branch_taken_early head_retired_next_pc head_next_retired_next_pc
             head_bus_fault mret_start mret_start_is_sret mret_start_is_dret
-            tlb_invalidate tlb_flush walk_req_valid walk_hold walk_spec_valid coh_admit_ready
+            tlb_invalidate tlb_flush walk_req_valid walk_hold coh_admit_ready
             coh_admit_clean coh_inval_done fence_i_sync_req fence_i_flush
             fence_class_flush_event translation_csr_commit_shadow sq_committed_empty
             sq_committed_empty_trap rob_full rob_full_for_2 rob_empty rob_count head_tag
@@ -10806,7 +10806,6 @@ def test_rs_payload_twin_assertion_groups(
         "o_trap_pending_a": ["trap_pc", "trap_cause", "trap_value", "trap_insn"],
         "o_head_bus_fault_a": ["head_bus_fault_va"],
         "o_walk_req_valid_a": ["walk_vpn"],
-        "o_walk_spec_valid_a": ["walk_spec_vpn"],
         "o_rs_issue_a.valid": ["rs_issue"],
         "o_mul_rs_issue_a.valid": ["mul_rs_issue"],
         "o_mem_rs_issue_a.valid": ["mem_rs_issue"],
@@ -10835,7 +10834,7 @@ def test_rs_payload_twin_assertion_groups(
     }
     cmo = {"cmo_valid": "", "cmo_kind": "o_cmo_valid_a", "cmo_addr": "o_cmo_valid_a"}
     counts = {
-        "bmc": 154,
+        "bmc": 152,
         "bmc_cdb": 1,
         "bmc_cdb_2": 1,
         "bmc_commit": 1,
@@ -10906,7 +10905,7 @@ def test_rs_payload_twin_assertion_groups(
         "opt_clean",
         "setundef -zero -init",
         "select -assert-count 112 t:$check r:FLAVOR=assume %i",
-        "select -assert-count 177 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 175 t:$check r:FLAVOR=assert %i",
         "select -set packets c:p_twin_cdb c:p_twin_cdb_2 c:p_twin_commit_comb c:p_twin_commit_comb_2",
         "select -set operands c:p_twin_operand_*",
         "select -set cmo c:p_twin_cmo_*",
@@ -10972,8 +10971,8 @@ def test_rs_payload_twin_assertion_groups(
 
     if not source:
         hashes = {
-            "rs_payload_twin.sby": "81bb20ff3111d27d01530a9e87f455308ed0da21b4d4ad49c969db7456670360",
-            "rs_payload_twin_formal.sv": "476a4465d5d9402b2d8384d5b6dc10578b36c4ca644563705e51a112f1ca3aa8",
+            "rs_payload_twin.sby": "d09dccd46f90225774a5c354cd7b7347cd24963d12ffac1f4316830d898ad625",
+            "rs_payload_twin_formal.sv": "bf55b92f3eb8eda22aef16b2268c2a1c1f458f946711b536cdc397fbb008ae61",
             "free_undefined.ys": "d9383d13eaa8e490ab3671853c1390d92160abbfa19ca0d93fdf40138549e7d6",
         }
         procedure = (
@@ -11069,7 +11068,7 @@ def test_rs_payload_twin_assertion_groups(
         assert re.findall(
             r"\bc_twin_cmo_request\s*:\s*cover\s*\(([^;]+)\)\s*;", body
         ) == ["o_cmo_valid_a && o_cmo_valid_b"]
-        assert len(re.findall(r"\bassert\s*\(", body)) == 177
+        assert len(re.findall(r"\bassert\s*\(", body)) == 175
         block = re.search(
             r"\balways_comb\s+begin\b(.*?)\bend\s+endmodule\s*:\s*rs_payload_twin_formal\s*\Z",
             body,
@@ -11078,7 +11077,7 @@ def test_rs_payload_twin_assertion_groups(
         assert block is not None
         statements = block[1].strip().split(";")
         assert statements.pop() == ""
-        assert len(statements) == len(expected) == sum(counts.values()) == 177
+        assert len(statements) == len(expected) == sum(counts.values()) == 175
         comparison = re.compile(
             r"(?:if\s*\(\s*([\w.]+)\s*\)\s*)?(?:(\w+)\s*:\s*)?"
             r"assert\s*\(\s*([\w.]+)\s*==\s*([\w.]+)\s*\)"

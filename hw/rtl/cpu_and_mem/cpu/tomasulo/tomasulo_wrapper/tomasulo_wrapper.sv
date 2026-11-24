@@ -302,8 +302,6 @@ module tomasulo_wrapper #(
     input  logic                                               i_walk_req_ready,
     output logic                  [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
     output logic                                               o_walk_hold,
-    output logic                                               o_walk_spec_valid,
-    output logic                  [riscv_pkg::Sv39VpnBits-1:0] o_walk_spec_vpn,
     input  logic                                               i_walk_resp_valid,
     input  riscv_pkg::ptw_resp_t                               i_walk_resp,
 
@@ -4618,8 +4616,6 @@ module tomasulo_wrapper #(
       .i_walk_req_ready(i_walk_req_ready),
       .o_walk_vpn(o_walk_vpn),
       .o_walk_hold(o_walk_hold),
-      .o_walk_spec_valid(o_walk_spec_valid),
-      .o_walk_spec_vpn(o_walk_spec_vpn),
       .i_walk_resp_valid(i_walk_resp_valid),
       .i_walk_resp(i_walk_resp)
   );

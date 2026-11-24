@@ -1326,12 +1326,12 @@ async def test_materialized_range_selective_fences(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_s1_cache_reach_promotion_pbmt_asid_and_flush(dut: Any) -> None:
+async def test_s1_cache_reach_pbmt_asid_and_flush(dut: Any) -> None:
     """Level-0 leaves evicted from the 16-entry DTLB resolve in the S1 cache.
 
-    Checks 40-page reach without walks, promotion back to cycle-0 DTLB bypass,
-    2-way set associativity, ASID coexistence and global entries, Svpbmt NC/IO
-    and live permission/atomic checks, and selective VA / ASID / full flushes.
+    Checks 40-page reach without walks, repeat S1 hits without walks, 2-way set
+    associativity, ASID coexistence and global entries, Svpbmt NC/IO and live
+    permission/atomic checks, and selective VA / ASID / full flushes.
     """
     await _setup(dut)
     await _clear(dut)
@@ -1352,27 +1352,20 @@ async def test_s1_cache_reach_promotion_pbmt_asid_and_flush(dut: Any) -> None:
         await _paired_cycle(dut)
         assert not int(dut.o_iss_out_valid.value)
 
-    # 2) Evict page 0 from the DTLB, hit it in the S1 cache, then confirm
-    #    deferred promotion restores cycle-0 DTLB bypass on the repeat access.
+    # 2) Evict page 0 from the DTLB, then confirm repeated accesses hit in the
+    #    S1 cache without invoking the walker.
     for i in range(16):
         await _install(dut, Leaf(vpn=0x500 + i, ppn=0x81000 + i))
-    op0 = Op(va=(leaves[0].vpn << 12) | 0x80, tag=7)
-    _issue(dut, op0)
-    await _paired_cycle(dut)
-    dut.i_iss_valid.value = 0
-    assert not int(dut.o_iss_out_valid.value), "evicted page bypassed DTLB"
-    assert not int(dut.o_walk_req_valid.value), "evicted page missed S1 cache"
-    await _paired_cycle(dut)
-    _check(dut, op0, leaves[0])
-    # Wait one cycle for the deferred promotion edge to land in the DTLB.
-    await _paired_cycle(dut)
-    op0_again = replace(op0, va=op0.va + 8, tag=8)
-    _issue(dut, op0_again)
-    await _paired_cycle(dut)
-    dut.i_iss_valid.value = 0
-    assert int(dut.o_iss_out_valid.value), "promoted S1 cache hit did not bypass"
-    _check(dut, op0_again, leaves[0])
-    await _paired_cycle(dut)
+    for off, tag in ((0x80, 7), (0x88, 8)):
+        op0 = Op(va=(leaves[0].vpn << 12) | off, tag=tag)
+        _issue(dut, op0)
+        await _paired_cycle(dut)
+        dut.i_iss_valid.value = 0
+        assert not int(dut.o_iss_out_valid.value), "evicted page bypassed DTLB"
+        assert not int(dut.o_walk_req_valid.value), "evicted page missed S1 cache"
+        await _paired_cycle(dut)
+        _check(dut, op0, leaves[0])
+        await _paired_cycle(dut)
 
     # 3) 2-way associativity and ASID isolation / global pages inside S1 cache.
     await _clear(dut)

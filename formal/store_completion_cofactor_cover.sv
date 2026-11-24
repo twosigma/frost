@@ -33,7 +33,7 @@ module store_completion_cofactor_cover #(
     input logic [riscv_pkg::PtePpnBits-1:0] i_walk_ppn
 );
   localparam logic [1:0] Cmo = 2'd1;
-  localparam logic [1:0] Sc = 2'd2;
+  localparam logic [1:0] Sc  = 2'd2;
 
   wire  rst_n = !$initstate;
   (* anyconst *)logic translation_active;
@@ -172,8 +172,6 @@ module store_completion_cofactor_cover #(
       .i_walk_req_ready(!walk_pending_q),
       .o_walk_vpn(walk_vpn),
       .o_walk_hold(),
-      .o_walk_spec_valid(),
-      .o_walk_spec_vpn(),
       .i_walk_resp_valid(walk_resp_valid),
       .i_walk_resp(walk_resp)
   );
