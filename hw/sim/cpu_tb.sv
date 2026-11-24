@@ -74,10 +74,14 @@ module cpu_tb
   logic pipeline_stall_comb;  // Stall signal (combinational, immediate)
   logic reset_to_cpu;  // Reset signal monitoring
 
-  // Registered 1-cycle fetch state (mimics block-RAM instruction memory latency)
-  logic [31:0] tb_cur_word;  // current fetch word presented to the CPU
+  // Registered 1-cycle fetch state: pair two sequential 32-bit testbench
+  // words into one 64-bit fetch window so every injected instruction gets
+  // contiguous +4 PCs with zero synthetic NOPs and 1-cycle word-0 latency.
+  logic [riscv_pkg::XLEN-1:0] cpu_o_pc;
+  logic [31:0] tb_buf_lo_q;
+  logic tb_have_lo_q;
   logic tb_bank_sel_q;  // parity (PC[2]) of the fetched address
-  // Provider-local word tags for the window presented one cycle later.
+  // Provider-local word tags for the window presented on the second word.
   logic [riscv_pkg::XLEN-3:0] tb_served_word_q;
   logic [riscv_pkg::XLEN-3:0] tb_served_last_word_q;
   logic [riscv_pkg::XLEN-3:0] tb_served_prev_word_q;
@@ -203,41 +207,55 @@ module cpu_tb
   assign i_interrupts = i_interrupts_reg;
   assign i_mtime = i_mtime_reg;
 
-  // Pipeline stage that mimics the block-RAM instruction memory latency.
+  // Expose the exact PC of the word currently being fed by the testbench.
+  assign o_pc = tb_have_lo_q ? (cpu_o_pc + riscv_pkg::XLEN'(4)) : cpu_o_pc;
+
+  // Pair two sequential 32-bit testbench words into one 64-bit fetch window:
+  // capture word 0 on the first cycle (holding i_instr_valid low so IF arms
+  // collapsed accept), then present {word 1, word 0} directly on the second
+  // cycle so word 0 enters PD with 1-cycle latency and zero extra delay.
+  logic tb_flush;
+  assign tb_flush = i_rst || device_under_test.pipeline_ctrl.reset ||
+                    device_under_test.pipeline_ctrl.flush;
+
   always_ff @(posedge i_clk) begin
     pipeline_stall_from_cpu <= device_under_test.pipeline_ctrl.stall;
-    // The word for the address requested on o_pc this cycle is presented on
-    // the next cycle.
-    tb_cur_word <= instruction_from_testbench;
-    tb_bank_sel_q <= o_pc[2];  // parity of the fetched address
-    tb_served_word_q <= o_pc[riscv_pkg::XLEN-1:2];
-    tb_served_last_word_q <= o_pc[riscv_pkg::XLEN-1:2] + 1'b1;
-    tb_served_prev_word_q <= o_pc[riscv_pkg::XLEN-1:2] - 1'b1;
-    tb_served_prev_word_valid_q <= |o_pc[riscv_pkg::XLEN-1:2];
-    tb_fault0_q <= o_fetch_fault0;
-    tb_fault0_page_q <= o_fetch_fault0_page;
-    tb_fault1_q <= o_fetch_fault1;
-    tb_fault1_page_q <= o_fetch_fault1_page;
+    if (tb_flush) begin
+      tb_have_lo_q <= 1'b0;
+    end else if (!pipeline_stall_comb) begin
+      if (!tb_have_lo_q) begin
+        tb_buf_lo_q                 <= instruction_from_testbench;
+        tb_bank_sel_q               <= cpu_o_pc[2];
+        tb_served_word_q            <= cpu_o_pc[riscv_pkg::XLEN-1:2];
+        tb_served_last_word_q       <= cpu_o_pc[riscv_pkg::XLEN-1:2] + 1'b1;
+        tb_served_prev_word_q       <= cpu_o_pc[riscv_pkg::XLEN-1:2] - 1'b1;
+        tb_served_prev_word_valid_q <= |cpu_o_pc[riscv_pkg::XLEN-1:2];
+        tb_fault0_q                 <= o_fetch_fault0;
+        tb_fault0_page_q            <= o_fetch_fault0_page;
+        tb_fault1_q                 <= o_fetch_fault1;
+        tb_fault1_page_q            <= o_fetch_fault1_page;
+        tb_have_lo_q                <= 1'b1;
+      end else begin
+        tb_have_lo_q <= 1'b0;
+      end
+    end
   end
 
-  // The bench supplies one instruction per step. A NOP in the next-word half
-  // could pair and advance PC by eight. ECALL cannot start slot 2, so it blocks
-  // pairing without executing; every executed instruction comes from tb_cur_word.
-  localparam logic [31:0] TbSlot2Blocker = 32'h0000_0073;  // ecall (SYSTEM)
-  assign i_instr = {TbSlot2Blocker, tb_cur_word};
+  assign i_instr = {instruction_from_testbench, tb_buf_lo_q};
   // The same window in physical bank order, {odd, even}, as the low BRAM
   // presents it: the current word sits in the bank its address parity names.
   logic [63:0] i_instr_low_by_parity;
   logic [63:0] i_instr_high;
   logic i_instr_window_high;
-  assign i_instr_low_by_parity = tb_bank_sel_q ? {tb_cur_word, TbSlot2Blocker} :
-                                                 {TbSlot2Blocker, tb_cur_word};
+  assign i_instr_low_by_parity = tb_bank_sel_q ? {tb_buf_lo_q, instruction_from_testbench} :
+                                                 {instruction_from_testbench, tb_buf_lo_q};
   assign i_instr_high = '0;
   assign i_instr_window_high = 1'b0;
   // Per-word predecode sideband, computed by the same pure function the RTL
   // fetch path uses (riscv_pkg::imem_make_sideband; no lookahead).
   assign i_instr_sideband = {
-    riscv_pkg::imem_make_sideband(TbSlot2Blocker), riscv_pkg::imem_make_sideband(tb_cur_word)
+    riscv_pkg::imem_make_sideband(instruction_from_testbench),
+    riscv_pkg::imem_make_sideband(tb_buf_lo_q)
   };
   assign i_instr_pc_metadata = {
     i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],
@@ -310,8 +328,8 @@ module cpu_tb
   assign i_instr_fault1_page = tb_fault1_page_q;
   assign i_served_high = 1'b0;
   assign i_instr_pc_metadata_served_high = 1'b0;
-  // Fixed 1-cycle provider: the fetch window is always valid.
-  assign i_instr_valid = 1'b1;
+  // Present the paired 64-bit window on the cycle its second word is driven.
+  assign i_instr_valid = tb_have_lo_q && !pipeline_stall_comb;
 
   // No I-cache: complete FENCE.I synchronization immediately.
   assign i_fence_i_sync_done = o_fence_i_sync_req;
@@ -358,12 +376,14 @@ module cpu_tb
   assign reset_to_cpu = device_under_test.pipeline_ctrl.reset;
 
   // Unregistered stall, so the test framework sees it in the same cycle. AMO
-  // instructions stall mid-pipeline and need that immediate view.
-  assign pipeline_stall_comb = device_under_test.pipeline_ctrl.stall;
+  // instructions stall mid-pipeline and parcel-queue backpressure pauses F0.
+  assign pipeline_stall_comb = device_under_test.pipeline_ctrl.stall ||
+                               device_under_test.if_stage_inst.f0_stop_fetch;
 
   // The instruction fixture serves private uncached memory at fixed latency.
   // Coherent cache ports, MSI ingress and variable-latency completions are idle.
   cpu_ooo device_under_test (
+      .o_pc(cpu_o_pc),
       .i_coherent_store_pending(1'b0),
       .i_coherent_store_ready(1'b1),
       .i_coherent_twin_push(1'b0),

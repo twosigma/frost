@@ -1210,15 +1210,17 @@ async def bp_trace(dut: Any) -> None:
     cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
     ifs = f"{cpu}.if_stage_inst"
     pds = f"{cpu}.pd_stage_inst"
-    bpc = f"{ifs}.branch_prediction_controller_inst"
     flags = {
-        "phold": f"{ifs}.prediction_holdoff",
-        "ahold": f"{ifs}.any_holdoff_safe",
-        "cfhold": f"{ifs}.control_flow_holdoff",
-        "nop": f"{ifs}.sel_nop",
-        "nop2": f"{ifs}.sel_nop_2",
-        "used": f"{bpc}.o_prediction_used",
-        "used2": f"{bpc}.o_slot2_prediction_used",
+        "f0l": f"{ifs}.f0_launch",
+        "f1a": f"{ifs}.f1_accept",
+        "f1ca": f"{ifs}.f1_collapsed_accept",
+        "stop": f"{ifs}.q_stop_fetch",
+        "f1rst": f"{ifs}.f1_resteer",
+        "fbtb": f"{ifs}.f1_false_btb",
+        "s1v": f"{ifs}.s1_valid",
+        "s2v": f"{ifs}.s2_valid",
+        "btb": f"{ifs}.f0_btb_valid",
+        "steer": f"{ifs}.f0_btb_steer_now",
         "pdcand": f"{pds}.pd_backing_candidate_r",
         "pdcand2": f"{pds}.pd_backing_candidate_2_r",
         "pdbr": f"{pds}.pd_backing_redirect_r",
@@ -1228,10 +1230,9 @@ async def bp_trace(dut: Any) -> None:
         "j2": f"{pds}.pd_slot2_jump",
     }
     vals = {
-        "pc": f"{ifs}.pc_reg",
+        "pc": f"{ifs}.s1_pc",
         "opc": f"{ifs}.o_pc",
         "tw": f"{ifs}.pc_tage_lookup",
-        "bhl": f"{ifs}.backing_hit_live",
         "bh": f"{pds}.i_backing_hit",
         "bc": f"{pds}.i_backing_compressed",
     }
@@ -1471,9 +1472,7 @@ class FastBtbContractCoverage:
         self.dut = dut
         self.cpu = dut.cpu_and_memory_subsystem.cpu.hart.cpu_inst
         self.ifs = self.cpu.if_stage_inst
-        self.bpc = self.ifs.branch_prediction_controller_inst
-        self.bp = self.bpc.branch_predictor_inst
-        self.bbtb = self.ifs.u_backing_btb
+        self.btb = self.ifs.u_fetch_btb_2w
         self.pd = self.cpu.pd_stage_inst
         base = "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_stage_inst."
         self.fetch_packets = [
@@ -1528,7 +1527,7 @@ class FastBtbContractCoverage:
         )
 
     def _btb_valid(self, pc: int) -> int:
-        return int(self.bp.btb_valid[(pc >> 2) & 0xFF].value)
+        return int(self.btb.btb_valid[(pc >> 2) & 1][(pc >> 3) & 0x7F].value)
 
     async def run(self) -> None:
         """Sample the core each clock and count the reach events of every case."""
@@ -1550,12 +1549,20 @@ class FastBtbContractCoverage:
             mret = int(self.cpu.mret_taken_reg.value)
             fence_flush = int(self.cpu.o_fence_i_flush.value)
             btb_inv = int(self.cpu.btb_invalidate.value)
-            o_pc = int(self.ifs.o_pc.value)
-            pc_reg = int(self.ifs.pc_reg.value)
-            pu = int(self.ifs.prediction_used.value)
-            pt = int(self.bpc.o_predicted_target.value)
-            s2u = int(self.ifs.slot2_prediction_used.value)
-            s2t = int(self.ifs.slot2_predicted_target_for_pc.value)
+            f0_pc = int(self.ifs.pc.value)
+            f0_fire = (
+                int(self.ifs.f0_launch.value) or int(self.ifs.f1_collapsed_accept.value)
+            ) and int(self.ifs.f0_btb_valid.value)
+            btb_hit_pc = (f0_pc & ~3) + 2 * int(self.ifs.btb_taken_pos.value)
+            btb_tgt = int(self.ifs.f0_btb_eff_target.value)
+            f1_btb_pc = (int(self.ifs.f1_win_pc.value) & ~3) + 2 * int(
+                self.ifs.f1_btb_pos.value
+            )
+            f1_walk_past = int(self.ifs.f1_false_btb.value) or (
+                int(self.ifs.f1_collapsed_accept.value)
+                and int(self.ifs.f0_btb_valid.value)
+                and not int(self.ifs.f1_btb_ok.value)
+            )
 
             # Case 1: M->M trap and mret survival (hit body and miss body)
             if em and em_pc == s["fbc_mh_jalr"] and em_tgt == s["fbc_mh_real"]:
@@ -1575,9 +1582,11 @@ class FastBtbContractCoverage:
                     and self._btb_valid(s["fbc_mh_jalr"])
                 ):
                     self.counts["c1_mret_keeps_hit"] += 1
-            if self.counts["c1_mret_keeps_hit"] and (
-                (s2u and pc_reg == s["fbc_mh_nop"] and s2t == s["fbc_mh_real"])
-                or (pu and o_pc == s["fbc_mh_jalr"] and pt == s["fbc_mh_real"])
+            if (
+                self.counts["c1_mret_keeps_hit"]
+                and f0_fire
+                and btb_hit_pc == s["fbc_mh_jalr"]
+                and btb_tgt == s["fbc_mh_real"]
             ):
                 self.counts["c1_surviving_hit_real"] += 1
             if (
@@ -1593,9 +1602,11 @@ class FastBtbContractCoverage:
                     and self._btb_valid(s["fbc_mm_jalr"])
                 ):
                     self.counts["c1_mret_keeps_miss"] += 1
-            if self.counts["c1_mret_keeps_miss"] and (
-                (s2u and pc_reg == s["fbc_mm_nop"] and s2t == s["fbc_mm_stale"])
-                or (pu and o_pc == s["fbc_mm_jalr"] and pt == s["fbc_mm_stale"])
+            if (
+                self.counts["c1_mret_keeps_miss"]
+                and f0_fire
+                and btb_hit_pc == s["fbc_mm_jalr"]
+                and btb_tgt == s["fbc_mm_stale"]
             ):
                 self.counts["c1_surviving_hit_stale"] += 1
             if (
@@ -1617,9 +1628,11 @@ class FastBtbContractCoverage:
                 and self._btb_valid(s["fbc_ms_jalr"])
             ):
                 self.counts["c2_mstatus_keeps_btb"] += 1
-            if self.counts["c2_mstatus_keeps_btb"] and (
-                (pu and o_pc == s["fbc_ms_jalr"] and pt == s["fbc_ms_stale"])
-                or (s2u and pc_reg == s["fbc_ms_jalr"] - 4 and s2t == s["fbc_ms_stale"])
+            if (
+                self.counts["c2_mstatus_keeps_btb"]
+                and f0_fire
+                and btb_hit_pc == s["fbc_ms_jalr"]
+                and btb_tgt == s["fbc_ms_stale"]
             ):
                 self.counts["c2_surviving_hit_stale"] += 1
             if (
@@ -1635,15 +1648,15 @@ class FastBtbContractCoverage:
                 self.counts["c3_inner_early_train"] += 1
             if (
                 self.counts["c3_inner_early_train"]
-                and pu
-                and o_pc == s["fbc_inner_p"]
-                and pt == s["fbc_inner_mid"]
+                and f0_fire
+                and btb_hit_pc == s["fbc_inner_p"]
+                and btb_tgt == s["fbc_inner_mid"]
             ):
                 self.counts["c3_inner_btb_hit"] += 1
             if (
                 self.counts["c3_inner_btb_hit"]
-                and int(self.ifs.pending_prediction_walk_past.value)
-                and int(self.ifs.pending_prediction_pc.value) == s["fbc_inner_p"]
+                and f1_walk_past
+                and f1_btb_pc == s["fbc_inner_p"]
             ):
                 self.counts["c3_walk_past"] += 1
 
@@ -1661,7 +1674,7 @@ class FastBtbContractCoverage:
                 self._await_c4_clear = True
 
             # Case 5: backing BTB no clear-all across FENCE.I
-            bbtb_hits = int(self.bbtb.o_hit.value)
+            bbtb_hits = int(self.ifs.o_backing_hit.value)
             if bbtb_hits:
                 for slot, pkt in enumerate(self.fetch_packets):
                     if bbtb_hits & (1 << slot):
@@ -1870,16 +1883,23 @@ class DelayedBranchFetchCoverage:
         self.dut = dut
         cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
         stage = f"{cpu}.if_stage_inst"
+        pcc = f"{stage}.pc_controller_inst"
         soc = "cpu_and_memory_subsystem.soc"
         paths = {
             "reset": f"{cpu}.i_rst",
             "local_state": f"{soc}.local_state_q",
             "instruction": f"{soc}.local_read_instruction_q",
             "instr_valid": f"{stage}.i_instr_valid",
-            "holdoff": f"{stage}.control_flow_holdoff",
-            "emitted": f"{stage}.prediction_already_emitted_q",
-            "pending": f"{stage}.pc_controller_inst.pending_prediction_valid",
-            "resteer": f"{stage}.window_resteer_pc_reg",
+            "pc": f"{stage}.pc",
+            "f1_win_pc": f"{stage}.f1_win_pc",
+            "next_pc": f"{pcc}.next_pc",
+            "f0_launch": f"{stage}.f0_launch",
+            "f1_accept": f"{stage}.f1_accept",
+            "f1_collapsed": f"{stage}.f1_collapsed_accept",
+            "btb_steer": f"{stage}.f0_btb_steer_now",
+            "span_fire": f"{stage}.f0_span_btb_fire",
+            "any_redirect": f"{stage}.any_redirect",
+            "resteer": f"{stage}.f1_resteer",
         }
         self.signals = {name: _get_signal(dut, path) for name, path in paths.items()}
         _require_signals("delayed branch-target coverage", self.signals)
@@ -1891,6 +1911,7 @@ class DelayedBranchFetchCoverage:
         self.target_waits = 0
         self.resteers = 0
         self.was_waiting = False
+        self._pending_target_pc: int | None = None
 
     async def run(self) -> None:
         """Count delayed AXI instruction completions and held predictions."""
@@ -1900,6 +1921,7 @@ class DelayedBranchFetchCoverage:
             await ReadOnly()
             if _read_bool(s["reset"]):
                 self.was_waiting = False
+                self._pending_target_pc = None
                 continue
             waiting = _read_int(s["local_state"]) == 2 and _read_bool(s["instruction"])
             # State 2 normally lasts one cycle. A second consecutive cycle
@@ -1908,12 +1930,29 @@ class DelayedBranchFetchCoverage:
             if waiting and self.was_waiting:
                 self.fuzz_waits += 1
             self.was_waiting = bool(waiting)
+            instr_valid = _read_bool(s["instr_valid"])
+            pc = _read_int(s["pc"]) or 0
+            f1_win_pc = _read_int(s["f1_win_pc"]) or 0
+            if self._pending_target_pc is not None:
+                if not instr_valid and (
+                    pc == self._pending_target_pc
+                    or f1_win_pc == self._pending_target_pc
+                ):
+                    self.target_waits += 1
+                if (
+                    _read_bool(s["any_redirect"])
+                    or _read_bool(s["resteer"])
+                    or (
+                        (_read_bool(s["f1_accept"]) or _read_bool(s["f1_collapsed"]))
+                        and f1_win_pc == self._pending_target_pc
+                    )
+                ):
+                    self._pending_target_pc = None
             if (
-                not _read_bool(s["instr_valid"])
-                and _read_bool(s["holdoff"])
-                and (_read_bool(s["emitted"]) or _read_bool(s["pending"]))
+                (_read_bool(s["f0_launch"]) or _read_bool(s["f1_collapsed"]))
+                and (_read_bool(s["btb_steer"]) or _read_bool(s["span_fire"]))
             ):
-                self.target_waits += 1
+                self._pending_target_pc = _read_int(s["next_pc"])
             if _read_bool(s["resteer"]):
                 self.resteers += 1
 
@@ -1940,25 +1979,31 @@ class OddHalfwordPredictionCoverage:
         self.dut = dut
         cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
         stage = f"{cpu}.if_stage_inst"
-        bpc = f"{stage}.branch_prediction_controller_inst"
-        pcc = f"{stage}.pc_controller_inst"
         paths = {
             "reset": f"{cpu}.i_rst",
-            "pred_used": f"{bpc}.o_prediction_used",
-            "pred_pc": f"{bpc}.i_pc",
-            "btb_compressed": f"{bpc}.btb_compressed",
-            "pred_is_call": f"{bpc}.o_predicted_is_call",
-            "target_holdoff": f"{pcc}.o_pending_prediction_target_holdoff",
-            "pc_reg": f"{pcc}.o_pc_reg",
-            "next_pc": f"{pcc}.next_pc",
-            "if_stall": f"{stage}.if_stage_stall",
-            "sel_nop_eff": f"{stage}.sel_nop_effective",
-            "is_compressed": f"{stage}.is_compressed",
-            "slot1_taken_raw": f"{stage}.slot1_btb_predicted_taken_raw",
-            "fetch_fault_eff": f"{stage}.fetch_fault_effective",
-            "ras_push": f"{stage}.ras_push",
-            "ras_pop": f"{stage}.ras_pop",
-            "stale_pending": f"{pcc}.stale_pending_prediction",
+            "stall": f"{cpu}.dbg_pipeline_stall",
+            "f0_launch": f"{stage}.f0_launch",
+            "f1_collapsed": f"{stage}.f1_collapsed_accept",
+            "f0_btb_valid": f"{stage}.f0_btb_valid",
+            "f0_btb_steer": f"{stage}.f0_btb_steer_now",
+            "f0_btb_target": f"{stage}.f0_btb_eff_target",
+            "btb_pos": f"{stage}.btb_taken_pos",
+            "btb_compressed": f"{stage}.btb_compressed",
+            "btb_is_call": f"{stage}.btb_is_call",
+            "f1_btb_ok": f"{stage}.f1_btb_ok",
+            "f1_btb_fault": f"{stage}.f1_btb_fault",
+            "f1_false_btb": f"{stage}.f1_false_btb",
+            "f0_span_fault_veto": f"{stage}.f0_span_fault_veto",
+            "f1_span_tail_fault": f"{stage}.f1_span_tail_fault",
+            "f1_ras_restore": f"{stage}.f1_ras_restore",
+            "ras_push": f"{stage}.f0_ras_push",
+            "ras_pop": f"{stage}.f0_ras_pop",
+            "s1_valid": f"{stage}.s1_valid",
+            "s1_pc": f"{stage}.s1_pc",
+            "s1_comp": f"{stage}.s1_comp",
+            "s1_fault": f"{stage}.s1_fault",
+            "s1_fault_hi": f"{stage}.s1_fault_hi",
+            "s1_btb_taken": f"{stage}.s1_btb_taken",
         }
         self.signals = {name: _get_signal(dut, path) for name, path in paths.items()}
         _require_signals("odd-halfword prediction coverage", self.signals)
@@ -1983,48 +2028,57 @@ class OddHalfwordPredictionCoverage:
             if _read_bool(s["reset"]):
                 self._armed_odd_target = None
                 continue
-            pred_pc = _read_int(s["pred_pc"]) or 0
+            f0_fire = _read_bool(s["f0_launch"]) or _read_bool(s["f1_collapsed"])
+            btb_pos = _read_int(s["btb_pos"]) or 0
             if (
-                _read_bool(s["pred_used"])
-                and (pred_pc & 0x2) != 0
+                f0_fire
+                and _read_bool(s["f0_btb_valid"])
+                and (btb_pos & 1) != 0
                 and not _read_bool(s["btb_compressed"])
             ):
                 self.odd_slot1_native_btb += 1
-                if _read_bool(s["pred_is_call"]):
+                if _read_bool(s["btb_is_call"]):
                     self.odd_slot1_native_call += 1
 
-            pc_reg = _read_int(s["pc_reg"]) or 0
-            next_pc = _read_int(s["next_pc"]) or 0
+            f0_target = _read_int(s["f0_btb_target"]) or 0
+            if f0_fire and _read_bool(s["f0_btb_steer"]) and (f0_target & 0x2) != 0:
+                self._armed_odd_target = f0_target
             if (
-                _read_bool(s["target_holdoff"])
-                and (pc_reg & 0x2) != 0
-                and next_pc == ((pc_reg + 4) & ((1 << 64) - 1))
+                self._armed_odd_target is not None
+                and _read_bool(s["s1_valid"])
+                and not _read_bool(s["stall"])
+                and (_read_int(s["s1_pc"]) or 0) == self._armed_odd_target
             ):
-                self._armed_odd_target = pc_reg
-            elif not _read_bool(s["if_stall"]) and not _read_bool(s["sel_nop_eff"]):
-                if self._armed_odd_target is not None:
-                    if (
-                        pc_reg == self._armed_odd_target
-                        and pred_pc == ((pc_reg + 4) & ((1 << 64) - 1))
-                        and not _read_bool(s["is_compressed"])
-                    ):
-                        self.even_to_odd_plus4_native_target += 1
-                    self._armed_odd_target = None
+                if not _read_bool(s["s1_comp"]):
+                    self.even_to_odd_plus4_native_target += 1
+                self._armed_odd_target = None
 
-            fault_eff = _read_int(s["fetch_fault_eff"]) or 0
-            if (
-                not _read_bool(s["if_stall"])
-                and not _read_bool(s["sel_nop_eff"])
-                and _read_bool(s["slot1_taken_raw"])
-                and (fault_eff & 0x4) != 0
-            ):
-                assert not _read_bool(s["ras_push"]) and not _read_bool(s["ras_pop"]), (
-                    "faulted packet with slot-1 BTB prediction updated the RAS"
+            if _read_bool(s["s1_valid"]) and _read_bool(s["s1_fault"]):
+                assert not _read_bool(s["s1_btb_taken"]), (
+                    "faulted slot-1 packet carried a taken BTB prediction"
                 )
-                if (fault_eff & 0x1) != 0:
-                    self.fault_vetoed_btb_pred += 1
 
-            if _read_bool(s["stale_pending"]):
+            fault_veto = (
+                (_read_bool(s["f1_false_btb"]) and _read_bool(s["f1_btb_fault"]))
+                or _read_bool(s["f1_span_tail_fault"])
+                or (f0_fire and _read_bool(s["f0_span_fault_veto"]))
+            )
+            if fault_veto:
+                assert not _read_bool(s["ras_push"]) and not _read_bool(s["ras_pop"]), (
+                    "faulted packet with BTB prediction updated the RAS"
+                )
+                if not (f0_fire and _read_bool(s["f0_span_fault_veto"])):
+                    assert _read_bool(s["f1_ras_restore"]), (
+                        "fault-vetoed BTB prediction did not restore the RAS"
+                    )
+                self.fault_vetoed_btb_pred += 1
+
+            walk_past = _read_bool(s["f1_false_btb"]) or (
+                _read_bool(s["f1_collapsed"])
+                and _read_bool(s["f0_btb_valid"])
+                and not _read_bool(s["f1_btb_ok"])
+            )
+            if walk_past and not _read_bool(s["f1_btb_fault"]):
                 self.stale_pending_drops += 1
 
     def verify(self, run_number: int) -> None:
@@ -3520,19 +3574,19 @@ async def run_until_complete(
         )
         btb_hit_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.btb_hit",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.btb_taken_raw",
         )
         btb_pred_taken_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.btb_predicted_taken",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.f0_btb_valid",
         )
         pred_used_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.o_prediction_used",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.f0_btb_steer_now",
         )
         pred_holdoff_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.o_prediction_holdoff",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.q_stop_fetch",
         )
         if_pc_sig = _struct_field(
             dut,
@@ -3661,77 +3715,72 @@ async def run_until_complete(
             dut, "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.pc"
         )
         if_pc_reg_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.pc_reg"
+            dut, "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.s1_pc"
         )
-        if_raw_parcel_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.raw_parcel"
-        )
+        if_raw_parcel_live_sig = if_raw_parcel_sig
         if_effective_instr_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.effective_instr",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.s1_instr",
         )
-        if_sel_nop_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.sel_nop"
-        )
+        if_sel_nop_live_sig = if_sel_nop_sig
         if_sel_compressed_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.sel_compressed",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.s1_comp",
         )
         pending_prediction_active_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.pending_prediction_active",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.f1_src_btb_taken",
         )
         pending_prediction_fetch_holdoff_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.pending_prediction_fetch_holdoff",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.f1_resteer",
         )
         if_use_instr_buffer_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.use_instr_buffer",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.q_stop_fetch",
         )
         if_prev_compressed_lo_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.prev_was_compressed_at_lo",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.f1_carry_hi_q",
         )
         pc_seq_next_pc_reg_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.pc_controller_inst.seq_next_pc_reg",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.pc_controller_inst.seq_next_pc",
         )
         pc_next_pc_reg_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.pc_controller_inst.next_pc_reg",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.pc_controller_inst.next_pc",
         )
         ras_tos_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.tos",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.u_ras.tos",
         )
         ras_valid_count_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.valid_count",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.u_ras.valid_count",
         )
         ras_pending_pop_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.pending_pop",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.u_ras.pending_pop",
         )
         ras_do_push_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.do_push",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.u_ras.do_push",
         )
         ras_target_live_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_top",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.ras_top",
         )
-        # IF's push and pop for the packet PD takes this cycle, and the link
-        # address of the registered push the stack applies now.
+        # IF's F0 speculative push/pop and link address for the RAS.
         ras_is_call_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.ras_push"
+            dut, "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.f0_ras_push"
         )
         ras_is_return_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.ras_pop"
+            dut, "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.f0_ras_pop"
         )
         ras_link_address_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.ras_pending_push_address",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.f0_ras_link",
         )
         ras_misprediction_live_sig = _struct_field(
             dut,
@@ -4086,7 +4135,7 @@ async def run_until_complete(
         )
         if_control_flow_holdoff_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.control_flow_holdoff",
+            "cpu_and_memory_subsystem.cpu.hart.cpu_inst.if_stage_inst.q_stop_fetch",
         )
         if app_name == "branch_pred_test":
             if control_flow_trace_label is None:

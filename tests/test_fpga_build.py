@@ -1115,45 +1115,33 @@ def test_optional_predecode_metadata_uses_scalar_overlay() -> None:
     assert "i_response_ready && !i_retarget" not in presenter
 
     if_stage = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv").read_text()
-    redirect_block_match = re.search(
-        r"fetch_redirect fetch_redirect_inst \((.*?)\n  \);", if_stage, re.S
+    pc_block_match = re.search(
+        r"fetch_pc_decoupled #\((.*?)\n  \);", if_stage, re.S
     )
-    assert redirect_block_match is not None
-    # The sequential catch-up arm does not cause a fetch redirect.
-    assert "npc_cond_for_redirect = npc_cond[riscv_pkg::PcNextArms-1:1];" in if_stage
-    assert "npc_cond_for_redirect[11] = 1'b0;" in if_stage
-    redirect_block = redirect_block_match.group(1)
+    assert pc_block_match is not None
+    pc_block = pc_block_match.group(1)
+    assert ".i_clk," in pc_block
     for port, signal in (
-        ("i_clk", "i_clk"),
         ("i_reset", "i_pipeline_ctrl.reset"),
-        ("i_pc_update_en", "pc_update_en"),
-        ("i_npc_cond", "npc_cond_for_redirect"),
-        ("i_npc_seq", "npc_seq[riscv_pkg::PcNextArms-1:1]"),
-        ("i_live_prediction_emits_with_output", "live_prediction_emits_with_output"),
+        ("i_f1_resteer", "f1_resteer"),
+        ("i_f0_launch", "f0_launch"),
         ("o_fetch_redirect", "o_fetch_redirect"),
+        ("o_fetch_cached_retarget", "o_fetch_cached_retarget"),
     ):
-        assert f".{port}({signal})" in redirect_block
-    # IF compares the registered redirect with the direct npc_sel equation.
-    assert re.search(
-        r"fetch_redirect_reference_q\s*<=\s*!i_pipeline_ctrl.reset\s*&&\s*"
-        r"pc_update_en\s*&&\s*\|\(npc_sel\s*&\s*~npc_seq\)\s*&&\s*"
-        r"!\(npc_sel\[PredictionNpcArm\]\s*&&\s*"
-        r"!live_prediction_emits_with_output\);",
-        if_stage,
-    )
-    assert "assert (o_fetch_redirect == fetch_redirect_reference_q);" in if_stage
+        assert f".{port}({signal})" in pc_block
+    fetch_pc_decoupled = (
+        REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/fetch_pc_decoupled.sv"
+    ).read_text()
+    assert "o_fetch_redirect        <= |npc_sel[5:1];" in fetch_pc_decoupled
+    assert "o_fetch_cached_retarget <= |npc_sel[5:1];" in fetch_pc_decoupled
     if_stage_files = (
         REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.f"
     ).read_text()
-    assert "cpu_and_mem/cpu/if_stage/fetch_redirect.sv" in if_stage_files
-    assert "o_fetch_cached_retarget <=" in if_stage
+    assert "cpu_and_mem/cpu/if_stage/fetch_pc_decoupled.sv" in if_stage_files
+    assert "cpu_and_mem/cpu/if_stage/fetch_parcel_queue.sv" in if_stage_files
     assert (
-        "(fetch_cached_retarget_redirect || slot2_prediction_used_for_pc ||" in if_stage
-    )
-    assert "live_prediction_emits_with_output || window_resteer_pc_reg)) ||" in if_stage
-    assert (
-        "assign o_fetch_live_claim = i_instr_valid && !sel_nop && "
-        "!if_stage_stall_registered;" in if_stage
+        "assign o_fetch_live_claim = (f1_accept || f1_collapsed_accept) && "
+        "!f0_self_loop;" in if_stage
     )
 
     cpu_and_mem_files = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu_and_mem.f").read_text()
