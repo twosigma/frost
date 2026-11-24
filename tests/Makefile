@@ -26,6 +26,14 @@ ROOT            ?= $(shell git rev-parse --show-toplevel 2>/dev/null || echo /wo
 WAVES           ?= 0
 SIM_BUILD       ?= sim_build
 
+# Generated HDL sources built into $(SIM_BUILD) by specific unit benches.
+# Coverage annotation regenerates every entry through the same Makefile rules.
+VCU118_CONE := $(SIM_BUILD)/vcu118_ddr_cone.sv
+EARLY_JALR_OFF_PKG := $(SIM_BUILD)/riscv_pkg.sv
+EARLY_JALR_OFF_CPU_F := $(SIM_BUILD)/cpu_ooo_early_jalr_off.f
+EARLY_JALR_OFF_TOP_F := $(SIM_BUILD)/cpu_top_early_jalr_off.f
+GENERATED_COVERAGE_SOURCES := $(VCU118_CONE) $(EARLY_JALR_OFF_PKG)
+
 export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
 
 # RTL sources by toplevel
@@ -615,7 +623,6 @@ VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),vcu118_frost)
 # Exercise the board itself. Cocotb drives the clock, CPU and DDR IP ports.
 # The omitted Ethernet and configuration primitives are outside this cone.
-VCU118_CONE := $(SIM_BUILD)/vcu118_ddr_cone.sv
 COMPILE_ARGS := -Wno-MODMISSING -Wno-WIDTHTRUNC \
     $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
     $(ROOT)/boards/vcu118/vcu118_ddr_init.sv \
@@ -667,9 +674,7 @@ COMPILE_ARGS := \
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),cpu_top)
 ifneq ($(findstring +define+FROST_TEST_EARLY_JALR_OFF,$(FROST_VERILATOR_EXTRA_ARGS)),)
-EARLY_JALR_OFF_PKG := $(SIM_BUILD)/riscv_pkg.sv
-EARLY_JALR_OFF_CPU_F := $(SIM_BUILD)/cpu_ooo_early_jalr_off.f
-EARLY_JALR_OFF_TOP_F := $(SIM_BUILD)/cpu_top_early_jalr_off.f
+EARLY_JALR_OFF := 1
 COMPILE_ARGS := -f $(EARLY_JALR_OFF_TOP_F)
 CUSTOM_COMPILE_DEPS += $(EARLY_JALR_OFF_PKG) $(EARLY_JALR_OFF_CPU_F) $(EARLY_JALR_OFF_TOP_F)
 VERILOG_SOURCES :=
@@ -901,7 +906,7 @@ endif
 # frost_cocotb_visibility.vlt supplies the system bench visibility list, and
 # verify that Verilator supports -fico-change-detect (5.052 or newer).
 ifeq ($(FROST_SELECTIVE_VISIBILITY),1)
-ifeq ($(filter clean,$(MAKECMDGOALS)),)
+ifeq ($(filter clean coverage-sources,$(MAKECMDGOALS)),)
 ifeq ($(shell $(VERILATOR_CMD) -E -fico-change-detect /dev/null >/dev/null 2>&1 && echo ok),)
 $(error Selective-visibility frost builds require Verilator 5.052 or newer for -fico-change-detect, but $(VERILATOR_CMD) reports $(VLT_VERSION); run through ./scripts/frost.py or set FROST_FULL_VISIBILITY=1)
 endif
@@ -939,15 +944,12 @@ clean:: clean-local
 clean-local:
 	@rm -rf dump.vcd dump.fst sw.mem sw64.mem sw_ddr.mem results.xml sim_build
 
-ifneq ($(VCU118_CONE),)
 # Keep the physical board top and its port connections. Only shorten the
 # sweep, and use the production clock and subsystem interfaces as test ports.
 $(VCU118_CONE): $(ROOT)/boards/vcu118/vcu118_frost.sv $(ROOT)/boards/vcu118/vcu118_clock.sv $(ROOT)/boards/xilinx_frost_subsystem.sv | $(SIM_BUILD)
 	sed "s/\.REGION_BYTES(32'h8000_0000)/.REGION_BYTES(256)/" $< > $@
 	for src in $(wordlist 2,3,$^); do sed '/^);/q' $$src; echo endmodule; done >> $@
-endif
 
-ifneq ($(EARLY_JALR_OFF_TOP_F),)
 # Exercise EarlyJalrRecovery=0 with EarlyJalRecovery=1 on unmodified RTL sources.
 $(EARLY_JALR_OFF_PKG): $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv | $(SIM_BUILD)
 	sed "s/localparam bit EarlyJalrRecovery = 1'b1;/localparam bit EarlyJalrRecovery = 1'b0;/" $< > $@
@@ -959,7 +961,11 @@ $(EARLY_JALR_OFF_CPU_F): $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f | $(SI
 $(EARLY_JALR_OFF_TOP_F): $(ROOT)/hw/rtl/cpu_top/cpu_top.f | $(SIM_BUILD)
 	sed "s|\$$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f|$(EARLY_JALR_OFF_CPU_F)|" $< > $@
 	grep -q "$(EARLY_JALR_OFF_CPU_F)" $@
+ifeq ($(EARLY_JALR_OFF),1)
 ifneq ($(TOGGLE_CONFIG),)
 $(TOGGLE_CONFIG): $(EARLY_JALR_OFF_PKG) $(EARLY_JALR_OFF_CPU_F) $(EARLY_JALR_OFF_TOP_F)
 endif
 endif
+
+.PHONY: coverage-sources
+coverage-sources: $(GENERATED_COVERAGE_SOURCES)

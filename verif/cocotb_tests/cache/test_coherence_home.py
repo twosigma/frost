@@ -2019,6 +2019,9 @@ class SpecMonitor:
                 "request_fire": int(a.i_req_valid.value) & int(a.o_req_ready.value),
                 "request_set": (int(a.i_req_addr.value) >> line_bits)
                 & ((1 << sets) - 1),
+                "req_spec": int(a.i_req_spec.value),
+                "req_block": int(a.i_req_addr.value) >> line_bits,
+                "direct_tag": int(self.b.dut.direct_tag_valid.value),
                 "phase": int(a.phase_q.value),
                 "tag_valid": int(a.i_req_valid.value),
             }
@@ -2272,3 +2275,112 @@ async def fast_tag_launch_cuts_hit_round_trip_by_two_cycles(dut: Any) -> None:
     assert not b.frozen
     await b.set(i_w_valid=0)
     assert await b.read(other) == dirty_val
+
+
+@cocotb.test()
+async def dma_write_and_cmo_skip_parallel_way_read(dut: Any) -> None:
+    """Verify DMAWrite and Zicbom lookups read tags alone with FAST_TAG_LAUNCH off and on."""
+    b = Home(dut)
+    await b.reset()
+    fast = bool(int(dut.FAST_TAG_LAUNCH.value))
+    monitor = SpecMonitor(b)
+    base = 0x80000000
+    other = base + b.line
+    cmo_addr = base + 2 * b.line
+    absent_cmo = base + 3 * b.line
+    await b.read(base)
+    line_bits = b.line.bit_length() - 1
+
+    # DMARead uses parallel way reads when enabled.
+    read_start = len(monitor.rows)
+    assert await b.read(base, 7) == b.expected(base)
+    assert any(
+        r["spec_fire"] and r["query"] == (base >> line_bits)
+        for r in monitor.rows[read_start:]
+    ) == parallel_reads(dut)
+
+    # DMAWrite skips parallel way reads on both hit (base) and miss (other),
+    # including direct tag launch when FAST_TAG_LAUNCH=1.
+    await b.tick(8)
+    write_start = len(monitor.rows)
+    mask = 0x80000181
+    for address in (base, other):
+        grant = await b.start(8, address, (1 << 256) - 1, mask)
+        assert not grant[5]
+        await b.finish(grant)
+    write_rows = monitor.rows[write_start:]
+    assert not any(r["spec_cycle"] or r["spec_fire"] for r in write_rows)
+    assert not any(r["request_fire"] and r["req_spec"] for r in write_rows)
+    if fast:
+        assert any(
+            r["request_fire"] and r["direct_tag"] and not r["req_spec"]
+            for r in write_rows
+        )
+    for address in (base, other):
+        expected = bytearray(b.expected(address).to_bytes(32, "little"))
+        for index in range(32):
+            if mask & (1 << index):
+                expected[index] = 255
+        assert await b.read(address) == int.from_bytes(expected, "little")
+
+    # Zicbom CMOs (CleanBlock, FlushBlock, InvalBlock) skip parallel way reads
+    # on both resident hits and absent lines, with direct launch when FAST_TAG_LAUNCH=1.
+    for op in CMO_OPCODES:
+        await b.read(cmo_addr)
+        await b.tick(8)
+        start = len(monitor.rows)
+        for address in (cmo_addr, absent_cmo):
+            grant = await b.start(op, address)
+            assert grant[0] == GRANT_ACK and not grant[5]
+            await b.finish(grant)
+        rows = monitor.rows[start:]
+        assert not any(r["spec_cycle"] or r["spec_fire"] for r in rows)
+        assert not any(r["request_fire"] and r["req_spec"] for r in rows)
+        if fast:
+            assert any(
+                r["request_fire"] and r["direct_tag"] and not r["req_spec"]
+                for r in rows
+            )
+
+    # GetMZero still uses parallel way reads on a resident hit when enabled.
+    await b.read(cmo_addr)
+    await b.tick(8)
+    gmz_start = len(monitor.rows)
+    grant = await b.start(10, cmo_addr)
+    assert not grant[5]
+    await b.finish(grant, written=True)
+    assert any(
+        r["spec_fire"] and r["query"] == (cmo_addr >> line_bits)
+        for r in monitor.rows[gmz_start:]
+    ) == parallel_reads(dut)
+
+    # Contended DMAWrite and CMO behind an active lookup go through tag_arbiter
+    # (lookup_spec) and still skip parallel way reads.
+    contend_base = base + 4 * b.line
+    contend_dma = base + 5 * b.line
+    contend_cmo = base + 6 * b.line
+    await b.read(contend_base)
+    await b.read(contend_dma)
+    await b.read(contend_cmo)
+    await b.tick(8)
+    for op, addr in ((8, contend_dma), (11, contend_cmo)):
+        start = len(monitor.rows)
+        await b.submit(0, contend_base, slot=0)
+        await b.submit(
+            op, addr, (1 << 256) - 1 if op == 8 else 0, mask if op == 8 else 0, slot=1
+        )
+        for _ in range(2):
+            grant = await b.take_grant()
+            assert not grant[5]
+            await b.complete(grant)
+        rows = monitor.rows[start:]
+        target_block = addr >> line_bits
+        target_fires = [
+            r for r in rows if r["request_fire"] and r["req_block"] == target_block
+        ]
+        assert target_fires
+        assert not any(r["req_spec"] for r in target_fires)
+        assert not any(
+            (r["spec_cycle"] or r["spec_fire"]) and r["query"] == target_block
+            for r in rows
+        )

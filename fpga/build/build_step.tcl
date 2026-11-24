@@ -241,6 +241,14 @@ proc getenv_default {name default_value} {
     return $default_value
 }
 
+proc vcu118_vector_enabled {} {
+    set vector [getenv_default FROST_VECTOR 0]
+    if {$vector ni {0 1}} {
+        error "FROST_VECTOR must be 0 or 1 (got '$vector')"
+    }
+    return $vector
+}
+
 # build.py --debug-ila: gather every MARK_DEBUG net (the FROST_DEBUG_FETCH_ILA
 # mirrors) into one ILA on the CPU clock, one probe per bus, bit 0 first. Runs
 # on the synthesized design before the checkpoint is written; the bitstream
@@ -479,6 +487,7 @@ set project_root_directory [file dirname $script_directory/../../../]
 set board_specific_directory [file join $project_root_directory boards/$board_name]
 set rtl_file_list [file join $board_specific_directory ${board_name}_frost.f]
 set constraints_file [file join $board_specific_directory constr/${board_name}.xdc]
+set vector_constraints_file [file join $board_specific_directory constr/${board_name}_vector.xdc]
 if {$argc >= 6} {
     set software_mem_directory [file normalize [lindex $argv 5]]
 } else {
@@ -647,6 +656,9 @@ if {$step eq "synth"} {
         read_mem [file join $software_mem_directory sw_imem_odd_${scalar_replica}.mem]
     }
     read_xdc $constraints_file
+    if {$board_name eq "vcu118" && [vcu118_vector_enabled] eq "1"} {
+        read_xdc $vector_constraints_file
+    }
     set_property top $top_level_module_name [current_fileset]
 
     set synth_args [list -top $top_level_module_name -part $fpga_part_number -directive $directive]
@@ -678,6 +690,10 @@ if {$step eq "synth"} {
         }
         if {$misaligned_hw eq "0"} {
             lappend synth_args -generic MISALIGNED_HW=0
+        }
+        if {[vcu118_vector_enabled] eq "1"} {
+            lappend synth_args -generic CPU_CLK_HZ=162500000 -generic VECTOR=1 -generic VECTOR_ADVERTISE=1
+            puts "VCU118 vector unit included (CPU_CLK_HZ=162500000, VECTOR=1, VLEN=256, VECTOR_ADVERTISE=1)"
         }
     }
     # A name used before its declaration becomes an implicit net. Verilator
@@ -719,6 +735,9 @@ if {$step eq "synth"} {
     open_checkpoint $checkpoint_path
     if {$board_name eq "vcu118" && [file exists $constraints_file]} {
         read_xdc $constraints_file
+        if {[vcu118_vector_enabled] eq "1"} {
+            read_xdc $vector_constraints_file
+        }
     }
 
     # build.py --debug-ila: the synthesis step defined the fetch ILA;
@@ -755,6 +774,9 @@ if {$step eq "synth"} {
     open_checkpoint $checkpoint_path
     if {$board_name eq "vcu118" && [file exists $constraints_file]} {
         read_xdc $constraints_file
+        if {[vcu118_vector_enabled] eq "1"} {
+            read_xdc $vector_constraints_file
+        }
     }
 
     # Optional UG904 CELL_BLOAT_FACTOR for wire-dense hierarchies. Enable with
@@ -904,9 +926,16 @@ if {$step eq "synth"} {
         set_x3_setup_uncertainty $board_name $physopt_uncertainty "$step sweep"
     }
 
+    set vcu118_vector_post_route [expr {
+        $board_name eq "vcu118" &&
+        $step eq "post_route_physopt" &&
+        [vcu118_vector_enabled] eq "1"
+    }]
     set sweep_order_env [getenv_default FROST_PHYSOPT_SWEEP_ORDER ""]
     if {$sweep_order_env ne ""} {
         set sweep_order [split_env_list $sweep_order_env]
+    } elseif {$vcu118_vector_post_route} {
+        set sweep_order [list AggressiveExplore]
     } else {
         set sweep_order [list \
         AggressiveExplore \
@@ -923,6 +952,8 @@ if {$step eq "synth"} {
 
     # Retiming is the final ordinary pass. On X3's last routed stage, try
     # endpoint groups only after the ordinary passes stop making progress.
+    # The opt-in VCU118 vector post-route stage runs AggressiveExplore only,
+    # repeated while WNS improves up to 3 passes.
     set directive_sweep_order [list]
     foreach sweep_pass $sweep_order {
         if {$sweep_pass ne "-retime"} {
@@ -930,7 +961,9 @@ if {$step eq "synth"} {
         }
     }
     set sweep_order $directive_sweep_order
-    lappend sweep_order "-retime"
+    if {!($vcu118_vector_post_route && $sweep_order_env eq "")} {
+        lappend sweep_order "-retime"
+    }
     set endpoint_fallback 0
     if {$board_name eq "x3" && $step eq "post_second_route_physopt" &&
         $sweep_order_env eq "" && $physopt_uncertainty ne ""} {
@@ -969,7 +1002,8 @@ if {$step eq "synth"} {
     }
     set repeat_sweeps [expr {$repeat_sweeps_value ne "0"}]
 
-    set max_sweeps [getenv_default FROST_PHYSOPT_MAX_SWEEPS 0]
+    set max_sweeps_default [expr {$vcu118_vector_post_route ? 3 : 0}]
+    set max_sweeps [getenv_default FROST_PHYSOPT_MAX_SWEEPS $max_sweeps_default]
     if {$step eq "post_place_physopt"} {
         set max_sweeps [getenv_default FROST_POST_PLACE_PHYSOPT_MAX_SWEEPS $max_sweeps]
     } elseif {$step eq "post_route_physopt"} {
@@ -1195,7 +1229,7 @@ if {$step eq "synth"} {
             }
             set repeat_for_wns [expr {$best_wns > ($sweep_start_wns + $wns_tie_epsilon)}]
             set repeat_for_tns 0
-            if {$sweep_tns_delta ne "" && abs($best_wns - $sweep_start_wns) <= $wns_tie_epsilon} {
+            if {!$vcu118_vector_post_route && $sweep_tns_delta ne "" && abs($best_wns - $sweep_start_wns) <= $wns_tie_epsilon} {
                 set repeat_for_tns [expr {$sweep_tns_delta > $tns_repeat_epsilon}]
             }
             if {!$repeat_for_wns && !$repeat_for_tns} {

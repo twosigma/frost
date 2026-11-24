@@ -310,3 +310,48 @@ def test_flash_listing_needs_no_images(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     programmer.main()
     assert len(calls) == 1 and calls[0]["list_only"] is True
+
+
+def test_flash_packer_vector_selects_vector_dtb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--vector picks boards/vcu118/frost_vector.dtb unless --dtb overrides it."""
+    fake_repo = tmp_path / "repo"
+    scalar_dtb = struct.pack(">II", 0xD00DFEED, 44) + b"SCLR" + bytes(32)
+    vector_dtb = struct.pack(">II", 0xD00DFEED, 44) + b"VECT" + bytes(32)
+    custom_dtb = struct.pack(">II", 0xD00DFEED, 44) + b"CUST" + bytes(32)
+    for part in packer.PARTITIONS:
+        target = fake_repo / str(part["default_file"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(scalar_dtb if part["name"] == "DTB" else b"X" * 64)
+    vec_target = fake_repo / packer.VECTOR_DTB_FILE
+    vec_target.parent.mkdir(parents=True, exist_ok=True)
+    vec_target.write_bytes(vector_dtb)
+    custom_path = tmp_path / "custom.dtb"
+    custom_path.write_bytes(custom_dtb)
+
+    out_default = tmp_path / "default.bin"
+    out_vector = tmp_path / "vector.bin"
+    out_override = tmp_path / "override.bin"
+    packer.build_flash_image(fake_repo, out_default)
+    packer.build_flash_image(fake_repo, out_vector, vector=True)
+    packer.build_flash_image(fake_repo, out_override, {"DTB": custom_path}, vector=True)
+
+    dtb_off = 0x200000 + packer.HEADER_SIZE
+    assert out_default.read_bytes()[dtb_off : dtb_off + len(scalar_dtb)] == scalar_dtb
+    assert out_vector.read_bytes()[dtb_off : dtb_off + len(vector_dtb)] == vector_dtb
+    assert out_override.read_bytes()[dtb_off : dtb_off + len(custom_dtb)] == custom_dtb
+
+    captured: list[tuple[dict[str, Path], bool]] = []
+    monkeypatch.setattr(
+        packer,
+        "build_flash_image",
+        lambda _root, _out, comps, *, vector=False: captured.append((comps, vector)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["make_flash_image.py", "-o", str(tmp_path / "cli.bin"), "--vector"],
+    )
+    packer.main()
+    assert captured == [({}, True)]

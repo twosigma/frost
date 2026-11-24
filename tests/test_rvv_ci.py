@@ -47,7 +47,7 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     )
     assert job["strategy"]["matrix"] == {
         "vlen": [128, 256, 512],
-        "shard": ["core", "segment"],
+        "shard": ["core", "segment", "ext"],
     }
     replay = next(
         step
@@ -79,6 +79,19 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
     assert seg_args[seg_args.index("--vlen") + 1] == "${{ matrix.vlen }}"
     assert seg_args[seg_args.index("--startup-timeout") + 1] == "1200"
     assert seg_args[seg_args.index("--response-timeout") + 1] == "600"
+    ext_replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Compare vector extension traces"
+    )
+    assert ext_replay["if"] == "matrix.shard == 'ext'"
+    ext_command = shlex.split(ext_replay["run"].replace("\\\n", ""))
+    assert ext_command[ext_command.index("--kill-after=10s") + 1] == "16m"
+    ext_args = ext_command[ext_command.index("tests/test_testrig.py") + 1 :]
+    assert "--vector-ext" in ext_args
+    assert ext_args[ext_args.index("--vlen") + 1] == "${{ matrix.vlen }}"
+    assert ext_args[ext_args.index("--startup-timeout") + 1] == "1200"
+    assert ext_args[ext_args.index("--response-timeout") + 1] == "600"
     control = next(
         step
         for step in job["steps"]
@@ -118,6 +131,69 @@ def test_testrig_vector_matrix_and_replay_arguments() -> None:
         ],
     ]
     assert job["steps"].index(seg_replay) < job["steps"].index(seg_control)
+    ext_control = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Check detection of an incorrect extension result"
+    )
+    assert ext_control["if"] == "matrix.vlen == 128 && matrix.shard == 'ext'"
+    assert ext_control["timeout-minutes"] == 11
+    ext_calls = [
+        shlex.split(line)[1:]
+        for line in ext_control["run"].replace("\\\n", "").splitlines()
+        if line.startswith("check_ext_result ")
+    ]
+    assert ext_calls == [
+        [
+            "zvfhmin",
+            "vector_zvfhmin",
+            "order=30 insn=0x42102557 rd=x10",
+            "0x3e00 != 0x3e01",
+        ],
+        [
+            "zvbb",
+            "vector_zvbb",
+            "order=24 insn=0x42202557 rd=x10",
+            "0xfffffffff00a1030 != 0xfffffffff00a1031",
+        ],
+        [
+            "zvbc-zvkned-zvkg",
+            "vector_zvbc_zvkned_zvkg",
+            "order=36 insn=0x42302557 rd=x10",
+            "0x40a0789828c810f0 != 0x40a0789828c810f1",
+        ],
+        [
+            "zvknhb",
+            "vector_zvknhb",
+            "order=56 insn=0x42402557 rd=x10",
+            "0xffffffff84c9dd79 != 0xffffffff84c9dd78",
+        ],
+        [
+            "zvfh-arith",
+            "vector_zvfh_arith_fma",
+            "order=25 insn=0x42502557 rd=x10",
+            "0x4100 != 0x4101",
+        ],
+        [
+            "zvfh-misc-red",
+            "vector_zvfh_cmp_misc_red",
+            "order=39 insn=0x42602557 rd=x10",
+            "0x3e00 != 0x3e01",
+        ],
+        [
+            "zvfh-widen",
+            "vector_zvfh_widen",
+            "order=26 insn=0x42702557 rd=x10",
+            "0x40200000 != 0x40200001",
+        ],
+        [
+            "zvfh-cvt",
+            "vector_zvfh_cvt",
+            "order=27 insn=0x42802557 rd=x10",
+            "0x3c01 != 0x3c00",
+        ],
+    ]
+    assert job["steps"].index(ext_replay) < job["steps"].index(ext_control)
     control_command = shlex.split(control["run"].replace("\\\n", ""))
     assert "timeout --kill-after=10s 600s" in control["run"], (
         "Vector result controls require the 600-second outer guard"

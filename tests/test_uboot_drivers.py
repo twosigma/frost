@@ -250,3 +250,74 @@ def test_firmware_forwards_the_compiler(tmp_path: Path) -> None:
     assert calls[0] == "-C ../apps/bootrom RISCV_PREFIX=selected-"
     assert calls[1] == "-C ../apps/fsbl RISCV_PREFIX=selected-"
     assert "--cross selected-" in calls[2]
+
+
+def test_firmware_vector_selects_162_5mhz_and_vector_dtb(tmp_path: Path) -> None:
+    """VECTOR=1 builds bootrom/fsbl at 162.5 MHz and compiles frost_vector.dtb."""
+    import os
+
+    work = tmp_path / "sw/uboot"
+    work.mkdir(parents=True)
+    log = tmp_path / "calls"
+    capture = tmp_path / "capture"
+    capture.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{log}"\n')
+    capture.chmod(0o755)
+    (tmp_path / "python3").symlink_to(capture)
+    subprocess.run(
+        [
+            "make",
+            "-f",
+            str(ROOT / "sw/uboot/Makefile"),
+            "firmware",
+            "-o",
+            "all",
+            "-o",
+            "dtb",
+            "VECTOR=1",
+            "CROSS_COMPILE=selected-",
+            "MAKE=" + str(capture),
+        ],
+        cwd=work,
+        check=True,
+        env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
+    )
+    calls = log.read_text().splitlines()
+    assert (
+        calls[0]
+        == "-C ../apps/bootrom RISCV_PREFIX=selected- FPGA_CPU_CLK_FREQ=162500000"
+    )
+    assert (
+        calls[1] == "-C ../apps/fsbl RISCV_PREFIX=selected- FPGA_CPU_CLK_FREQ=162500000"
+    )
+    assert "--cross selected-" in calls[2]
+
+    for vector_val, expected_src, expected_out in (
+        ("0", "frost_vcu118.dts", "frost.dtb"),
+        ("1", "frost_vcu118_vector.dts", "frost_vector.dtb"),
+    ):
+        dry = subprocess.run(
+            [
+                "make",
+                "-n",
+                "-B",
+                "-f",
+                str(ROOT / "sw/uboot/Makefile"),
+                "dtb",
+                f"VECTOR={vector_val}",
+            ],
+            cwd=ROOT / "sw/uboot",
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert expected_src in dry.stdout
+        assert expected_out in dry.stdout
+
+    bad = subprocess.run(
+        ["make", "-n", "-f", str(ROOT / "sw/uboot/Makefile"), "dtb", "VECTOR=2"],
+        cwd=ROOT / "sw/uboot",
+        capture_output=True,
+        text=True,
+    )
+    assert bad.returncode != 0
+    assert "VECTOR must be 0 or 1" in bad.stderr

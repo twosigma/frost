@@ -4167,4 +4167,29 @@ module if_stage #(
   end
 `endif
 
+`ifdef IF_SLOT2_VETO_REDUNDANT_PROOF
+  // Observed internal state wires connected by formal/if_fault_ras_veto.sby
+  // after flattening (u_slot2_prediction_capture.valid_q and
+  // u_fetch_fault_2_sc.saved).
+  wire        f_slot2_cap_valid_q;
+  wire  [2:0] f_slot2_fault_saved;
+  logic       f_veto_past_valid = 1'b0;
+
+  initial assume (i_pipeline_ctrl.reset);
+
+  always_ff @(posedge i_clk) begin
+    f_veto_past_valid <= 1'b1;
+    if (f_veto_past_valid) begin
+      p_pc_reg_high_for_coverage_matches : assert (pc_reg_high_for_coverage == pc_reg[1]);
+      p_live_disjoint : assert (!(slot2_predicted_taken && fetch_fault_2_live[2]));
+      p_cap_disjoint :
+      assert (!(slot2_staged_prediction_used_for_capture && fetch_fault_2_live[2]));
+      p_saved_disjoint : assert (!(f_slot2_cap_valid_q && f_slot2_fault_saved[2]));
+      p_line3311_redundant :
+      assert (!(!slot2_sel_nop_effective && o_from_if_to_pd_2.fetch_fault &&
+                (replay_saved_if_outputs ? slot2_replay_consumed : slot2_predicted_taken)));
+    end
+  end
+`endif
+
 endmodule : if_stage

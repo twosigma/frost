@@ -214,6 +214,9 @@ BOARD_CONFIG = {
     },
 }
 
+# Opt-in VCU118 vector build (build.py vcu118 --vector).
+VCU118_VECTOR_CLOCK_FREQ = 162500000
+
 # A divided-clock bitstream (build.py --cpu-clock-div) runs the CPU below the
 # board's rated clock. FROST_CPU_CLK_HZ gives that clock so the application
 # build (FPGA_CPU_CLK_FREQ: UART divisor, timer constants, the Linux device
@@ -238,22 +241,32 @@ FORCED_DDR_APPS = frozenset(
 )
 
 
-def valid_apps_for_board(board: str) -> list[str]:
+def valid_apps_for_board(board: str, *, vector: bool = False) -> list[str]:
     """Return JTAG applications supported by the selected board."""
     if board not in BOARD_CONFIG:
         raise ValueError(f"Unknown board: {board}")
     return [
         app
         for app in VALID_APPS
-        if app not in BOARD_SPECIFIC_APPS or board in BOARD_SPECIFIC_APPS[app]
+        if app not in BOARD_SPECIFIC_APPS
+        or board in BOARD_SPECIFIC_APPS[app]
+        or (board == "vcu118" and vector and app in VECTOR_UNIT_APPS)
     ]
 
 
 def board_clock_freq(
-    board: str, environment: Mapping[str, str] = os.environ
+    board: str,
+    environment: Mapping[str, str] = os.environ,
+    *,
+    vector: bool | None = None,
 ) -> tuple[int, bool]:
     """Return the board's CPU clock in Hz and whether FROST_CPU_CLK_HZ set it."""
-    rated = int(BOARD_CONFIG[board]["clock_freq"])
+    vcu118_vector = board == "vcu118" and bool(vector)
+    rated = (
+        VCU118_VECTOR_CLOCK_FREQ
+        if vcu118_vector
+        else int(BOARD_CONFIG[board]["clock_freq"])
+    )
     raw = environment.get(CPU_CLK_ENV, "").strip()
     if not raw:
         return rated, False
@@ -265,8 +278,21 @@ def board_clock_freq(
         ) from exc
     if override <= 0:
         raise ValueError(f"{CPU_CLK_ENV} must be positive, got {override}")
-    if board == "vcu118" and override != rated:
-        raise ValueError(f"VCU118 uses a fixed CPU clock; unset {CPU_CLK_ENV}")
+    if board == "vcu118":
+        if vector is True and override != VCU118_VECTOR_CLOCK_FREQ:
+            raise ValueError(
+                f"VCU118 vector builds use a fixed CPU clock of "
+                f"{VCU118_VECTOR_CLOCK_FREQ} Hz; unset {CPU_CLK_ENV}"
+            )
+        if vector is False and override != int(BOARD_CONFIG["vcu118"]["clock_freq"]):
+            raise ValueError(f"VCU118 uses a fixed CPU clock; unset {CPU_CLK_ENV}")
+        if vector is None and override not in (
+            int(BOARD_CONFIG["vcu118"]["clock_freq"]),
+            VCU118_VECTOR_CLOCK_FREQ,
+        ):
+            raise ValueError(
+                f"VCU118 uses a fixed CPU clock; unset {CPU_CLK_ENV} or pass --vector"
+            )
     return override, True
 
 
@@ -414,13 +440,18 @@ def _parse_sv_named_params(param_block: str) -> dict[str, str]:
 
 
 def board_vector_config(
-    board: str, project_root: Path | None = None
+    board: str,
+    project_root: Path | None = None,
+    *,
+    vector: bool = False,
 ) -> tuple[int, bool]:
     """Return ``(vlen, advertise)`` derived from the board's RTL top and subsystem.
 
     Reads ``boards/<board>/<board>_frost.sv`` and ``boards/xilinx_frost_subsystem.sv``.
     A scalar board (``VECTOR=0``) returns ``(0, False)``; a vector board
-    (``VECTOR=1``) returns ``(VLEN, bool(VECTOR_ADVERTISE))``.
+    (``VECTOR=1``) returns ``(VLEN, bool(VECTOR_ADVERTISE))``. When ``vector``
+    is true on ``vcu118``, applies the opt-in ``VECTOR=1`` / ``VECTOR_ADVERTISE=1``
+    synthesis generics to the top module.
     """
     if board not in BOARD_CONFIG:
         raise ValueError(f"Unknown board: {board}")
@@ -443,6 +474,20 @@ def board_vector_config(
         )
     instance_block, _ = _extract_balanced_parens(top_text, instances[0].end() - 1)
     instance_overrides = _parse_sv_named_params(instance_block)
+
+    if board == "vcu118" and vector:
+        if (
+            instance_overrides.get("VECTOR") != "VECTOR"
+            or "VECTOR" not in top_defaults
+            or instance_overrides.get("VECTOR_ADVERTISE") != "VECTOR_ADVERTISE"
+            or "VECTOR_ADVERTISE" not in top_defaults
+        ):
+            raise ValueError(
+                f"{top_path}: opt-in vector requires VECTOR and VECTOR_ADVERTISE "
+                "top-level parameters wired to xilinx_frost_subsystem"
+            )
+        top_defaults["VECTOR"] = "1'b1"
+        top_defaults["VECTOR_ADVERTISE"] = "1'b1"
 
     fallback_defaults = {"VECTOR": "0", "VLEN": "256", "VECTOR_ADVERTISE": "0"}
 
@@ -552,6 +597,7 @@ def resolve_vector_app_config(
     *,
     vlen: int | None = None,
     vec_advertise: bool | None = None,
+    vector: bool = False,
     project_root: Path | None = None,
 ) -> tuple[int, bool | None] | None:
     """Resolve effective ``(VEC_VLEN, VEC_ADVERTISE)`` for a vector-width app.
@@ -579,7 +625,9 @@ def resolve_vector_app_config(
             "--vec-advertise and --no-vec-advertise are only valid for vec_state_test"
         )
 
-    board_vlen, board_advertise = board_vector_config(board, project_root=project_root)
+    board_vlen, board_advertise = board_vector_config(
+        board, project_root=project_root, vector=vector
+    )
     effective_vlen = board_vlen if vlen is None else vlen
     if app_name in VEC_ADVERTISE_APPS:
         if effective_vlen not in SUPPORTED_VEC_STATE_VLENS:
@@ -611,6 +659,7 @@ def vector_app_make_vars(
     *,
     vlen: int | None = None,
     vec_advertise: bool | None = None,
+    vector: bool = False,
     environment: Mapping[str, str] = os.environ,
     project_root: Path | None = None,
 ) -> dict[str, str]:
@@ -620,6 +669,7 @@ def vector_app_make_vars(
         board,
         vlen=vlen,
         vec_advertise=vec_advertise,
+        vector=vector,
         project_root=project_root,
     )
     if resolved is None:
@@ -721,6 +771,7 @@ def compile_app_for_board(
     debug: bool = False,
     ddr_bytes: int | None = None,
     board: str = "x3",
+    vector: bool = False,
 ) -> bool:
     """Compile an app with board settings and optional Make overrides.
 
@@ -739,6 +790,10 @@ def compile_app_for_board(
     env.setdefault("FROST_L2_CACHE_BYTES", str(BOARD_CONFIG[board]["l2_cache_bytes"]))
     if app_name == "linux_boot":
         env["FROST_LINUX_BOARD"] = board
+        if board == "vcu118":
+            env["FROST_LINUX_VECTOR"] = "1" if vector else "0"
+        else:
+            env.pop("FROST_LINUX_VECTOR", None)
     if ddr_bytes is not None:
         if not (1 << 30 <= ddr_bytes <= 1 << 37) or ddr_bytes & (ddr_bytes - 1):
             print("Error: board DDR capacity must be a power of two from 1 to 128 GiB")
@@ -1265,13 +1320,33 @@ def main() -> None:
             "(default: match the selected board's RTL, or off when --vlen 0)"
         ),
     )
+    parser.add_argument(
+        "--vector",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Target an opt-in VCU118 vector build (162500000 Hz CPU clock, "
+            "VLEN 256, misa.V advertised, vector apps enabled, V in Linux DTB; "
+            "default: on for x3, off for vcu118)"
+        ),
+    )
     add_target_args(parser, managed=True)
     args = parser.parse_args()
     validate_target_args(parser, args)
+    if args.board == "x3" and args.vector is False:
+        parser.error("--no-vector is only supported for vcu118")
+    vcu118_vector = args.board == "vcu118" and bool(args.vector)
     if args.software_app is not None and args.software_app not in valid_apps_for_board(
-        args.board
+        args.board, vector=vcu118_vector
     ):
-        parser.error(f"{args.software_app} is not supported on {args.board}")
+        hint = (
+            " (pass --vector for a VCU118 vector build)"
+            if args.board == "vcu118"
+            and not vcu118_vector
+            and args.software_app in VECTOR_UNIT_APPS
+            else ""
+        )
+        parser.error(f"{args.software_app} is not supported on {args.board}{hint}")
     if args.software_app == "bootrom" and args.ddr:
         parser.error("bootrom requires VCU118 and BRAM execution")
     if args.expected_build_config_sha256 is not None:
@@ -1292,6 +1367,7 @@ def main() -> None:
         or args.debug
         or args.vlen is not None
         or args.vec_advertise is not None
+        or args.vector is not None
     ):
         parser.error("--list-targets cannot be combined with build/debug options")
 
@@ -1370,12 +1446,14 @@ def main() -> None:
             args.board,
             vlen=args.vlen,
             vec_advertise=args.vec_advertise,
+            vector=vcu118_vector,
         )
         vector_make_vars = vector_app_make_vars(
             args.software_app,
             args.board,
             vlen=args.vlen,
             vec_advertise=args.vec_advertise,
+            vector=vcu118_vector,
         )
     except (OSError, ValueError) as error:
         parser.error(str(error))
@@ -1386,7 +1464,7 @@ def main() -> None:
 
     board_config = BOARD_CONFIG[args.board]
     try:
-        clock_freq, clock_overridden = board_clock_freq(args.board)
+        clock_freq, clock_overridden = board_clock_freq(args.board, vector=args.vector)
     except ValueError as error:
         parser.error(str(error))
     if clock_overridden:
@@ -1475,6 +1553,7 @@ def main() -> None:
         print(f"  Vector length (VEC_VLEN): {vector_config[0]}")
         if vector_config[1] is not None:
             print(f"  Vector advertisement (VEC_ADVERTISE): {int(vector_config[1])}")
+    compile_vector: dict[str, bool] = {"vector": True} if vcu118_vector else {}
     if not args.skip_build and not compile_app_for_board(
         args.software_app,
         app_dir,
@@ -1485,6 +1564,7 @@ def main() -> None:
         debug=args.debug,
         **board_memory,
         board=args.board,
+        **compile_vector,
     ):
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)
         sys.exit(1)

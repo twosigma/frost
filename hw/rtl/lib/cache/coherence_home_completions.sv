@@ -32,7 +32,7 @@ module coherence_home_completions #(
     parameter int unsigned PREFETCH_SLOTS = coherence_pkg::PrefetchIds,
     // Select an unblocked non-prefetch demand into an idle work register on
     // its admission edge, and register the selected work's address, error,
-    // prefetch and management flags beside the slot index.
+    // prefetch, management and no-parallel-read flags beside the slot index.
     parameter bit FAST_TAG_LAUNCH = 1'b0,
     localparam int unsigned WayBits = WAYS > 1 ? $clog2(WAYS) : 1,
     localparam int unsigned SlotBits = SLOTS > 1 ? $clog2(SLOTS) : 1,
@@ -59,6 +59,7 @@ module coherence_home_completions #(
     output logic [ADDR_WIDTH-1:0] o_work_addr,
     output logic o_work_prefetch,
     output logic o_work_cmo,
+    output logic o_work_no_spec,
     // A registered copy of D acceptance: the strobe on the cycle after it,
     // with the accepted request's opcode, identity and address.
     output logic o_accepted,
@@ -264,6 +265,10 @@ module coherence_home_completions #(
   function automatic logic [3:0] request_opcode(input coh_d_t packet);
     request_opcode = packet.opcode;
   endfunction
+  function automatic logic no_spec_opcode(input logic [3:0] opcode);
+    no_spec_opcode = opcode == coherence_pkg::Prefetch || opcode == coherence_pkg::DMAWrite ||
+        coherence_pkg::is_cmo(opcode);
+  endfunction
 
   assign incoming = i_d;
   assign result = i_result;
@@ -408,13 +413,14 @@ module coherence_home_completions #(
   assign o_work_nofill = nofill_q[work_slot_q];
   if (FAST_TAG_LAUNCH) begin : gen_work_meta
     logic [ADDR_WIDTH-1:0] work_addr_q;
-    logic work_error_q, work_prefetch_q, work_cmo_q;
+    logic work_error_q, work_prefetch_q, work_cmo_q, work_no_spec_q;
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         work_addr_q <= '0;
         work_error_q <= 1'b0;
         work_prefetch_q <= 1'b0;
         work_cmo_q <= 1'b0;
+        work_no_spec_q <= 1'b0;
       end else if (!work_selected_q) begin
         work_addr_q <= work_found ? work_address[work_pick] : incoming.addr;
         work_error_q <= work_found ? wake_error_q[work_pick] : 1'b0;
@@ -424,17 +430,24 @@ module coherence_home_completions #(
         ) : coherence_pkg::is_cmo(
             incoming.opcode
         );
+        work_no_spec_q <= work_found ? no_spec_opcode(
+            request_opcode(work[work_pick])
+        ) : no_spec_opcode(
+            incoming.opcode
+        );
       end
     end
     assign o_work_error = work_error_q;
     assign o_work_addr = work_addr_q;
     assign o_work_prefetch = work_prefetch_q;
     assign o_work_cmo = work_cmo_q;
+    assign o_work_no_spec = work_no_spec_q;
   end else begin : gen_no_work_meta
     assign o_work_error = wake_error_q[work_slot_q];
     assign o_work_addr = '0;
     assign o_work_prefetch = 1'b0;
     assign o_work_cmo = 1'b0;
+    assign o_work_no_spec = 1'b0;
   end
   assign o_waiting_request = work;
   for (genvar slot = 0; slot < SLOTS; slot++) begin : gen_waiting
@@ -1255,6 +1268,7 @@ module coherence_home_completions #(
           assert (o_work_error == wake_error_q[work_slot_q]);
           assert (o_work_prefetch == slot_prefetch[work_slot_q]);
           assert (o_work_cmo == coherence_pkg::is_cmo(request_opcode(work[work_slot_q])));
+          assert (o_work_no_spec == no_spec_opcode(request_opcode(work[work_slot_q])));
         end
       end
       // A forward names one parked GetS, LoadReserved, GetM or Zicbom
@@ -1491,6 +1505,7 @@ module coherence_home_completions #(
         assert (o_work_tid == $past(o_work_tid));
         assert (o_work_buffer == $past(o_work_buffer));
         assert (o_work_error == $past(o_work_error));
+        if (FAST_TAG_LAUNCH) assert (o_work_no_spec == $past(o_work_no_spec));
       end
       cover ($countones(live) == SLOTS && $countones(buffer_owned_q) == RESULT_SLOTS);
       cover (accept_work && |f_granted_q);

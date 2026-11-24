@@ -26,6 +26,9 @@ module coherence_store_boundary_formal #(
     parameter bit COVER_AMO_HOME = 1'b0,
     parameter bit DELAY_SECOND_STORE = 1'b0,
     parameter bit FOUR_STORES = 1'b0,
+    parameter bit PROBE_LAUNCH = 1'b0,
+    parameter bit PROBE_READ_FIRST = 1'b0,
+    parameter bit COVER_PROBE_KEPT = 1'b0,
     parameter int unsigned MODE = 0,
     parameter int unsigned SECTOR_CASE = 2
 ) (
@@ -42,6 +45,13 @@ module coherence_store_boundary_formal #(
   wire  rst = !past_q;
   always_ff @(posedge i_clk) past_q <= 1;
   (* anyseq *) logic offer_normal_load, permit_d, permit_g, permit_c, permit_u, observe_drain;
+  logic [1:0] probe_commit_mode;
+  if (PROBE_READ_FIRST) begin : gen_probe_commit_mode
+    (* anyconst *) logic [1:0] mode_choice;
+    assign probe_commit_mode = mode_choice;
+  end else begin : gen_no_probe_commit_mode
+    assign probe_commit_mode = 2'd0;
+  end
   // Dispatch and commit form one back-to-back program. Normal-load issue
   // and home-channel stalls are independent choices.
   wire advance = 1'b1;
@@ -74,8 +84,8 @@ module coherence_store_boundary_formal #(
   wire  second_store_delayed;
   if (DELAY_SECOND_STORE) begin : gen_second_store_delayed
     assign second_store_delayed = 1'b1;
-  end else if (MODE == 0 && !FOUR_STORES && SECTOR_CASE == 0 && !COVER_BOUNDARIES &&
-               !COVER_MODE) begin : gen_second_store_choice
+  end else if (MODE == 0 && !FOUR_STORES && !PROBE_READ_FIRST && SECTOR_CASE == 0 &&
+               !COVER_BOUNDARIES && !COVER_MODE) begin : gen_second_store_choice
     (* anyconst *) logic gap;
     assign second_store_delayed = gap;
   end else begin : gen_second_store_immediate
@@ -127,6 +137,9 @@ module coherence_store_boundary_formal #(
   logic l1_u_ready;
   logic l1_write_done;
   logic l1_write_inflight;
+  // C2b: decouple buffered store_ack (l1_write_inflight && l1_write_done)
+  // from bus-busy while holding the port for atomic writes.
+  wire l1_write_busy = l1_write_inflight && !l1_write_done;
   logic local_owner;
   logic lq_coherent_arm_valid;
   riscv_pkg::fu_complete_t lq_fu_complete;
@@ -173,8 +186,14 @@ module coherence_store_boundary_formal #(
 
   wire second_store_data_ready = second_store_delayed ?
       (step_q == 5 && second_store_wait_q == 3'd3) : (step_q == 3);
+  wire probe_commit_ready =
+      probe_commit_mode == 2'd0 ? 1'b1 :
+      probe_commit_mode == 2'd1 ? (second_store_wait_q == 3'd5) :
+      probe_commit_mode == 2'd2 ? (!l1_pending_store && acknowledged_q >= 1) :
+                                  1'b0;
   wire commit_second_store = !FOUR_STORES && step_q == 5 && advance &&
-      (!second_store_delayed || second_store_wait_q == 3'd5);
+      (PROBE_READ_FIRST ? probe_commit_ready :
+       (!second_store_delayed || second_store_wait_q == 3'd5));
   wire retire_atomic = step_q == 6 && (Mode == 1 || Mode == 2) && atomic_complete_q &&
       advance && (!LOCAL_PROGRESS || !commit_hold);
   wire commit_store = FOUR_STORES ? (step_q >= 6 && step_q <= 9) :
@@ -214,7 +233,8 @@ module coherence_store_boundary_formal #(
       (RsDepth*ReorderBufferTagWidth)'(pre_issue_tag);
   (* anyconst *) logic [1:0] watched_store;
   wire [63:0] address0 = 64'h80000000;
-  wire [63:0] address1 = address0 + (different_sector ? 64'd32 : 64'd0);
+  wire [63:0] address1 = address0 + (different_sector ? 64'd32 :
+      (PROBE_READ_FIRST ? 64'd8 : 64'd0));
   wire [ReorderBufferTagWidth-1:0] head = FOUR_STORES ?
       (step_q < 6 ? 7'd0 : step_q <= 9 ? ReorderBufferTagWidth'(step_q-6) : 7'd4) :
       step_q < 5 ? 7'd0 : step_q == 5 ? 7'd1 :
@@ -254,7 +274,8 @@ module coherence_store_boundary_formal #(
     load_addr = '0;
     load_addr.valid = load_update_q;
     load_addr.rob_tag = load_second_update_q ? 3 : 2;
-    load_addr.address = Mode == 3 ? address0 + (load_second_update_q ? 4 : 0) : address1;
+    load_addr.address = Mode == 3 ? address0 + (load_second_update_q ? 4 : 0) :
+        PROBE_READ_FIRST ? address0 : address1;
     load_addr.amo_rs2 = 1;
     sc_issue = '0;
     sc_issue.valid = step_q >= 2 && offer_load && !addressed_q && Mode == 2;
@@ -303,7 +324,8 @@ module coherence_store_boundary_formal #(
       fresh_stage_q <= 0;
       fresh_addressed_q <= 0;
     end else begin
-      if (second_store_delayed && step_q == 5 && second_store_wait_q != 3'd5)
+      if ((second_store_delayed || (PROBE_READ_FIRST && probe_commit_mode == 2'd1)) &&
+          step_q == 5 && second_store_wait_q != 3'd5)
         second_store_wait_q <= second_store_wait_q + 1'b1;
       if (commit_advance && (FOUR_STORES ? step_q < 12 :
           (step_q < 5 || commit_second_store || (step_q > 6 && step_q < 10) || retire_atomic ||
@@ -698,6 +720,8 @@ module coherence_store_boundary_formal #(
       p_no_buffered_atomic : assert (!(l1_pending_store && l1_atomic_live));
       p_no_buffered_guard : assert (!(l1_pending_store && protected_q));
       p_no_fatal : assert (!l1_fatal);
+      p_c2b_write_busy_atomic : assert (!l1_write_busy || l1_atomic_live);
+      p_c2b_store_ack_unbusy : assert (!(l1_write_inflight && l1_write_done) || !l1_write_busy);
       assert (acknowledged_q <= accepted_q);
       assert (accepted_q - acknowledged_q <= 1);
       if (ordinary_write) begin
@@ -714,7 +738,8 @@ module coherence_store_boundary_formal #(
         assert (!lq_fu_complete.exception);
         p_load_value :
         assert (lq_fu_complete.value ==
-            {8{FOUR_STORES && watched_store == 0 ? first_byte : second_byte}});
+            {8{(FOUR_STORES && watched_store == 0) || PROBE_READ_FIRST ?
+               first_byte : second_byte}});
       end
       if (Mode == 3 && lq_fu_complete.valid) begin
         assert (!lq_fu_complete.exception);
@@ -887,6 +912,7 @@ module coherence_store_boundary_formal #(
       .PREISSUE_SEL_WIDTH(3),
       .PREISSUE_RS_DEPTH(RsDepth),
       .ENABLE_SQ_FORWARD_FAST_PATH(1'b1),
+      .PROBE_LAUNCH(PROBE_LAUNCH),
       .REGISTERED_SECTOR_MATCH(1'b1)
   ) lq (
       .i_coherent_cut_hold(LOCAL_PROGRESS && l1_cut_hold),
@@ -954,7 +980,7 @@ module coherence_store_boundary_formal #(
       .i_mem_read_error(rt_lq_mem_read_error),
       .i_mem_read_is_cached(rt_lq_mem_read_is_cached),
       .i_mem_read_id(rt_lq_mem_read_id),
-      .i_mem_bus_busy(sq_mem_write_en || lq_amo_mem_write_en || l1_write_inflight ||
+      .i_mem_bus_busy(sq_mem_write_en || lq_amo_mem_write_en || l1_write_busy ||
           rt_lq_mem_request_valid),
       .i_mem_request_pending(rt_lq_mem_request_valid),
       .i_cached_resp_held(rt_cached_read_held),
@@ -1106,7 +1132,7 @@ module coherence_store_boundary_formal #(
       .o_cached_read_ready(rt_cached_read_ready),
       .o_cached_read_held(rt_cached_read_held),
       .i_cached_write_done(l1_write_done),
-      .i_cached_write_inflight(l1_write_inflight),
+      .i_cached_write_inflight(l1_write_busy),
       .i_uncached_read_request_ready('0),
       .o_uncached_read_enable(rt_uncached_read_enable),
       .o_uncached_read_size(rt_uncached_read_size),
@@ -1391,6 +1417,73 @@ module coherence_store_boundary_formal #(
         p_control_all_local_stages :
         cover (released_q && probe_accepted_q && extra_granted_q &&
             (interrupt_seen_q & Stages) == Stages);
+    end
+  end
+  if (COVER_PROBE_KEPT) begin : gen_probe_kept_covers
+    // Reachability of a kept probe-cycle read (and C2b's store_ack decoupling
+    // and push_prev_q sector hold) beside an older store to another dword or
+    // sector, observed purely through the production module ports.
+    wire probe_fire = lq_mem_read_en && lq_sq_check_valid;
+    wire store_ack_cycle = l1_write_inflight && l1_write_done && !l1_write_busy;
+    logic [1:0] read_count_q = 0;
+    logic probe_verdict_q = 0, probe_after_s0_q = 0, probe_store_ack_q = 0;
+    logic probe_kept_q = 0, probe_kept_ack_q = 0;
+    logic l0_hit_seen_q = 0, resp_after_verdict_q = 0;
+    logic sector_held_on_ack_q = 0, sector_held_second_ack_q = 0;
+    always_ff @(posedge i_clk) begin
+      assume (permit_d && permit_g && permit_c && permit_u);
+      assume (first_byte == 8'h11 && second_byte == 8'h22);
+      if (rst) begin
+        read_count_q <= 0;
+        probe_verdict_q <= 0;
+        probe_after_s0_q <= 0;
+        probe_store_ack_q <= 0;
+        probe_kept_q <= 0;
+        probe_kept_ack_q <= 0;
+        l0_hit_seen_q <= 0;
+        resp_after_verdict_q <= 0;
+        sector_held_on_ack_q <= 0;
+        sector_held_second_ack_q <= 0;
+      end else begin
+        probe_verdict_q <= probe_fire;
+        if (lq_mem_read_en && read_count_q != 2'd3) read_count_q <= read_count_q + 2'd1;
+        if (probe_fire && !sq_empty && acknowledged_q >= 1) probe_after_s0_q <= 1'b1;
+        if (probe_fire && !sq_empty && acknowledged_q >= 1 && store_ack_cycle)
+          probe_store_ack_q <= 1'b1;
+        if (probe_verdict_q && probe_after_s0_q && !lq_fu_complete.valid &&
+            !lq_l0_hit && !rt_lq_mem_read_valid)
+          probe_kept_q <= 1'b1;
+        if (probe_verdict_q && probe_store_ack_q && !lq_fu_complete.valid &&
+            !lq_l0_hit && !rt_lq_mem_read_valid)
+          probe_kept_ack_q <= 1'b1;
+        if (probe_kept_q && rt_lq_mem_read_valid) resp_after_verdict_q <= 1'b1;
+        if (lq_l0_hit) l0_hit_seen_q <= 1'b1;
+        if (store_ack_cycle && $past(
+                ordinary_write
+            ) && $past(
+                rt_data_mem_addr[31:5]
+            ) == address0[31:5] && addressed_q && !load_update_q && read_count_q == 0 &&
+                !lq_mem_read_en && !lq_sq_check_valid && !lq_fu_complete.valid) begin
+          sector_held_on_ack_q <= 1'b1;
+          if (accepted_q == 2 && acknowledged_q == 1) sector_held_second_ack_q <= 1'b1;
+        end
+        p_probe_kept_launch : cover (probe_fire && !sq_empty && acknowledged_q >= 1);
+        p_probe_kept_verdict : cover (probe_kept_q);
+        if (SECTOR_CASE == 1)
+          p_probe_kept_on_store_ack :
+          cover (probe_fire && !sq_empty && acknowledged_q >= 1 && store_ack_cycle);
+        if (lq_fu_complete.valid && lq_fu_complete.value == {8{first_byte}}) begin
+          p_probe_kept_complete :
+          cover (probe_kept_q && (resp_after_verdict_q || rt_lq_mem_read_valid) &&
+                 read_count_q == 2'd1 && !l0_hit_seen_q);
+          if (SECTOR_CASE == 1)
+            p_probe_kept_store_ack_complete :
+            cover (probe_kept_ack_q && (resp_after_verdict_q || rt_lq_mem_read_valid) &&
+                   read_count_q == 2'd1 && !l0_hit_seen_q);
+          p_probe_sector_hold_store_ack : cover (sector_held_on_ack_q);
+          if (SECTOR_CASE == 0) p_probe_sector_hold_second_ack : cover (sector_held_second_ack_q);
+        end
+      end
     end
   end
 `ifdef FATAL_STICKY_PROOF

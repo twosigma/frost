@@ -12,7 +12,7 @@ prove_pre_match
 # (formal/README.md); the Load queue CI job holds their sum.
 bmc: timeout 1800
 bmc_no_prepare_busy: timeout 1800
-bmc_probe_launch: timeout 1500
+bmc_probe_launch: timeout 1800
 cover: timeout 600
 cover_no_prepare_busy: timeout 600
 cover_probe_launch: timeout 600

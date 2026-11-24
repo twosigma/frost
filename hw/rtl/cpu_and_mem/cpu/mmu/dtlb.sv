@@ -736,14 +736,16 @@ module dtlb #(
   endfunction
 
   logic f_whole_leaf, f_priv_ok, f_valid, f_hit, f_perm_ok, f_clean;
-  assign f_whole_leaf =
+  logic f_uniform_pma;
+  assign f_uniform_pma =
       !(f_region_cut(f_level, f_base_pa, riscv_pkg::DdrBase, riscv_pkg::DdrLimit) ||
       f_region_cut(f_level, f_base_pa, riscv_pkg::PmaUncachedBase, riscv_pkg::PmaUncachedLimit) ||
       f_region_cut(f_level, f_base_pa, riscv_pkg::PmaDevice0Base, riscv_pkg::PmaDevice0Limit) ||
       f_region_cut(f_level, f_base_pa, riscv_pkg::PmaDevice1Base, riscv_pkg::PmaDevice1Limit) ||
-      f_region_cut(f_level, f_base_pa, riscv_pkg::PmaDevice2Base, riscv_pkg::PmaDevice2Limit) ||
-      f_region_cut(f_level, f_base_pa, riscv_pkg::DdrBase + riscv_pkg::PbmtAliasOffset,
-                   riscv_pkg::PbmtAliasCoverLimit + riscv_pkg::PbmtAliasOffset));
+      f_region_cut(f_level, f_base_pa, riscv_pkg::PmaDevice2Base, riscv_pkg::PmaDevice2Limit));
+  assign f_whole_leaf = f_uniform_pma &&
+      !f_region_cut(f_level, f_base_pa, riscv_pkg::DdrBase + riscv_pkg::PbmtAliasOffset,
+                    riscv_pkg::PbmtAliasCoverLimit + riscv_pkg::PbmtAliasOffset);
   assign f_priv_ok = e_u[f_slot] ? (f_priv_u_q || f_sum_q) : !f_priv_u_q;
   assign f_valid = e_valid[f_slot] && (e_g[f_slot] || e_asid[f_slot] == i_asid) &&
       !i_verdict_invalidate && !i_flush.en &&
@@ -785,6 +787,13 @@ module dtlb #(
         p_export_atomic : assert (o_entry_atomic_ok[f_slot] ==
             (e_pbmt[f_slot] == riscv_pkg::PbmtPma && riscv_pkg::pma_atomic_ok(f_base_pa)));
       end
+      // S1 takes the uncached-alias bit from the stored PPN. Compare every
+      // lookup offset using only the other PMA ranges to qualify the leaf.
+      if (o_entry_valid[f_slot] && f_uniform_pma) begin
+        p_alias_cut_redundant_for_lookup : assert ({o_entry_device[f_slot],
+            o_entry_atomic_ok[f_slot]} ==
+            {leaf_device_page[0][f_slot], leaf_atomic_page[0][f_slot]});
+      end
       if (o_entry_valid[f_slot] && o_entry_whole_leaf[f_slot]) begin
         p_export_leaf : assert ({f_perm_ok, o_entry_device[f_slot],
             o_entry_atomic_ok[f_slot], f_access_ppn} ==
@@ -807,8 +816,23 @@ module dtlb #(
           i_asid != f_asid_q && i_asid == e_asid[f_slot] && e_valid[f_slot] && !i_install_valid));
       c_export_mixed : cover (o_entry_valid[f_slot] && lowest_match[0][f_slot] &&
           e_level[f_slot] == 2'd1 && !o_entry_whole_leaf[f_slot] && f_base_pa[63:21] == '0);
+      c_export_user : cover (f_hit && i_perm_priv_u && e_u[f_slot] &&
+          o_entry_load_ok[f_slot] && o_clean_hit[0] && !i_perm_store[0]);
+      c_export_mega : cover (f_hit && f_level == 2'd1 && o_clean_hit[0] &&
+          i_lookup_vpn[0][8:0] != o_entry_vpn[f_slot][8:0]);
+`ifdef DTLB_256M_NO_ALIAS_PROOF
+      p_export_small_map : assert (riscv_pkg::DdrCapacityLog2Bytes == 28 &&
+          !riscv_pkg::PbmtAliasEnabled);
+      c_export_ddr_boundary : cover (o_entry_valid[f_slot] && lowest_match[0][f_slot] &&
+          f_level == 2'd2 && f_base_pa == riscv_pkg::DdrBase && !o_entry_whole_leaf[f_slot] &&
+          o_entry_atomic_ok[f_slot] && !leaf_atomic_page[0][f_slot]);
+      c_export_no_alias : cover (f_hit && f_level == 2'd2 && f_base_pa == 64'hc000_0000 &&
+          e_pbmt[f_slot] == riscv_pkg::PbmtNc && !i_perm_store[0] && !i_perm_atomic[0] &&
+          o_entry_load_ok[f_slot] && !o_entry_ppn_hi_nonzero[f_slot] && !o_clean_hit[0]);
+`else
       c_export_superpage : cover (f_hit && o_entry_level[f_slot] == 2'd2 &&
           o_entry_atomic_ok[f_slot] && i_lookup_vpn[0][17:0] != o_entry_vpn[f_slot][17:0]);
+`endif
     end
   end
 `elsif FORMAL
