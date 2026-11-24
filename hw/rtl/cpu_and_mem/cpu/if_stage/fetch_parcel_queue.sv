@@ -105,7 +105,9 @@ module fetch_parcel_queue #(
 
   for (genvar mb = 0; mb < 2; mb++) begin : gen_meta_bank
     logic mb_we;
-    assign mb_we = i_push_valid && !i_flush && (meta_tail_q[0] == 1'(mb));
+    // Flush clears meta_count_q and meta_tail_q on the same edge, so writes
+    // during a flush target unused slots and need not gate on !i_flush.
+    assign mb_we = i_push_valid && (meta_tail_q[0] == 1'(mb));
 
     sdp_dist_ram #(
         .ADDR_WIDTH(MetaBankBits),
@@ -215,7 +217,8 @@ module fetch_parcel_queue #(
   for (genvar b = 0; b < 4; b++) begin : gen_bank_wr
     logic [1:0] wr_off;
     assign wr_off = 2'(b) - tail_q[1:0];
-    assign bank_we[b] = meta_push_eff && (3'(wr_off) < i_push_count);
+    // Flush clears count_q and tail_q on the same edge; keep !i_flush off the write enables.
+    assign bank_we[b] = i_push_valid && (3'(wr_off) < i_push_count);
     assign bank_wdata[b] = push_entries[wr_off];
   end
 

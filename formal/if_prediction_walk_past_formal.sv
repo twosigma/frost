@@ -432,6 +432,7 @@ module fetch_btb_2w #(
     output logic                      o_is_call,
     output logic                      o_is_return,
     output logic                      o_is_span,
+    output logic                      o_target_is_cached,
     output logic                      o_w0_hit,
     output logic                      o_w1_hit,
     input  logic                      i_update,
@@ -448,19 +449,20 @@ module fetch_btb_2w #(
     input  logic                      i_late_update_taken,
     input  logic                      i_invalidate_all
 );
-  (* anyseq *) logic f_taken, f_comp, f_call, f_ret, f_w0, f_w1;
+  (* anyseq *) logic f_taken, f_comp, f_call, f_ret, f_tgt_cached, f_w0, f_w1;
   (* anyseq *) logic [1:0] f_pos;
   (* anyseq *) logic [XLEN-2:0] f_target_hw;
 
-  assign o_taken      = f_taken;
-  assign o_taken_pos  = f_pos;
-  assign o_target     = {f_target_hw, 1'b0};
-  assign o_compressed = f_comp;
-  assign o_is_call    = f_taken && f_call;
-  assign o_is_return  = f_taken && f_ret;
-  assign o_is_span    = f_taken && (f_pos == 2'd3) && !f_comp;
-  assign o_w0_hit     = f_w0;
-  assign o_w1_hit     = f_w1;
+  assign o_taken            = f_taken;
+  assign o_taken_pos        = f_pos;
+  assign o_target           = {f_target_hw, 1'b0};
+  assign o_compressed       = f_comp;
+  assign o_is_call          = f_taken && f_call;
+  assign o_is_return        = f_taken && f_ret;
+  assign o_is_span          = f_taken && (f_pos == 2'd3) && !f_comp;
+  assign o_target_is_cached = f_tgt_cached;
+  assign o_w0_hit           = f_w0;
+  assign o_w1_hit           = f_w1;
 endmodule : fetch_btb_2w
 
 // verilog_lint: waive module-filename

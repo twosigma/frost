@@ -67,6 +67,7 @@ cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_pos 2'd2
 cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_comp 0
 cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_call 0
 cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_ret 0
+cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_tgt_cached 0
 cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_target_hw 0
 cover_backing: connect -set u_if_stage.u_immu.f_pa_valid 1
 cover_backing: connect -set u_if_stage.u_immu.f_fault0 0

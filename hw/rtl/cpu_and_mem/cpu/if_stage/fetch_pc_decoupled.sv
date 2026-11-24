@@ -101,7 +101,7 @@ module fetch_pc_decoupled #(
 
   logic [XLEN-1:0] pc_q;
   logic [riscv_pkg::TageLookupHiBit:2] pc_tage_lookup_q;
-  logic [EvenBtbBits-1:0] pc_even_btb_idx_q;
+  (* keep = "true" *) logic [EvenBtbBits-1:0] pc_even_btb_idx_q;
   logic [EvenDirBits-1:0] pc_even_dir_idx_q;
 
   logic [XLEN-1:0] seq_next_pc;

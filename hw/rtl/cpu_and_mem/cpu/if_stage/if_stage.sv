@@ -214,13 +214,16 @@ module if_stage #(
   typedef struct packed {
     logic valid;
     logic [XLEN-1:0] pc;
-    logic fault0;
+    logic span_veto;
     logic span_tail;
     logic btb_taken;
     logic btb_is_span;
     logic [1:0] btb_pos;
     logic btb_comp;
     logic [XLEN-1:0] btb_target;
+    logic btb_is_call;
+    logic btb_is_return;
+    logic [XLEN-1:0] btb_link;
     logic [3:0] dir_taken;
     logic [RasPtrBits-1:0] ras_ckpt_tos;
     logic [RasPtrBits:0] ras_ckpt_cnt;
@@ -372,6 +375,7 @@ module if_stage #(
   logic btb_is_call;
   logic btb_is_return;
   logic btb_is_span;
+  logic btb_target_is_cached;
 
   fetch_btb_2w #(
       .XLEN(XLEN),
@@ -388,6 +392,7 @@ module if_stage #(
       .o_is_call(btb_is_call),
       .o_is_return(btb_is_return),
       .o_is_span(btb_is_span),
+      .o_target_is_cached(btb_target_is_cached),
       .o_w0_hit(),
       .o_w1_hit(),
       .i_update(btb_update_q),
@@ -424,6 +429,9 @@ module if_stage #(
   // faulting word 0, after a tag resteer, while a spanning BTB target is
   // completing, or when a bare-mode target would cross memory tiers.
   logic [XLEN-1:0] f0_btb_eff_target;
+  logic ras_top_is_cached;
+  logic pc_is_cached;
+  logic f0_btb_eff_is_cached;
   logic f0_btb_same_tier;
   logic f0_span_fault_veto;
   logic f0_span_btb_fire;
@@ -434,9 +442,13 @@ module if_stage #(
   logic [XLEN-1:0] f0_btb_link;
 
   assign f0_btb_eff_target = (btb_is_return && ras_nonempty) ? ras_top : btb_target_raw;
-  assign f0_btb_same_tier = i_fetch_translation_active ||
-      (riscv_pkg::pma_cached_ok(f0_btb_eff_target) ==
-       riscv_pkg::pma_cached_ok(XLEN'(fetch_pa0_live)));
+  // Evaluate tier membership from precomputed payload/RAS/PC bits so no wide
+  // PMA comparator sits in series behind the fast BTB lookup.
+  assign ras_top_is_cached = riscv_pkg::pma_cached_ok(ras_top);
+  assign pc_is_cached = riscv_pkg::pma_cached_ok(pc);
+  assign f0_btb_eff_is_cached = (btb_is_return && ras_nonempty) ?
+      ras_top_is_cached : btb_target_is_cached;
+  assign f0_btb_same_tier = i_fetch_translation_active || (f0_btb_eff_is_cached == pc_is_cached);
   assign f0_span_fault_veto = span_btb_pending_q.valid && !f1_cancel_span && fetch_fault0_live;
   assign f0_span_btb_fire = span_btb_pending_q.valid && !f1_cancel_span && !fetch_fault0_live;
   assign f0_pred_en = !i_disable_branch_prediction && !fetch_fault0_live &&
@@ -477,7 +489,7 @@ module if_stage #(
       .i_span_btb_fire(f1_collapsed_accept ? f1_collapsed_span_fire : f0_span_btb_fire),
       .i_span_btb_target(span_btb_pending_q.target),
       .i_btb_taken(f1_collapsed_accept ? f1_collapsed_btb_steer : f0_btb_steer_now),
-      .i_btb_target(f0_btb_eff_target),
+      .i_btb_target(f1_collapsed_accept ? f1_req_q.btb_target : f0_btb_eff_target),
       .o_pc(pc),
       .o_pc_tage_lookup(pc_tage_lookup),
       .o_pc_even_btb_idx(pc_even_btb_idx),
@@ -602,15 +614,15 @@ module if_stage #(
   assign f0_ras_push = !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore &&
       ((f0_launch && ((f0_btb_steer_now && btb_is_call) ||
                       (f0_span_btb_fire && span_btb_pending_q.is_call))) ||
-       (f1_collapsed_btb_steer && btb_is_call) ||
+       (f1_collapsed_btb_steer && f1_req_q.btb_is_call) ||
        (f1_collapsed_span_fire && span_btb_pending_q.is_call));
   assign f0_ras_pop = !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore &&
       ((f0_launch && ((f0_btb_steer_now && btb_is_return) ||
                       (f0_span_btb_fire && span_btb_pending_q.is_return))) ||
-       (f1_collapsed_btb_steer && btb_is_return) ||
+       (f1_collapsed_btb_steer && f1_req_q.btb_is_return) ||
        (f1_collapsed_span_fire && span_btb_pending_q.is_return));
   assign f0_ras_link = ((f0_launch && f0_span_btb_fire) || f1_collapsed_span_fire) ?
-      span_btb_pending_q.link : f0_btb_link;
+      span_btb_pending_q.link : (f1_collapsed_btb_steer ? f1_req_q.btb_link : f0_btb_link);
 
   // Register F0's speculative push/pop by one cycle to match return_address_stack's
   // pending-op contract: o_top/o_tos/o_valid_count reflect the prior cycle's push/pop
@@ -628,14 +640,18 @@ module if_stage #(
     f0_ras_link_q <= f0_ras_link;
   end
 
+  // Do not gate i_push/i_pop with !f1_ras_restore: return_address_stack already
+  // prioritizes i_misprediction (ras_restore) over pending ops on state update,
+  // and keeping f1_ras_restore off i_push/i_pop prevents a combinational path
+  // from F1 validation back through u_ras.o_top into F0 prediction.
   return_address_stack #(
       .RAS_DEPTH(riscv_pkg::RasDepth),
       .RAS_PTR_BITS(RasPtrBits)
   ) u_ras (
       .i_clk,
       .i_rst(i_pipeline_ctrl.reset),
-      .i_push(f0_ras_push_q && !any_redirect && !f1_ras_restore),
-      .i_pop(f0_ras_pop_q && !any_redirect && !f1_ras_restore),
+      .i_push(f0_ras_push_q && !any_redirect),
+      .i_pop(f0_ras_pop_q && !any_redirect),
       .i_push_address(f0_ras_link_q),
       .i_misprediction(ras_restore),
       .i_restore_tos(ras_restore_tos),
@@ -653,12 +669,15 @@ module if_stage #(
   // ===========================================================================
   // Synchronous Predictors (Backing BTB, TAGE, ITTAGE)
   // ===========================================================================
+  // Keep any_redirect off pred_lookup_capture: on a redirect cycle f1_req_q
+  // and f1_pred_fresh_q clear on the same edge, so any captured lookup is ignored.
   logic pred_lookup_capture;
-  assign pred_lookup_capture = f0_launch ||
-      (!f1_req_q.valid && !i_instr_valid && fetch_pa_valid && !f0_stop_fetch && !any_redirect);
+  assign pred_lookup_capture =
+      (i_instr_valid && fetch_pa_valid && !f0_stop_fetch && !f1_resteer && !f1_collapsed_accept) ||
+      (!f1_req_q.valid && !i_instr_valid && fetch_pa_valid && !f0_stop_fetch);
 
   logic [XLEN-1:0] f1_win_pc;
-  assign f1_win_pc = f1_req_q.valid ? f1_req_q.pc : pc;
+  assign f1_win_pc = f1_req_q.pc;
 
   logic [3:0] backing_win_hit_live;
   logic [3:0] backing_win_comp_live;
@@ -777,14 +796,16 @@ module if_stage #(
   assign served_word = i_instr_pc_metadata_served_high ? i_served_word_high : i_served_word_low;
 
   logic f1_tag_match;
-  logic collapsed_tag_match;
-  assign f1_tag_match        = (served_word == f1_req_q.pc[XLEN-1:2]);
-  assign collapsed_tag_match = (served_word == pc[XLEN-1:2]);
+  logic f1_accept_raw;
+  logic f1_collapsed_accept_raw;
+  assign f1_tag_match = (served_word == f1_req_q.pc[XLEN-1:2]);
+  assign f1_accept_raw = f1_req_q.valid && i_instr_valid && f1_tag_match;
+  assign f1_collapsed_accept_raw = !f1_req_q.valid && collapsed_armed_q &&
+      i_instr_valid && fetch_pa_valid && !f0_stop_fetch && f1_tag_match;
 
-  assign f1_accept = !any_redirect && f1_req_q.valid && i_instr_valid && f1_tag_match;
+  assign f1_accept = !any_redirect && f1_accept_raw;
   assign f1_tag_resteer = !any_redirect && f1_req_q.valid && i_instr_valid && !f1_tag_match;
-  assign f1_collapsed_accept = !any_redirect && !f1_req_q.valid && collapsed_armed_q &&
-      i_instr_valid && fetch_pa_valid && !f0_stop_fetch && collapsed_tag_match;
+  assign f1_collapsed_accept = !any_redirect && f1_collapsed_accept_raw;
 
   // Extract the four halfwords and their predecode sideband fields from i_instr.
   logic [15:0] hw_raw[4];
@@ -850,8 +871,12 @@ module if_stage #(
   assign hw_rvc_extra[2] = sb_w1[riscv_pkg::ImemSbRvcExtraLoLsb+:23];
   assign hw_rvc_extra[3] = sb_w1[riscv_pkg::ImemSbRvcExtraHiLsb+:23];
 
+  // Propagate launch-cycle spanning-branch fault vetoes into F1 word-0 fault
+  // without altering non-spanning fault behavior (such as simulation harnesses
+  // that filter bare-mode access faults on i_instr_fault0).
   logic f1_fault0_eff;
-  assign f1_fault0_eff = i_instr_fault0 || (f1_req_q.valid ? f1_req_q.fault0 : fetch_fault0_live);
+  assign f1_fault0_eff = i_instr_fault0 ||
+      (f1_req_q.valid ? f1_req_q.span_veto : f0_span_fault_veto);
   assign hw_fault      = {i_instr_fault1, i_instr_fault1, f1_fault0_eff, f1_fault0_eff};
   assign hw_fault_page = {
     i_instr_fault1_page, i_instr_fault1_page, i_instr_fault0_page, i_instr_fault0_page
@@ -884,20 +909,25 @@ module if_stage #(
   assign valid_start[3] = (valid_start[1] && !hw_comp[1] && !hw_fault[1]) ||
       (valid_start[2] && (hw_comp[2] || hw_fault[2]));
 
-  // Validate F0's fast-BTB prediction against actual instruction boundaries,
-  // size, control-flow opcode class, and fetch faults (both for normal F1
-  // accepts and for collapsed-lead accepts).
+  // Validate F0's registered fast-BTB prediction against actual instruction
+  // boundaries, size, control-flow opcode class, and fetch faults. Both normal
+  // F1 accepts and collapsed-lead accepts read from f1_req_q flops so F0's
+  // BTB/dir/RAS lookup never chains into F1, the parcel queue, or PD.
+  logic f1_collapsed_btb_en;
   logic f1_src_btb_taken;
   logic f1_src_btb_is_span;
   logic [1:0] f1_src_btb_pos;
   logic f1_src_btb_comp;
   logic [XLEN-1:0] f1_src_btb_target;
 
-  assign f1_src_btb_taken   = f1_req_q.valid ? f1_req_q.btb_taken : f0_btb_valid;
-  assign f1_src_btb_is_span = f1_req_q.valid ? f1_req_q.btb_is_span : (f0_btb_valid && btb_is_span);
-  assign f1_src_btb_pos     = f1_req_q.valid ? f1_req_q.btb_pos : btb_taken_pos;
-  assign f1_src_btb_comp    = f1_req_q.valid ? f1_req_q.btb_comp : btb_compressed;
-  assign f1_src_btb_target  = f1_req_q.valid ? f1_req_q.btb_target : f0_btb_eff_target;
+  assign f1_collapsed_btb_en = !i_disable_branch_prediction && !btb_invalidate_active &&
+      !fetch_fault0_live;
+  assign f1_src_btb_taken   = f1_req_q.valid ?
+      f1_req_q.btb_taken : (f1_req_q.btb_taken && f1_collapsed_btb_en);
+  assign f1_src_btb_is_span = f1_req_q.btb_is_span;
+  assign f1_src_btb_pos     = f1_req_q.btb_pos;
+  assign f1_src_btb_comp    = f1_req_q.btb_comp;
+  assign f1_src_btb_target  = f1_req_q.btb_target;
 
   logic [1:0] f1_btb_pos;
   logic f1_btb_fault;
@@ -920,9 +950,9 @@ module if_stage #(
   assign f1_span_tail_fault = f1_accept && f1_req_q.span_tail && f1_fault0_eff;
 
   assign f1_collapsed_btb_steer = f1_collapsed_accept && !span_btb_pending_q.valid &&
-      f0_btb_steer_now && f1_btb_ok;
+      f1_req_q.btb_taken && !f1_req_q.btb_is_span && f1_collapsed_btb_en && f1_btb_ok;
   assign f1_collapsed_btb_span = f1_collapsed_accept && !span_btb_pending_q.valid &&
-      f0_btb_valid && btb_is_span && f1_btb_ok;
+      f1_req_q.btb_taken && f1_req_q.btb_is_span && f1_collapsed_btb_en && f1_btb_ok;
   assign f1_collapsed_span_fire = f1_collapsed_accept && span_btb_pending_q.valid &&
       !i_instr_fault0 && !fetch_fault0_live;
 
@@ -946,7 +976,7 @@ module if_stage #(
   // Use scalar packed structs rather than an unpacked array of structs so
   // Yosys resolves every field select cleanly.
   logic [3:0] f1_dir_taken;
-  assign f1_dir_taken = f1_req_q.valid ? f1_req_q.dir_taken : dir_taken_f0;
+  assign f1_dir_taken = f1_req_q.dir_taken;
 
   function automatic parcel_t make_parcel(
       input logic [15:0] p_raw, input logic p_allows_s2,
@@ -1016,7 +1046,9 @@ module if_stage #(
   logic [2:0] f1_push_count;
   logic [3:0][ParcelBits-1:0] f1_push_parcels;
   logic [1:0] btb_end_hw;
-  assign f1_push_valid = f1_accept || f1_collapsed_accept;
+  // Pass redirect-free push valid to u_parcel_queue; u_parcel_queue already
+  // masks push counts and resets pointers when i_flush (pqueue_flush) fires.
+  assign f1_push_valid = f1_accept_raw || f1_collapsed_accept_raw;
   assign btb_end_hw = f1_btb_pos + (hw_comp[f1_btb_pos] ? 2'd0 : 2'd1);
 
   always_comb begin
@@ -1051,9 +1083,9 @@ module if_stage #(
     f1_push_meta.word0_pc      = f1_win_pc[XLEN-1:2];
     f1_push_meta.word1_pc      = f1_win_pc[XLEN-1:2] + (XLEN - 2)'(1);
     f1_push_meta.btb_target_hi = f1_src_btb_target[XLEN-1:1];
-    f1_push_meta.ras_ckpt_tos  = f1_req_q.valid ? f1_req_q.ras_ckpt_tos : ras_tos;
-    f1_push_meta.ras_ckpt_cnt  = f1_req_q.valid ? f1_req_q.ras_ckpt_cnt : ras_valid_count;
-    f1_push_meta.ras_ckpt_top  = f1_req_q.valid ? f1_req_q.ras_ckpt_top : ras_top;
+    f1_push_meta.ras_ckpt_tos  = f1_req_q.ras_ckpt_tos;
+    f1_push_meta.ras_ckpt_cnt  = f1_req_q.ras_ckpt_cnt;
+    f1_push_meta.ras_ckpt_top  = f1_req_q.ras_ckpt_top;
     f1_push_meta.tage_cov      = f1_tage_cov;
     f1_push_meta.tage_w0       = f1_w0_odd ? f1_pred.tage_bank1 : f1_pred.tage_bank0;
     f1_push_meta.tage_w1       = f1_w0_odd ? f1_pred.tage_bank0 : f1_pred.tage_bank1;
@@ -1091,23 +1123,26 @@ module if_stage #(
         f1_carry_hi_q <= f1_next_carry_hi;
       end
     end else if (f0_launch) begin
-      f1_req_q.valid        <= 1'b1;
-      f1_req_q.pc           <= pc;
-      f1_req_q.fault0       <= fetch_fault0_live;
-      f1_req_q.span_tail    <= f0_span_btb_fire;
-      f1_req_q.btb_taken    <= f0_btb_valid;
-      f1_req_q.btb_is_span  <= f0_btb_valid && btb_is_span;
-      f1_req_q.btb_pos      <= btb_taken_pos;
-      f1_req_q.btb_comp     <= btb_compressed;
-      f1_req_q.btb_target   <= f0_btb_eff_target;
-      f1_req_q.dir_taken    <= dir_taken_f0;
-      f1_req_q.ras_ckpt_tos <= ras_tos;
-      f1_req_q.ras_ckpt_cnt <= ras_valid_count;
-      f1_req_q.ras_ckpt_top <= ras_top;
+      f1_req_q.valid         <= 1'b1;
+      f1_req_q.pc            <= pc;
+      f1_req_q.span_veto     <= f0_span_fault_veto;
+      f1_req_q.span_tail     <= f0_span_btb_fire;
+      f1_req_q.btb_taken     <= f0_btb_valid;
+      f1_req_q.btb_is_span   <= f0_btb_valid && btb_is_span;
+      f1_req_q.btb_pos       <= btb_taken_pos;
+      f1_req_q.btb_comp      <= btb_compressed;
+      f1_req_q.btb_target    <= f0_btb_eff_target;
+      f1_req_q.btb_is_call   <= btb_is_call;
+      f1_req_q.btb_is_return <= btb_is_return;
+      f1_req_q.btb_link      <= f0_btb_link;
+      f1_req_q.dir_taken     <= dir_taken_f0;
+      f1_req_q.ras_ckpt_tos  <= ras_tos;
+      f1_req_q.ras_ckpt_cnt  <= ras_valid_count;
+      f1_req_q.ras_ckpt_top  <= ras_top;
 
-      f1_pred_fresh_q       <= 1'b1;
-      collapsed_armed_q     <= 1'b0;
-      f1_resteer_nopred_q   <= 1'b0;
+      f1_pred_fresh_q        <= 1'b1;
+      collapsed_armed_q      <= 1'b0;
+      f1_resteer_nopred_q    <= 1'b0;
 
       if (f0_btb_valid && btb_is_span) begin
         span_btb_pending_q.valid     <= 1'b1;
@@ -1130,10 +1165,10 @@ module if_stage #(
       f1_carry_hi_q       <= f1_next_carry_hi;
       if (f1_collapsed_btb_span) begin
         span_btb_pending_q.valid     <= 1'b1;
-        span_btb_pending_q.target    <= f0_btb_eff_target;
-        span_btb_pending_q.is_call   <= btb_is_call;
-        span_btb_pending_q.is_return <= btb_is_return;
-        span_btb_pending_q.link      <= f0_btb_link;
+        span_btb_pending_q.target    <= f1_req_q.btb_target;
+        span_btb_pending_q.is_call   <= f1_req_q.btb_is_call;
+        span_btb_pending_q.is_return <= f1_req_q.btb_is_return;
+        span_btb_pending_q.link      <= f1_req_q.btb_link;
       end else begin
         span_btb_pending_q.valid <= 1'b0;
       end
@@ -1149,8 +1184,23 @@ module if_stage #(
           f1_pred_fresh_q <= 1'b0;
         end
       end else if (!f1_req_q.valid && !i_instr_valid && fetch_pa_valid && !f0_stop_fetch) begin
-        collapsed_armed_q <= 1'b1;
-        f1_pred_fresh_q   <= 1'b1;
+        collapsed_armed_q      <= 1'b1;
+        f1_pred_fresh_q        <= 1'b1;
+        f1_req_q.pc            <= pc;
+        f1_req_q.span_veto     <= f0_span_fault_veto;
+        f1_req_q.span_tail     <= 1'b0;
+        f1_req_q.btb_taken     <= f0_btb_valid;
+        f1_req_q.btb_is_span   <= f0_btb_valid && btb_is_span;
+        f1_req_q.btb_pos       <= btb_taken_pos;
+        f1_req_q.btb_comp      <= btb_compressed;
+        f1_req_q.btb_target    <= f0_btb_eff_target;
+        f1_req_q.btb_is_call   <= btb_is_call;
+        f1_req_q.btb_is_return <= btb_is_return;
+        f1_req_q.btb_link      <= f0_btb_link;
+        f1_req_q.dir_taken     <= dir_taken_f0;
+        f1_req_q.ras_ckpt_tos  <= ras_tos;
+        f1_req_q.ras_ckpt_cnt  <= ras_valid_count;
+        f1_req_q.ras_ckpt_top  <= ras_top;
       end else if (!f1_req_q.valid && i_instr_valid && f1_pred_fresh_q) begin
         f1_pred_hold_q  <= f1_pred_live;
         f1_pred_fresh_q <= 1'b0;

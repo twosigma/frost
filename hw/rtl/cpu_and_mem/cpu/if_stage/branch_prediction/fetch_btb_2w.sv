@@ -58,6 +58,7 @@ module fetch_btb_2w #(
     output logic            o_is_call,
     output logic            o_is_return,
     output logic            o_is_span,    // 32-bit taken branch at W+1 upper halfword (pos 3)
+    output logic            o_target_is_cached,
     output logic            o_w0_hit,
     output logic            o_w1_hit,
 
@@ -86,7 +87,8 @@ module fetch_btb_2w #(
   localparam int unsigned UpperTagBits = XLEN - BTB_INDEX_BITS - 2;  // PC[63:10] = 54b
   localparam int unsigned TagBits = UpperTagBits + 1;  // {upper, PC[1]} = 55b
   localparam int unsigned TargetBits = riscv_pkg::PhysAddrBits;
-  localparam int unsigned PayloadBits = (TargetBits - 1) + 3;  // {target[TargetBits-1:1], comp, call, ret}
+  // {target[TargetBits-1:1], target_is_cached, comp, call, ret}
+  localparam int unsigned PayloadBits = (TargetBits - 1) + 4;
 
   localparam logic [1:0] StronglyNotTaken = 2'b00;
   localparam logic [1:0] WeaklyNotTaken = 2'b01;
@@ -135,8 +137,15 @@ module fetch_btb_2w #(
   logic [1:0] early_next_counter;
   (* keep = "true" *) logic [1:0] late_next_counter;
 
+  logic update_target_is_cached;
+  assign update_target_is_cached = riscv_pkg::pma_cached_ok(i_update_target);
+
   assign update_payload = {
-    i_update_target[TargetBits-1:1], i_update_compressed, i_update_call, i_update_return
+    i_update_target[TargetBits-1:1],
+    update_target_is_cached,
+    i_update_compressed,
+    i_update_call,
+    i_update_return
   };
 
   // Per-bank RAM read outputs
@@ -242,19 +251,31 @@ module fetch_btb_2w #(
   // ===========================================================================
   // Combinational Dual-Word Lookup
   // ===========================================================================
-  // Compare each bank's upper tag in kept 14-bit chunks.
-  localparam int unsigned TagCompareChunkBits = 14;
+  // Compare each bank's upper tag in 3-bit groups (6 inputs per leaf) reduced
+  // in a balanced two-level tree to keep lookup depth shallow.
+  localparam int unsigned TagCompareChunkBits = 3;
   localparam int unsigned UpperCompareChunks =
       (UpperTagBits + TagCompareChunkBits - 1) / TagCompareChunkBits;
-  (* keep = "true" *) logic [1:0][UpperCompareChunks-1:0] bank_upper_eq_chunks;
+  localparam int unsigned UpperReduceGroupBits = 6;
+  localparam int unsigned UpperReduceGroups =
+      (UpperCompareChunks + UpperReduceGroupBits - 1) / UpperReduceGroupBits;
+  (* keep = "true" *) logic [1:0][UpperCompareChunks-1:0] bank_upper_eq_l1;
+  (* keep = "true" *) logic [1:0][UpperReduceGroups-1:0] bank_upper_eq_l2;
   for (genvar b = 0; b < 2; b++) begin : gen_bank_cmp
     for (genvar chunk = 0; chunk < UpperCompareChunks; chunk++) begin : gen_chunk
       localparam int unsigned FirstBit = chunk * TagCompareChunkBits;
       localparam int unsigned ChunkWidth =
           (UpperTagBits - FirstBit < TagCompareChunkBits) ?
           (UpperTagBits - FirstBit) : TagCompareChunkBits;
-      assign bank_upper_eq_chunks[b][chunk] =
+      assign bank_upper_eq_l1[b][chunk] =
           bank_tag_lookup[b][1+FirstBit+:ChunkWidth] == lookup_upper_tag[FirstBit+:ChunkWidth];
+    end
+    for (genvar grp = 0; grp < UpperReduceGroups; grp++) begin : gen_grp
+      localparam int unsigned FirstChunk = grp * UpperReduceGroupBits;
+      localparam int unsigned GroupWidth =
+          (UpperCompareChunks - FirstChunk < UpperReduceGroupBits) ?
+          (UpperCompareChunks - FirstChunk) : UpperReduceGroupBits;
+      assign bank_upper_eq_l2[b][grp] = &bank_upper_eq_l1[b][FirstChunk+:GroupWidth];
     end
   end
 
@@ -263,8 +284,8 @@ module fetch_btb_2w #(
   logic [1:0] bank_hw_lookup;
   assign bank_valid_lookup[0] = btb_valid[0][bank_lookup_idx[0]];
   assign bank_valid_lookup[1] = btb_valid[1][bank_lookup_idx[1]];
-  assign bank_upper_match[0]  = bank_valid_lookup[0] && (&bank_upper_eq_chunks[0]);
-  assign bank_upper_match[1]  = bank_valid_lookup[1] && (&bank_upper_eq_chunks[1]);
+  assign bank_upper_match[0]  = bank_valid_lookup[0] && (&bank_upper_eq_l2[0]);
+  assign bank_upper_match[1]  = bank_valid_lookup[1] && (&bank_upper_eq_l2[1]);
   assign bank_hw_lookup[0]    = bank_tag_lookup[0][0];
   assign bank_hw_lookup[1]    = bank_tag_lookup[1][0];
 
@@ -308,15 +329,16 @@ module fetch_btb_2w #(
   assign sel_w1      = !w0_taken && w1_taken;
   assign sel_payload = sel_w1 ? w1_payload : w0_payload;
 
-  assign o_w0_hit     = w0_hit;
-  assign o_w1_hit     = w1_hit;
-  assign o_taken      = w0_taken || w1_taken;
-  assign o_taken_pos  = sel_w1 ? {1'b1, w1_hw} : {1'b0, w0_hw};
-  assign o_target     = {i_pc[XLEN-1:TargetBits], sel_payload[PayloadBits-1:3], 1'b0};
-  assign o_compressed = o_taken && sel_payload[2];
-  assign o_is_call    = o_taken && sel_payload[1];
-  assign o_is_return  = o_taken && sel_payload[0];
-  assign o_is_span    = o_taken && (o_taken_pos == 2'd3) && !sel_payload[2];
+  assign o_w0_hit           = w0_hit;
+  assign o_w1_hit           = w1_hit;
+  assign o_taken            = w0_taken || w1_taken;
+  assign o_taken_pos        = sel_w1 ? {1'b1, w1_hw} : {1'b0, w0_hw};
+  assign o_target           = {i_pc[XLEN-1:TargetBits], sel_payload[PayloadBits-1:4], 1'b0};
+  assign o_target_is_cached = sel_payload[3];
+  assign o_compressed       = o_taken && sel_payload[2];
+  assign o_is_call          = o_taken && sel_payload[1];
+  assign o_is_return        = o_taken && sel_payload[0];
+  assign o_is_span          = o_taken && (o_taken_pos == 2'd3) && !sel_payload[2];
 
   // ===========================================================================
   // Parallel Early/Late Counter RMW
