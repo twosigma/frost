@@ -255,7 +255,7 @@ The Zicbom programs and cluster benches run the following cases.
 | `svpbmt_cmo_test`, `svpbmt_cmo_test_inval_flush` | Cacheable, NC and IO mappings of the same physical block, with per-operation DDR write checks in the default and flush-only configurations. Adjacent CMO/load pairs exercise every combination of the two mappings with a dirty cached line. |
 | `nic_cmo_loopback` | Eight transmitted payloads and descriptor completions while the CPU cleans packet blocks that DMA is reading, in both memory tiers. |
 | `coherence_home`, `coherence_home_equal` | An older DMA fill, a management request and a younger DMA read complete in order with 64-byte and 32-byte home lines. |
-| `coherence_cbo_mgmt` | Dirty private and home copies, either dirty sector, absent or clean lines, DMA and write-backs in flight. |
+| `coherence_cbo_mgmt`, `coherence_cbo_mgmt_fast_tag` | Dirty private and home copies, either dirty sector, absent or clean lines, DMA and write-backs in flight, with default and direct tag launch in the home. |
 | `coherence_cbo_mgmt_misses`, `coherence_cbo_mgmt_equal_lines`, `coherence_cbo_mgmt_links` | The same data and ordering checks with three miss endpoints, 32-byte home lines or registered links. |
 
 The `coherence_endpoints`, `coherence_endpoints_single`, and
