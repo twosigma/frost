@@ -658,3 +658,64 @@ def test_checkpoint_constraint_reload_is_board_scoped(
             if command.startswith(f"{step}_design ")
         )
         assert opened < reloads[0] < transformed
+
+
+@pytest.mark.parametrize("step", ("opt", "place"))
+@pytest.mark.parametrize("frost_vector", ("0", "1", "invalid"))
+def test_vcu118_vector_checkpoint_constraint_reload(
+    tmp_path: Path, step: str, frost_vector: str
+) -> None:
+    """VCU118 opt/place reload the SLR1 vector floorplan after vcu118.xdc iff FROST_VECTOR=1."""
+    source = HOOK_MODEL.replace(
+        "open_checkpoint - close_design - read_checkpoint - set_param -",
+        "read_xdc - opt_design - open_checkpoint - close_design - read_checkpoint - set_param -",
+    ).replace(
+        "set argv [list x3 place ExtraNetDelay_high fresh_input.dcp 0]",
+        f"set argv [list vcu118 {step} Explore checkpoint.dcp 0]",
+    )
+    script = tmp_path / "hook.tcl"
+    script.write_text(source)
+    trace = tmp_path / "trace.txt"
+    trace.touch()
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("FROST_")
+    }
+    environment.update(
+        FROST_VECTOR=frost_vector,
+        HOOK_TRACE=str(trace),
+        HOOK_SOURCE=str(REPO_ROOT / "fpga/build/build_step.tcl"),
+    )
+    result = subprocess.run(
+        ["tclsh", str(script)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if frost_vector == "invalid":
+        assert result.returncode != 0
+        assert "FROST_VECTOR must be 0 or 1" in result.stderr
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    commands = trace.read_text().splitlines()
+    reloads = [
+        i for i, command in enumerate(commands) if command.startswith("read_xdc ")
+    ]
+    opened = next(
+        i
+        for i, command in enumerate(commands)
+        if command.startswith("open_checkpoint ")
+    )
+    transformed = next(
+        i for i, command in enumerate(commands) if command.startswith(f"{step}_design ")
+    )
+    if frost_vector == "0":
+        assert len(reloads) == 1
+        assert commands[reloads[0]].endswith("boards/vcu118/constr/vcu118.xdc")
+        assert opened < reloads[0] < transformed
+    else:
+        assert len(reloads) == 2
+        assert commands[reloads[0]].endswith("boards/vcu118/constr/vcu118.xdc")
+        assert commands[reloads[1]].endswith("boards/vcu118/constr/vcu118_vector.xdc")
+        assert opened < reloads[0] < reloads[1] < transformed

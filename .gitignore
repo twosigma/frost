@@ -120,6 +120,7 @@ fpga/site.env
 # VCU118 boot firmware sources and device tree output.
 /sw/uboot/build/
 /boards/vcu118/frost.dtb
+/boards/vcu118/frost_vector.dtb
 
 # Formal and synthesis pass markers and reports of CI reuse (tests/ci_reuse.py)
 .ci-reuse/

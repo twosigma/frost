@@ -107,12 +107,13 @@ cases import RTLIL processes with `--no-proc --best-effort-hierarchy
 --ignore-initial`; source initialization still receives semantic checking,
 while the import omits initial state and image-loading work.
 
-Vector-enabled `frost` cases check the X3 configuration (`VECTOR=1`,
-`VLEN=256`, Xilinx primitives, the external DDR port, BSCAN debug, and
-hardware misaligned accesses) and the simulation configuration at VLEN
-128, 256, and 512. These cases elaborate the vector engine with the same
-declaration rules as the default tops. They check FROST's RTL without
-elaborating vendor IP or board clock and transceiver wrappers.
+Vector-enabled `frost` cases check the X3 and opt-in VCU118 configurations
+(`VECTOR=1`, `VLEN=256`, `VECTOR_ADVERTISE=1`, Xilinx primitives, the external
+DDR port, BSCAN debug, and hardware misaligned accesses, with VCU118's 32 KiB
+L1I, 4 MiB L2, 2 GiB DDR aperture, and 1 Gb/s Ethernet) and the simulation
+configuration at VLEN 128, 256, and 512. These cases elaborate the vector
+engine with the same declaration rules as the default tops. They check FROST's
+RTL without elaborating vendor IP or board clock and transceiver wrappers.
 
 The same four simulation variants, without `SYNTHESIS`, check both complete
 tops and 22 independent module roots, including the load queue and L1D.

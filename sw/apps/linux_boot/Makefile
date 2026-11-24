@@ -96,6 +96,13 @@ PACK_ARGS := --initrd "$(PACK_INITRD)"
 endif
 PACK_ARGS += $(if $(FROST_LINUX_IP),--ip "$(FROST_LINUX_IP)")
 PACK_ARGS += --board "$(or $(FROST_LINUX_BOARD),x3)"
+ifeq ($(FROST_LINUX_VECTOR),1)
+PACK_ARGS += --vector
+else ifeq ($(FROST_LINUX_VECTOR),0)
+PACK_ARGS += --no-vector
+else ifneq ($(FROST_LINUX_VECTOR),)
+$(error FROST_LINUX_VECTOR must be 0 or 1 (got '$(FROST_LINUX_VECTOR)'))
+endif
 PACK_ARGS += $(if $(FROST_LINUX_MAC),--mac "$(FROST_LINUX_MAC)")
 # The packer takes FROST_INITRD from the environment as its --initrd default,
 # which would give an NFS root an initramfs; only the variables above choose it.
