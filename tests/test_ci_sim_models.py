@@ -111,8 +111,10 @@ def test_shared_models_match_the_consumers() -> None:
     for width in ("128", "256", "512"):
         core_entry = consumers["test-testrig-vector"][f"{width}/core"]
         seg_entry = consumers["test-testrig-vector"][f"{width}/segment"]
+        ext_entry = consumers["test-testrig-vector"][f"{width}/ext"]
         assert len(core_entry["shared"]) == 1 and not core_entry["local"]
         assert seg_entry == core_entry
+        assert ext_entry == core_entry
     assert len(consumers["test-native"]["live"]["shared"]) == 1
     assert len(consumers["test-native"]["live"]["local"]) == 1
 
@@ -758,6 +760,16 @@ def _workflow_runtime_cases(
         shard_controls = {
             "core": ("state",),
             "segment": ("segment", "segment-matrix"),
+            "ext": (
+                "zvfhmin",
+                "zvbb",
+                "zvbc-zvkned-zvkg",
+                "zvknhb",
+                "zvfh-arith",
+                "zvfh-misc-red",
+                "zvfh-widen",
+                "zvfh-cvt",
+            ),
         }
         for row in expand_matrix(jobs["test-testrig-vector"]["strategy"]["matrix"]):
             shard = row["shard"]

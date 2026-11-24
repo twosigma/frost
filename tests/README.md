@@ -1632,9 +1632,13 @@ replays the five seeded generated segment traces from
 digests pinned in `tests/test_testrig_vector.py`) alongside
 `verif/testrig/vector_segment.S`, covering all 252 base-V segment loads
 and stores across `nf = 2..8` and 8/16/32/64-bit widths independent of
-`SEW`.
+`SEW`. `--vector-ext` replays all eight directed RVA23 vector extension
+traces (`vector_zvfhmin.S`, `vector_zvbb.S`, `vector_zvbc_zvkned_zvkg.S`,
+`vector_zvknhb.S`, `vector_zvfh_arith_fma.S`, `vector_zvfh_cmp_misc_red.S`,
+`vector_zvfh_widen.S` and `vector_zvfh_cvt.S`), covering all thirty-seven
+non-base-V encoding slots and all 101 FP16 operating modes.
 Every vector store trace compares all written bytes through immediate
-scalar loads. CI compares the `core` and `segment` shards at each length.
+scalar loads. CI compares the `core`, `segment` and `ext` shards at each length.
 The VLEN 128 shards inject one incorrect value in each control replay and
 require TestRIG to report each mismatch.
 

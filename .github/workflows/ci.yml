@@ -1073,7 +1073,7 @@ jobs:
       fail-fast: false
       matrix:
         vlen: [128, 256, 512]
-        shard: [core, segment]
+        shard: [core, segment, ext]
     env:
       FROST_SKIP_SUBMODULE_INIT: "1"
       FROST_DDR_MODEL_SEED: testrig-vector
@@ -1118,6 +1118,16 @@ jobs:
           ./scripts/frost.py --image frost-dev:latest run \
             env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 30m \
             python3 tests/test_testrig.py --vector-segments --vlen "${{ matrix.vlen }}" \
+              --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
+              --response-timeout 600 --no-shrink
+
+      - name: Compare vector extension traces
+        if: matrix.shard == 'ext'
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run make -C tests clean
+          ./scripts/frost.py --image frost-dev:latest run \
+            env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 16m \
+            python3 tests/test_testrig.py --vector-ext --vlen "${{ matrix.vlen }}" \
               --ddr-capacity-log2-bytes 30 --startup-timeout 1200 \
               --response-timeout 600 --no-shrink
 
@@ -1219,6 +1229,45 @@ jobs:
           check_segment_result segment-matrix vector_segments \
             'order=147 insn=0x43d02557 rd=x10' '0x42eadaac != 0x42eadaad' \
             --vector-segments
+
+      - name: Check detection of an incorrect extension result
+        if: matrix.vlen == 128 && matrix.shard == 'ext'
+        timeout-minutes: 11
+        run: |
+          check_ext_result() {
+            local selector=$1 trace=$2 record=$3 mismatch=$4
+            local logs="tests/testrig_logs/vector-result-control/$trace" status=0
+            FROST_TESTRIG_VECTOR_RESULT_CONTROL="$selector" \
+              ./scripts/frost.py --image frost-dev:latest run \
+              env NUMBER_OF_CPU_CORES=4 PYTHON_CPU_COUNT=4 timeout --kill-after=10s 600s \
+              python3 tests/test_testrig.py --trace "verif/testrig/$trace.S" \
+                --vlen 128 --ddr-capacity-log2-bytes 30 --startup-timeout 360 --response-timeout 180 \
+                --no-shrink --verbosity 2 --log-dir "$logs" \
+                --save-dir "tests/testrig_failures/vector-result-control/$trace" || status=$?
+            test "$status" -eq 1
+            test "$(grep -Fc 'Vector result control: ' "$logs/frost.log")" -eq 1
+            grep -Fq "Vector result control: $record" "$logs/frost.log"
+            grep -Fq 'TESTS=1 PASS=1 FAIL=0' "$logs/frost.log"
+            grep -Fq "mismatch in field rd_wdata: $mismatch" "$logs/engine.log"
+            echo "TestRIG reported the injected vector result mismatch in $trace."
+          }
+
+          check_ext_result zvfhmin vector_zvfhmin \
+            'order=30 insn=0x42102557 rd=x10' '0x3e00 != 0x3e01'
+          check_ext_result zvbb vector_zvbb \
+            'order=24 insn=0x42202557 rd=x10' '0xfffffffff00a1030 != 0xfffffffff00a1031'
+          check_ext_result zvbc-zvkned-zvkg vector_zvbc_zvkned_zvkg \
+            'order=36 insn=0x42302557 rd=x10' '0x40a0789828c810f0 != 0x40a0789828c810f1'
+          check_ext_result zvknhb vector_zvknhb \
+            'order=56 insn=0x42402557 rd=x10' '0xffffffff84c9dd79 != 0xffffffff84c9dd78'
+          check_ext_result zvfh-arith vector_zvfh_arith_fma \
+            'order=25 insn=0x42502557 rd=x10' '0x4100 != 0x4101'
+          check_ext_result zvfh-misc-red vector_zvfh_cmp_misc_red \
+            'order=39 insn=0x42602557 rd=x10' '0x3e00 != 0x3e01'
+          check_ext_result zvfh-widen vector_zvfh_widen \
+            'order=26 insn=0x42702557 rd=x10' '0x40200000 != 0x40200001'
+          check_ext_result zvfh-cvt vector_zvfh_cvt \
+            'order=27 insn=0x42802557 rd=x10' '0x3c01 != 0x3c00'
 
       - name: Upload TestRIG counterexamples and logs
         if: always()

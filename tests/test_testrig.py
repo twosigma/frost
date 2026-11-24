@@ -120,6 +120,19 @@ VECTOR_DIRECTED_TRACES = tuple(
     )
 )
 VECTOR_SEGMENT_TRACE = VERIF_DIR / "testrig" / "vector_segment.S"
+VECTOR_EXT_TRACES = tuple(
+    VERIF_DIR / "testrig" / f"vector_{family}.S"
+    for family in (
+        "zvfhmin",
+        "zvbb",
+        "zvbc_zvkned_zvkg",
+        "zvknhb",
+        "zvfh_arith_fma",
+        "zvfh_cmp_misc_red",
+        "zvfh_widen",
+        "zvfh_cvt",
+    )
+)
 SSCOFPMF_TRACE = REPO_ROOT / "verif" / "testrig" / "sscofpmf" / "controls.S"
 DEFAULT_SAVE_DIR = TESTS_DIR / "testrig_failures"
 DEFAULT_LOG_DIR = TESTS_DIR / "testrig_logs"
@@ -487,6 +500,18 @@ def prepare_inputs(
             flush=True,
         )
         command += ["-d", str(trace_dir)]
+    elif arguments.vector_ext:
+        trace_dir = work_dir / "vector_ext"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        trace_dir.mkdir()
+        for trace in VECTOR_EXT_TRACES:
+            shutil.copyfile(trace, trace_dir / trace.name)
+        print(
+            f"Copied {len(VECTOR_EXT_TRACES)} vector extension traces at VLEN "
+            f"{arguments.vlen} to {trace_dir}",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
     elif arguments.fp_ext:
         seed = (
             arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
@@ -714,7 +739,7 @@ def run(arguments: argparse.Namespace) -> int:
         ATOMICS_ARCHITECTURE
         if (arguments.atomics or arguments.mmu or arguments.cmo)
         else vector.ARCHITECTURE
-        if (arguments.vector or arguments.vector_segments)
+        if (arguments.vector or arguments.vector_segments or arguments.vector_ext)
         else DEFAULT_ARCHITECTURE
     )
     sail = frost = engine = None
@@ -1064,6 +1089,12 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "(sets --vlen to 128 when not given)",
     )
     parser.add_argument(
+        "--vector-ext",
+        action="store_true",
+        help="replay the directed RVA23 vector extension traces "
+        "(sets --vlen to 128 when not given)",
+    )
+    parser.add_argument(
         "--vlen",
         type=int,
         choices=vector.VECTOR_LENGTHS,
@@ -1116,7 +1147,9 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--vector-source-widths requires --vector")
     if arguments.vector_directed and arguments.vector is None:
         parser.error("--vector-directed requires --vector")
-    if (arguments.vector or arguments.vector_segments) and arguments.vlen is None:
+    if (
+        arguments.vector or arguments.vector_segments or arguments.vector_ext
+    ) and arguments.vlen is None:
         arguments.vlen = DEFAULT_VECTOR_LENGTH
     active_modes = sum(
         bool(mode)
@@ -1134,6 +1167,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             arguments.cmo,
             arguments.vector,
             arguments.vector_segments,
+            arguments.vector_ext,
         )
     )
     if active_modes > 1 and not (
@@ -1141,8 +1175,8 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     ):
         parser.error(
             "--trace, --trace-dir, --wfi, --sscofpmf, --atomics, --crypto, --zcb, "
-            "--fp-ext, --svinval, --mmu, --cmo, --vector and --vector-segments "
-            "are mutually exclusive (except --sscofpmf --trace)"
+            "--fp-ext, --svinval, --mmu, --cmo, --vector, --vector-segments and "
+            "--vector-ext are mutually exclusive (except --sscofpmf --trace)"
         )
     return arguments
 
