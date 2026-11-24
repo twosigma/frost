@@ -790,10 +790,10 @@ Formally, `load_queue` checks queue invariants from reset, and its
 `PROBE_LAUNCH=1`: a dropped response reaches neither the LQ data, the CDB
 stage nor the L0, each verdict keeps or drops the read as above,
 `p_probe_block_inval_no_launch` and `p_probe_zero_twin_no_launch` pin the
-global `cbo.zero` pending-twin and block-invalidation hold (with sole-blocker
+global `cbo.zero` pending-twin and block-invalidation hold, with sole-blocker
 covers for the pending twin, post-flush hold, block invalidation, and
 release-then-launch; the independent check of the L1D contract remains
-`p_zero_pending_twin_no_read_req` in `coherence_l1d.sv`), and covers reach a
+`p_zero_pending_twin_no_read_req` in `coherence_l1d.sv`. Covers also reach a
 launch followed by a forward, a keep, a block and relaunch, a replaced stage, a
 response in the verdict cycle, and a store accepted on the launch edge.
 `coherent_cpu` repeats all five unbounded `coh_lq_*` prove tasks with

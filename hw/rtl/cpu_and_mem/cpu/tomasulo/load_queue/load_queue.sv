@@ -6323,10 +6323,10 @@ module load_queue #(
     end
   end
   if (PROBE_LAUNCH) begin : gen_f_probe_zero_twin
-    // Direct check of the cbo.zero pending-twin hold (conservative global
+    // Direct check of the cbo.zero pending-twin hold: a conservative global
     // hold on probe-cycle launches from a lower-sector cbo.zero push until
     // its upper-sector twin push, surviving flushes, plus any block
-    // invalidation cycle). Note that f_zero_push and f_twin_push mirror the
+    // invalidation cycle. Note that f_zero_push and f_twin_push mirror the
     // hold's detection interface; the independent check of the L1D contract
     // is p_zero_pending_twin_no_read_req in coherence_l1d.sv.
     logic f_zero_twin_pending_q;
