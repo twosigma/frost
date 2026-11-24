@@ -74,6 +74,12 @@ default VCU118 build omits the vector unit and leaves `constr/vcu118.xdc`, the
 default scalar clock configuration, and the default implementation directives
 unchanged.
 
+The opt-in VCU118 vector device trees (`dts/frost_vcu118_vector.dts` and
+`--vector` on `frost_boot_image.py` and `load_software.py`) advertise V, Zvbb,
+Zvbc, Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn,
+Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, Zvl32b, Zvl64b, Zvl128b and
+Zvl256b, and omit `svpbmt`.
+
 The PCS/PMA IP supplies the SGMII reference clock constraint. The reset
 button and UART receive input are asynchronous inputs; the UART receiver
 uses a two-register synchronizer. MDC and MDIO form a write-only PHY
