@@ -428,3 +428,76 @@ async def pending_tag_update_interrupts_repeated_lookups(dut: Any) -> None:
     await b.tick(12)
     tag = await b.lookup(0, 3)
     assert tag[1]
+
+
+@cocotb.test()
+async def resp_spec_excludes_final_data_read_stage(dut: Any) -> None:
+    """Keep an open parallel read at DATA_READ_LATENCY - 1 and drop o_resp_spec at DATA_READ_LATENCY."""
+    ultra = bool(int(dut.ULTRA.value))
+    tag_lat = int(dut.TAG_READ_LATENCY.value)
+    data_lat = int(dut.DATA_READ_LATENCY.value)
+    if not (ultra and tag_lat + 2 <= data_lat):
+        return
+    b = Array(dut)
+    await b.reset()
+    full = (1 << b.line) - 1
+    payload = int.from_bytes(bytes((i * 17 + 3) & 255 for i in range(b.line)), "little")
+    await b.update(0, 0, payload, full, 0)
+    await b.tick(12)
+
+    # Stall Reply until the open parallel read reaches stage DATA_READ_LATENCY - 1:
+    # o_resp_spec remains set and keeping it delivers the row on the next cycle.
+    await b.set(
+        i_req_valid=1,
+        i_req_addr=0,
+        i_req_token=5,
+        i_req_spec=1,
+        i_resp_ready=0,
+        i_resp_keep=0,
+        i_resp_claim=0,
+    )
+    await b.wait("o_req_ready")
+    await b.tick()
+    await b.set(i_req_valid=0, i_req_spec=0)
+    await b.wait("o_resp_valid")
+    for _ in range(data_lat + 2):
+        if (b.get("read_open_q") >> (data_lat - 1)) & 1:
+            break
+        assert b.get("o_resp_spec") == 1
+        await b.tick()
+    assert (b.get("read_open_q") >> (data_lat - 1)) & 1
+    assert b.get("o_resp_spec") == 1
+    assert b.get("o_read_valid") == 0
+    b.reads[5] = payload
+    await b.set(i_resp_ready=1, i_resp_keep=1)
+    await b.tick()
+    await b.set(i_resp_keep=0)
+    await b.tick()
+    assert 5 not in b.reads and 5 in b.read_done
+
+    # Stall Reply one cycle further until the open stage reaches DATA_READ_LATENCY:
+    # o_resp_spec clears because that output stage has no successor and drops.
+    await b.set(
+        i_req_valid=1,
+        i_req_addr=0,
+        i_req_token=6,
+        i_req_spec=1,
+        i_resp_ready=0,
+        i_resp_keep=0,
+        i_resp_claim=0,
+    )
+    await b.wait("o_req_ready")
+    await b.tick()
+    await b.set(i_req_valid=0, i_req_spec=0)
+    await b.wait("o_resp_valid")
+    for _ in range(data_lat + 2):
+        if (b.get("read_open_q") >> data_lat) & 1:
+            break
+        assert b.get("o_resp_spec") == 1
+        await b.tick()
+    assert (b.get("read_open_q") >> data_lat) & 1
+    assert b.get("o_resp_spec") == 0
+    assert b.get("o_read_valid") == 0
+    await b.set(i_resp_ready=1, i_resp_keep=0)
+    await b.tick(8)
+    assert 6 not in b.read_done

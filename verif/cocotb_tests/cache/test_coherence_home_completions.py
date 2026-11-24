@@ -718,6 +718,7 @@ async def direct_d_select_shortcuts_unblocked_demand(dut: Any) -> None:
         assert b.get("o_work_addr") == 0x80000000
         assert b.get("o_work_prefetch") == 0
         assert b.get("o_work_cmo") == 0
+        assert b.get("o_work_no_spec") == 0
         assert b.get("o_work_error") == 0
     else:
         assert b.get("o_work_valid") == 0
@@ -726,6 +727,7 @@ async def direct_d_select_shortcuts_unblocked_demand(dut: Any) -> None:
         assert b.get("o_work_addr") == 0
         assert b.get("o_work_prefetch") == 0
         assert b.get("o_work_cmo") == 0
+        assert b.get("o_work_no_spec") == 0
     first = await b.dispatch()
     assert first[0] == 0
 
@@ -745,6 +747,13 @@ async def direct_d_select_shortcuts_unblocked_demand(dut: Any) -> None:
     await b.tick()
     await b.set(i_d_valid=0)
     assert b.get("o_work_valid") == 0
+    for _ in range(10):
+        if b.get("o_work_valid"):
+            break
+        await b.tick()
+    assert b.get("o_work_valid") == 1
+    assert b.get("o_work_prefetch") == int(fast)
+    assert b.get("o_work_no_spec") == int(fast)
     pf = await b.dispatch()
     assert pf[0] == 480
 
@@ -771,7 +780,7 @@ async def direct_d_select_shortcuts_unblocked_demand(dut: Any) -> None:
     await b.complete(pf)
     await b.release(pf)
 
-    # An unblocked CMO selects directly when FAST_TAG_LAUNCH=1 and sets o_work_cmo.
+    # An unblocked CMO selects directly when FAST_TAG_LAUNCH=1 and sets o_work_cmo and o_work_no_spec.
     cmo_q = pack((2, 0), (2, 3), (4, 8), (1, 0))
     await b.set(i_d_valid=1, i_d=b.request(cmo_q, 0x80000200, op=11))
     assert b.get("o_d_ready")
@@ -781,6 +790,7 @@ async def direct_d_select_shortcuts_unblocked_demand(dut: Any) -> None:
     if fast:
         assert b.get("o_work_valid") == 1
         assert b.get("o_work_cmo") == 1
+        assert b.get("o_work_no_spec") == 1
         assert b.get("o_work_prefetch") == 0
         assert b.get("o_work_addr") == 0x80000200
     cmo = await b.dispatch()
@@ -789,4 +799,24 @@ async def direct_d_select_shortcuts_unblocked_demand(dut: Any) -> None:
     await b.grant(cmo, 0)
     await b.complete(cmo)
     await b.release(cmo)
+
+    # An unblocked DMAWrite selects directly when FAST_TAG_LAUNCH=1 and sets o_work_no_spec.
+    dma_q = pack((2, 2), (2, 3), (4, 1), (1, 0))
+    await b.set(i_d_valid=1, i_d=b.request(dma_q, 0x80000300, op=8))
+    assert b.get("o_d_ready")
+    assert direct_select() == int(fast)
+    await b.tick()
+    await b.set(i_d_valid=0)
+    if fast:
+        assert b.get("o_work_valid") == 1
+        assert b.get("o_work_cmo") == 0
+        assert b.get("o_work_no_spec") == 1
+        assert b.get("o_work_prefetch") == 0
+        assert b.get("o_work_addr") == 0x80000300
+    dma = await b.dispatch()
+    assert dma[0] == dma_q
+    await b.result(dma, 0)
+    await b.grant(dma, 0)
+    await b.complete(dma)
+    await b.release(dma)
     assert b.get("buffer_live_q") == 0

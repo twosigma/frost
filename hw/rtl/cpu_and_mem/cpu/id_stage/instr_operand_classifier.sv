@@ -63,8 +63,8 @@ module instr_operand_classifier #(
   assign fp_int_output = (i_instr.funct7[6:1] == 6'b110000) ||
       (i_instr.funct7[6:1] == 6'b111000) || (i_instr.funct7[6:1] == 6'b101000) ||
       (i_instr.funct7[6:1] == 6'b111001);
-  // Zfa FLI.S/FLI.D (funct7 1111000/1111001, rs2 00001): rs1 indexes a constant.
-  assign fp_no_source = (i_instr.funct7[6:1] == 6'b111100) && i_instr.source_reg_2[0];
+  // Zfa FLI.S/D/H (funct7 1111000/1111001/1111010, rs2 00001): rs1 indexes a constant.
+  assign fp_no_source = (i_instr.funct7[6:2] == 5'b11110) && i_instr.source_reg_2[0];
   assign fp_two_sources = (i_instr.funct7[6:1] == 6'b000000) ||
       (i_instr.funct7[6:1] == 6'b000010) || (i_instr.funct7[6:1] == 6'b000100) ||
       (i_instr.funct7[6:1] == 6'b000110) || (i_instr.funct7[6:1] == 6'b001000) ||

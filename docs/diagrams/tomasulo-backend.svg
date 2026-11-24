@@ -14,7 +14,7 @@
     (add, subtract, multiply and FMA with a 16-entry result FIFO and one-cycle
     early forward wakeup to FP RS), a radix-16 divider and an FP engine for
     square root, conversions and misc operations; MEM feeds address generation
-    and the Sv39 DMMU (16-entry DTLB, last-page and Bare bypass, backed by the
+    and the Sv39 DMMU (16-entry DTLB, resident-hit and Bare bypass, backed by the
     shared 512-entry four-way L2 TLB with a 32-entry superpage side array and
     pointer-walk-cache PTW). The load queue holds a 512-entry, eight-byte L0
     cache, checks store-queue forwarding and VMT range holds, and issues early
@@ -224,7 +224,7 @@
     <rect x="764" y="490" width="360" height="134" rx="10" class="memory"/>
     <text x="944" y="519" class="label">Address generation + DMMU</text>
     <text x="944" y="546" class="body">Sv39 DTLB · 16 entries</text>
-    <text x="944" y="572" class="xs">Last-page or Bare bypass</text>
+    <text x="944" y="572" class="xs">Resident-hit or Bare bypass</text>
     <text x="944" y="596" class="xs accent-mint">Misses → L2 TLB (512 + 32 SP) → PTW + PWC</text>
   </g>
   <!-- FP pipeline 1-cycle-early forward wakeup back to FP RS -->

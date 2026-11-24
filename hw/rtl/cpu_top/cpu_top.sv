@@ -31,8 +31,8 @@ module cpu_top #(
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     // Cached loads read memory during the store-queue probe (load_queue
-    // PROBE_LAUNCH).
-    parameter bit LQ_PROBE_LAUNCH = 1'b0,
+    // PROBE_LAUNCH); gated by CACHED_TIER_EN inside cpu_ooo.
+    parameter bit LQ_PROBE_LAUNCH = 1'b1,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
     parameter int unsigned DECODED_QUEUE_DEPTH = riscv_pkg::DecodedQueueDepth,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,

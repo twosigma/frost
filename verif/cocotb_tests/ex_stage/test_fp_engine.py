@@ -438,6 +438,7 @@ async def test_zfa(dut: Any) -> None:
     for index in range(32):
         await inj.run("FLI_S", 0, index)
         await inj.run("FLI_D", 0, index | 0xABCD_EF00)
+        await inj.run("FLI_H", 0, index | 0x1234_5600)
 
     sp_ops = [box(v) for v in SP_CORNERS]
     for suffix, corners in (("S", sp_ops), ("D", DP_CORNERS)):

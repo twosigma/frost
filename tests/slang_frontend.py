@@ -157,9 +157,15 @@ def top_cases(root: Path = ROOT) -> list[SlangCase]:
 
 
 def vector_cases(root: Path = ROOT) -> list[SlangCase]:
-    """Check the X3 FROST instance and the simulation's three vector lengths."""
+    """Check the X3 and opt-in VCU118 FROST instances and the three simulation widths."""
     bases = {case.name: case for case in top_cases(root)}
     common = (("VECTOR", "1"), ("ENABLE_CACHED_TIER", "1"), ("MISALIGNED_HW", "1"))
+    board_parameters = common + (
+        ("VLEN", "256"),
+        ("USE_BEHAVIORAL_DDR", "0"),
+        ("DEBUG_JTAG_TAP", "0"),
+        ("RAW_LOOPBACK", "0"),
+    )
     hardware = bases["synthesis/xilinx/platform_top"]
     simulation = bases["simulation/generic/platform_top"]
     return [
@@ -167,12 +173,25 @@ def vector_cases(root: Path = ROOT) -> list[SlangCase]:
             hardware,
             name="synthesis/xilinx/vector-x3/frost",
             top="frost",
-            parameters=common
+            parameters=board_parameters,
+        ),
+        replace(
+            hardware,
+            name="synthesis/xilinx/vector-vcu118/frost",
+            top="frost",
+            units=tuple(
+                replace(
+                    unit, options=(*unit.options, "-DFROST_DDR_CAPACITY_LOG2_BYTES=31")
+                )
+                for unit in hardware.units
+            ),
+            parameters=board_parameters
             + (
-                ("VLEN", "256"),
-                ("USE_BEHAVIORAL_DDR", "0"),
-                ("DEBUG_JTAG_TAP", "0"),
-                ("RAW_LOOPBACK", "0"),
+                ("CLK_FREQ_HZ", "162500000"),
+                ("L1I_CACHE_BYTES", "32768"),
+                ("L2_CACHE_BYTES", "4194304"),
+                ("ENABLE_1G_ETH", "1"),
+                ("VECTOR_ADVERTISE", "1"),
             ),
         ),
         *(

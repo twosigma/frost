@@ -66,11 +66,12 @@ module coherence_home_array #(
     // The selection's tag fields for every way, held from selection through
     // the response; o_resp_addr's tag is o_resp_tags[o_resp_way].
     output logic [WAYS-1:0][ADDR_WIDTH-SetBits-OffsetBits-1:0] o_resp_tags,
-    // The response's parallel read is in flight. Kept, its row (the
-    // response's way) arrives on the read output with the response's token.
+    // The response's parallel read is open before the output stage. Kept, its
+    // row (the response's way) arrives on the read output with the response's
+    // token.
     output logic o_resp_spec,
-    // The response handshake can keep an open stage before the output stage
-    // for o_resp_way. An open stage at the output has no successor and drops.
+    // The response handshake keeps an open stage before the output stage for
+    // o_resp_way. An open stage at the output has no successor and drops.
     input logic i_resp_keep,
     input logic i_read_valid,
     // i_read_valid before the consumer's stop qualification. It decides the
@@ -283,7 +284,7 @@ module coherence_home_array #(
   end
   assign o_resp_token = token_q;
   assign o_resp_token_onehot = token_onehot_q;
-  assign o_resp_spec = |(read_valid_q & read_open_q);
+  assign o_resp_spec = |(read_valid_q[DATA_READ_LATENCY-1:0] & read_open_q[DATA_READ_LATENCY-1:0]);
 `ifndef SYNTHESIS
   // Reset and every request capture write both, so they agree after reset.
 `ifdef FORMAL
@@ -629,8 +630,10 @@ module coherence_home_array #(
       if (spec_fire) assert (!(update_fire && i_update_has_data && write_set == set_q));
       assert ($countones(read_open_q) <= 1);
       assert ((read_open_q & ~read_valid_q) == '0);
-      // The first Reply meets the open read before its output stage.
+      // The first Reply meets the open read before its output stage, and
+      // o_resp_spec excludes the output stage.
       p_final_open_after_stall : assert (!read_open_q[DATA_READ_LATENCY] || resp_stalled_q);
+      p_resp_spec_excludes_final : assert (!(o_resp_spec && read_open_q[DATA_READ_LATENCY]));
 `ifdef COHERENCE_HOME_CONTROL
       // The home drives ready with run. Once Reply stalls, the home stays
       // stopped until reset clears the read pipeline.
@@ -735,7 +738,11 @@ module coherence_home_array #(
         f_open_q[stage] <= f_open_q[stage-1] && !resolve;
         f_expected_q[stage] <= f_expected_q[stage-1];
       end
-      if (f_check_q[DATA_READ_LATENCY] && !f_open_q[DATA_READ_LATENCY]) begin
+      if (f_known_q && resolve && o_resp_spec && set_q == f_set)
+        assert (|(f_check_q[DATA_READ_LATENCY-1:0] & f_open_q[DATA_READ_LATENCY-1:0]));
+      if (f_check_q[DATA_READ_LATENCY] &&
+          (!f_open_q[DATA_READ_LATENCY] ||
+           (resolve && o_resp_spec && i_resp_keep && o_resp_way == f_way))) begin
         assert (o_read_valid);
         assert (o_read_data[8*f_byte+:8] == f_expected_q[DATA_READ_LATENCY]);
       end
@@ -772,7 +779,8 @@ module coherence_home_array #(
       cover (o_read_valid && o_updated && o_resp_valid);
       // A response keeps a parallel read of f_row.
       if (SpecRead)
-        cover (resolve && i_resp_keep && |(f_check_q & f_open_q) && o_resp_way == f_way);
+        cover (resolve && o_resp_spec && i_resp_keep && |(f_check_q & f_open_q) &&
+               o_resp_way == f_way);
     end
   end
 `endif

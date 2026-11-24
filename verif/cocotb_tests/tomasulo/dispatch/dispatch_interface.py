@@ -868,14 +868,14 @@ _ZFHMIN_FP_DEST = frozenset(
 _ZFA_FP_DEST = frozenset(
     _INSTR_OPS[name]
     for name in (
-        "FLI_S", "FLI_D", "FMINM_S", "FMAXM_S", "FMINM_D", "FMAXM_D",
+        "FLI_S", "FLI_D", "FLI_H", "FMINM_S", "FMAXM_S", "FMINM_D", "FMAXM_D",
         "FROUND_S", "FROUNDNX_S", "FROUND_D", "FROUNDNX_D",
     )
 )  # fmt: skip
 _ZFA_INT_DEST = frozenset(
     _INSTR_OPS[name] for name in ("FCVTMOD_W_D", "FLEQ_S", "FLTQ_S", "FLEQ_D", "FLTQ_D")
 )
-_FLI_OPS = frozenset({_INSTR_OPS["FLI_S"], _INSTR_OPS["FLI_D"]})
+_FLI_OPS = frozenset({_INSTR_OPS["FLI_S"], _INSTR_OPS["FLI_D"], _INSTR_OPS["FLI_H"]})
 _FP_EXT_COMPUTE = (
     _ZFHMIN_FP_DEST | _ZFA_FP_DEST | _ZFA_INT_DEST | {_INSTR_OPS["FMV_X_H"]}
 )

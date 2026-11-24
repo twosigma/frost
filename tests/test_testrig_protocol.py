@@ -583,3 +583,51 @@ def test_svinval_generator_reproducibility_and_coverage(tmp_path: Path) -> None:
         test_testrig.parse_arguments(["--sscofpmf", "--svinval", "5"])
     with pytest.raises(SystemExit):
         test_testrig.parse_arguments(["--vector", "2", "--svinval", "5"])
+
+
+def test_lq_probe_launch_defaults_agree() -> None:
+    """All six CPU/SoC tops default LQ_PROBE_LAUNCH=1; standalone units stay 0."""
+    enabled_tops = (
+        "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv",
+        "hw/rtl/cpu_top/frost_hart.sv",
+        "hw/rtl/cpu_top/cpu_top.sv",
+        "hw/rtl/platform_top.sv",
+        "hw/rtl/frost.sv",
+        "hw/sim/frost_rvfi_platform.sv",
+    )
+    for rel_path in enabled_tops:
+        source = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+        assert re.search(r"\bparameter\s+bit\s+LQ_PROBE_LAUNCH\s*=\s*1'b1\b", source), (
+            f"{rel_path} must default LQ_PROBE_LAUNCH to 1'b1"
+        )
+
+    cpu_ooo_src = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text(
+        encoding="utf-8"
+    )
+    assert ".LQ_PROBE_LAUNCH(LQ_PROBE_LAUNCH && CACHED_TIER_EN)" in cpu_ooo_src
+
+    disabled_units = (
+        (
+            "hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv",
+            "PROBE_LAUNCH",
+        ),
+        (
+            "hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv",
+            "LQ_PROBE_LAUNCH",
+        ),
+        (
+            "hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/"
+            "tomasulo_coherent_cut_test_harness.sv",
+            "LQ_PROBE_LAUNCH",
+        ),
+    )
+    for rel_path, param_name in disabled_units:
+        source = (REPO_ROOT / rel_path).read_text(encoding="utf-8")
+        assert re.search(rf"\bparameter\s+bit\s+{param_name}\s*=\s*1'b0\b", source), (
+            f"{rel_path} must keep {param_name} defaulting to 1'b0"
+        )
+
+    subsystem = (REPO_ROOT / "boards/xilinx_frost_subsystem.sv").read_text(
+        encoding="utf-8"
+    )
+    assert "LQ_PROBE_LAUNCH" not in subsystem

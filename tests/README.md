@@ -107,12 +107,13 @@ cases import RTLIL processes with `--no-proc --best-effort-hierarchy
 --ignore-initial`; source initialization still receives semantic checking,
 while the import omits initial state and image-loading work.
 
-Vector-enabled `frost` cases check the X3 configuration (`VECTOR=1`,
-`VLEN=256`, Xilinx primitives, the external DDR port, BSCAN debug, and
-hardware misaligned accesses) and the simulation configuration at VLEN
-128, 256, and 512. These cases elaborate the vector engine with the same
-declaration rules as the default tops. They check FROST's RTL without
-elaborating vendor IP or board clock and transceiver wrappers.
+Vector-enabled `frost` cases check the X3 and opt-in VCU118 configurations
+(`VECTOR=1`, `VLEN=256`, `VECTOR_ADVERTISE=1`, Xilinx primitives, the external
+DDR port, BSCAN debug, and hardware misaligned accesses, with VCU118's 32 KiB
+L1I, 4 MiB L2, 2 GiB DDR aperture, and 1 Gb/s Ethernet) and the simulation
+configuration at VLEN 128, 256, and 512. These cases elaborate the vector
+engine with the same declaration rules as the default tops. They check FROST's
+RTL without elaborating vendor IP or board clock and transceiver wrappers.
 
 The same four simulation variants, without `SYNTHESIS`, check both complete
 tops and 22 independent module roots, including the load queue and L1D.
@@ -287,7 +288,8 @@ and check AXI burst order, byte masks, allocation hints, errors and reset on bot
 
 `coherence_home_array` and its BRAM and packed-tag variants check concurrent
 tag decisions, explicit row reads and masked updates, including the banked
-UltraRAM form. They do not request parallel way reads. They exercise physical-row
+UltraRAM form, and verify that `o_resp_spec` holds through stage
+`DATA_READ_LATENCY - 1` and clears at stage `DATA_READ_LATENCY`. They exercise physical-row
 aliases, live victim exclusions, continuous read/write contention and reset
 with responses in flight. The `coherence_array_reset_*` and
 `coherence_home_array_reset_*` benches exercise both reset modes in block RAM
@@ -327,7 +329,9 @@ prefetch enabled or disabled.
 and CPU observation cuts; `coherence_home_rowread` runs the UltraRAM home with `PARALLEL_READ=0` so row reads after the decision and probe replies ahead of row data are exercised, and `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
 requests execute, preserve waiter order across an older writer, check
 current data on waiter reentry, sweep fills, puts and dirty probe updates
-across parallel way reads of a set, and run back-to-back hit lookups across
+across parallel way reads of a set, verify that `DMAWrite` and Zicbom lookups
+skip parallel way reads with `FAST_TAG_LAUNCH` off and on, and run back-to-back
+hit lookups across
 and within a set. Two DMA reads with an intervening clean,
 flush or invalidate check that the later reader leaves the fill's way
 available to the management request. Streaming cases check way-0 miss placement,
@@ -408,7 +412,9 @@ checks that a subsequent load cannot use their stale data from L0.
 `hitpath_probe_order` sweeps an invalidating probe across a younger load's
 L1D hit path, then issues an older load to the same word, which reads the
 new value; a younger load that read the old value must replay instead of
-retiring.
+retiring. `hitpath_probe_order_probe_launch` and
+`coherent_stream_order_probe_launch` repeat those two harness benches with
+`LQ_PROBE_LAUNCH=1`.
 `cached_store_burst_test` checks masked stores, machine-mode ECALL,
 FENCE.I, SC and AMO. Each trap burst ends with a store to a fresh
 cached line. The stores and ECALL share one instruction-cache line.
@@ -513,15 +519,22 @@ the next target. pytest collects the applications grouped by their Verilator
 arguments, in registry order within each group, so a run builds each
 configuration once.
 
-Whole-CPU simulations, synthesis, and FPGA builds all use the CPU
-configuration in `riscv_pkg`. The `tomasulo_wrapper_no_early_load` and
-`load_queue_no_prepare_busy` targets cover early load wakeup and busy-port
-load preparation turned off, `load_queue_sq_forward` runs the load-queue bench
-with store-to-load forwarding on, as the core builds it,
-`load_queue_probe_launch` and `tomasulo_wrapper_probe_launch` run with cached
-loads launched during the store-queue probe (`PROBE_LAUNCH`), as does the
-`probe_zero_twin` program, which loads the upper sector of a block whose
-cbo.zero waits for its second store-buffer record, and `coremark_profile`
+Whole-CPU simulations, synthesis, and FPGA builds use the CPU configuration in
+`riscv_pkg`, and also default `LQ_PROBE_LAUNCH=1` across `cpu_ooo`,
+`frost_hart`, `cpu_top`, `platform_top`, `frost`, and `frost_rvfi_platform`
+(gated inside `cpu_ooo` by `CACHED_TIER_EN`, so every cached-tier SoC,
+`cpu_top`, ASIC, FPGA, native simulator, and TestRIG build launches cached
+ordinary loads during the store-queue probe while builds without the cached
+tier stay off). Standalone `load_queue`, `tomasulo_wrapper`, and
+`tomasulo_coherent_cut_test_harness` keep probe-cycle launch off by default.
+The `tomasulo_wrapper_no_early_load` and `load_queue_no_prepare_busy` targets
+cover early load wakeup and busy-port load preparation turned off,
+`load_queue_sq_forward` runs the load-queue bench with store-to-load forwarding
+on, as the core builds it, `load_queue_probe_launch`,
+`tomasulo_wrapper_probe_launch`, `coherent_stream_order_probe_launch`, and
+`hitpath_probe_order_probe_launch` exercise those standalone harnesses with
+`PROBE_LAUNCH=1`, `probe_zero_twin` loads the upper sector of a block whose
+`cbo.zero` waits for its second store-buffer record, and `coremark_profile`
 runs CoreMark with the profiling counters. The `rob_link_value_ram` and
 `rob_link_value_ram_onehot` benches compare shared-link reads with four
 reference banks across allocation, staged-drain and CDB collisions.
@@ -1842,7 +1855,12 @@ a counterexample at its target assertion and a saved solver trace.
 
 `test_pa_bridge_mutation.py` runs the 64 GiB proof on a private fixture for
 each AXI address channel and requires a counterexample at that channel's
-full-offset assertion. The standalone `aplic_msi_mutations.py` diagnostic
+full-offset assertion. `test_probe_launch_mutations.py` runs four registered
+formal negative controls against `load_queue:bmc_probe_launch` (removing
+`!probe_zero_hold`, clearing `twin_wait_q` on flush) and
+`coherence_store_boundary` (delaying the SQ forwarding match by one cycle, and
+removing the `push_prev_q` push-match term from `coherent_sector_hold`). The
+standalone `aplic_msi_mutations.py` diagnostic
 checks the baseline and isolated mutants with both cocotb and formal.
 Tests that relocate a checkout proof use `sby_config.stage_proof` to copy the
 proof's `[files]` inputs in checkout-relative layout before applying edits.

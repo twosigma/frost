@@ -85,7 +85,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zimop | Implemented | `riscv-arch-test` (`Zimop`), `mops`, `test_id_stage.py`, TestRIG (`--zcb`), `instr_operand_classifier.sby` |
 | Zcmop | Implemented | `mops`, `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
 | Zcb | Implemented | `riscv-arch-test` (`C`), `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
-| Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
+| Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, `vec_fp_test`, TestRIG (`--fp-ext`, `vector_fli_h.S`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
 | Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
 | Supm | Scalar hardware support through Ssnpm; the supplied Linux image does not expose the tagged-address ABI | `pm_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `pm_mode_select.sby`, `coherent_store_pma_twin.sby` |
 | Zifencei | Implemented | `riscv-arch-test` (`Zifencei`), `smc_fencei_test`, `ddr_smc_test`, TestRIG, `coherent_hart_cache.sby` |
@@ -611,12 +611,9 @@ and targeted microbenchmarks give these items:
    streaming scale, add and triad loops spend less than 0.3%. Taking
    ownership of a single 32-byte sector without fetching its 64-byte home
    line would still need per-sector L2 validity tracking.
-2. Data translation. Under Sv39, translated loads and stores outside the
-   single-entry last-page buffer wait for DMMU stage S1 before reaching S2;
-   replacing that buffer with a 16-entry DTLB bypass lets any clean resident
-   hit enter S2 directly, leaving faults, concurrent refills and
-   mixed-attribute superpages on S1. The L1D store-lookup change (item 9)
-   and per-entry DTLB verdicts are on `main`, with the 16-entry bypass next.
+2. Data translation. Under Sv39, a clean hit in any of the 16 DTLB entries
+   sends a load or store directly to DMMU stage S2. Faults, concurrent
+   refills and mixed-attribute superpages go through S1.
    On a DTLB miss, the shared 512-entry second-level TLB waits for S1 to
    report the miss; starting that lookup on the bypass miss whenever the
    port is idle removes that wait while keeping instruction-TLB priority.

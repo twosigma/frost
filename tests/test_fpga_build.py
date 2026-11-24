@@ -2519,6 +2519,556 @@ def test_x3_rejects_disabling_misaligned_hw(
     assert "--no-misaligned-hw is only supported for vcu118" in capsys.readouterr().err
 
 
+def test_vcu118_vector_wiring() -> None:
+    """Opt-in VCU118 vector parameters, clock MMCM, and SLR1 pblock are wired consistently."""
+    source = (REPO_ROOT / "boards/vcu118/vcu118_frost.sv").read_text()
+    top = re.sub(r"//[^\n]*|/\*.*?\*/", "", source, flags=re.DOTALL)
+    parameters = re.search(
+        r"\bmodule\s+vcu118_frost\s*#\s*\((.*?)\)\s*\(", top, re.DOTALL
+    )
+    assert parameters is not None
+    assert re.search(
+        r"\bparameter\s+int\s+unsigned\s+CPU_CLK_HZ\s*=\s*200_000_000\b", parameters[1]
+    )
+    assert re.search(r"\bparameter\s+bit\s+VECTOR\s*=\s*1'b0\b", parameters[1])
+    assert re.search(
+        r"\bparameter\s+bit\s+VECTOR_ADVERTISE\s*=\s*1'b0\b", parameters[1]
+    )
+    subsystem = re.search(
+        r"\bxilinx_frost_subsystem\s*#\s*\((.*?)\)\s*u_frost_subsystem\s*\(",
+        top,
+        re.DOTALL,
+    )
+    assert subsystem is not None
+    assert re.search(r"\.CLK_FREQ_HZ\s*\(\s*CPU_CLK_HZ\s*\)", subsystem[1])
+    assert re.search(r"\.VECTOR\s*\(\s*VECTOR\s*\)", subsystem[1])
+    assert re.search(r"\.VLEN\s*\(\s*256\s*\)", subsystem[1])
+    assert re.search(r"\.VECTOR_ADVERTISE\s*\(\s*VECTOR_ADVERTISE\s*\)", subsystem[1])
+
+    clock_rtl = (REPO_ROOT / "boards/vcu118/vcu118_clock.sv").read_text()
+    assert "162_500_000" in clock_rtl
+    assert re.search(
+        r"DivclkDiv\s*=.*?\(CPU_CLK_HZ\s*==\s*162_500_000\)\s*\?\s*3\b",
+        clock_rtl,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"ClkfboutMult\s*=.*?\(CPU_CLK_HZ\s*==\s*162_500_000\)\s*\?\s*13\.000\b",
+        clock_rtl,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"Clkout0Div\s*=.*?\(CPU_CLK_HZ\s*==\s*162_500_000\)\s*\?\s*8\.000\b",
+        clock_rtl,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"Clkout1Div\s*=.*?\(CPU_CLK_HZ\s*==\s*162_500_000\)\s*\?\s*32\b",
+        clock_rtl,
+        re.DOTALL,
+    )
+    # Verify XCVU9P MMCME4_ADV limits (PFD 10-450 MHz, VCO 800-1600 MHz).
+    pfd_mhz = 300.0 / 3
+    vco_mhz = pfd_mhz * 13.0
+    assert 10.0 <= pfd_mhz <= 450.0
+    assert 800.0 <= vco_mhz <= 1600.0
+    assert int(round(vco_mhz / 8.0 * 1_000_000)) == fpga_build.VCU118_VECTOR_CLOCK_FREQ
+    assert (
+        int(round(vco_mhz / 32 * 1_000_000)) == fpga_build.VCU118_VECTOR_CLOCK_FREQ // 4
+    )
+
+    vector_xdc = (REPO_ROOT / "boards/vcu118/constr/vcu118_vector.xdc").read_text()
+    assert "create_pblock pblock_vec_slr1" in vector_xdc
+    assert "resize_pblock pblock_vec_slr1 -add {SLR1}" in vector_xdc
+    assert (
+        'NAME =~ "u_frost_subsystem/*gen_vector_unit.u_vec_unit" && !IS_PRIMITIVE'
+        in vector_xdc
+    )
+    assert "remove_cells_from_pblock [get_pblocks pblock_slr2]" in vector_xdc
+    assert "add_cells_to_pblock [get_pblocks pblock_vec_slr1]" in vector_xdc
+
+
+@pytest.mark.parametrize(
+    "options,inherited,expected,expected_clock",
+    [
+        ([], "1", ("0", "1"), 200_000_000),
+        (["--no-vector"], "1", ("0", "1"), 200_000_000),
+        (["--no-vector", "--no-misaligned-hw"], "1", ("0", "0"), 200_000_000),
+        (["--vector"], "0", ("1", "1"), 162_500_000),
+        (["--vector", "--no-misaligned-hw"], "0", ("1", "0"), 162_500_000),
+    ],
+)
+def test_vcu118_vector_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    options: list[str],
+    inherited: str,
+    expected: tuple[str, str],
+    expected_clock: int,
+) -> None:
+    """Select the two VCU118 synthesis switches independently and match bootrom clock."""
+    monkeypatch.setenv("FROST_VECTOR", inherited)
+    monkeypatch.setenv("FROST_MISALIGNED_HW", "0" if expected[1] == "1" else "1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "vcu118",
+            "--build-dir",
+            str(tmp_path),
+            "--stop-after",
+            "synth",
+            *options,
+        ],
+    )
+    compiled_clocks: list[tuple[int, str]] = []
+
+    def check_bootrom(
+        _root: Path, _output: Path, clock: int, app_name: str = "hello_world"
+    ) -> bool:
+        compiled_clocks.append((clock, app_name))
+        return True
+
+    monkeypatch.setattr(fpga_build, "compile_hello_world", check_bootrom)
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+
+    def check_synthesis(*args: Any, **kwargs: Any) -> tuple[bool, float, str]:
+        assert args[1:3] == ("vcu118", "synth")
+        assert (
+            os.environ["FROST_VECTOR"],
+            os.environ["FROST_MISALIGNED_HW"],
+        ) == expected
+        return True, 0.0, "post_synth"
+
+    monkeypatch.setattr(fpga_build, "run_step", check_synthesis)
+    fpga_build.main()
+    assert compiled_clocks == [(expected_clock, "bootrom")]
+    assert "--vector takes effect at synthesis" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "options,expected_route",
+    [
+        ([], "AggressiveExplore"),
+        (["--no-vector"], "AggressiveExplore"),
+        (["--vector"], "AggressiveExplore"),
+        (
+            ["--vector", "--route-directive", "AlternateCLBRouting"],
+            "AlternateCLBRouting",
+        ),
+        (["--vector", "--route-directive", "Explore"], "Explore"),
+    ],
+)
+def test_vcu118_vector_route_directive_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    options: list[str],
+    expected_route: str,
+) -> None:
+    """VCU118 --vector uses AggressiveExplore, honors overrides, and scopes its resume note."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "post_place_physopt.dcp").touch()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "vcu118",
+            "--build-dir",
+            str(tmp_path),
+            "--start-at",
+            "route",
+            "--stop-after",
+            "route",
+            *options,
+        ],
+    )
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+    seen: list[tuple[str, str]] = []
+
+    def check_route(*args: Any, **kwargs: Any) -> tuple[bool, float, str]:
+        seen.append((args[2], args[3]))
+        return True, 0.0, "route"
+
+    monkeypatch.setattr(fpga_build, "run_step", check_route)
+    fpga_build.main()
+    assert seen == [("route", expected_route)]
+    assert ("--vector takes effect at synthesis" in capsys.readouterr().out) == (
+        "--vector" in options
+    )
+
+
+@pytest.mark.parametrize(
+    "frost_vector,margins,expected_passes,expected_max_sweeps",
+    [
+        ("1", ["-0.300", "-0.200", "-0.100", "-0.050"], 3, 3),
+        ("1", ["-0.300", "-0.200", "-0.200", "-0.100"], 2, 3),
+        ("1", ["-0.300", "0.010"], 1, 3),
+        ("0", ["-0.300"], 10, 0),
+        ("0", ["-0.300", "-0.300"], 20, 0),
+    ],
+)
+def test_vcu118_vector_routed_physopt_policy(
+    tmp_path: Path,
+    frost_vector: str,
+    margins: list[str],
+    expected_passes: int,
+    expected_max_sweeps: int,
+) -> None:
+    """VCU118 --vector runs AggressiveExplore up to 3 improving passes; default keeps full sweep."""
+    if shutil.which("tclsh") is None:
+        pytest.skip("requires tclsh")
+    step_name = fpga_build.STEPS[5]
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    work = tmp_path / "work"
+    work.mkdir()
+    (tmp_path / "in.dcp").touch()
+    margin_list = " ".join(margins)
+    harness = tmp_path / "physopt_policy.tcl"
+    harness.write_text(
+        f"""
+set ::margins [list {margin_list}]
+set ::margin_idx 0
+set ::physopt_calls [list]
+proc set_param {{args}} {{}}
+proc current_design {{}} {{ return d0 }}
+proc list_property {{args}} {{ return {{}} }}
+proc get_ports {{args}} {{ return {{}} }}
+proc get_nets {{args}} {{ return {{}} }}
+proc report_incremental_reuse {{args}} {{ return "" }}
+proc close_design {{}} {{}}
+proc open_checkpoint {{path}} {{}}
+proc write_checkpoint {{args}} {{
+    set out [lindex $args end]
+    set f [open $out w]; puts $f dcp; close $f
+}}
+proc report_utilization {{args}} {{
+    set file_idx [lsearch -exact $args -file]
+    if {{$file_idx >= 0}} {{
+        set f [open [lindex $args [expr {{$file_idx + 1}}]] w]
+        close $f
+    }}
+}}
+proc report_high_fanout_nets {{args}} {{
+    set file_idx [lsearch -exact $args -file]
+    if {{$file_idx >= 0}} {{
+        set f [open [lindex $args [expr {{$file_idx + 1}}]] w]
+        close $f
+    }}
+}}
+proc phys_opt_design {{args}} {{
+    lappend ::physopt_calls $args
+    if {{$::margin_idx + 1 < [llength $::margins]}} {{
+        incr ::margin_idx
+    }}
+}}
+proc get_timing_paths {{args}} {{ return [list p0] }}
+proc get_property {{args}} {{
+    set prop [lindex $args end-1]
+    set prop_s [format "%s%s" SL ACK]
+    if {{$prop eq $prop_s}} {{
+        return [lindex $::margins $::margin_idx]
+    }}
+    return ""
+}}
+proc report_timing_summary {{args}} {{
+    set file_idx [lsearch -exact $args -file]
+    set path [lindex $args [expr {{$file_idx + 1}}]]
+    set val [lindex $::margins $::margin_idx]
+    set total_neg [expr {{$val >= 0.0 ? 0.0 : -10.0 + $::margin_idx}}]
+    set fail [expr {{$val >= 0.0 ? 0 : 5}}]
+    set hdr_w [format "%s%s" WN S]
+    set hdr_t [format "%s%s" TN S]
+    set f [open $path w]
+    puts $f "    ${{hdr_w}}(ns)      ${{hdr_t}}(ns)  ${{hdr_t}} Failing Endpoints"
+    puts $f "    -------      -------  ---------------------"
+    puts $f [format "    %.3f        %.3f  %d" $val $total_neg $fail]
+    close $f
+}}
+rename exit _real_exit
+proc exit {{{{code 0}}}} {{
+    puts "CALL_COUNT=[llength $::physopt_calls]"
+    puts "CALLS=$::physopt_calls"
+    puts "MAX_SWEEPS=$::max_sweeps"
+    _real_exit $code
+}}
+set argv [list vcu118 {step_name} Sweep {tmp_path / "in.dcp"} 0]
+set argc [llength $argv]
+source {REPO_ROOT / "fpga/build/build_step.tcl"}
+"""
+    )
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith("FROST_")
+    }
+    env["FROST_VECTOR"] = frost_vector
+    result = subprocess.run(
+        ["tclsh", str(harness)],
+        cwd=run_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    call_count = int(
+        next(
+            line.removeprefix("CALL_COUNT=")
+            for line in result.stdout.splitlines()
+            if line.startswith("CALL_COUNT=")
+        )
+    )
+    calls_text = next(
+        line.removeprefix("CALLS=")
+        for line in result.stdout.splitlines()
+        if line.startswith("CALLS=")
+    )
+    max_sweeps = int(
+        next(
+            line.removeprefix("MAX_SWEEPS=")
+            for line in result.stdout.splitlines()
+            if line.startswith("MAX_SWEEPS=")
+        )
+    )
+    assert call_count == expected_passes
+    assert max_sweeps == expected_max_sweeps
+    if frost_vector == "1":
+        assert calls_text == " ".join(
+            ["{-directive AggressiveExplore}"] * expected_passes
+        )
+    else:
+        assert "-retime" in calls_text
+
+
+@pytest.mark.parametrize(
+    "board,misaligned,vector,generics,expect_vector_xdc",
+    [
+        ("vcu118", None, None, (), False),
+        ("vcu118", "1", "0", (), False),
+        ("vcu118", "0", "0", ("MISALIGNED_HW=0",), False),
+        (
+            "vcu118",
+            "1",
+            "1",
+            ("CPU_CLK_HZ=162500000", "VECTOR=1", "VECTOR_ADVERTISE=1"),
+            True,
+        ),
+        (
+            "vcu118",
+            "0",
+            "1",
+            (
+                "MISALIGNED_HW=0",
+                "CPU_CLK_HZ=162500000",
+                "VECTOR=1",
+                "VECTOR_ADVERTISE=1",
+            ),
+            True,
+        ),
+        ("vcu118", "1", "invalid", None, False),
+        ("x3", "0", "0", (), False),
+        ("x3", "invalid", "invalid", (), False),
+    ],
+)
+def test_synthesis_vector_generics(
+    tmp_path: Path,
+    board: str,
+    misaligned: str | None,
+    vector: str | None,
+    generics: tuple[str, ...] | None,
+    expect_vector_xdc: bool,
+) -> None:
+    """Evaluate the Tcl that selects generics and constraints for top-level synthesis."""
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    env_proc = tcl.index("proc getenv_default {name default_value} {")
+    env_end = tcl.index("\nproc frost_insert_fetch_", env_proc)
+    xdc_start = tcl.index("    read_xdc $constraints_file")
+    xdc_end = tcl.index("    set_property top ", xdc_start)
+    synth_start = tcl.index("    set synth_args [list")
+    synth_end = tcl.index("    set_msg_config -id {Synth 8-11241}", synth_start)
+    harness = tmp_path / "synth_args.tcl"
+    harness.write_text(
+        f"""
+set board_name {board}
+set top_level_module_name {board}_frost
+set fpga_part_number part0
+set directive AlternateRoutability
+set retiming 0
+set constraints_file boards/{board}/constr/{board}.xdc
+set vector_constraints_file boards/{board}/constr/{board}_vector.xdc
+set read_xdc_files [list]
+proc read_xdc {{path}} {{ lappend ::read_xdc_files $path }}
+{tcl[env_proc:env_end]}
+{tcl[xdc_start:xdc_end]}
+{tcl[synth_start:synth_end]}
+puts "XDC=$read_xdc_files"
+puts "ARGS=$synth_args"
+"""
+    )
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in (
+            "FROST_CPU_CLK_DIV",
+            "FROST_PERF_COUNTERS",
+            "FROST_MISALIGNED_HW",
+            "FROST_VECTOR",
+        )
+    }
+    if misaligned is not None:
+        env["FROST_MISALIGNED_HW"] = misaligned
+    if vector is not None:
+        env["FROST_VECTOR"] = vector
+    result = subprocess.run(
+        ["tclsh", str(harness)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if generics is None:
+        assert result.returncode != 0
+        assert "FROST_VECTOR must be 0 or 1" in result.stderr
+        return
+    assert result.returncode == 0, result.stderr
+    xdc_line = next(
+        line.removeprefix("XDC=")
+        for line in result.stdout.splitlines()
+        if line.startswith("XDC=")
+    )
+    args_line = next(
+        line.removeprefix("ARGS=")
+        for line in result.stdout.splitlines()
+        if line.startswith("ARGS=")
+    )
+    expected_xdcs = [f"boards/{board}/constr/{board}.xdc"]
+    if expect_vector_xdc:
+        expected_xdcs.append(f"boards/{board}/constr/{board}_vector.xdc")
+    assert xdc_line.split() == expected_xdcs
+    assert args_line.split() == [
+        "-top",
+        f"{board}_frost",
+        "-part",
+        "part0",
+        "-directive",
+        "AlternateRoutability",
+        *(arg for value in generics for arg in ("-generic", value)),
+    ]
+
+
+def test_x3_rejects_disabling_vector(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The X3 board top always includes the vector unit."""
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--no-vector"])
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+    assert "--no-vector is only supported for vcu118" in capsys.readouterr().err
+
+
+def test_vcu118_default_build_inputs_unchanged_from_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prove the default VCU118 build inputs stay identical to origin/main."""
+    import hashlib
+
+    # Exact SHA-256 digests of the default VCU118 XDC and DTS on origin/main.
+    assert (
+        hashlib.sha256(
+            (REPO_ROOT / "boards/vcu118/constr/vcu118.xdc").read_bytes()
+        ).hexdigest()
+        == "95d5ad2d248a7685173a0c11c42c0b31e617585b46d2791ba19a48d228979d61"
+    )
+    assert (
+        hashlib.sha256(
+            (REPO_ROOT / "boards/vcu118/dts/frost_vcu118.dts").read_bytes()
+        ).hexdigest()
+        == "9715afd4bfcdb81cd4dc994e974761742ae5385d06e2002a424172ef6925f694"
+    )
+    assert fpga_build.BOARD_CONFIG["vcu118"] == {
+        "clock_freq": 200000000,
+        "is_ultrascale": True,
+        "synth_directive": "AlternateRoutability",
+    }
+
+    # RTL top and MMCM default parameters stay scalar and 200 MHz.
+    top_sv = (REPO_ROOT / "boards/vcu118/vcu118_frost.sv").read_text()
+    assert "parameter int unsigned CPU_CLK_HZ = 200_000_000" in top_sv
+    assert "parameter bit MISALIGNED_HW = 1'b1" in top_sv
+    assert "parameter bit VECTOR = 1'b0" in top_sv
+    assert "parameter bit VECTOR_ADVERTISE = 1'b0" in top_sv
+
+    clock_sv = (REPO_ROOT / "boards/vcu118/vcu118_clock.sv").read_text()
+    assert "parameter int unsigned CPU_CLK_HZ = 200_000_000" in clock_sv
+    assert re.search(
+        r"ClkfboutMult\s*=.*?\(CPU_CLK_HZ\s*==\s*200_000_000\)\s*\?\s*4\.000\b",
+        clock_sv,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"Clkout0Div\s*=.*?\(CPU_CLK_HZ\s*==\s*200_000_000\)\s*\?\s*6\.000\b",
+        clock_sv,
+        re.DOTALL,
+    )
+    assert re.search(
+        r"Clkout1Div\s*=.*?\(CPU_CLK_HZ\s*==\s*200_000_000\)\s*\?\s*24\b",
+        clock_sv,
+        re.DOTALL,
+    )
+
+    # Default build.py vcu118 sets FROST_VECTOR=0, compiles bootrom at 200 MHz,
+    # and passes zero extra generics or extra XDC files to synthesis.
+    monkeypatch.setenv("FROST_VECTOR", "1")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build.py", "vcu118", "--build-dir", str(tmp_path), "--stop-after", "synth"],
+    )
+    bootrom_calls: list[tuple[int, str]] = []
+
+    def capture_bootrom(
+        _root: Path, _output: Path, clock: int, app_name: str = "hello_world"
+    ) -> bool:
+        bootrom_calls.append((clock, app_name))
+        return True
+
+    monkeypatch.setattr(fpga_build, "compile_hello_world", capture_bootrom)
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+    synth_env: dict[str, str] = {}
+
+    def capture_synth(*args: Any, **kwargs: Any) -> tuple[bool, float, str]:
+        for key in (
+            "FROST_VECTOR",
+            "FROST_MISALIGNED_HW",
+            "FROST_PERF_COUNTERS",
+            "FROST_DDR_CAPACITY_LOG2_BYTES",
+        ):
+            synth_env[key] = os.environ[key]
+        return True, 0.0, "post_synth"
+
+    monkeypatch.setattr(fpga_build, "run_step", capture_synth)
+    fpga_build.main()
+    assert bootrom_calls == [(200_000_000, "bootrom")]
+    assert synth_env == {
+        "FROST_VECTOR": "0",
+        "FROST_MISALIGNED_HW": "1",
+        "FROST_PERF_COUNTERS": "0",
+        "FROST_DDR_CAPACITY_LOG2_BYTES": "31",
+    }
+
+
 def test_read_log_tail_streams_appended_text_and_survives_truncation(
     tmp_path: Path,
 ) -> None:
@@ -5147,7 +5697,10 @@ def test_placement_sweep_rejects_changed_post_opt(
 
 
 @pytest.mark.parametrize("divider", ("1", "2"))
-def test_vcu118_ddr_clock_and_capacity_contract(tmp_path: Path, divider: str) -> None:
+@pytest.mark.parametrize("vector", (None, "0", "1", "invalid"))
+def test_vcu118_ddr_clock_and_capacity_contract(
+    tmp_path: Path, divider: str, vector: str | None
+) -> None:
     """Execute the BD script and compare its clocks and aperture with the build."""
     harness = tmp_path / "bd.tcl"
     harness.write_text(r"""
@@ -5177,9 +5730,17 @@ source [lindex $argv 0]
 create_vcu118_ddr_bd
 """)
     design = REPO_ROOT / "fpga/build/vcu118_ddr_bd.tcl"
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("FROST_CPU_CLK_DIV", "FROST_VECTOR")
+    }
+    env["FROST_CPU_CLK_DIV"] = divider
+    if vector is not None:
+        env["FROST_VECTOR"] = vector
     result = subprocess.run(
         ["tclsh", str(harness), str(design)],
-        env={**os.environ, "FROST_CPU_CLK_DIV": divider},
+        env=env,
         text=True,
         capture_output=True,
         timeout=10,
@@ -5188,8 +5749,16 @@ create_vcu118_ddr_bd
         assert result.returncode != 0
         assert "fixed CPU clock" in result.stderr
         return
+    if vector == "invalid":
+        assert result.returncode != 0
+        assert "FROST_VECTOR must be 0 or 1" in result.stderr
+        return
     assert result.returncode == 0, result.stderr
-    clock = fpga_build.BOARD_CONFIG["vcu118"]["clock_freq"]
+    clock = (
+        fpga_build.VCU118_VECTOR_CLOCK_FREQ
+        if vector == "1"
+        else fpga_build.BOARD_CONFIG["vcu118"]["clock_freq"]
+    )
     assert f"CLOCK cpu_clk {clock}\n" in result.stdout
     assert f"CLOCK jtag_clk {clock // 4}\n" in result.stdout
     capacity = fpga_build.board_ddr_capacity_log2_bytes(design)
