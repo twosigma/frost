@@ -102,6 +102,15 @@ module backing_btb #(
     output logic [1:0] o_slot2_return_by_size,
     output logic [1:0][TARGET_BITS-2:0] o_slot2_target_by_size,
 
+    // Optional four-halfword window response for decoupled fetch: compares
+    // the newest read (images 0 and 1) against i_win_pc and returns per-
+    // halfword hits and fields in {W+1:hi, W+1:lo, W:hi, W:lo} order.
+    input  logic [XLEN-1:0] i_win_pc = '0,
+    output logic [3:0] o_win_hit,
+    output logic [3:0] o_win_compressed,
+    output logic [3:0] o_win_return,
+    output logic [3:0][TARGET_BITS-2:0] o_win_target,
+
     // Training: a jump's update from the one ex_comb_synthesizer selects,
     // at most one per cycle
     input logic            i_update,
@@ -637,6 +646,42 @@ module backing_btb #(
       o_return[1] = o_slot2_return_by_size[i_packet_compressed];
       o_target[1] = o_slot2_target_by_size[i_packet_compressed];
       o_hit[1] = shift_slot2_hit_by_size[shift_select][i_packet_compressed];
+    end
+  end
+
+  // Four-halfword window response from the newest read (src 0): image 0 holds
+  // word W (halfwords 0 and 1), image 1 holds word W+1 (halfwords 2 and 3,
+  // suppressed past the last set).
+  logic win_aligned;
+  assign win_aligned = request_valid_q && (request_index_q == i_win_pc[IndexBits+1:2]);
+  logic [1:0][WAYS-1:0] win_upper_match;
+  logic [3:0][WAYS-1:0] win_hw_match;
+  for (genvar img = 0; img < 2; img++) begin : gen_win_img
+    for (genvar way = 0; way < WAYS; way++) begin : gen_win_way
+      tag_t wtag;
+      assign wtag = tags_q[img][way*TagEntryBits+:TagEntryBits];
+      assign win_upper_match[img][way] = wtag.valid &&
+          (wtag.upper == i_win_pc[XLEN-1:IndexBits+2]) && !(img == 1 && last_set);
+      assign win_hw_match[img*2+0][way] = win_upper_match[img][way] && !wtag.halfword;
+      assign win_hw_match[img*2+1][way] = win_upper_match[img][way] && wtag.halfword;
+    end
+  end
+  always_comb begin
+    o_win_hit        = '0;
+    o_win_compressed = '0;
+    o_win_return     = '0;
+    o_win_target     = '0;
+    for (int h = 0; h < 4; h++) begin
+      int img;
+      img = h >> 1;
+      for (int way = 0; way < WAYS; way++) begin
+        if (win_hw_match[h][way]) begin
+          o_win_hit[h]        = win_aligned;
+          o_win_compressed[h] = o_win_compressed[h] || entry_compressed[0][img][way];
+          o_win_return[h]     = o_win_return[h] || entry_return[0][img][way];
+          o_win_target[h]     = o_win_target[h] | entry_target[0][img][way];
+        end
+      end
     end
   end
 
