@@ -185,7 +185,7 @@ module fp_engine_equiv_harness #(
       5'd20: ext_op_at = riscv_pkg::FLTQ_S;
       5'd21: ext_op_at = riscv_pkg::FLEQ_D;
       5'd22: ext_op_at = riscv_pkg::FLTQ_D;
-      5'd23: ext_op_at = riscv_pkg::FCVTMOD_W_D;
+      5'd23: ext_op_at = riscv_pkg::FLI_H;
       5'd24: ext_op_at = riscv_pkg::FROUND_D;
       5'd25: ext_op_at = riscv_pkg::FROUNDNX_S;
       5'd26: ext_op_at = riscv_pkg::FROUND_S;
@@ -228,7 +228,7 @@ module fp_engine_equiv_harness #(
       riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU,
       riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
       riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X, riscv_pkg::FMV_H_X,
-      riscv_pkg::FLI_S, riscv_pkg::FLI_D:
+      riscv_pkg::FLI_S, riscv_pkg::FLI_D, riscv_pkg::FLI_H:
       op_has_int_src = 1'b1;
       default: op_has_int_src = 1'b0;
     endcase

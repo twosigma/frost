@@ -1158,9 +1158,10 @@ registered commit, memory and vector-to-scalar instructions at the head,
 load reads it on the next edge, with no cycle to spare.
 
 The X3 configuration uses `VECTOR=1`, `VLEN=256` and `VECTOR_ADVERTISE=1`, so
-`misa.V` reads one. Its device tree advertises V, Zve32x, Zve32f, Zve64x,
-Zve64f and Zve64d, with the Zvl32b, Zvl64b, Zvl128b and Zvl256b length
-guarantees. Software enables the state by writing `mstatus.VS`.
+`misa.V` reads one. Its device tree advertises V, Zvbb, Zvbc, Zve32f, Zve32x,
+Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn, Zvknc, Zvkned,
+Zvkng, Zvknha, Zvknhb, Zvkt, and the Zvl32b, Zvl64b, Zvl128b and Zvl256b
+length guarantees. Software enables the state by writing `mstatus.VS`.
 `VECTOR_ADVERTISE=0` leaves `misa.V` clear without removing the unit.
 With `VECTOR=0` the vector CSRs do not exist, VS reads zero and `misa.V`
 reads zero. This configuration requires `VECTOR_ADVERTISE=0`; advertising

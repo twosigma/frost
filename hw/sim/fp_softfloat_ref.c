@@ -153,6 +153,14 @@ static uint64_t fli_d(unsigned idx)
     return f32_to_f64(f32v(fli_s[idx])).v;
 }
 
+/* Zfa FLI.H constants, half precision (index 1 is 2^-14, indices 2 and 3 are
+ * subnormals 2^-16 and 2^-15, index 29 overflows to +inf). */
+static const uint16_t fli_h[32] = {0xBC00U, 0x0400U, 0x0100U, 0x0200U, 0x1C00U, 0x2000U, 0x2C00U,
+                                   0x3000U, 0x3400U, 0x3500U, 0x3600U, 0x3700U, 0x3800U, 0x3900U,
+                                   0x3A00U, 0x3B00U, 0x3C00U, 0x3D00U, 0x3E00U, 0x3F00U, 0x4000U,
+                                   0x4100U, 0x4200U, 0x4400U, 0x4800U, 0x4C00U, 0x5800U, 0x5C00U,
+                                   0x7800U, 0x7C00U, 0x7C00U, 0x7E00U};
+
 /* FCVTMOD.W.D as the Zfa specification and Sail define it: the low 32 bits of
  * the integer part, NV when the integer is outside the signed 32-bit range (or
  * for NaN and infinity), otherwise NX when the fraction is nonzero. */
@@ -346,6 +354,8 @@ int fp_softfloat_ref(
         r = box32(fli_s[a & 31U]);
     else if (OP("FLI_D"))
         r = fli_d((unsigned) (a & 31U));
+    else if (OP("FLI_H"))
+        r = box16(fli_h[a & 31U]);
     /* FMINM/FMAXM: FMIN/FMAX (and their NV), but any NaN gives the canonical NaN */
     else if (OP("FMINM_S") || OP("FMAXM_S")) {
         uint32_t m = minmax32(as, bs, OP("FMAXM_S"));

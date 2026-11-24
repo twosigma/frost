@@ -288,7 +288,8 @@ and check AXI burst order, byte masks, allocation hints, errors and reset on bot
 
 `coherence_home_array` and its BRAM and packed-tag variants check concurrent
 tag decisions, explicit row reads and masked updates, including the banked
-UltraRAM form. They do not request parallel way reads. They exercise physical-row
+UltraRAM form, and verify that `o_resp_spec` holds through stage
+`DATA_READ_LATENCY - 1` and clears at stage `DATA_READ_LATENCY`. They exercise physical-row
 aliases, live victim exclusions, continuous read/write contention and reset
 with responses in flight. The `coherence_array_reset_*` and
 `coherence_home_array_reset_*` benches exercise both reset modes in block RAM
@@ -328,7 +329,9 @@ prefetch enabled or disabled.
 and CPU observation cuts; `coherence_home_rowread` runs the UltraRAM home with `PARALLEL_READ=0` so row reads after the decision and probe replies ahead of row data are exercised, and `coherence_cluster_misses` runs the cluster cases with three L1D request endpoints. `coherence_cluster_misses_link1` and `coherence_store_pressure_link1` repeat their cases with one register stage between the L1D and the home (the harness's `LINK_STAGES`). Home cases hold every memory fill while resident
 requests execute, preserve waiter order across an older writer, check
 current data on waiter reentry, sweep fills, puts and dirty probe updates
-across parallel way reads of a set, and run back-to-back hit lookups across
+across parallel way reads of a set, verify that `DMAWrite` and Zicbom lookups
+skip parallel way reads with `FAST_TAG_LAUNCH` off and on, and run back-to-back
+hit lookups across
 and within a set. Two DMA reads with an intervening clean,
 flush or invalidate check that the later reader leaves the fill's way
 available to the management request. Streaming cases check way-0 miss placement,
@@ -1183,7 +1186,9 @@ writes those checks into the program. By default the finished program runs on
 Spike. The frost image supplies the pinned tools in `/opt/riscv-vector-tests`.
 [Upstream suite](https://github.com/chipsalliance/riscv-vector-tests)
 
-`--rtl` selects the core's vector ISA. Each vector length has 3,017 generated
+`--rtl` selects the extensions in the core's vector ISA that the pinned
+generator supports (`V`, `Zvfhmin`, `Zvfh`, `Zvbb`, `Zvbc`, `Zvkg`, `Zvkned`,
+and `Zvknha`; the generator omits `Zvknhb`). Each vector length has 3,017 generated
 files across 665 instruction forms. The classes are `float` (1,243),
 `integer` (1,043), `load-store` (487), `mask-permute-reduce` (163), `bitmanip`
 (63) and `crypto` (18). The Spike selection also includes the upstream bfloat16
@@ -2217,7 +2222,7 @@ and Fast Python Tests jobs locally.
 | Cocotb unit benches (two jobs of about equal duration, split by the `cocotb_unit_a` and `cocotb_unit_b` marks), DDR probes, fetch fuzzers, programs on the SRAM macros, OpenSBI smoke and reset, cache counters over OpenOCD | BRAM only: tier-independent or fixed-layout runs |
 | Physical address apertures | Software boundary, fetch, translation, DMA, and NIC checks at 1, 64, and 128 GiB; generic synthesis at 128 GiB, with the Yosys jobs covering the 1 GiB default |
 | Architecture compliance | BRAM and DDR, in groups of extensions, including CMO's Zicboz `cbo.zero` case in both tiers; excludes Zifencei on BRAM and F/D on DDR; F and D share three BRAM shards; only the I B C group in BRAM collects coverage; a fast check compares the workflow's groups with the runner's supported extensions |
-| riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build |
+| riscv-tests | Physical mode in BRAM and DDR (including `rv64mzicbo`), user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build; a fast check compares the workflow's suites with the runner's supported suites |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
 | TestRIG vector | Two jobs (`core` and `segment`) at each of VLEN 128, 256, and 512 (six jobs total) on main pushes and pull requests labelled `run-ci`. Across both shards, each vector length compares 12 seeded vector traces, source-width and directed vector traces (state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride, strided, indexed, fault-only-first, integer comparison, carry/borrow, mask-register, integer multiply-add, integer scalar/merge, widening and narrowing integer, fixed-point, single-width FP, whole-register, widening FP, permute, reduction, and `vector_segment.S` plus five generated segment matrix traces) against Sail, plus VLEN 128 result-control checks |

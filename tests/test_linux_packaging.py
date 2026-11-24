@@ -570,19 +570,36 @@ def test_vector_device_tree_matches_board(board: str, tmp_path: Path) -> None:
     assert tokens == extensions
     assert len(extensions) == len(set(extensions))
     vector = {ext for ext in extensions if ext == "v" or ext.startswith("zv")}
-    expected = {
-        "v",
-        "zve32x",
+    expected_zv = (
+        "zvbb",
+        "zvbc",
         "zve32f",
-        "zve64x",
-        "zve64f",
+        "zve32x",
         "zve64d",
+        "zve64f",
+        "zve64x",
+        "zvfh",
+        "zvfhmin",
+        "zvkb",
+        "zvkg",
+        "zvkn",
+        "zvknc",
+        "zvkned",
+        "zvkng",
+        "zvknha",
+        "zvknhb",
+        "zvkt",
         "zvl32b",
         "zvl64b",
         "zvl128b",
         "zvl256b",
-    }
+    )
+    expected = {"v", *expected_zv}
     assert vector == (expected if board == "x3" else set())
+    assert not (
+        {"zvks", "zvksc", "zvksed", "zvksg", "zvksh", "zvfbfmin", "zvfbfwma"}
+        & set(extensions)
+    )
     assert ("svpbmt" in extensions) == (board == "x3")
     assert ("_svpbmt" in properties["riscv,isa"]) == (board == "x3")
     first_supervisor = next(
@@ -592,7 +609,11 @@ def test_vector_device_tree_matches_board(board: str, tmp_path: Path) -> None:
         i < first_supervisor for i, ext in enumerate(extensions) if ext.startswith("z")
     )
     if board == "x3":
-        assert extensions[extensions.index("zkt") + 1] == "zve32x"
+        zv_slice = tuple(ext for ext in extensions if ext.startswith("zv"))
+        assert zv_slice == expected_zv == packer.X3_VECTOR_EXTENSIONS
+        zv_binding = [ext for ext in zv_slice if not ext.startswith("zvl")]
+        assert zv_binding == sorted(zv_binding)
+        assert extensions[extensions.index("zkt") + 1] == "zvbb"
         assert extensions[extensions.index("smaia") - 1] == "zvl256b"
     top = (REPO_ROOT / f"boards/{board}/{board}_frost.sv").read_text()
     if board == "x3":
@@ -801,13 +822,14 @@ def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:
 def test_advertised_isa_lists_agree() -> None:
     """Board DTs agree with the packer, and docs match the advertised ISAs.
 
-    X3 also advertises V and its implemented Zve and Zvl subsets, which
-    README.md lists. Also checks that the predecode Python twin serializes
-    the three Svinval words.
+    X3 also advertises V, its Zve and Zvl subsets, and its implemented Zv
+    extensions, which README.md lists. Also checks that the predecode Python
+    twin serializes the three Svinval words.
     """
     packer = _load_module(SBI_PACKER)
     assert packer.ISA_BASE == "rv64i"
     assert len(packer.ISA_EXTENSIONS) == len(set(packer.ISA_EXTENSIONS))
+    assert len(packer.X3_ISA_EXTENSIONS) == len(set(packer.X3_ISA_EXTENSIONS))
     assert len(packer.VCU118_ISA_EXTENSIONS) == len(set(packer.VCU118_ISA_EXTENSIONS))
     assert len(packer.VCU118_VECTOR_ISA_EXTENSIONS) == len(
         set(packer.VCU118_VECTOR_ISA_EXTENSIONS)
@@ -818,6 +840,7 @@ def test_advertised_isa_lists_agree() -> None:
 
     for isa_str, isa_exts in (
         (packer.ISA_STRING, packer.ISA_EXTENSIONS),
+        (packer.X3_ISA_STRING, packer.X3_ISA_EXTENSIONS),
         (packer.VCU118_ISA_STRING, packer.VCU118_ISA_EXTENSIONS),
         (packer.VCU118_VECTOR_ISA_STRING, packer.VCU118_VECTOR_ISA_EXTENSIONS),
     ):
@@ -888,24 +911,29 @@ def test_advertised_isa_lists_agree() -> None:
 
     advertised = set(packer.ISA_EXTENSIONS)
     x3_advertised = set(packer.X3_ISA_EXTENSIONS)
+    x3_v_implied = {
+        "zve32f",
+        "zve32x",
+        "zve64d",
+        "zve64f",
+        "zve64x",
+        "zvl32b",
+        "zvl64b",
+        "zvl128b",
+        "zvl256b",
+    }
 
     readme = (REPO_ROOT / "README.md").read_text()
     ext_section = readme.split("### Supported RISC-V Extensions\n", 1)[1].split(
         "\n### Microarchitecture", 1
     )[0]
     readme_exts: set[str] = set()
-    vector_unadvertised = {"zvbb", "zvfhmin", "zvfh", "zvbc", "zvkng"}
     for match in re.finditer(
         r"^\|\s*\*\*([^*]+)\*\*\s*\|\s*(.*?)\s*\|$", ext_section, re.M
     ):
         names, desc = match[1], match[2]
         for raw_token in names.split(","):
             token = raw_token.strip().lower()
-            if token in vector_unadvertised:
-                assert (
-                    "unadvertised" in desc.lower()
-                    or "advertisement remain disabled" in desc.lower()
-                ), token
             if token == "rv64i":
                 readme_exts.add("i")
             elif token == "b":
@@ -913,7 +941,7 @@ def test_advertised_isa_lists_agree() -> None:
             elif token == "v":
                 assert "VLEN 256" in desc
                 readme_exts.add("v")
-                readme_exts.update(packer.X3_VECTOR_EXTENSIONS)
+                readme_exts.update(x3_v_implied)
             elif token == "supervisor mode":
                 assert "Sv39" in desc and "Sstc" in desc
                 readme_exts.add("sstc")
@@ -922,9 +950,9 @@ def test_advertised_isa_lists_agree() -> None:
             else:
                 readme_exts.add(token)
     # Supm needs a tagged-address ABI that the supplied Linux image lacks.
-    # README.md describes the X3 configuration, which advertises V (VLEN 256).
-    readme_unadvertised = {"supm"} | (readme_exts & vector_unadvertised)
-    assert not (vector_unadvertised & x3_advertised)
+    # README.md describes the X3 configuration, which advertises V (VLEN 256)
+    # and the implemented Zv extensions.
+    readme_unadvertised = {"supm"}
     assert readme_unadvertised <= readme_exts
     assert not (readme_unadvertised & x3_advertised)
     assert readme_exts - readme_unadvertised == x3_advertised
@@ -946,6 +974,23 @@ def test_advertised_isa_lists_agree() -> None:
     ):
         assert priv_ext in linux_isa_section
         assert priv_ext.lower() in advertised
+    for zv_ext in (
+        "Zvbb",
+        "Zvbc",
+        "Zvfh",
+        "Zvfhmin",
+        "Zvkb",
+        "Zvkg",
+        "Zvkn",
+        "Zvknc",
+        "Zvkned",
+        "Zvkng",
+        "Zvknha",
+        "Zvknhb",
+        "Zvkt",
+    ):
+        assert zv_ext in linux_isa_section
+        assert zv_ext.lower() in x3_advertised
 
     roadmap = (REPO_ROOT / "ROADMAP.md").read_text()
     rva23_section = roadmap.split("## RVA23 profile and the vector extension\n", 1)[
@@ -976,10 +1021,15 @@ def test_advertised_isa_lists_agree() -> None:
                 roadmap_implemented.add(ext_name)
         else:
             roadmap_unadvertised.add(ext_name)
-    non_rva23_advertised = {"smaia", "ssaia", "zbkb", "zbkc"}
+    non_rva23_advertised = (
+        {"smaia", "ssaia", "zbkb", "zbkc"}
+        | x3_v_implied
+        | {"zvkb", "zvkg", "zvkn", "zvknc", "zvkned", "zvknha", "zvknhb"}
+    )
     assert not (non_rva23_advertised & roadmap_unadvertised)
-    assert (roadmap_implemented | non_rva23_advertised) == advertised | {"v"}
-    assert not (roadmap_unadvertised & advertised)
+    assert (roadmap_implemented | non_rva23_advertised) == x3_advertised
+    assert not (roadmap_unadvertised & x3_advertised)
+    assert roadmap_unadvertised == {"supm"}
 
     sail_raw = (REPO_ROOT / "verif" / "testrig" / "sail_frost.json").read_text()
     sail_clean = re.sub(r"^\s*//.*$", "", sail_raw, flags=re.M)
@@ -1016,6 +1066,24 @@ def test_advertised_isa_lists_agree() -> None:
         (sail_enabled - sail_umbrella_only) | {"i", "c"} | sail_not_toggled
     )
     assert sail_advertised == advertised
+
+    sail_v256_raw = (
+        REPO_ROOT / "verif" / "testrig" / "sail_frost_vlen256.json"
+    ).read_text()
+    sail_v256_clean = re.sub(r"^\s*//.*$", "", sail_v256_raw, flags=re.M)
+    sail_v256_exts = json.loads(sail_v256_clean)["extensions"]
+    sail_v256_enabled = {
+        key.lower()
+        for key, value in sail_v256_exts.items()
+        if isinstance(value, dict)
+        and (value.get("supported") is True or value.get("support_level") == "Full")
+    }
+    # Sail enables Zvkb implicitly via Zvbb, and models V's Zve*/Zvl* subsets
+    # and the NIST Zvk* aggregate names without separate toggle entries.
+    assert (
+        sail_v256_enabled | x3_v_implied | {"zvkb", "zvkn", "zvknc", "zvkng"}
+        == x3_advertised - advertised
+    )
 
     predecode = _load_module(
         REPO_ROOT / "sw" / "common" / "generate_imem_predecode_init.py"

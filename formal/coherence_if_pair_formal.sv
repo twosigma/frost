@@ -71,6 +71,7 @@ module coherence_if_pair_formal (
       .o_work_addr(),
       .o_work_prefetch(),
       .o_work_cmo(),
+      .o_work_no_spec(),
       .i_count_valid(1'b0),
       .i_count_tid('0),
       .o_waiting(),
