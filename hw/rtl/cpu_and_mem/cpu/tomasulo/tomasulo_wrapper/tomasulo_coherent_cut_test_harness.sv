@@ -454,6 +454,8 @@ module tomasulo_coherent_cut_test_harness #(
       .o_head_mem_fp_store(),
       .o_head_mem_atomic(),
       .o_head_fallthrough_pc(),
+      .o_walk_spec_valid(),
+      .o_walk_spec_vpn(),
       .*
   );
   coherence_l1d #(

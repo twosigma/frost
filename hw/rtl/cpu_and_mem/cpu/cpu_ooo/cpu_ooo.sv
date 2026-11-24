@@ -860,8 +860,8 @@ module cpu_ooo #(
     if (i_rst) sfence_tlb_flush_active_q <= 1'b0;
     else sfence_tlb_flush_active_q <= sfence_tlb_flush_active;
   end
-  logic walk_req_valid, walk_req_ready, walk_hold;
-  logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn;
+  logic walk_req_valid, walk_req_ready, walk_hold, walk_spec_valid;
+  logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn, walk_spec_vpn;
   logic walk_resp_valid;
   riscv_pkg::ptw_resp_t walk_resp;
   logic mret_start_is_sret;
@@ -2871,6 +2871,8 @@ module cpu_ooo #(
       .i_walk_req_ready(walk_req_ready),
       .o_walk_vpn(walk_vpn),
       .o_walk_hold(walk_hold),
+      .o_walk_spec_valid(walk_spec_valid),
+      .o_walk_spec_vpn(walk_spec_vpn),
       .i_walk_resp_valid(walk_resp_valid),
       .i_walk_resp(walk_resp),
       .o_rob_full(rob_full),
@@ -4811,6 +4813,18 @@ module cpu_ooo #(
   assign ma_walk_resp_valid = ptw_resp_valid && walk_owner_ma_q;
   assign vec_walk_resp_valid = ptw_resp_valid && walk_owner_vec_q;
 
+  // Speculative L2 TLB pre-read when no real walk request is offered: prefer
+  // a data operation entering S1, else the registered fetch PC. !walk_hold
+  // guarantees the data MMU is not requesting, and excluding iwalk_req_valid,
+  // ma_walk_select and vec_walk_select keeps l2_spec_valid disjoint from
+  // ptw_req_valid.
+  logic l2_spec_en, l2_spec_valid;
+  logic [riscv_pkg::Sv39VpnBits-1:0] l2_spec_vpn;
+  assign l2_spec_en = !walk_hold && !iwalk_req_valid && !ma_walk_select && !vec_walk_select;
+  assign l2_spec_valid = l2_spec_en && (walk_spec_valid || csr_fetch_translation_active);
+  assign l2_spec_vpn = walk_spec_valid ? walk_spec_vpn :
+      riscv_pkg::Sv39VpnBits'({{riscv_pkg::Sv39VpnBits{1'b0}}, o_pc} >> 12);
+
   // The second-level TLB answers repeat translations before the walker sees
   // them and stores the clean 4 KiB translations the walker returns. With
   // L2TLB_SETS = 0 the requests pass to the walker unchanged.
@@ -4829,6 +4843,8 @@ module cpu_ooo #(
         .i_req_valid(ptw_req_valid),
         .o_req_ready(ptw_req_ready),
         .i_req_vpn(ptw_req_vpn),
+        .i_spec_valid(l2_spec_valid),
+        .i_spec_vpn(l2_spec_vpn),
         .o_resp_valid(ptw_resp_valid),
         .o_resp(walk_resp),
         .o_ptw_req_valid(l2_ptw_req_valid),

@@ -339,6 +339,10 @@ module rs_payload_twin_formal #(
   logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn_b;
   logic o_walk_hold_a;
   logic o_walk_hold_b;
+  logic o_walk_spec_valid_a;
+  logic o_walk_spec_valid_b;
+  logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_spec_vpn_a;
+  logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_spec_vpn_b;
   logic o_coh_admit_ready_a;
   logic o_coh_admit_ready_b;
   logic o_coh_admit_clean_a;
@@ -679,6 +683,8 @@ module rs_payload_twin_formal #(
       .i_walk_req_ready(i_walk_req_ready),
       .o_walk_vpn(o_walk_vpn_a),
       .o_walk_hold(o_walk_hold_a),
+      .o_walk_spec_valid(o_walk_spec_valid_a),
+      .o_walk_spec_vpn(o_walk_spec_vpn_a),
       .i_walk_resp_valid(i_walk_resp_valid),
       .i_walk_resp(i_walk_resp),
       .i_widen_commit_ok(i_widen_commit_ok),
@@ -1038,6 +1044,8 @@ module rs_payload_twin_formal #(
       .i_walk_req_ready(i_walk_req_ready),
       .o_walk_vpn(o_walk_vpn_b),
       .o_walk_hold(o_walk_hold_b),
+      .o_walk_spec_valid(o_walk_spec_valid_b),
+      .o_walk_spec_vpn(o_walk_spec_vpn_b),
       .i_walk_resp_valid(i_walk_resp_valid),
       .i_walk_resp(i_walk_resp),
       .i_widen_commit_ok(i_widen_commit_ok),
@@ -1325,6 +1333,8 @@ module rs_payload_twin_formal #(
     assert (o_walk_req_valid_a == o_walk_req_valid_b);
     if (o_walk_req_valid_a) assert (o_walk_vpn_a == o_walk_vpn_b);
     assert (o_walk_hold_a == o_walk_hold_b);
+    assert (o_walk_spec_valid_a == o_walk_spec_valid_b);
+    if (o_walk_spec_valid_a) assert (o_walk_spec_vpn_a == o_walk_spec_vpn_b);
     assert (o_coh_admit_ready_a == o_coh_admit_ready_b);
     assert (o_coh_admit_clean_a == o_coh_admit_clean_b);
     assert (o_coh_inval_done_a == o_coh_inval_done_b);

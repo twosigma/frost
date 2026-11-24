@@ -24,9 +24,12 @@
  * after the request fires with the stored {PBMT, PPN, RWXUD, G}, while the
  * request port is already ready for the next lookup; a miss goes to the
  * walker, and the clean 4 KiB translation it returns is stored on its way back.
- * Both arrays keep the leaf's Svpbmt field beside its permissions, and the PPN
- * the walker returned (the uncached alias's for NC or IO over DDR), so a hit
- * answers exactly the walk it stored.
+ * While idle with no real request, an optional speculative pre-read
+ * (i_spec_valid, i_spec_vpn) reads the target set one cycle ahead so a matching
+ * request on the next cycle resolves immediately (one-cycle hit response, or
+ * same-cycle walker launch on miss). Both arrays keep the leaf's Svpbmt field
+ * beside its permissions, and the PPN the walker returned (the uncached
+ * alias's for NC or IO over DDR), so a hit answers exactly the walk it stored.
  *
  * Superpage leaves (2 MiB and 1 GiB) go to a separate fully associative side
  * array of SP_ENTRIES entries. Its tags, ASIDs, global bits, levels and valid
@@ -100,6 +103,11 @@ module l2tlb #(
     input  logic                               i_req_valid,
     output logic                               o_req_ready,
     input  logic                 [VpnBits-1:0] i_req_vpn,
+    // Speculative pre-read while idle: read the block RAM set one cycle ahead
+    // so a matching request on the next cycle resolves immediately. Asserted
+    // only while i_req_valid is low.
+    input  logic                               i_spec_valid = 1'b0,
+    input  logic                 [VpnBits-1:0] i_spec_vpn = '0,
     output logic                               o_resp_valid,
     output riscv_pkg::ptw_resp_t               o_resp,
 
@@ -131,6 +139,9 @@ module l2tlb #(
   logic [VpnBits-1:0] vpn_q;
   logic [AsidW-1:0] asid_q;
   logic [SetBits-1:0] set_q;
+  // Previous idle cycle pre-read the set for (vpn_q, asid_q) into rd_q.
+  logic spec_valid_q;
+  logic spec_hit_req;
 
   // Valid bits live in flops so a flush-all is one cycle and the fill can look
   // for a free way; the entries themselves are in block RAM.
@@ -189,12 +200,14 @@ module l2tlb #(
   assign flush_all_now = flush_start && (!(i_flush.use_va || i_flush.use_asid) || flush_busy);
 
   // ---------------------------------------------------------------------------
-  // Array read: while idle, the offered request's set index feeds the block
-  // RAMs, so the set is read in the cycle the request fires and answers in the
-  // next. A flush scan reads the following set while comparing this one.
+  // Array read: while idle, either a speculative pre-read or the offered
+  // request's set index feeds the block RAMs, so the set is read in that cycle
+  // and answers in the next. A flush scan reads the following set while
+  // comparing this one.
   // ---------------------------------------------------------------------------
-  assign rd_addr = (state_q == S_IDLE) ? i_req_vpn[SetBits-1:0] :
-                   (state_q == S_FL_CMP && fl_scan_q) ? set_q + 1'b1 : set_q;
+  assign rd_addr = (state_q == S_IDLE) ?
+      (i_spec_valid ? i_spec_vpn[SetBits-1:0] : i_req_vpn[SetBits-1:0]) :
+      (state_q == S_FL_CMP && fl_scan_q) ? set_q + 1'b1 : set_q;
   for (genvar w = 0; w < WAYS; w++) begin : g_way
     (* ram_style = "block" *) logic [EntryBits-1:0] mem[SETS];
     always_ff @(posedge i_clk) begin
@@ -367,6 +380,9 @@ module l2tlb #(
   // ---------------------------------------------------------------------------
   // Control
   // ---------------------------------------------------------------------------
+  assign spec_hit_req = (state_q == S_IDLE) && i_req_valid && o_req_ready &&
+                        spec_valid_q && (i_req_vpn == vpn_q) && (i_asid == asid_q);
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       state_q <= S_IDLE;
@@ -377,9 +393,11 @@ module l2tlb #(
       sp_rr_q <= '0;
       sp_victim_q <= '0;
       hit_resp_valid_q <= 1'b0;
+      spec_valid_q <= 1'b0;
       fl_scan_q <= 1'b0;
     end else begin
       hit_resp_valid_q <= 1'b0;
+      spec_valid_q <= 1'b0;
 
       if (fill_en) begin
         valid_q[victim_q][set_q] <= 1'b1;
@@ -393,10 +411,26 @@ module l2tlb #(
       case (state_q)
         S_IDLE: begin
           if (i_req_valid && o_req_ready) begin
-            vpn_q   <= i_req_vpn;
-            asid_q  <= i_asid;
-            set_q   <= i_req_vpn[SetBits-1:0];
-            state_q <= S_CMP;
+            if (spec_hit_req) begin
+              if (sp_any_hit || any_hit) begin
+                hit_resp_valid_q <= 1'b1;
+                state_q <= S_IDLE;
+              end else begin
+                victim_q <= victim;
+                sp_victim_q <= sp_victim;
+                state_q <= i_ptw_req_ready ? S_WAIT : S_FWD;
+              end
+            end else begin
+              vpn_q   <= i_req_vpn;
+              asid_q  <= i_asid;
+              set_q   <= i_req_vpn[SetBits-1:0];
+              state_q <= S_CMP;
+            end
+          end else if (i_spec_valid && o_req_ready) begin
+            vpn_q        <= i_spec_vpn;
+            asid_q       <= i_asid;
+            set_q        <= i_spec_vpn[SetBits-1:0];
+            spec_valid_q <= 1'b1;
           end
         end
         S_CMP: begin
@@ -434,6 +468,7 @@ module l2tlb #(
       if (i_discard && !flush_busy) begin
         state_q <= S_IDLE;
         hit_resp_valid_q <= 1'b0;
+        spec_valid_q <= 1'b0;
       end
 
       // Flushes win over everything above.
@@ -442,19 +477,22 @@ module l2tlb #(
         sp_valid_q <= '0;
         state_q <= S_IDLE;
         hit_resp_valid_q <= 1'b0;
+        spec_valid_q <= 1'b0;
       end else if (flush_start) begin
         fl_q <= i_flush;
         fl_scan_q <= !i_flush.use_va;
         set_q <= i_flush.use_va ? i_flush.vpn[SetBits-1:0] : '0;
         state_q <= S_FL_RD;
         hit_resp_valid_q <= 1'b0;
+        spec_valid_q <= 1'b0;
       end
     end
   end
 
   assign o_req_ready = (state_q == S_IDLE) && !i_discard && !i_flush.en && !flush_busy;
 
-  assign o_ptw_req_valid = (state_q == S_FWD) || ((state_q == S_CMP) && !any_hit && !sp_any_hit);
+  assign o_ptw_req_valid = (state_q == S_FWD) ||
+                           (((state_q == S_CMP) || spec_hit_req) && !any_hit && !sp_any_hit);
   assign o_ptw_req_vpn = vpn_q;
 
   // The walker's response passes straight through; a hit answers from its register.
@@ -462,6 +500,18 @@ module l2tlb #(
   assign o_resp_valid = (hit_resp_valid_q || ((state_q == S_WAIT) && i_ptw_resp_valid)) &&
                         !i_discard;
   assign o_resp = hit_resp_valid_q ? hit_resp_q : i_ptw_resp;
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  logic reset_seen_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) reset_seen_q <= 1'b1;
+    if (reset_seen_q && !i_rst) begin
+      p_spec_req_disjoint : assert (!(i_req_valid && i_spec_valid));
+    end
+  end
+`endif
+`endif
 
 `ifdef FORMAL
   // Reference: for one watched page and lookup ASID, shadow the entries the
@@ -486,6 +536,7 @@ module l2tlb #(
   always_comb begin
     if (i_flush.en) assume (i_discard);
     if ((state_q == S_WAIT) && i_ptw_resp_valid) assume (i_ptw_resp.vpn == vpn_q);
+    assume (!(i_req_valid && i_spec_valid));
   end
   always_ff @(posedge i_clk) begin
     if (f_past_valid && $past(i_flush.en) && i_flush.en) assume ($stable(i_flush));
@@ -596,7 +647,7 @@ module l2tlb #(
   end
 
   logic f_target;  // the lookup being compared is the watched one
-  assign f_target = (state_q == S_CMP) && (vpn_q == f_vpn) && (asid_q == f_la);
+  assign f_target = ((state_q == S_CMP) || spec_hit_req) && (vpn_q == f_vpn) && (asid_q == f_la);
 
   logic f_hit_ng_data, f_hit_g_data;
   assign f_hit_ng_data = f_live_ng && (hit_entry[PpnBits+PermBits-1:PermBits] == f_ng_ppn) &&
@@ -652,11 +703,13 @@ module l2tlb #(
       p_hit_sound : assert (!(f_target && any_hit) || f_live_ng || f_live_g);
       p_sp_hit_sound : assert (!(f_target && sp_any_hit) || (|f_sp_live_ng) || (|f_sp_live_g));
       // A superpage hit never reaches the walker.
-      p_sp_hit_no_walk : assert (!(state_q == S_CMP && sp_any_hit) || !o_ptw_req_valid);
+      p_sp_hit_no_walk :
+      assert (!(((state_q == S_CMP) || spec_hit_req) && sp_any_hit) || !o_ptw_req_valid);
       // The answer is one of the entries the shadow holds, bit for bit.
       p_hit_data : assert (!(f_target && any_hit) || f_hit_ng_data || f_hit_g_data);
       // No lookup runs, and none is accepted, while a flush runs.
-      p_no_lookup_in_flush : assert (!flush_busy || (!o_req_ready && state_q != S_CMP));
+      p_no_lookup_in_flush :
+      assert (!flush_busy || (!o_req_ready && state_q != S_CMP && !spec_valid_q));
       p_no_ready_with_flush : assert (!i_flush.en || !o_req_ready);
       // Only clean translations fill: 4 KiB leaves the set-associative
       // array, superpages (level 1 or 2: the level's bits differ) the side
@@ -701,6 +754,13 @@ module l2tlb #(
       cover (i_flush.en && i_flush.use_asid && f_sp_live_g[1] && !f_sp_kills_g[1]);
       // A new lookup fires in the same cycle a registered hit answers.
       c_back_to_back_hit : cover (hit_resp_valid_q && !i_discard && i_req_valid && o_req_ready);
+      // Speculative pre-read hit, miss, mismatch, and overlap with response.
+      c_spec_hit_4k : cover (spec_hit_req && any_hit && !sp_any_hit);
+      c_spec_hit_sp : cover (spec_hit_req && sp_any_hit);
+      c_spec_miss_walk : cover (spec_hit_req && !any_hit && !sp_any_hit && o_ptw_req_valid);
+      c_spec_mismatch :
+      cover ((state_q == S_IDLE) && i_req_valid && o_req_ready && spec_valid_q && !spec_hit_req);
+      c_spec_during_resp : cover (hit_resp_valid_q && !i_discard && i_spec_valid && o_req_ready);
     end
   end
 `endif

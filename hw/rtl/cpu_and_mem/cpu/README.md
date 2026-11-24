@@ -607,17 +607,22 @@ flight and clear the walker's pointer cache; which TLB entries they remove
 is described under "Address-space IDs and SFENCE.VMA" below.
 
 A 4-way, 512-set second-level TLB (`l2tlb.sv`, 2,048 entries, 8 MiB of 4 KiB
-pages, block RAM) sits between the two MMUs and the walker. An L1 TLB miss
-that hits there is answered two cycles after the request fires, with the
-request port ready again on the response cycle, in place of
-a walk of one to three dependent line reads; a miss reaches the walker one
-cycle later than it would without the array. It stores the clean 4 KiB
-translations that the walker returns. Clean 2 MiB and 1 GiB leaves go to a
-32-entry fully associative superpage side array beside it (`SP_ENTRIES`):
-tags, ASIDs, global bits and levels in flops, compared level-masked in the
-same cycle as the block RAM ways, and PPNs and permissions in distributed RAM,
-read in the same compare cycle, so a superpage hit also answers two cycles after
-the request fires for any page of its region. Neither array holds negative
+pages, block RAM) sits between the two MMUs and the walker. While idle with no
+real walk request, `cpu_ooo` drives a speculative pre-read from the data MMU's
+next S1 candidate (skid entry, else live issue) or, when none is present, from
+the registered fetch PC. When the following cycle's walk request matches that
+pre-read's VPN and ASID, a hit answers one cycle after the request fires and a
+miss reaches the walker on the request cycle itself; otherwise a hit answers
+two cycles after the request fires and a miss reaches the walker one cycle
+later. The request port is ready again on the registered hit-response cycle so
+the next lookup or speculative pre-read starts without a bubble. It stores the
+clean 4 KiB translations that the walker returns. Clean 2 MiB and 1 GiB leaves
+go to a 32-entry fully associative superpage side array beside it
+(`SP_ENTRIES`): tags, ASIDs, global bits and levels in flops, compared
+level-masked in the same cycle as the block RAM ways, and PPNs and permissions
+in distributed RAM, read in the same compare cycle, so a superpage hit has the
+same latency as a 4 KiB hit for any page of its region. Neither array holds
+negative
 entries, so a PTE that changes from invalid to valid is seen without
 SFENCE.VMA (Svvptc). SUM and MXR stay out of the entries, so toggling them
 needs no flush. `cpu_ooo` takes `L2TLB_SETS` (0 removes both arrays; any
