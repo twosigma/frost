@@ -1301,9 +1301,22 @@ module coherence_home #(
   // ordered behind a CMO leaves the fill free to release the way the CMO needs.
   // A demand fill's primary owns the first; a forward gives it up.
   assign join_live = run && array_response && decision_reader;
+  // Pre-qualify waiting read candidates once across all fills so each fill's
+  // per-slot eligibility combines that flag with its block match and enable in
+  // one kept node ahead of the seat selector's six-input group counters.
+  logic [COMPLETIONS-1:0] waiting_reader;
+  for (genvar slot = 0; slot < COMPLETIONS; slot++) begin : gen_waiting_reader
+    if (PREFETCH_SLOTS != 0 && slot >= COMPLETIONS - PREFETCH_SLOTS) begin : gen_prefetch_reader
+      assign waiting_reader[slot] = 1'b0;
+    end else begin : gen_request_reader
+      (* keep = "true" *) logic reader_node;
+      assign reader_node = waiting[slot] && read_waiter(waiting_opcode[slot]);
+      assign waiting_reader[slot] = reader_node;
+    end
+  end
   for (genvar fill = 0; fill < FILLS; fill++) begin : gen_seats
     logic [COMPLETIONS-1:0] eligible;
-    logic enabled;
+    (* keep = "true" *) logic enabled;
     logic [1:0] count_live, count_idle;
     // A CMO's fill takes no waiter seat: readers of its line are ordered
     // behind the CMO's U and dispatch after it.
@@ -1320,11 +1333,11 @@ module coherence_home #(
         // A prefetch slot holds only Prefetches, which take no seat.
         assign eligible[slot] = 1'b0;
       end else begin : gen_request_slot
-        assign eligible[slot] = enabled && waiting[slot] && same_block(
+        (* keep = "true" *) logic slot_eligible;
+        assign slot_eligible = enabled && waiting_reader[slot] && same_block(
             waiting_addr[slot], fill_addr_q[fill]
-        ) && read_waiter(
-            waiting_opcode[slot]
         );
+        assign eligible[slot] = slot_eligible;
       end
     end
     // A join takes a seat. With join_live the fill joins exactly when it is

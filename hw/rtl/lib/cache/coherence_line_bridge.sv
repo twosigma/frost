@@ -25,8 +25,8 @@ module coherence_line_bridge #(
     parameter bit CLEAN = 1'b0
 ) (
 `ifdef COH_MAINT_OWNED
-    input logic [63:0] i_maint_final,
-    input logic i_maint_final_seen,
+    input logic [63:0] i_maint_grant_image,
+    output logic [63:0] o_maint_response_image,
     output logic [2:0] o_maint_phase,
     output logic [ADDR_WIDTH-1:0] o_maint_address,
     output logic [ID_BITS-1:0] o_maint_id,
@@ -303,13 +303,15 @@ module coherence_line_bridge #(
 `endif
 `ifdef COH_MAINT_OWNED
   if (SOURCE == 0) begin : gen_maint_latest_payload
+    // Follow the independently sampled read through G to its response.
     always_ff @(posedge i_clk)
-      if (!i_rst &&
-          o_resp_valid &&
-          !o_resp_error &&
-          demand_q.addr == 32'h80000000 &&
-          i_maint_final_seen)
-        p_maint_if_latest_response : assert (o_resp_data == {4{i_maint_final}});
+      if (i_rst) o_maint_response_image <= 0;
+      else if (i_g_valid && o_g_ready) o_maint_response_image <= i_maint_grant_image;
+    always_ff @(posedge i_clk)
+      if (!i_rst && o_resp_valid && !o_resp_error && demand_q.addr == 32'h80000000)
+        p_maint_if_latest_response : assert (o_resp_data == {4{o_maint_response_image}});
+  end else begin : gen_maint_unused_image
+    assign o_maint_response_image = '0;
   end
 `endif
 `ifdef COH_MAINT_OWNED

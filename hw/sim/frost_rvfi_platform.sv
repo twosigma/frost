@@ -63,7 +63,7 @@ module frost_rvfi_platform #(
     // line in a single beat.
     parameter int unsigned L2_LINE_BYTES = 64,
     // Direct tag launch in the coherent home (coherence_home FAST_TAG_LAUNCH).
-    parameter bit HOME_FAST_TAG_LAUNCH = 1'b0,
+    parameter bit HOME_FAST_TAG_LAUNCH = 1'b1,
     // Accepted for the production interface; this fixture has no cluster
     // memory and so no links between it and the hart.
     parameter int unsigned MEMORY_LINK_STAGES = 0,
@@ -521,9 +521,8 @@ module frost_rvfi_platform #(
   // unmapped page on both sides (the store-issue page split in
   // tomasulo_wrapper).
   initial begin
-    // The RVFI-DII recorder sees ROB commits and store-queue writes only; an
-    // access the misaligned-access engine performs has neither.
-    if (MISALIGNED_HW) $fatal(1, "frost_rvfi_platform: TestRIG needs MISALIGNED_HW=0");
+    if (MISALIGNED_HW && (ENABLE_CACHED_TIER == 0))
+      $fatal(1, "frost_rvfi_platform: MISALIGNED_HW requires ENABLE_CACHED_TIER != 0");
     if ((MmioAddr != {riscv_pkg::MmioFirstPage, 12'h000}) ||
         ((MmioAddr + MmioSizeBytes) != {riscv_pkg::MmioLastPage + 20'd1, 12'h000}) ||
         ({AplicWindowSel, 22'h00_0000} != {riscv_pkg::AplicFirstPage, 12'h000}) ||
@@ -1011,7 +1010,7 @@ module frost_rvfi_platform #(
       .o_uncached_write_byte_en(),
       .o_uncached_write_size(),
       .o_uncached_write_buffered(),
-      // The vector unit uses the hart line-client port with MISALIGNED_HW=0.
+      // The misaligned-access engine and vector unit share the hart line-client port.
       .o_ma_line_req_valid(line_req_valid),
       .i_ma_line_req_ready(line_req_ready),
       .o_ma_line_req_write(line_req_write),
@@ -1898,7 +1897,31 @@ module frost_rvfi_platform #(
   // instruction memory, records each retired or trapped instruction, and
   // stands in for the devices. It reads the core's retirement, redirect, and
   // memory-write signals hierarchically.
-  logic [riscv_pkg::MemDataBits-1:0] rvfi_dii_device_read_data;
+  logic                 [riscv_pkg::MemDataBits-1:0] rvfi_dii_device_read_data;
+  logic                                              rvfi_ma_store;
+  logic                 [       riscv_pkg::XLEN-1:0] rvfi_ma_va;
+  riscv_pkg::mem_size_e                              rvfi_ma_size;
+  logic                                              rvfi_ma_translate;
+  logic                 [       riscv_pkg::XLEN-1:0] rvfi_ma_lower_pa;
+  logic                 [       riscv_pkg::XLEN-1:0] rvfi_ma_upper_pa;
+  logic                 [       riscv_pkg::XLEN-1:0] rvfi_ma_store_data;
+  if (MISALIGNED_HW) begin : gen_rvfi_ma_tap
+    assign rvfi_ma_store = cpu_inst.gen_misaligned.engine.store_q;
+    assign rvfi_ma_va = cpu_inst.gen_misaligned.engine.va_q;
+    assign rvfi_ma_size = cpu_inst.gen_misaligned.engine.size_q;
+    assign rvfi_ma_translate = cpu_inst.gen_misaligned.engine.translate_q;
+    assign rvfi_ma_lower_pa = cpu_inst.gen_misaligned.engine.lower_pa_q;
+    assign rvfi_ma_upper_pa = cpu_inst.gen_misaligned.engine.upper_pa_q;
+    assign rvfi_ma_store_data = cpu_inst.gen_misaligned.engine.data_q;
+  end else begin : gen_rvfi_ma_stub
+    assign rvfi_ma_store = 1'b0;
+    assign rvfi_ma_va = '0;
+    assign rvfi_ma_size = riscv_pkg::MEM_SIZE_BYTE;
+    assign rvfi_ma_translate = 1'b0;
+    assign rvfi_ma_lower_pa = '0;
+    assign rvfi_ma_upper_pa = '0;
+    assign rvfi_ma_store_data = '0;
+  end
   frost_rvfi_dii u_rvfi_dii (
       .i_clk,
       .i_rst(rst_core),
@@ -1950,6 +1973,19 @@ module frost_rvfi_platform #(
       .i_amo_write_addr(cpu_inst.amo_mem_write_addr),
       .i_amo_write_data(cpu_inst.amo_mem_write_data),
       .i_amo_write_is_dword(cpu_inst.amo_mem_write_is_dword),
+      .i_ma_assist_start(cpu_inst.ma_assist_start),
+      .i_ma_done(cpu_inst.ma_done),
+      .i_ma_store(rvfi_ma_store),
+      .i_ma_wb_valid(cpu_inst.ma_wb_arm),
+      .i_ma_wb_fp(cpu_inst.ma_wb_fp_arm),
+      .i_ma_wb_rd(cpu_inst.ma_wb_rd_arm),
+      .i_ma_wb_data(cpu_inst.ma_wb_data_arm[riscv_pkg::XLEN-1:0]),
+      .i_ma_va(rvfi_ma_va),
+      .i_ma_size(rvfi_ma_size),
+      .i_ma_translate(rvfi_ma_translate),
+      .i_ma_lower_pa(rvfi_ma_lower_pa),
+      .i_ma_upper_pa(rvfi_ma_upper_pa),
+      .i_ma_store_data(rvfi_ma_store_data),
       .i_dev_read_addr(mmio_load_addr),
       .i_dev_read_capture(mmio_read_capture),
       .o_dev_read_data(rvfi_dii_device_read_data),

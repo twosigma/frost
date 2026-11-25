@@ -31,6 +31,7 @@ conformance bugs fixed for
 | [`compressed_mops.py`](compressed_mops.py) | Random Zcb, Zcmop, Zimop, and Zihintntl tests (see [Scalar floating point and Zcb](#scalar-floating-point-and-zcb)) |
 | [`mmu.py`](mmu.py) | Random Sv39 MMU, ASID, SFENCE.VMA, and Sstvala tests (see [Sv39 MMU, cache-block operations, and Sstvala](#sv39-mmu-cache-block-operations-and-sstvala)) |
 | [`cmo.py`](cmo.py) | Random Zicbom, Zicboz, Zicbop, Zawrs, device-window, and Sstvala tests (see [Sv39 MMU, cache-block operations, and Sstvala](#sv39-mmu-cache-block-operations-and-sstvala)) |
+| [`misaligned.py`](misaligned.py) | Directed misaligned load and store traces across widths, offsets, boundaries, and second-page faults (see [Misaligned loads and stores](#misaligned-loads-and-stores)) |
 | [`vector.py`](vector.py) | Random vector-instruction tests (see [The vector extension](#the-vector-extension)) |
 | [`vector_segments.py`](vector_segments.py) | Seeded deterministic generator for five segment memory matrix traces covering all 252 base-V segment encodings (`--vector-segments`) |
 | [`sail_frost.json`](sail_frost.json) | Sail settings that describe FROST |
@@ -64,6 +65,7 @@ repository root:
 ./scripts/frost.py run python3 tests/test_testrig.py --fp-ext 60 --test-length 250  # Scalar FP (F, D, Zfhmin, and Zfa) tests
 ./scripts/frost.py run python3 tests/test_testrig.py --zcb 50              # Zcb, Zcmop, Zimop, and Zihintntl tests
 ./scripts/frost.py run python3 tests/test_testrig.py --wfi                 # Directed WFI waits, wakes, and traps
+./scripts/frost.py run python3 tests/test_testrig.py --misaligned          # Directed misaligned loads, stores, and second-page faults
 ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf           # deterministic counter controls
 ./scripts/frost.py run python3 tests/test_testrig.py --vector 12 \
   --vector-source-widths --vector-directed --seed 42 --vlen 128
@@ -214,7 +216,7 @@ presented, so a window presented after a redirect belongs to the new path.
 Each requested retirement, xRET, or exception produces one record: PC, next
 PC, trap, privilege, the integer destination and its value (FP destinations are not
 reported, as in Sail), and the physical address, mask and data of writes
-through the store queue. CSR read values arrive through delayed write-back.
+through the store queue and the misaligned-access engine. CSR read values arrive through delayed write-back.
 The vector unit writes through the hart line client. The runner clears
 Sail's memory payload for a retiring vector store. Committed vector-store
 traces must assert a trap or read back and assert each stored element with
@@ -229,7 +231,9 @@ record capacity. Completion waits for the requested stores and CSR read
 values. The hang bound counts cycles without a requested retirement or a
 store or CSR completion, including cycles that retire filler. The
 `rvfi_recorder` unit bench checks delayed data, two-store retirement at the
-capacity boundary, missing store completion, and excessive capacity requests.
+capacity boundary, missing store completion, excessive capacity requests, and
+misaligned-access engine retirements, cross-page store reporting, and
+second-part faults.
 
 The build differs from the production core in these ways, all for
 simulation only:
@@ -238,10 +242,10 @@ simulation only:
   injected instructions need no memory and Sail checks only translation for
   them; this also drops the access fault of an instruction page-table walk
   that reads outside DDR, which the default templates never produce;
-- misaligned loads and stores always trap; production FROST traps them only
-  once `mtvec` has a nonzero base, and performs plain ones to cached DDR in
-  its misaligned-access engine (`MISALIGNED_HW`), which this build leaves out
-  because the recorder sees no retirement for them;
+- misaligned loads and stores always enter the misaligned-access path
+  regardless of `mtvec`; plain misaligned loads and stores to cached DDR
+  execute in the misaligned-access engine (`MISALIGNED_HW=1`), while accesses
+  to low BRAM, device RAM, and atomics raise the address-misaligned exception;
 - Legal WFI completes at once with the default build. `--wfi` enables the
   ROB wait and a simulation-only wake timeout. All TestRIG modes suppress
   interrupt delivery to the trap unit.
@@ -265,10 +269,10 @@ different implementation choice:
 
 | Setting | FROST |
 |---------|-------|
-| Extensions | RV64IMAFDC, B, Zfa, Zfhmin, Zcb, Zcmop, Zihintntl, Zimop, Zicond, Zbc, Zbkb, Zbkc, Zkt, Zihintpause, Zicntr, Zihpm, Zic64b, Ziccif, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svinval, Svnapot, Svpbmt, Ssnpm, Svvptc, Sstc, Sscofpmf, Sscounterenw, Sstvala, Sstvecd; `misa` read-only |
+| Extensions | RV64IMAFDC, B, Zfa, Zfhmin, Zcb, Zcmop, Zihintntl, Zimop, Zicond, Zbc, Zbkb, Zbkc, Zkt, Zihintpause, Zicntr, Zihpm, Zic64b, Ziccif, Zicclsm, Zicboz, Zicbom, Zicbop, Zawrs, S, U, Sv39, Svade, Svinval, Svnapot, Svpbmt, Ssnpm, Svvptc, Sstc, Sscofpmf, Sscounterenw, Sstvala, Sstvecd; `misa` read-only |
 | Memory regions | The PMA map: low BRAM, MMIO, APLIC, IMSIC, and configurable DDR (1 GiB default), the only region page-table walks read |
 | Physical addresses | 64 bits wide, so an untranslated access beyond the memory map faults with its full address in `mtval` |
-| Misaligned accesses | Address-misaligned trap, after the PMA check; `Zicclsm` is left off because TestRIG builds omit the misaligned-access engine |
+| Misaligned accesses | Plain loads and stores to cached DDR complete in hardware (`Zicclsm` enabled in `sail_frost.json`); low BRAM, device windows, and atomics raise address-misaligned traps after translation and the PMA check |
 | `mtval` | The faulting instruction's bits for illegal instructions (Sstvala) |
 | `mstatus.FS` | Dirty when an FP instruction raises a flag, even one already set |
 | `mstatus.VS` | Read-only zero in the scalar fixture. The vector overlays allow all four VS states |
@@ -293,8 +297,8 @@ assigns local counter overflow interrupt number 13 and specifies that
 
 Replay a saved counterexample directly with `--trace <file>` (or
 `--sscofpmf --trace <file>`); `--sscofpmf` cannot be combined with
-`--trace-dir`, `--atomics`, `--crypto`, `--zcb`, `--fp-ext`, `--mmu`, `--cmo`,
-`--svinval`, `--vector` or `--wfi`.
+`--trace-dir`, `--misaligned`, `--atomics`, `--crypto`, `--zcb`, `--fp-ext`,
+`--mmu`, `--cmo`, `--svinval`, `--vector` or `--wfi`.
 
 ## What the comparison leaves out
 
@@ -433,7 +437,50 @@ Scalar FP and Zcb exclusions in the Sail 0.16 comparison:
 | Scalar `Zfh` arithmetic, comparisons, FMA, and `fclass.h` | FROST implements `Zfhmin` rather than full scalar `Zfh`, so `sail_frost.json` keeps `Zfh` disabled even though Sail 0.16 supports it; unimplemented `Zfh` encodings are checked as illegal-instruction traps |
 | `fli.h` in scalar TestRIG | Under the Zfa specification `fli.h` requires `Zfh` or `Zvfh`; the scalar TestRIG build disables both `Zfh` and `V`, so `fli.h` traps as an illegal instruction on both implementations |
 | `fmvh.x.d` and `fmvp.d.x` | RV32-only Zfa double-precision register-pair moves do not apply on RV64 |
-| Hardware misaligned FP and Zcb loads/stores (`Zicclsm`) | TestRIG builds omit `ma_engine` because the recorder sees no retirement for hardware misaligned accesses; `sail_frost.json` disables `Zicclsm` so misaligned accesses trap as address-misaligned on both implementations |
+
+## Misaligned loads and stores
+
+`--misaligned` replays five deterministic traces from
+[`misaligned.py`](misaligned.py) covering plain misaligned loads and stores
+executed by the misaligned-access engine (`MISALIGNED_HW=1`, `Zicclsm`) in
+cached DDR and address-misaligned or access-fault traps outside cached DDR:
+
+- Bare-mode integer loads and stores (`lh`, `lhu`, `lw`, `lwu`, `ld`, `sh`,
+  `sw`, `sd`, plus `x0` destination and source) at every misaligned offset
+  across 8-byte dword, 32-byte sector, 64-byte cache-line, and 4 KiB page
+  boundaries, with aligned readbacks on both sides of each boundary.
+- Bare-mode scalar FP (`flh`, `flw`, `fld`, `fsh`, `fsw`, `fsd`) and compressed
+  (`c.lh`, `c.lhu`, `c.sh`, `c.lw`, `c.sw`, `c.ld`, `c.sd`, `c.fld`, `c.fsd`,
+  `c.lwsp`, `c.ldsp`, `c.fldsp`, `c.swsp`, `c.sdsp`, `c.fsdsp`) misaligned
+  loads and stores across those boundaries.
+- Sv39 translated misaligned loads and stores across 8-byte, 32-byte, 64-byte,
+  and 4 KiB page boundaries (including non-adjacent physical frames and a
+  2 MiB superpage) in MPRV S, direct S, and direct U modes, plus `MXR=1` and
+  Ssnpm 7-bit pointer masking.
+- Sv39 cross-page misaligned loads faulting on the second page (invalid PTE,
+  execute-only without `MXR`, user page without `SUM`, supervisor page in U
+  mode, `A=0`, reserved `W=1/R=0`, non-canonical upper VA, and unmapped upper
+  PA), in M mode and delegated to S mode, alongside first-page faults.
+- Low BRAM, MMIO, APLIC, and IMSIC misaligned accesses and misaligned DDR
+  atomics (causes 4 and 6), plus unmapped physical addresses (causes 5 and 7),
+  in bare and Sv39 modes.
+
+For a translated store crossing a 4 KiB page boundary, Sail 0.16 splits the
+access at the page boundary and reports the upper page's physical base, upper
+byte mask, and shifted upper bytes in its single RVFI-DII store record; every
+other store reports its starting physical address, full width mask, and
+right-aligned data. `hw/sim/frost_rvfi_dii.sv` reports the same payload on the
+engine's completion pulse, and the trace set reads back aligned dwords on both
+sides of the boundary to verify both halves in memory.
+
+Cases kept out of TestRIG because Sail 0.16 cannot model FROST's rule:
+
+| Omitted case | Reason |
+|--------------|--------|
+| Sv39 cross-page store faulting on the second page | FROST validates both pages before any write, leaving page 1 untouched and `mem_wmask = 0` on the trapping record; Sail 0.16 writes the lower page before translating the upper page and leaves a nonzero `mem_wmask` on the trapping record |
+| Sv39 cross-page access in or into low BRAM or a device window | Sail 0.16 splits a translated cross-page access at the 4 KiB page boundary before checking per-region `misaligned_exceptions`, so naturally aligned halves (`+0xFFF` for 2 bytes, `+0xFFE` for 4 bytes, `+0xFFC` for 8 bytes) retire on Sail instead of trapping, and an upper-page alignment trap writes the upper page base to `xtval` instead of the original virtual address |
+| Bare-mode misaligned access straddling the upper edge of DDR into unmapped space | FROST writes the upper sector base to `xtval` for the access fault; Sail 0.16 writes the starting address |
+| Bare-mode misaligned access straddling the upper edge of low BRAM or a device window into unmapped space | FROST checks the lower part first and raises address-misaligned (4/6); Sail 0.16 checks whole-range region containment first and raises access fault (5/7) |
 
 ## The vector extension
 

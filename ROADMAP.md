@@ -8,8 +8,8 @@ set the direction of this roadmap. The sections are in priority order.
 FROST is working toward the RVA23 profile without the hypervisor extension:
 the RVA23U64 user profile and every RVA23S64 supervisor extension except H.
 The mandatory scalar and supervisor extensions are implemented in hardware,
-though the supplied Linux image does not expose the `Supm` tagged-address
-ABI. Two larger pieces come before the second hart:
+and the supplied Linux image exposes the `Supm` tagged-address ABI. Two
+larger pieces come before the second hart:
 
 - A vector unit. The profile requires V with Zvfhmin, Zvbb and Zvkt. The optional
   cryptography extensions include Zvbc and Zvkng. The vector length
@@ -43,10 +43,10 @@ ABI. Two larger pieces come before the second hart:
   in the low BRAM.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR by default
-  on the X3 and VCU118 and in simulation (`MISALIGNED_HW`). Misaligned
-  accesses to low BRAM raise the address-misaligned exception. TestRIG
-  leaves the engine out until its RVFI-DII recorder reports the engine's
-  retirements and writes.
+  on the X3 and VCU118 and in simulation (`MISALIGNED_HW`), including
+  TestRIG builds. Misaligned accesses to low BRAM raise the
+  address-misaligned exception. The RVFI-DII recorder reports the engine's
+  retirements, writes, and second-part faults against Sail.
 
 The table below lists the mandatory extensions of RVA23U64 and RVA23S64
 (excluding Sha, the hypervisor profile extension) and the RVA23 optional
@@ -67,7 +67,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Ziccif | Implemented | `ifread_test`, `ddr_exec_test`, `smc_fencei_test`, `coherent_hart_cache.sby`, `immu_twin.sby` |
 | Ziccrse | Implemented | `rv64_amo_test`, `ddr_atomic_test`, TestRIG (`--atomics`), `coherence_l1d.sby`, `coherence_home.sby` |
 | Ziccamoa | Implemented | `riscv-arch-test` (`A`), `riscv-tests` (`rv64ua`), `rv64_amo_test`, TestRIG (`--atomics`), `load_queue_amo_compute.sby`, `coherence_l1d.sby` |
-| Zicclsm | Implemented in hardware by default on the X3 and VCU118 and in simulation. TestRIG builds leave the engine out | `misaligned_test`, `riscv-tests` (`ma_data`), `test_ma_engine.py`, `ma_engine.sby`, `ma_pkg.sby` |
+| Zicclsm | Implemented in hardware by default on the X3 and VCU118 and in simulation, including TestRIG | `misaligned_test`, `riscv-tests` (`ma_data`), `test_ma_engine.py`, TestRIG (`--misaligned`), `ma_engine.sby`, `ma_pkg.sby` |
 | Za64rs | Implemented | Verified by construction (32-byte sector and 64-byte line reservations); LR/SC functional tests in `rv64_amo_test`, `ddr_atomic_test`, `coherence_l1d.sby`, `coherence_home.sby` |
 | Zihintpause | Implemented | `riscv-arch-test` (`hints`), `pause_test`, TestRIG |
 | Zic64b | Implemented | `cbo_zero_test`, `cbo_mgmt_test`, `riscv-arch-test` (`CMO`), TestRIG (`Zicboz`, `Zicbom`), `store_queue.sby` |
@@ -87,7 +87,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zcb | Implemented | `riscv-arch-test` (`C`), `test_rvc_decompressor.py`, TestRIG (`--zcb`), `rvc_predecode.sby` |
 | Zfa | Implemented | `riscv-arch-test` (`F_Zfa`, `D_Zfa`), `fs_off_test`, `fp_dyn_rm_test`, `vec_fp_test`, TestRIG (`--fp-ext`, `vector_fli_h.S`), `fp_launch_squash.sby`, `instr_operand_classifier.sby` |
 | Zawrs | Implemented | `zawrs_test`, TestRIG, `reorder_buffer.sby` |
-| Supm | Scalar hardware support through Ssnpm; the supplied Linux image does not expose the tagged-address ABI | `pm_test`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `pm_mode_select.sby`, `coherent_store_pma_twin.sby` |
+| Supm | Implemented through Ssnpm (`senvcfg.PMM`, PMLEN 7 and 16) and exposed by the pinned Debian 7.3 Linux kernel (`CONFIG_RISCV_ISA_SUPM`) through `prctl(PR_SET_TAGGED_ADDR_CTRL)` | `pm_test`, `frost_supm_probe`, TestRIG (`ssnpm_pmm.S`), `pointer_masking.sby`, `pm_mode_select.sby`, `coherent_store_pma_twin.sby` |
 | Zifencei | Implemented | `riscv-arch-test` (`Zifencei`), `smc_fencei_test`, `ddr_smc_test`, TestRIG, `coherent_hart_cache.sby` |
 | Ss1p13 | Implemented | `riscv-tests` (`rv64si`), `smode_test`, `umode_test`, `vm_test`, TestRIG, `csr_file.sby`, `trap_unit.sby` |
 | Svbare | Implemented | `pa_width_test`, `pma_fault_test`, TestRIG, `immu_bare.sby`, `dmmu_twin.sby` |
@@ -167,13 +167,15 @@ acquisitions overlap on borrowed load endpoints, and each read slot holds one
 load. The home has eight
 fills and a stream prefetcher. Two instruction-refill slots can overlap;
 instruction and page-table readers capture data and errors at the grant and
-hold their identities through release. The probe for an instruction or
-page-table read downgrades a Modified sector to Shared, so the next store to it
-acquires it again. An AMO or SC on a sector the L1D holds Modified completes in
-the L1D once endpoint 0 and that sector are free; other AMOs drain every L1D
-request and go through the home. Further work targets reader latency and DMA
-throughput. The single-hart queue sizes and lane choices will need revisiting
-for the second hart's memory traffic.
+hold their identities through release. Instruction, page-table and DMA
+reads leave a Modified sector in the L1D. When the L1D holds newer
+bytes, the home collects them before granting the read. A later store
+that hits the Modified sector reuses its permission. An AMO or SC on a
+Modified sector completes in the L1D once endpoint 0 and that sector are
+free. Other AMOs drain every L1D request and go through the home.
+Further work targets reader latency and DMA throughput. The single-hart
+queue sizes and lane choices will need revisiting for the second
+hart's memory traffic.
 
 Writable BRAM stays private to one hart. Its read caches are outside the
 coherent ingress, and its instruction and data copies are separate, so a
@@ -361,10 +363,10 @@ trace of 40 cycles or fewer reaches the first, and a store-only search found
 none for the second.
 
 Open: `coherence_l1d.sby`, `coherence_store_boundary.sby` and the
-unbounded pair of `coherent_hart_cache.sby` run a plain `opt` while their
-registers have no free starting value, which SymbiYosys gives them only
-after the script. A register without an initial value can then be fixed to
-the constant it loads, fused with a register that shares its input, or
+original unbounded pair of `coherent_hart_cache.sby` run a plain `opt`
+before SymbiYosys gives their registers free starting values. A
+register without an initial value can then be fixed to the constant it
+loads, fused with a register that shares its input, or
 folded to a constant x that each reader resolves separately, which drops
 behaviors from their checks. With every register starting free, the
 store-boundary BMCs take about 3.5 times as long per frame, more than the
@@ -373,11 +375,12 @@ cycle does not shorten them, because the added state is registers without
 a reset that the load tasks never load, such as the AMO operand and SC
 table registers. A word-level engine is slower still: in twenty minutes
 smtbmc with Boolector checks the sound load BMC's first 38 steps, where
-CaDiCaL checks 75 frames and main's script all 80 in seven minutes. From
-the state after the reset cycle with every other register free, the hart
-maintenance lemma induction passes in about two minutes
-(`coh_hart_maint_owned_reset_prove` keeps that check), but the PDR proof
-that assumes its lemmas leaves one property unresolved in two hours.
+CaDiCaL checks 75 frames and main's script all 80 in seven minutes.
+The hart task `coh_hart_maint_owned_reset_prove` checks ownership by
+induction from the state after reset with every other register free.
+Two PDR tasks check maintenance with unspecified initial values left
+free. One proves all 286 ownership facts. The other assumes those
+facts and proves the remaining 89 assertions.
 Fifty-two other `.sby` files run such an optimization after their own
 `setundef` or without one, and twenty-one files in `DONT_CARE_OPEN` (three of
 them without `opt`: `coherence_l1d_twin.sby`, `coherence_read_capture.sby`,
@@ -399,8 +402,10 @@ store-home BMCs run `peepopt`, and its compact covers `abc` and
 capture checks run `abc` after cutting every flip-flop; and the AXI
 bridge's partitions map their assertions with a file of their own. In
 files named above, the L1D conflict proofs run `opt -full` and `sat` after
-cutting every flip-flop, the hart reset-state task starts from `sim`'s
-state after the reset cycle, and the hart covers zero undefined constants.
+cutting every flip-flop. The hart reset-state task starts from `sim`'s
+state after the reset cycle. The original two hart maintenance covers
+zero undefined constants. The retained-snapshot cover and the two
+free-state maintenance PDR tasks preserve those initial values.
 
 No list of forms keeps undefined constants, which SymbiYosys also makes
 free only after the script. Passes inside the forms the check accepts fuse
@@ -690,32 +695,25 @@ and targeted microbenchmarks give these items:
    ahead of the stream, up to eight lines ahead and within the 4 KiB page,
    through its two highest-numbered load endpoints. More cached loads in
    flight or one read slot per line for loads to the same line would let one
-   stream keep more lines in flight. Dependent loads are also slower than
-   through the previous hierarchy: in simulation an L2 hit takes 28 cycles
-   against 23 and a DRAM miss about 4 cycles more. In a serial pointer
-   chase, a working set that overflows the L1D into the L2 adds about 23
-   cycles per step, and one that overflows the L2 adds about 35 more. The
+   stream keep more lines in flight. In simulation, a dependent load that
+   misses the L1D and hits the L2 takes 24 cycles. In a serial pointer
+   chase, a working set that overflows the L1D into the L2 adds about 21
+   cycles per step, and one that overflows the L2 adds about 36 more. The
    L1D answers a load from its grant, and registered stages and arbitration
    add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
-   line installs. Planned work trims the L1D-miss to L2-hit round trip in
-   order. First, the home holds an accepted request before entering L2 tag
-   lookup; starting the lookup as the request is accepted, with live
-   line-conflict checks on that edge, removes that wait. Second, the home's
-   speculative L2 data read waits after the tag request; launching both on
-   the same edge removes that wait. Third, an accepted grant pauses at the
-   L1D endpoint before reaching the core; answering the core straight from
-   the accepted grant removes that wait. Fourth, on the request path from L1D
-   to home, a miss waits after endpoint acquisition, at an idle request
-   arbiter, and for the controller's own lookup; presenting the request at
-   acquisition, passing a lone offer straight through an idle arbiter, and
-   optionally acquiring from the hit path's miss result remove those waits.
-9. L1D read hits. A dependent load that hits in the L1D takes about nine
-   cycles from one load launch to the next. A hit path beside the coherent
-   L1D's controller answers loads that hit. Its answers still wait a cycle in
-   the read slots' response registers, which answering from its last stage
-   would remove, and a variant without that stage would be shorter again.
+   line installs. Four waits on that path are gone. The home starts the L2
+   tag lookup as it accepts a request and, on the FPGA builds, starts the
+   speculative L2 data read in the same cycle. The L1D answers the core
+   straight from the arriving fill when nothing else is waiting, and the
+   hart's idle request arbiter passes a lone request straight through. Two
+   waits remain between the L1D and the home: after the L1D acquires an
+   endpoint, and for the controller's own lookup.
+9. L1D read hits. In simulation, a dependent load that hits in the L1D takes
+   about seven cycles from one load launch to the next. A hit path beside the
+   coherent L1D's controller answers loads that hit, straight into the read
+   output register when nothing else is waiting.
    Offering the hit port directly from the L1D input instead of its input
    registers would remove a cycle on hits, at the risk of crossing the
    core-to-cache boundary into the cache arrays in one cycle at the target

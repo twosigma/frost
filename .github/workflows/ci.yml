@@ -968,6 +968,8 @@ jobs:
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --trace-dir verif/testrig/traces --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
+            python3 tests/test_testrig.py --misaligned --continue-on-fail
+          ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --crypto 50 --continue-on-fail
           ./scripts/frost.py --image frost-dev:latest run \
             python3 tests/test_testrig.py --svinval 50 --continue-on-fail
@@ -1585,8 +1587,8 @@ jobs:
             pytest_filter: >-
               ((coherence_ or coherent_) and not
               (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
-              coherence_store_home or coherence_link or coherent_local_atomic or coh_hart_maint_prove or
-              coh_hart_maint_owned_prove or coherence_array_equiv or coherence_array_progress or
+              coherence_store_home or coherence_link or coherence_sc_wa or coherent_local_atomic or coh_hart_maint_prove or
+              coh_hart_maint_owned_prove or coh_hart_maint_free_ or coherence_array_equiv or coherence_array_progress or
               coherence_store_bank or
               coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
               (coherent_local_atomic and amo_cover)
@@ -1623,7 +1625,7 @@ jobs:
           # the pressure BMC's two cases have their own job.
           - shard: Coherence links
             pytest_filter: >-
-              coherence_link or
+              coherence_link or coherence_sc_wa or
               (coherence_store_home_link and not coherence_store_home_link_bmc_pressure)
             timeout_minutes: 200
           - shard: Coherence links pressure
@@ -1809,6 +1811,10 @@ jobs:
               coh_l1d_stream_bmc or coh_l1d_stream_free_nostore_bmc or
               coh_l1d_stream_outlier_prove
             timeout_minutes: 335
+          # Two 120-minute PDR allowances and ten minutes for setup.
+          - shard: Hart snapshot ownership
+            pytest_filter: coh_hart_maint_free_
+            timeout_minutes: 250
           # Compare hand-instantiated primitives with their portable forms. The
           # payload twin's operand group runs with the wrapper proofs. This job
           # runs the other twin tasks, the read select's primitive tasks, the
@@ -2465,7 +2471,7 @@ jobs:
               boot() {
                 local bios="$1" log="$2" memory="$3"
                 timeout -k5 180 qemu-system-riscv64 -M virt -m "$memory" -nographic \
-                  -cpu rv64,sv57=off,sv48=off,zicbom=false,zicboz=true,cboz_blocksize=64,v=false,h=false \
+                  -cpu rv64,sv57=off,sv48=off,zicbom=false,zicboz=true,cboz_blocksize=64,ssnpm=true,v=false,h=false \
                   -bios "$bios" -kernel /img/Image-debian \
                   -initrd /img/rootfs-frost.cpio \
                   -append "earlycon console=ttyS0 rdinit=/sbin/init ipv6.disable=1" \
@@ -2475,6 +2481,7 @@ jobs:
                 grep -q "FROST_NET10G_MODULE_PASS" "$log"
                 grep -q "FROST_MEMERR_MODULE_PASS" "$log"
                 grep -q "FROST_USERSPACE_STRESS_PASS" "$log"
+                grep -q "FROST_SUPM_PROBE_PASS" "$log"
                 grep -q "buildroot login:" "$log"
               }
               boot default /tmp/qemu-bundled.log 256M

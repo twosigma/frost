@@ -29,9 +29,10 @@
  * the rings with NAPI disabled; reconfiguration synchronizes TX again after
  * the last poll, which may have woken the queue while the interface stays up.
  *
- * The source is built as a module for Debian's kernel (6.12 on Debian 13),
- * through DKMS on a Debian root and the same way for the kernel FROST packs, so
- * it uses only long-standing interfaces rather than the newest spelling of one.
+ * The source is built as a module for Debian 13's kernels (6.12 from trixie
+ * and 7.3 from trixie-backports), through DKMS on a Debian root and the same
+ * way for the kernel FROST packs, with LINUX_VERSION_CODE guards where the
+ * devlink parameter callbacks differ across series.
  */
 
 #include <linux/bitfield.h>
@@ -55,6 +56,7 @@
 #include <linux/timer.h>
 #include <linux/u64_stats_sync.h>
 #include <linux/unaligned.h>
+#include <linux/version.h>
 #include <net/checksum.h>
 #include <net/ip6_checksum.h>
 #include <net/devlink.h>
@@ -1693,11 +1695,22 @@ static struct frost_priv *frost_devlink_priv(struct devlink *devlink)
 	return *(struct frost_priv **)devlink_priv(devlink);
 }
 
-static int frost_dl_rx_fifo_get(struct devlink *devlink, u32 id, struct devlink_param_gset_ctx *ctx)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 19, 0)
+static int frost_dl_rx_fifo_get(struct devlink *devlink, u32 id,
+				struct devlink_param_gset_ctx *ctx,
+				struct netlink_ext_ack *extack)
 {
 	ctx->val.vu32 = frost_devlink_priv(devlink)->rx_fifo_limit * FROST_FIFO_WORD_BYTES;
 	return 0;
 }
+#else
+static int frost_dl_rx_fifo_get(struct devlink *devlink, u32 id,
+				struct devlink_param_gset_ctx *ctx)
+{
+	ctx->val.vu32 = frost_devlink_priv(devlink)->rx_fifo_limit * FROST_FIFO_WORD_BYTES;
+	return 0;
+}
+#endif
 
 static int frost_dl_rx_fifo_set(struct devlink *devlink, u32 id, struct devlink_param_gset_ctx *ctx,
 				struct netlink_ext_ack *extack)
@@ -1712,20 +1725,33 @@ static int frost_dl_rx_fifo_set(struct devlink *devlink, u32 id, struct devlink_
 	return err;
 }
 
-static int frost_dl_rx_fifo_validate(struct devlink *devlink, u32 id, union devlink_param_value val,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+#define FROST_DEVLINK_VAL_TYPE union devlink_param_value *
+#define FROST_DEVLINK_VAL_U32(val) ((val)->vu32)
+#else
+#define FROST_DEVLINK_VAL_TYPE union devlink_param_value
+#define FROST_DEVLINK_VAL_U32(val) ((val).vu32)
+#endif
+
+static int frost_dl_rx_fifo_validate(struct devlink *devlink, u32 id,
+				     FROST_DEVLINK_VAL_TYPE val,
 				     struct netlink_ext_ack *extack)
 {
 	struct frost_priv *priv = frost_devlink_priv(devlink);
 	u32 min = FROST_FIFO_LIMIT_MIN * FROST_FIFO_WORD_BYTES;
 	u32 max = priv->rx_fifo_depth * FROST_FIFO_WORD_BYTES;
+	u32 bytes = FROST_DEVLINK_VAL_U32(val);
 
-	if (val.vu32 % FROST_FIFO_WORD_BYTES || val.vu32 < min || val.vu32 > max) {
+	if (bytes % FROST_FIFO_WORD_BYTES || bytes < min || bytes > max) {
 		NL_SET_ERR_MSG_FMT_MOD(extack, "rx_fifo_bytes must be a multiple of %u from %u to %u",
 				       FROST_FIFO_WORD_BYTES, min, max);
 		return -EINVAL;
 	}
 	return 0;
 }
+
+#undef FROST_DEVLINK_VAL_U32
+#undef FROST_DEVLINK_VAL_TYPE
 
 static const struct devlink_param frost_devlink_params[] = {
 	DEVLINK_PARAM_DRIVER(FROST_DEVLINK_PARAM_RX_FIFO_BYTES, "rx_fifo_bytes",
@@ -1918,5 +1944,5 @@ module_platform_driver(frost_driver);
 
 MODULE_DESCRIPTION("FROST net10g 10GBASE-R Ethernet driver");
 /* The DKMS package version: PACKAGE_VERSION in dkms.conf matches it */
-MODULE_VERSION("1.3");
+MODULE_VERSION("1.4");
 MODULE_LICENSE("Dual BSD/GPL");

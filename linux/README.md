@@ -176,7 +176,17 @@ Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn,
 Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, and the Zvl32b, Zvl64b, Zvl128b
 and Zvl256b length guarantees. Those builds set `misa.V` and have `VLEN=256`
 and `ELEN=64`. These entries describe the vector capabilities for Linux ISA
-discovery. The default VCU118 device tree describes its scalar configuration.
+discovery. In the pinned Debian 7.3 kernel, the RISC-V vector-crypto (`Zvkned`,
+`Zvknha`/`Zvknhb`, `Zvkg`, `Zvkb`, `Zvbb`) and carry-less CRC32 (`Zbc`)
+implementations reside in `lib/crypto` and `lib/crc`: `aes-lib`,
+`ecb-aes-lib`, `cbc-aes-lib`, `cts-cbc-aes-lib`, `ctr-aes-lib`, `xts-aes-lib`,
+and `sha224/256/384/512-lib` are built in, while `chacha`, `gcm` (instantiated
+as `gcm_base(ctr-aes-lib,ghash-lib)` through `tcrypt mode=35`),
+`crc32-cryptoapi`, and `crc32c-cryptoapi` are loadable modules.
+[`crypto_selftest.py`](crypto_selftest.py) checks the expected `/proc/crypto`
+self-test set for the running kernel release (supporting both Linux 6.12's
+`arch/riscv/crypto` modules and Linux 7.3's `lib/crypto` drivers). The default
+VCU118 device tree describes its scalar configuration.
 Both the default and `--vector` VCU118 device trees omit `svpbmt` because the
 VCU118's 2 GiB DDR map has no uncached alias.
 
@@ -216,16 +226,17 @@ location. The NIC's `dma-coherent` property keeps its normal DMA buffers
 cacheable; its IO register mappings exercise PBMT without using the DDR alias.
 On the X3, `/proc/cpuinfo` lists `svpbmt` in its `isa` line.
 
-Ssnpm: the DTB lists `ssnpm`, so Linux 6.13 and later (`CONFIG_RISCV_ISA_SUPM`)
-offer user pointer masking (Supm): `prctl(PR_SET_TAGGED_ADDR_CTRL,
-PR_TAGGED_ADDR_ENABLE | PMLEN << 24)` sets `senvcfg.PMM` for the process, and
-the kernel grants the smallest of FROST's PMLEN 7 and 16 that covers the
-request (HWASAN's 8 tag bits get 16). U-mode loads, stores, AMOs, LR/SC and
-CBOs then ignore the top PMLEN address bits; instruction fetch and the kernel's
-own accesses are never masked. `riscv_hwprobe` reports `RISCV_HWPROBE_EXT_SUPM`
-and `/proc/cpuinfo` lists `ssnpm`.
-The pinned Debian 6.12 kernel predates this interface; the supplied Linux
-workloads do not request tagged addresses.
+Ssnpm: the DTB lists `ssnpm`, and the pinned Debian `trixie-backports` 7.3
+kernel enables `CONFIG_RISCV_ISA_SUPM`, offering user pointer masking (Supm):
+`prctl(PR_SET_TAGGED_ADDR_CTRL, PR_TAGGED_ADDR_ENABLE | PMLEN << 24)` sets
+`senvcfg.PMM` for the process, and the kernel grants the smallest of FROST's
+PMLEN 7 and 16 that covers the request (HWASAN's 8 tag bits get 16). U-mode
+loads, stores, AMOs, LR/SC and CBOs then ignore the top PMLEN address bits;
+instruction fetch and the kernel's own accesses are never masked.
+`riscv_hwprobe` reports `RISCV_HWPROBE_EXT_SUPM` and `/proc/cpuinfo` lists
+`ssnpm`. `frost_supm_probe` verifies discovery, tagged loads and stores at
+PMLEN 7 and 16, syscall untagging, and `SIGSEGV` faults on tagged loads and
+stores after disabling tagging.
 
 Svnapot: the DTB lists `svnapot`. With `CONFIG_RISCV_ISA_SVNAPOT` and
 hugetlb enabled, Linux offers 64 KiB hugetlb pages (`hugepages-64kB`). A
@@ -336,11 +347,12 @@ payload reports cycle, instruction, time, and IPC deltas for its own workload.
 
 [`debian_kernel.py`](debian_kernel.py) downloads Debian's riscv64 kernel and
 headers from snapshot.debian.org and checks their sizes and SHA-256 sums.
-It also requires built-in APLIC, APLIC MSI and IMSIC drivers in the packaged
-kernel configuration, including when reusing a cached extraction. The
-pinned release is `6.12.113+deb13-riscv64`; the snapshot, versions, and
-checksums are in the script. FROST runs this kernel unmodified, with its NIC
-and memory error drivers built as separate modules.
+It also requires built-in APLIC, APLIC MSI and IMSIC drivers and
+`CONFIG_RISCV_ISA_SUPM` in the packaged kernel configuration, including when
+reusing a cached extraction. The pinned release is `7.3.4+deb13-riscv64`
+(`7.3.4-1~bpo13+1` from Debian 13 `trixie-backports`); the snapshot, package
+versions, and checksums are in the script. FROST runs this kernel unmodified,
+with its NIC and memory error drivers built as separate modules.
 
 Its subcommands, `fetch`, `release`, `image`, `module`, and `initramfs`,
 print their result on stdout and progress on stderr. `module` and `initramfs`
@@ -360,6 +372,7 @@ A replacement kernel selected with `FROST_LINUX_KERNEL` must provide:
 | `CONFIG_MMU`, `CONFIG_ARCH_RV64I`, `CONFIG_64BIT` | Sv39 RV64 kernel in S-mode. Leave `CONFIG_RISCV_M_MODE` unset. |
 | `CONFIG_RISCV_SBI` | Runs under OpenSBI and calls the SBI interface |
 | `CONFIG_RISCV_APLIC`, `CONFIG_RISCV_APLIC_MSI`, `CONFIG_RISCV_IMSIC` | Built-in APLIC MSI delivery and IMSIC interrupt files for wired interrupts and IPIs. All three are enabled in the pinned kernel. |
+| `CONFIG_RISCV_ISA_SUPM` | User pointer masking (Supm) through `senvcfg.PMM` and `prctl(PR_SET_TAGGED_ADDR_CTRL)`. Enabled in the pinned kernel and verified by `frost_supm_probe`. |
 | `CONFIG_RISCV_PMU`, `CONFIG_RISCV_PMU_SBI` | Cycle and instruction counters through the SBI PMU |
 | `CONFIG_RISCV_MISALIGNED` | Handles misaligned accesses once the kernel takes FWFT delegation. The pin selects it through `CONFIG_RISCV_PROBE_UNALIGNED_ACCESS`; `CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS` also works. |
 | `CONFIG_BINFMT_ELF`, `CONFIG_FPU` | ELF userspace with LP64D hard float |
@@ -387,20 +400,19 @@ and their looped copies all agree; see
 
 `debian_kernel.py module` builds the [NIC driver](frost-net10g/README.md) and
 the [memory error driver](frost-memerr/README.md) against the pinned kernel's
-headers and checks each module's name, `vermagic` release and symbol CRCs
-against that kernel. Linux would not catch a
-mismatch: the pin sets `CONFIG_MODVERSIONS`, under which the kernel ignores
-the release in `vermagic` and loads the module into any ABI-compatible
-kernel. The image build compiles the modules with Buildroot's cross toolchain;
-a standalone build uses `FROST_LINUX_CROSS_COMPILE` or `--cross`.
+headers and checks each module's name and `vermagic` release against that
+kernel (and symbol CRCs when `CONFIG_MODVERSIONS` is enabled; the pinned
+7.3.4 kernel leaves `CONFIG_MODVERSIONS` unset, so `vermagic` release matching
+is exact). The image build compiles the modules with Buildroot's cross
+toolchain; a standalone build uses `FROST_LINUX_CROSS_COMPILE` or `--cross`.
 
 `debian_kernel.py initramfs` appends the modules and a startup script for
 each to Buildroot's `rootfs.cpio` as a second cpio archive, which the kernel
-unpacks after the first, so Buildroot does not rebuild. For the same
-`vermagic` reason, each script checks `uname -r` itself before it loads its
-module, then prints `FROST_NET10G_MODULE_PASS <release>` or
-`FROST_NET10G_MODULE_FAIL <reason>`, and `FROST_MEMERR_MODULE_PASS <release>`
-or `FROST_MEMERR_MODULE_FAIL <reason>`, before login. `FROST_NET10G_MODULE`
+unpacks after the first, so Buildroot does not rebuild. Each script checks
+`uname -r` before it loads its module, then prints
+`FROST_NET10G_MODULE_PASS <release>` or `FROST_NET10G_MODULE_FAIL <reason>`,
+and `FROST_MEMERR_MODULE_PASS <release>` or
+`FROST_MEMERR_MODULE_FAIL <reason>`, before login. `FROST_NET10G_MODULE`
 and `FROST_MEMERR_MODULE` name prebuilt modules to use instead of building
 them.
 
@@ -487,10 +499,11 @@ NFS's default directory attribute cache. It reads through those descriptors
 during loopback. The shell restores the link through files opened before
 the test, then checks NFS writes and sync.
 
-CI boots the packaged kernel and initramfs on QEMU's `virt` machine with
-256 MiB using both bundled OpenSBI and FROST's firmware. A third boot uses
-FROST's firmware and 3 GiB of RAM starting at `0x8000_0000`. It requires
-Linux's `NODE_DATA` allocation above 4 GiB, successful module loads, the
-userspace stress token, and a login prompt. This checks firmware and Linux
-use of high physical memory on QEMU. It does not exercise FROST's RTL, DDR
-controller, or NIC traffic above 4 GiB.
+CI boots the packaged kernel and initramfs on QEMU's `virt` machine (with
+`ssnpm=true`) with 256 MiB using both bundled OpenSBI and FROST's firmware. A
+third boot uses FROST's firmware and 3 GiB of RAM starting at `0x8000_0000`.
+It requires Linux's `NODE_DATA` allocation above 4 GiB, successful module
+loads, the userspace stress token, the `frost_supm_probe` pass token, and a
+login prompt. This checks firmware and Linux use of high physical memory on
+QEMU. It does not exercise FROST's RTL, DDR controller, or NIC traffic above
+4 GiB.

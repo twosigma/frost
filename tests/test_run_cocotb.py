@@ -3260,8 +3260,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=(
             "+define+FROST_RVFI_DII",
             "-DFROST_WIDE_DDR_TEST",
-            # The RVFI-DII recorder sees no misaligned-access engine retirement.
-            "-GMISALIGNED_HW=0",
             "-GL1_CACHE_BYTES=4096",
             "-GL1I_CACHE_BYTES=4096",
             "-GL2_CACHE_BYTES=16384",
@@ -4207,14 +4205,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "sdp_block_ram",
                 "L1D tag array of one way",
                 "1x1",
-                ("-GADDR_WIDTH=10", "-GDATA_WIDTH=19"),
+                ("-GADDR_WIDTH=10", "-GDATA_WIDTH=20"),
             ),
             (
                 "sram_macros_l1d_tags_clear",
                 "sdp_block_ram",
                 "L1D tag array of one way with simulation's bulk clear",
                 "1x1",
-                ("-GADDR_WIDTH=10", "-GDATA_WIDTH=19", "-GSUPPORT_BULK_CLEAR=1"),
+                ("-GADDR_WIDTH=10", "-GDATA_WIDTH=20", "-GSUPPORT_BULK_CLEAR=1"),
             ),
             (
                 "sram_macros_btb_payload",
@@ -4472,7 +4470,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("--assert", "-GCACHE_BYTES=512"),
         python_test_module="cocotb_tests.cache.test_coherence_l1d",
         hdl_toplevel_module="coherence_l1d",
-        description="Buffered store ordering, masked hits, read turns, grants, probes, frozen writebacks and W selection after an absorbed put",
+        description="Buffered stores, masked hits, read turns, grants, snapshot versions, credited eviction, frozen writebacks and W selection after absorption",
     ),
     "coherence_local_atomics": CocotbRunConfig(
         verilator_extra_args=(
@@ -4495,7 +4493,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("--assert",),
         python_test_module="cocotb_tests.cache.test_coherence_cluster",
         hdl_toplevel_module="coherence_cluster_test_harness",
-        description="One hart, DMA, pending stores, recalls, and atomic ownership",
+        description="One hart, DMA snapshots of installed store bytes, recalls, and atomic ownership",
     ),
     "coherence_cluster_fast_tag": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GHOME_FAST_TAG_LAUNCH=1"),
@@ -4605,6 +4603,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Zicbom write-back: clean and flush write dirty L1D or L2 blocks to "
         "memory before done, inval discards them, absent and clean blocks write nothing, "
         "no eviction rewrites a cleaned block, DMA races and program order",
+    ),
+    "coherence_cbo_mgmt_fast_tag": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GHOME_FAST_TAG_LAUNCH=1"),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_mgmt",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Zicbom write-back with direct tag launch in the home",
     ),
     "coherence_cbo_mgmt_misses": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GL1D_MISSES=3"),

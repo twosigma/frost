@@ -19,7 +19,8 @@
 Boot Debian's pinned kernel with the Buildroot test initramfs
 (``linux/debian_kernel.py``). Require the modules'
 ``FROST_NET10G_MODULE_PASS <release>`` and ``FROST_MEMERR_MODULE_PASS
-<release>`` lines and ``FROST_USERSPACE_STRESS_PASS`` by login. Reject crashes, timeouts, and unavailable counters: the DTB maps cycle
+<release>`` lines, ``FROST_USERSPACE_STRESS_PASS``, and
+``FROST_SUPM_PROBE_PASS`` by login. Reject crashes, timeouts, and unavailable counters: the DTB maps cycle
 and instruction events to programmable HPM counters 9 and 10 through the SBI PMU. ``--login-only`` skips
 token and counter checks.
 
@@ -57,13 +58,15 @@ from hw_defaults import DEFAULT_SERIALS  # noqa: E402
 
 PASS_TOKEN = "FROST_USERSPACE_STRESS_PASS"
 FAIL_TOKEN = "FROST_USERSPACE_STRESS_FAIL"
-# sysinit prints all three before login. Match the uname -r release at a boundary
-# to reject longer releases. CONFIG_MODVERSIONS can ignore vermagic's release,
-# so successful insmod alone does not identify the kernel.
+SUPM_PASS_TOKEN = "FROST_SUPM_PROBE_PASS"
+SUPM_FAIL_TOKEN = "FROST_SUPM_PROBE_FAIL"
+# sysinit prints all four before login. Match the uname -r release at a boundary
+# to reject longer releases even on kernels that enable CONFIG_MODVERSIONS.
 BOOT_TOKENS = (
     (MODULE_PASS_LINE, MODULE_PASS_RE),
     (MEMERR_PASS_LINE, MEMERR_PASS_RE),
     (PASS_TOKEN, re.compile(re.escape(PASS_TOKEN))),
+    (SUPM_PASS_TOKEN, re.compile(re.escape(SUPM_PASS_TOKEN))),
 )
 LOGIN_MARKER = "login:"
 CRASH_MARKERS = (
@@ -74,6 +77,7 @@ CRASH_MARKERS = (
     "Bad trap",
     "SIGILL",
     FAIL_TOKEN,
+    SUPM_FAIL_TOKEN,
     MODULE_FAIL_TOKEN,
     MEMERR.fail_token,
 )

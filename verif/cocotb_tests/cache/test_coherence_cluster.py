@@ -42,7 +42,8 @@ class Cluster:
         self.cut_lookup_overlap = 0
         self.cuts: list[int] = []
         self.sc_writes: list[int] = []
-        self.reply_states: list[int] = []
+        self.probe_replies: list[tuple[int, ...]] = []
+        self.store_acquisitions = 0
         self.memory_reads: list[int] = []
         self.speculative_requests: set[int] = set()
         self.perf: dict[str, list[int]] = {
@@ -99,7 +100,7 @@ class Cluster:
                     int(self.dut.reply.value),
                     (2, 6, 1, 1, self.p, 2, 1, 1, 256, 1, 1, 1, 1, 1),
                 )
-                self.reply_states.append(reply[5])
+                self.probe_replies.append(reply)
             if self.get("o_mem_req_valid") and self.get("i_mem_req_ready"):
                 address = self.get("o_mem_req_addr")
                 write = self.get("o_mem_req_write")
@@ -122,14 +123,16 @@ class Cluster:
                 )
                 speculative = int(self.dut.hart.ld_prefetch_q.value)
                 for ep in range(len(self.dut.hart_d_valid)):
-                    if (accepted & speculative) >> ep & 1:
+                    if accepted >> ep & 1:
                         width = self.p + 312
                         bits = (int(self.dut.hart_d.value) >> (width * ep)) & (
                             (1 << width) - 1
                         )
                         fields = unpack(bits, (4, 9, self.p, 5, 3, 32, 1, 1, 1, 256))
-                        assert fields[0] == 0
-                        self.speculative_requests.add(fields[2])
+                        self.store_acquisitions += fields[0] in (1, 10)
+                        if speculative >> ep & 1:
+                            assert fields[0] == 0
+                            self.speculative_requests.add(fields[2])
             await self.set(i_clk=1)
             await self.set(i_clk=0)
             self.cycle += 1
@@ -344,11 +347,55 @@ async def yielding_store_and_dma(dut: Any) -> None:
     await b.set(i_hold_grant=0)
     await b.wait("o_pending_store", 0)
     assert await b.dma(a) & ((1 << 64) - 1) == 0xDEADBEEF
-    assert b.reply_states[-1] == 2
+    assert b.probe_replies[-1][5] == 3
     await b.dma(a, 0xA5, 1)
-    assert b.reply_states[-1] == 0
+    assert b.probe_replies[-1][5] == 0
     assert a in b.cuts
     assert await b.read(a) == 0xDEADBEA5
+
+
+@cocotb.test()
+async def snapshots_follow_installed_bytes(dut: Any) -> None:
+    """Check two private versions, the home copy, and a partial DMA write."""
+    b = Cluster(dut)
+    await b.reset()
+    address = 0x80001000
+    row = bytes(range(b.line))
+    b.memory[address] = int.from_bytes(row, "little")
+    expected = bytearray(row[:32])
+    await b.store(address, 0xF1, mask=1)
+    expected[0] = 0xF1
+    await b.wait("o_pending_store", 0)
+    start = b.store_acquisitions
+    assert start == 1
+    for version in range(2):
+        for has_data in (1, 0):
+            assert await b.dma(address) == int.from_bytes(expected, "little")
+            reply = b.probe_replies[-1]
+            assert (reply[0], reply[4], reply[5], reply[7], reply[9]) == (
+                has_data,
+                address,
+                3,
+                has_data,
+                0,
+            )
+            if has_data:
+                assert reply[8] == int.from_bytes(expected, "little")
+        if version == 0:
+            await b.store(address + 24, 0xCE << 56, mask=128)
+            await b.wait("o_pending_store", 0)
+            expected[-1] = 0xCE
+            assert b.store_acquisitions == start
+    assert not b.cuts
+    await b.dma(address, 0xAD << 8, mask=2)
+    reply = b.probe_replies[-1]
+    assert (reply[5], reply[7], reply[8]) == (0, 1, int.from_bytes(expected, "little"))
+    expected[1] = 0xAD
+    assert b.cuts == [address]
+    assert await b.dma(address) == int.from_bytes(expected, "little")
+    assert (b.probe_replies[-1][5], b.probe_replies[-1][7]) == (0, 0)
+    if b.line == 64:
+        assert await b.dma(address + 32) == int.from_bytes(row[32:], "little")
 
 
 @cocotb.test()
@@ -1152,11 +1199,11 @@ async def l1d_miss_l2_hit_round_trip_latency(dut: Any) -> None:
     assert direct_d_seen == fast
     assert direct_tag_seen == fast
     assert home_d_to_tag == (1 if fast else 3)
-    assert home_d_to_grant == (11 if fast else 13)
+    assert home_d_to_grant == (10 if fast else 12)
     if links == 0 and misses == 1:
-        # Endpoint 0 answers after L1D installation: 29 cycles off, 27 on (-2).
-        assert round_trip == (27 if fast else 29)
+        # Endpoint 0 answers after L1D installation: 27 cycles off, 25 on (-2).
+        assert round_trip == (25 if fast else 27)
     elif links == 0 and misses >= 2:
         # Nonzero load endpoints answer on the grant's first lookup cycle:
-        # 24 cycles off, 22 on (-2).
-        assert round_trip == (22 if fast else 24)
+        # 22 cycles off, 20 on (-2).
+        assert round_trip == (20 if fast else 22)

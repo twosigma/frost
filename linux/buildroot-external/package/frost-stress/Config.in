@@ -24,7 +24,9 @@ config BR2_PACKAGE_FROST_STRESS
 	  Also installs frost_sigprobe, the signal-return probe inittab
 	  runs, frost_nettest, which runs the frost,net10g driver
 	  through the NIC's loopback and prints
-	  FROST_NET_LOOPBACK_PASS/_FAIL for the regression runner, and
+	  FROST_NET_LOOPBACK_PASS/_FAIL for the regression runner,
 	  frost_isa_probe, which inspects the ISA extensions the kernel
 	  reports and checks register-state handling across context
-	  switches, signals, ptrace, core notes, fork, and exec.
+	  switches, signals, ptrace, core notes, fork, and exec, and
+	  frost_supm_probe, which verifies the Supm tagged-address ABI
+	  through prctl(PR_SET_TAGGED_ADDR_CTRL).

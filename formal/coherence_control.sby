@@ -8,6 +8,7 @@ coh_c_payload_wide_prove payload payload_wide
 coh_arbiter_prove arbiter
 coh_arbiter24_prove arbiter large_arbiter
 coh_arbiter_held_prove arbiter large_arbiter held_arbiter
+coh_arbiter_bypass_prove arbiter large_arbiter held_arbiter bypass_arbiter
 coh_reader_prove reader early
 coh_reader_cover reader early covers
 coh_reader_slot1_prove reader early slot1
@@ -84,6 +85,7 @@ payload: prep -top coherence_c_payload
 arbiter: chparam -set WIDTH 12 -set PORTS 3 coherence_d_arbiter
 large_arbiter: chparam -set PORTS 24 coherence_d_arbiter
 held_arbiter: chparam -set HOLD_VALID 1 coherence_d_arbiter
+bypass_arbiter: chparam -set BYPASS_IDLE 1 coherence_d_arbiter
 arbiter: hierarchy -top coherence_d_arbiter
 arbiter: script free_undefined.ys
 arbiter: prep -top coherence_d_arbiter

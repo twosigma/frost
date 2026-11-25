@@ -65,7 +65,8 @@ package coherence_pkg;
   typedef enum logic [1:0] {
     ProbeRead = 0,
     ProbeInvalidate = 1,
-    CheckSC = 2
+    CheckSC = 2,
+    ProbeSnapshot = 3
   } p_opcode_t;
   typedef enum logic [1:0] {
     ProbeAck  = 0,

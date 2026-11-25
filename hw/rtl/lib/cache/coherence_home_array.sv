@@ -16,7 +16,7 @@
 
 // Tag decisions, row reads and masked updates have independent service ports.
 // The data array is banked by way. With ULTRA, a lookup that asks for it
-// (i_req_spec) reads every way of its set on the cycle after its acceptance,
+// (i_req_spec) reads every way of its set on the cycle of its acceptance,
 // beside the tag read, and the response keeps (i_resp_keep) the hit way's row
 // for the requester's token: the row arrives a fixed few cycles after the
 // response, without a row read through the read port's arbiter.
@@ -202,7 +202,7 @@ module coherence_home_array #(
   logic [SetBits-1:0] read_set_q[DATA_READ_LATENCY+1];
   logic [WayBits-1:0] read_way_q[DATA_READ_LATENCY+1];
   // Parallel reads, with UltraRAM on the FPGA. The first response cycle meets
-  // the open stage at index TAG_READ_LATENCY-1, which must leave a cycle to
+  // the open stage at index TAG_READ_LATENCY, which must leave a cycle to
   // register the bank selection before the stage loads o_read_data. With
   // SRAM macros (FROST_SRAM_MACROS) the array keeps one bank and reads only
   // the hit way, a quarter of the read energy.
@@ -212,7 +212,7 @@ module coherence_home_array #(
   localparam bit SramMacros = 1'b0;
 `endif
   localparam bit SpecRead = ULTRA && !SramMacros && TAG_READ_LATENCY + 2 <= DATA_READ_LATENCY;
-  logic spec_want_q, spec_cycle, spec_hazard, spec_fire, resolve;
+  logic spec_cycle, spec_hazard, spec_fire, resolve;
   logic [DATA_WRITE_LATENCY:0] write_valid_q, write_data_q;
   logic [TOKEN_BITS-1:0] write_token_q[DATA_WRITE_LATENCY+1];
   logic [RowBits-1:0] write_row_q[DATA_WRITE_LATENCY+1];
@@ -359,18 +359,15 @@ module coherence_home_array #(
   assign write_set = i_update_addr[OffsetBits+:SetBits];
   assign read_row = (RowBits'(i_read_way) << SetBits) | RowBits'(read_set);
   assign write_row = (RowBits'(i_update_way) << SetBits) | RowBits'(write_set);
-  // The parallel read takes the first tag-read cycle of a lookup that asks
-  // for it, when no data write to its set is in the write pipeline or on
-  // offer (by the tag comparison's set group): a waiting write goes first,
-  // and no bank row is read and written on one edge. Every term is a
-  // register or a comparison of registers.
-  assign spec_cycle = SpecRead && phase_q == Tags && count_q == CountBits'(TAG_READ_LATENCY) &&
-      spec_want_q;
+  // The parallel read takes the acceptance cycle of a lookup that asks for it,
+  // when no data write to its set is in the write pipeline or on offer: a
+  // waiting write goes first, and no bank row is read and written on one edge.
+  assign spec_cycle = SpecRead && request_fire && i_req_spec;
   always_comb begin
-    spec_hazard = i_update_valid && i_update_has_data && tag_set_match;
+    spec_hazard = i_update_valid && i_update_has_data && write_set == tag_raddr;
     for (int stage = 0; stage <= DATA_WRITE_LATENCY; stage++)
     if (write_valid_q[stage] && write_data_q[stage] &&
-        write_row_q[stage][SetBits-1:0] == set_q)
+        write_row_q[stage][SetBits-1:0] == tag_raddr)
       spec_hazard = 1'b1;
   end
   assign spec_fire = spec_cycle && !spec_hazard;
@@ -379,10 +376,14 @@ module coherence_home_array #(
   always_comb begin
     write_hazard = 1'b0;
     read_hazard  = 1'b0;
-    // An open stage holds every way of its set.
+    // An open read reserves every way until its tag decision. A row
+    // read with a registered RAM input samples its bytes in stage zero.
+    // After sampling, even a write to its sibling sector cannot change
+    // the row in the output pipeline.
     for (int stage = 0; stage <= DATA_READ_LATENCY; stage++)
     if (read_valid_q[stage] && read_set_q[stage] == write_set &&
-        (read_open_q[stage] || read_way_q[stage] == i_update_way) && i_update_has_data)
+        (read_open_q[stage] || (ULTRA && stage == 0 && read_way_q[stage] == i_update_way)) &&
+        i_update_has_data)
       write_hazard = 1'b1;
     for (int stage = 0; stage <= DATA_WRITE_LATENCY; stage++) begin
       if (write_valid_q[stage] && write_data_q[stage]) begin
@@ -395,9 +396,6 @@ module coherence_home_array #(
   assign o_read_ready = o_init_done && !read_hazard && !(row_contended && !read_turn_q) &&
       !spec_cycle;
   assign read_fire = i_read_valid && o_read_ready;
-  // An open stage that reaches the output was never resolved (the response
-  // stalled behind a stop): it is dropped.
-  assign o_read_valid = read_valid_q[DATA_READ_LATENCY] && !read_open_q[DATA_READ_LATENCY];
   assign o_read_token = read_token_q[DATA_READ_LATENCY];
   assign o_updated = write_valid_q[DATA_WRITE_LATENCY];
   assign o_updated_token = write_token_q[DATA_WRITE_LATENCY];
@@ -429,7 +427,7 @@ module coherence_home_array #(
           .i_wdata(i_update_data),
           .i_wbyte_en(i_update_mask & {LINE_BYTES{update_fire && i_update_way == WayBits'(way)}}),
           .i_re(spec_fire || (read_fire && i_read_way == WayBits'(way))),
-          .i_raddr(spec_cycle ? set_q : read_set),
+          .i_raddr(spec_cycle ? tag_raddr : read_set),
           .o_rdata(bank_rdata[way])
       );
     end
@@ -488,6 +486,7 @@ module coherence_home_array #(
     if (i_rst) begin
       read_valid_q  <= '0;
       read_open_q   <= '0;
+      o_read_valid  <= 1'b0;
       write_valid_q <= '0;
       write_data_q  <= '0;
       read_turn_q   <= 1'b0;
@@ -495,9 +494,13 @@ module coherence_home_array #(
       if (read_fire || (update_fire && i_update_has_data)) read_turn_q <= !read_fire;
       read_valid_q[0] <= read_fire || spec_fire;
       read_open_q[0]  <= spec_fire;
-      read_token_q[0] <= spec_cycle ? token_q : i_read_token;
-      read_set_q[0]   <= spec_cycle ? set_q : read_set;
+      read_token_q[0] <= spec_cycle ? i_req_token : i_read_token;
+      read_set_q[0]   <= spec_cycle ? tag_raddr : read_set;
       read_way_q[0]   <= i_read_way;
+      // Capture validity with the returned word. An open read returns
+      // only if its response keeps the way by this edge.
+      o_read_valid <= read_valid_q[DATA_READ_LATENCY-1] &&
+          (!read_open_q[DATA_READ_LATENCY-1] || (resolve && i_resp_keep));
       // The response keeps its open stage for its way or drops it.
       for (int stage = 1; stage <= DATA_READ_LATENCY; stage++) begin
         read_valid_q[stage] <= read_valid_q[stage-1] &&
@@ -546,7 +549,6 @@ module coherence_home_array #(
       token_onehot_q <= (1 << TOKEN_BITS)'(1);
       count_q <= '0;
       plru_q <= '0;
-      spec_want_q <= 1'b0;
       o_resp_hit <= 1'b0;
       o_resp_available <= 1'b0;
       o_resp_two_available <= 1'b0;
@@ -585,7 +587,6 @@ module coherence_home_array #(
         tag_q <= i_req_addr[ADDR_WIDTH-1:OffsetBits+SetBits];
         token_q <= i_req_token;
         token_onehot_q <= (1 << TOKEN_BITS)'(1) << i_req_token;
-        spec_want_q <= i_req_spec;
         count_q <= CountBits'(TAG_READ_LATENCY);
         phase_q <= Tags;
       end
@@ -627,7 +628,7 @@ module coherence_home_array #(
       // A parallel read shares its cycle with no row read and no data write
       // of its set, and it is the only open stage.
       if (spec_cycle) assert (!read_fire);
-      if (spec_fire) assert (!(update_fire && i_update_has_data && write_set == set_q));
+      if (spec_fire) assert (!(update_fire && i_update_has_data && write_set == tag_raddr));
       assert ($countones(read_open_q) <= 1);
       assert ((read_open_q & ~read_valid_q) == '0);
       // The first Reply meets the open read before its output stage, and
@@ -665,6 +666,8 @@ module coherence_home_array #(
       // A resolved stage belongs to its token's read owner. An open stage
       // is the lookup in service's parallel read, at the index its tag-read
       // cycles give (later only while the response waits).
+      p_control_read_valid : assert (o_read_valid == (read_valid_q[DATA_READ_LATENCY] &&
+          !read_open_q[DATA_READ_LATENCY]));
       assert ($countones(read_open_q) <= 1);
       assert ((read_open_q & ~read_valid_q) == '0);
       if (!SpecRead) assert (read_open_q == '0);
@@ -672,10 +675,10 @@ module coherence_home_array #(
         if (read_valid_q[stage] && !read_open_q[stage]) assert (i_read_owner[read_token_q[stage]]);
         if (read_open_q[stage]) begin
           assert (read_token_q[stage] == token_q && read_set_q[stage] == set_q);
-          assert ((phase_q == Tags && int'(count_q) < TAG_READ_LATENCY &&
-                   stage == TAG_READ_LATENCY - 1 - int'(count_q)) ||
-              (phase_q == Select && stage == TAG_READ_LATENCY - 1) ||
-              (phase_q == Reply && stage >= TAG_READ_LATENCY - 1));
+          assert ((phase_q == Tags && count_q != '0 && int'(count_q) <= TAG_READ_LATENCY &&
+                   stage == TAG_READ_LATENCY - int'(count_q)) ||
+              (phase_q == Select && stage == TAG_READ_LATENCY) ||
+              (phase_q == Reply && stage >= TAG_READ_LATENCY));
         end
         if (read_valid_q[stage])
           for (int other = stage + 1; other <= DATA_READ_LATENCY; other++)
@@ -729,7 +732,7 @@ module coherence_home_array #(
         f_value_q <= i_update_data[8*f_byte+:8];
       end
       f_check_q[0] <= f_known_q &&
-          ((read_fire && read_row == f_row) || (spec_fire && set_q == f_set));
+          ((read_fire && read_row == f_row) || (spec_fire && tag_raddr == f_set));
       f_open_q[0] <= spec_fire;
       f_expected_q[0] <= f_value_q;
       for (int stage = 1; stage <= DATA_READ_LATENCY; stage++) begin
@@ -747,7 +750,8 @@ module coherence_home_array #(
         assert (o_read_data[8*f_byte+:8] == f_expected_q[DATA_READ_LATENCY]);
       end
     end
-    if (i_rst || !o_init_done || !row_contended || i_update_tag) begin
+    if (i_rst || !o_init_done || !row_contended || i_update_tag ||
+        (f_past_valid && read_row != $past(read_row))) begin
       f_read_wait_q  <= '0;
       f_write_wait_q <= '0;
     end else begin
@@ -793,7 +797,8 @@ module coherence_home_array #(
   logic [ADDR_WIDTH-1:0] f_capture_addr_q;
   logic [1:0] f_capture_state_q;
   logic [WAYS-1:0] f_capture_matches;
-  logic [2:0] f_capture_flags;
+  logic [2:0] f_capture_flags, f_capture_flags_q;
+  logic [8*LINE_BYTES-1:0] f_capture_data_q;
   wire f_capture_select = FoldSelect ? phase_q == Tags && count_q == 1 : phase_q == Select;
   wire f_capture_row = read_valid_q[DATA_READ_LATENCY-1] && !read_open_q[DATA_READ_LATENCY-1];
   wire f_capture_keep = read_valid_q[DATA_READ_LATENCY-1] && read_open_q[DATA_READ_LATENCY-1] &&
@@ -810,12 +815,17 @@ module coherence_home_array #(
       f_capture_way_q <= '0;
       f_capture_addr_q <= '0;
       f_capture_state_q <= '0;
+      f_capture_flags_q <= '0;
     end else if (f_capture_select) begin
       f_capture_way_q <= selected;
       f_capture_addr_q <= {select_tags[selected][TagBits-1:0], set_q, {OffsetBits{1'b0}}};
       f_capture_state_q <= select_tags[selected][TagBits+:2];
+      f_capture_flags_q <= f_capture_flags;
     end
+    if (read_valid_q[DATA_READ_LATENCY-1]) f_capture_data_q <= f_capture_read_source;
     if (f_capture_reset_seen_q) begin
+      p_capture_read_valid : assert (o_read_valid == (read_valid_q[DATA_READ_LATENCY] &&
+          !read_open_q[DATA_READ_LATENCY]));
       // With the parallel-read latency constraint, Reply has started by the
       // edge that registers the bank selection for an open read.
       if (SpecRead)
@@ -824,12 +834,16 @@ module coherence_home_array #(
         p_capture_way : assert (o_resp_way == f_capture_way_q);
         p_capture_addr : assert (o_resp_addr == f_capture_addr_q);
         p_capture_state : assert (o_resp_state == f_capture_state_q);
+        p_capture_held_flags :
+        assert ({o_resp_hit, o_resp_available, o_resp_two_available} == f_capture_flags_q);
       end
       if ($past(!i_rst && f_capture_select)) begin
         p_capture_flags : assert (o_resp_valid &&
             {o_resp_hit, o_resp_available, o_resp_two_available} == $past(f_capture_flags));
         p_capture_cover_flags : cover (o_resp_valid && o_resp_hit && o_resp_available);
       end
+      if (!i_rst && o_read_valid)
+        p_capture_returned_data : assert (o_read_data == f_capture_data_q);
       if ($past(!i_rst && (f_capture_row || f_capture_keep))) begin
         p_capture_data : assert (o_read_valid && o_read_data == $past(f_capture_read_source));
         p_capture_cover_row : cover (o_read_valid && |o_read_data &&

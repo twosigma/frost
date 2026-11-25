@@ -149,7 +149,8 @@ module coherent_hart_cache #(
 `ifdef COH_MAINT_OWNED
     input logic [63:0] i_maint_first,
     i_maint_final,
-    output logic [8+8+7+3*64-1:0] o_maint_view,
+    input logic [63:0] i_maint_grant_image,
+    output logic [8+8+7+3*64:0] o_maint_view,
     output logic [3:0][ADDR_WIDTH+2:0] o_maint_read_requests,
     output logic o_maint_swept,
 `endif
@@ -178,6 +179,7 @@ module coherent_hart_cache #(
   logic [3:0][2:0] f_if_id;
   logic [1:0] f_if_cache_waiting;
   logic [1:0][ADDR_WIDTH-1:0] f_if_cache_address;
+  logic [1:0][63:0] f_if_response_image;
 `endif
   // D and C ports: the L1D's endpoints first, then two IF slots, two PTW
   // slots and the Zicbom requester. G and U route by port class (3: Zicbom).
@@ -269,9 +271,12 @@ module coherent_hart_cache #(
       .i_ready(i_c_ready),
       .o_payload(o_c)
   );
+  // Each D source holds its offer from Demand or SendD until acceptance.
   coherence_d_arbiter #(
       .WIDTH((ADDR_WIDTH + 312)),
-      .PORTS(Ports)
+      .PORTS(Ports),
+      .HOLD_VALID(1),
+      .BYPASS_IDLE(1)
   ) demands (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -418,6 +423,7 @@ module coherent_hart_cache #(
 `ifdef COH_MAINT_OWNED
       .i_maint_final(i_maint_final),
       .i_maint_final_seen(o_maint_view[8+8+7+3*64-2]),
+      .i_maint_response_image(if_slot_resp[1] ? f_if_response_image[1] : f_if_response_image[0]),
       .o_maint_swept(o_maint_swept),
       .o_maint_if_waiting(f_if_cache_waiting),
       .o_maint_if_address(f_if_cache_address),
@@ -465,8 +471,8 @@ module coherent_hart_cache #(
         .i_rst(i_rst),
         .i_fatal_stop(i_fatal_stop),
 `ifdef COH_MAINT_OWNED
-        .i_maint_final(i_maint_final),
-        .i_maint_final_seen(o_maint_view[8+8+7+3*64-2]),
+        .i_maint_grant_image(i_maint_grant_image),
+        .o_maint_response_image(f_if_response_image[slot]),
         .o_maint_phase(f_if_phase[slot]),
         .o_maint_address(f_if_address[slot]),
         .o_maint_id(f_if_id[slot]),
@@ -511,8 +517,8 @@ module coherent_hart_cache #(
         .i_rst(i_rst),
         .i_fatal_stop(i_fatal_stop),
 `ifdef COH_MAINT_OWNED
-        .i_maint_final(i_maint_final),
-        .i_maint_final_seen(o_maint_view[8+8+7+3*64-2]),
+        .i_maint_grant_image(i_maint_grant_image),
+        .o_maint_response_image(),
         .o_maint_phase(f_if_phase[slot+2]),
         .o_maint_address(f_if_address[slot+2]),
         .o_maint_id(f_if_id[slot+2]),

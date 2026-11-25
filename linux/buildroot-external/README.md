@@ -32,7 +32,7 @@ For the boot interface, memory map, and kernel requirements, see the
 | --- | --- |
 | `external.desc`, `external.mk`, `Config.in` | Buildroot external-tree registration |
 | `configs/frost_rv64_defconfig` | OpenSBI and the musl test userspace, built with the Bootlin riscv64 `lp64d` toolchain |
-| `package/frost-stress/` | Boot stress, signal-return, ISA-discovery, and NIC loopback programs |
+| `package/frost-stress/` | Boot stress, signal-return, ISA-discovery, Supm pointer-masking, and NIC loopback programs |
 | `board/frost/busybox-mmu.fragment` | BusyBox configuration (statically linked) |
 | `board/frost/rootfs-overlay-mmu/` | Startup scripts and login configuration |
 | `board/frost/post-image-mmu.sh` | Builds the firmware, stages Debian's kernel and driver modules, and packs the images |
@@ -140,6 +140,7 @@ OpenSBI. RTL simulation does not boot Linux.
 | `frost_stress --counters` | Runs a fixed workload in a child process and reports its cycles and instructions (counted through `perf_event_open` from the child's exec to its exit), the elapsed time, and IPC; replaces `perf stat` in this image |
 | `frost_sigprobe` | vDSO signal-return probe |
 | `frost_isa_probe` | Queries the ISA extensions the kernel exposes through the live device tree, `/proc/cpuinfo`, `riscv_hwprobe`, `AT_HWCAP`, and `prctl`, and runs the matching discovery and register-state verification matrix (`FROST_ISA_PROBE` / `FROST_ISA_PROBE_SUMMARY`) |
+| `frost_supm_probe` | Verifies Supm discovery (`riscv_hwprobe` and `/proc/cpuinfo`), enables user pointer masking through `prctl(PR_SET_TAGGED_ADDR_CTRL)` at PMLEN 7 and 16, exercises tagged loads, tagged stores, and syscall untagging, and verifies `SIGSEGV` faults on tagged loads and stores once tagging is disabled (`FROST_SUPM_PROBE` / `FROST_SUPM_PROBE_PASS`) |
 | `frost_nettest` | Driver loopback test; an optional interface argument selects the NIC. Prints `FROST_NET_LOOPBACK_PASS` or `FROST_NET_LOOPBACK_FAIL <reason>` and leaves the interface down with loopback disabled |
 
 `frost_nettest` opens the interface's sysfs directory, packet and error

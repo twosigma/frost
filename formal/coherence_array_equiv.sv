@@ -93,6 +93,7 @@ module coherence_array_equiv #(
       .i_req_skip_data_on_hit,
       .i_req_no_bank,
       .i_req_data_if_modified,
+      .i_req_snapshot(1'b0),
       .i_req_data_if_hit,
       .i_req_data_if_victim_modified,
       .i_req_no_touch,
@@ -104,6 +105,7 @@ module coherence_array_equiv #(
       .o_resp_way(resp_way[0]),
       .o_resp_addr(resp_addr[0]),
       .o_resp_state(resp_state[0]),
+      .o_resp_home_current(),
       .o_resp_data_valid(resp_data_valid[0]),
       .o_resp_data(resp_data[0]),
       .i_update_valid,
@@ -111,6 +113,7 @@ module coherence_array_equiv #(
       .i_update_addr,
       .i_update_way,
       .i_update_state,
+      .i_update_home_current(1'b0),
       .i_update_insert,
       .i_update_touch,
       .i_update_mask,
@@ -119,6 +122,7 @@ module coherence_array_equiv #(
       .i_hp_addr,
       .o_hp_ready(),
       .o_hp_hit(),
+      .o_hp_dword(),
       .o_hp_data()
   );
 

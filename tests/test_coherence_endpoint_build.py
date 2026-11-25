@@ -14,6 +14,7 @@
 
 """Coherent endpoints have explicit layouts and legal resource geometry."""
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -201,3 +202,59 @@ def test_home_array_geometry(address: int, line: int, ways: int, ultra: int) -> 
         cwd=runner.test_dir,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.synthesis
+@pytest.mark.parametrize("address,banks", [(32, 2), (48, 2), (49, 4), (56, 4)])
+@pytest.mark.parametrize("ultra", [False, True])
+def test_l1d_array_tag_geometry(
+    address: int, banks: int, ultra: bool, tmp_path: Path
+) -> None:
+    """Elaborate the four-way L1D at the packed tag's 36-bit boundary."""
+    lib = Path(__file__).resolve().parents[1] / "hw/rtl/lib"
+    sources = [
+        lib / "ram/sdp_block_ram.sv",
+        lib / "ram/sdp_packed_tag_uram.sv",
+        lib / "ram/sdp_ram_byte_en.sv",
+        lib / "cache/coherence_array.sv",
+    ]
+    netlist = tmp_path / "array.json"
+    top = "coherence_array"
+    script = (
+        "read_verilog -sv -DSYNTHESIS "
+        + " ".join(map(str, sources))
+        + f"; chparam -set ADDR_WIDTH {address} -set ULTRA {int(ultra)} "
+        f"-set WAYS 4 -set HIT_PORT {int(not ultra)} {top}; hierarchy -check -top {top}; "
+        f"proc; memory_collect; check -assert; write_json {netlist}"
+    )
+    result = subprocess.run(
+        ["yosys", "-q", "-p", script], capture_output=True, text=True, timeout=90
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    modules = json.loads(netlist.read_text())["modules"]
+    (array,) = (
+        module
+        for module in modules.values()
+        if int(module["attributes"].get("top", "0"), 2)
+    )
+    cells = array["cells"]
+    # Four 32-byte ways in 128 KiB use 10 set bits and 5 offset bits.
+    # Each tag carries its address, two permission bits and a snapshot bit.
+    entry_bits = address - 15 + 3
+    tags = [cell for name, cell in cells.items() if name.startswith("gen_tag_")]
+    copies = [
+        cell for name, cell in cells.items() if name.startswith("gen_hit_port.gen_copy")
+    ]
+    assert len(tags) == (1 if ultra else 4)
+    assert len(copies) == (0 if ultra else 4)
+    for copy in copies:
+        assert len(copy["connections"]["i_write_data"]) == entry_bits
+        assert len(copy["connections"]["o_read_data"]) == entry_bits
+    for tag in tags:
+        assert len(tag["connections"]["i_write_data"]) == entry_bits
+        words = 4 if ultra else 1
+        assert len(tag["connections"]["o_read_data"]) == entry_bits * words
+    if ultra:
+        storage = modules[tags[0]["type"]]["cells"]
+        physical = [name for name in storage if name.endswith(".memory")]
+        assert len(physical) == banks

@@ -136,6 +136,15 @@ module coherence_cluster_test_harness #(
     output logic [L1D_MISSES-1:0] o_live_stores,
     output logic [1:0] o_held_puts,
     output logic o_load_grant,
+`ifdef COHERENCE_SNAPSHOT_PROOF
+    output logic o_probe_taken,
+    output logic [1:0] o_probe_opcode,
+    output logic o_reply_taken,
+    output logic [1:0] o_reply_state,
+    output logic o_reply_data_valid,
+    output logic [255:0] o_reply_data,
+    output logic o_getm_taken,
+`endif
     output logic o_fatal,
     output logic [ADDR_WIDTH-1:0] o_fatal_addr,
     // The hart's line client (source 0, class 3), crossing LINK_STAGES as
@@ -210,6 +219,15 @@ module coherence_cluster_test_harness #(
   if (L1D_MISSES >= 3 && HOME_FILLS < 2) begin : gen_invalid_fills
     initial $fatal(1, "coherence_cluster_test_harness: three or more L1D endpoints need two fills");
   end
+`ifdef COHERENCE_SNAPSHOT_PROOF
+  assign o_probe_taken = p_valid && p_ready;
+  assign o_probe_opcode = probe.opcode;
+  assign o_reply_taken = r_valid && r_ready;
+  assign o_reply_state = reply.state;
+  assign o_reply_data_valid = reply.data_valid;
+  assign o_reply_data = reply.data;
+  assign o_getm_taken = home_d_valid && home_d_ready && coherence_pkg::is_getm(home_d.opcode);
+`endif
   assign o_held_puts = accepted_puts_q | (w_valid ? (2'b01 << put.put_id) : 2'b00);
   assign o_load_grant = g_valid && g_ready && grant.q.src == 0 &&
       grant.opcode == coherence_pkg::GrantS;
