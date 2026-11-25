@@ -102,7 +102,7 @@ module frost_sram_1w1r #(
   localparam int unsigned ArrayMacro = 0;
   localparam int unsigned Macro4096x64m8 = 1;  // L2 data and NIC transmit buffer
   localparam int unsigned Macro1024x64m8 = 2;  // L1D data
-  localparam int unsigned Macro1024x19 = 3;  // L1D tags
+  localparam int unsigned Macro1024x20 = 3;  // L1D tags
   localparam int unsigned Macro1024x18 = 4;  // L2 tags
   localparam int unsigned Macro512x68 = 5;  // NIC receive FIFO
   localparam int unsigned Macro256x36 = 6;  // BTB slot-2 payloads
@@ -113,7 +113,7 @@ module frost_sram_1w1r #(
   function automatic int unsigned select_macro();
     if (fits(12, 64, 8)) select_macro = Macro4096x64m8;
     else if (fits(10, 64, 8)) select_macro = Macro1024x64m8;
-    else if (fits(10, 19, 0)) select_macro = Macro1024x19;
+    else if (fits(10, 20, 0)) select_macro = Macro1024x20;
     else if (fits(10, 18, 0)) select_macro = Macro1024x18;
     else if (fits(9, 68, 0)) select_macro = Macro512x68;
     else if (fits(8, 36, 0)) select_macro = Macro256x36;
@@ -127,13 +127,13 @@ module frost_sram_1w1r #(
   localparam int unsigned TileAddrWidth =
       (Macro == Macro8192x28 || Macro == Macro8192x4) ? 13 :
       (Macro == Macro4096x64m8 || Macro == Macro4096x8) ? 12 :
-      (Macro == Macro1024x64m8 || Macro == Macro1024x19 || Macro == Macro1024x18) ? 10 :
+      (Macro == Macro1024x64m8 || Macro == Macro1024x20 || Macro == Macro1024x18) ? 10 :
       (Macro == Macro512x68) ? 9 :
       (Macro == Macro256x36) ? 8 :
       (Macro == Macro128x64m8) ? 7 : ADDR_WIDTH;
   localparam int unsigned TileDataWidth =
       (Macro == Macro4096x64m8 || Macro == Macro1024x64m8 || Macro == Macro128x64m8) ? 64 :
-      (Macro == Macro1024x19) ? 19 :
+      (Macro == Macro1024x20) ? 20 :
       (Macro == Macro1024x18) ? 18 :
       (Macro == Macro512x68) ? 68 :
       (Macro == Macro256x36) ? 36 :
@@ -281,8 +281,8 @@ module frost_sram_1w1r #(
               .addr1 (read_address),
               .dout1 (tile_read_data)
           );
-        end else if (Macro == Macro1024x19) begin : gen_macro
-          sram_1w1r_1024x19 u_macro (
+        end else if (Macro == Macro1024x20) begin : gen_macro
+          sram_1w1r_1024x20 u_macro (
               .clk0 (i_write_clock),
               .csb0 (!write_select),
               .addr0(write_address),
