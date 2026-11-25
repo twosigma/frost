@@ -314,6 +314,7 @@ result depends on timing, out of the default run:
 | The `atomic` and `memAmo` templates | They put traps between LR and SC (see [The A extension](#the-a-extension)); `--atomics` covers the A extension instead |
 | `unstructured` template | Random 32-bit words reach custom CSRs and other implementation-defined encodings |
 | CHERI and HPM event templates | Not applicable |
+| Vector stores that trap part-way | Sail emits the last performed element's store fields on a trapping partial vector store while FROST's RVFI emits none (see [The vector extension](#the-vector-extension)) |
 
 ## Directed behavior
 
@@ -542,6 +543,14 @@ Additional vector-extension behaviors are not compared against Sail 0.16:
   `vec_crypto_exec_v{128,256,512}`
   (`verif/cocotb_tests/vector/test_vec_crypto_exec.py`), and
   `tests/test_vector_legality_reference.py --forms crypto`.
+- Vector stores that trap part-way (after performing one or more elements):
+  `verif/testrig/run_stats.py` clears Sail's memory payload only for retiring
+  (`trap == 0`) vector stores. On a trapping partial vector store, Sail 0.16
+  emits the last performed element's store fields while FROST's RVFI emits
+  none, so TestRIG cannot check vector stores that trap part-way. These cases
+  are covered outside TestRIG by `vec_vstart_irq_test_v{128,256,512}`
+  (`sw/apps/vec_vstart_irq_test/main.c`) and `vec_debug_partial`
+  (`verif/cocotb_tests/vector/test_vec_debug_partial.py`).
 
 The `--vector-ext` option replays eight directed RVA23 vector extension traces:
 

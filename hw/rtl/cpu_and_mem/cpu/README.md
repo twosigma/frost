@@ -1085,10 +1085,10 @@ that entry and writes `vstart`, and sets VS Dirty, on the following edge;
 nothing retires or writes a CSR in between. Machine or supervisor interrupts
 and Debug Mode halts between elements of a strided, indexed, segment, or
 fault-only-first run use the same `vstart` path; a partial-load fault in Debug
-Mode re-parks without that `vstart` update. After retirement, `vector/vec_vmu.sv` splits the
-access into 32-byte sectors across six line-client identities (IDs 2..7) to the
-coherence home, freeing the `vec_vmt` entry once all sector responses and VRF
-writes finish. A failed sector response after retirement, or during a partial
+Mode re-parks without that `vstart` update. After retirement,
+`vector/vec_vmu.sv` splits the access into 32-byte sectors across six
+line-client identities (IDs 2..7) to the coherence home, freeing the `vec_vmt`
+entry once all sector responses and VRF writes finish. A failed sector response after retirement, or during a partial
 first-page run ahead of a second-page fault, suppresses any VRF write and
 raises a sticky hart fatal error alongside `o_cache_fatal`.
 
@@ -1131,7 +1131,7 @@ last field group may not pass `v31`, and an indexed segment load's field groups
 may not overlap the index group. The first access waits for older committed
 scalar stores to drain. Before launching each element (or segment), the unit
 raises the interrupt shield, keeping it up across all fields of a segment and
-dropping it once the element completes (holding it through completion on the
+dropping it once the element completes (holding it through retirement on the
 final active element). While the shield is down between elements, the head unit
 advertises the next element index on the `vstart` sideband so a pending,
 enabled interrupt or a debug halt stops the instruction precisely at that

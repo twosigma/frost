@@ -1189,7 +1189,8 @@ fault-only-first trimming after resumption, and agreement with synchronous page
 faults on the same instruction. `vec_debug_partial` also asserts JTAG `haltreq`
 mid-run on strided, indexed, segment, and fault-only-first loads and stores,
 checking `dpc`, `dcsr.cause`, `vstart`, `mstatus.VS`, prestart preservation,
-and completion after `dret`.
+and completion after `dret`, and single-steps over multi-element strided loads
+and stores to verify the whole instruction completes before halting.
 
 ### `test_riscv_vector_tests.py`
 
