@@ -275,7 +275,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (40, instructions + 25036) if vector_directed else (15, instructions)
+    expected = (41, instructions + 25874) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -298,6 +298,7 @@ def test_vector_directed_replay(
         ("vector_strided.S", 1846, 629),
         ("vector_indexed.S", 1924, 645),
         ("vector_fof.S", 326, 208),
+        ("vector_vstart_resume.S", 838, 338),
         ("vector_int_widen_narrow.S", 1753, 871),
         ("vector_fixed_point.S", 1701, 1206),
         ("vector_fp_single.S", 1446, 1068),
@@ -590,7 +591,11 @@ def _update_vec_reg_tracking(
 
 
 def _check_vector_mem_store_readbacks(
-    trace: Path, blocks: list[str], words: list[int]
+    trace: Path,
+    blocks: list[str],
+    words: list[int],
+    *,
+    allow_vstart_write: bool = False,
 ) -> None:
     """Verify immediate readback for unit-stride, mask, strided, indexed, segment and whole-register stores."""
     for block in blocks:
@@ -614,7 +619,7 @@ def _check_vector_mem_store_readbacks(
                 assert csr != 0x301, f"{trace.name}: misa access is disallowed"
                 rs1_or_uimm = (word >> 15) & 0x1F
                 is_write = funct3 in (1, 5) or rs1_or_uimm != 0
-                assert not (csr == 0x008 and is_write), (
+                assert allow_vstart_write or not (csr == 0x008 and is_write), (
                     f"{trace.name}: unexpected vstart write at index {index}"
                 )
         elif word & 0xC000_707F == 0xC000_7057:  # vsetivli
@@ -804,9 +809,15 @@ def _check_vector_store_readbacks(traces: Iterable[Path]) -> None:
             "vector_indexed.S",
             "vector_segment.S",
             "vector_whole_reg.S",
+            "vector_vstart_resume.S",
         ):
             assert stores, f"{trace.name}: expected vector stores"
-            _check_vector_mem_store_readbacks(trace, blocks, words)
+            _check_vector_mem_store_readbacks(
+                trace,
+                blocks,
+                words,
+                allow_vstart_write=(trace.name == "vector_vstart_resume.S"),
+            )
             continue
         if trace.name != "vector_cached_store.S":
             for store in stores:
@@ -4162,7 +4173,7 @@ def test_vector_segments_replay_and_coverage(tmp_path: Path) -> None:
         "02_segment_strided.S": "5cb073d5a2535c0e390f21abea9a447d770f9e1258f453a9e290185241f72db9",
         "03_segment_indexed_load.S": "bbf03bd621de6a3bf6ae33cd14d0fb7998168ac22fa0ea79b3dcc94d1c9972f0",
         "04_segment_indexed_store.S": "14a0855dd20339b8cfbbb2d223a9fd15bf197a78423a9a424e542e79444bb6d3",
-        "05_segment_fof.S": "b905d4672a161fd49d5d5aedaf4603621ce3901bccc690664fe05ed70f27482c",
+        "05_segment_fof.S": "dbb50c34ec67e311d41236822e6277d2d035d7c569f695e68f5ad9ede3a16d90",
     }
     assert vector_segments.trace_digests() == expected_digests
     regen_a = vector_segments.write_traces(tmp_path / "regen_a")
@@ -4176,7 +4187,7 @@ def test_vector_segments_replay_and_coverage(tmp_path: Path) -> None:
     plan = test_testrig.prepare_inputs(args, tmp_path, config)
     seg_dir = tmp_path / "vector_segments"
     assert plan.command == ["-d", str(seg_dir)]
-    assert (plan.traces, plan.instructions) == (6, 7817 + 2159)
+    assert (plan.traces, plan.instructions) == (6, 8166 + 2159)
 
     traces = sorted(seg_dir.glob("*.S"))
     assert [p.name for p in traces] == [
@@ -5029,6 +5040,19 @@ def test_zvfhmin_runs_without_zvfh(tmp_path: Path) -> None:
         for proc in procs:
             proc.kill()
             proc.wait()
+
+
+@pytest.mark.parametrize("vlen", vector.VECTOR_LENGTHS)
+def test_vector_vstart_resume_two_sail_agree(tmp_path: Path, vlen: int) -> None:
+    """Two Sail instances agree on vector_vstart_resume.S at each VLEN."""
+    traces = tmp_path / "vstart"
+    traces.mkdir()
+    src = VERIF_DIR / "testrig" / "vector_vstart_resume.S"
+    (traces / src.name).write_bytes(src.read_bytes())
+    result = _compare_two_sail(tmp_path, traces, vlen, vlen)
+    assert result.returncode == 0 and "No Failure" in result.stdout, (
+        result.stdout[-2000:] + result.stderr[-2000:]
+    )
 
 
 def test_readout_sees_every_register_and_vxsat() -> None:

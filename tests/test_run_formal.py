@@ -1257,7 +1257,8 @@ FORMAL_TARGETS = [
         "vec_head_mmu.sby",
         "Head vector translation before access, precise partial faults, commit shield "
         "and consumption of every commit; strided and indexed element runs in order with "
-        "each element translated first, precise mid-run faults and pointer masking",
+        "each element translated first, mid-run interrupt boundaries, precise mid-run "
+        "faults and pointer masking",
         tasks=(
             "bmc",
             "cover",

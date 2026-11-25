@@ -1692,6 +1692,42 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("EXTRA_CFLAGS", "-DVEC_VLEN=512"),),
         include_in_pytest=False,
     ),
+    "vec_vstart_irq_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vstart_irq_test",
+        nic_mac_clocks=False,
+        description=(
+            "M-mode and S-mode interrupts mid-run on strided, indexed, segment and "
+            "fault-only-first vector loads and stores: vstart, prestart preservation, "
+            "bounded latency, resumption and fault agreement; VLEN 256"
+        ),
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+    ),
+    "vec_vstart_irq_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vstart_irq_test",
+        nic_mac_clocks=False,
+        description="Mid-run vector memory interrupt resumption at VLEN 128; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=128"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_vstart_irq_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_vstart_irq_test",
+        nic_mac_clocks=False,
+        description="Mid-run vector memory interrupt resumption at VLEN 512; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
+        include_in_pytest=False,
+    ),
     "vec_vtype_handoff_test_v128": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2151,7 +2187,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_debug_partial",
         hdl_toplevel_module="frost",
         app_name="debug_target",
-        description="Debug Mode partial unit-stride and strided vector loads dirty mstatus.VS",
+        description=(
+            "Debug Mode partial vector loads dirty mstatus.VS, mid-run haltreq/"
+            "dret resumption with vstart, and single-step over strided loads and stores"
+        ),
         verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
     ),
     "debug_test": CocotbRunConfig(
@@ -3715,19 +3754,28 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "vec_head_mmu_v128": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_head_mmu",
         hdl_toplevel_module="vec_head_mmu",
-        description="Head vector translation, commit shield and partial faults at VLEN 128",
+        description=(
+            "Head vector translation, commit shield, partial faults and mid-run "
+            "interrupt boundaries at VLEN 128"
+        ),
         verilator_extra_args=("--assert", "-GVLEN=128"),
     ),
     "vec_head_mmu_v256": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_head_mmu",
         hdl_toplevel_module="vec_head_mmu",
-        description="Head vector translation, commit shield and partial faults at VLEN 256",
+        description=(
+            "Head vector translation, commit shield, partial faults and mid-run "
+            "interrupt boundaries at VLEN 256"
+        ),
         verilator_extra_args=("--assert", "-GVLEN=256"),
     ),
     "vec_head_mmu_v512": CocotbRunConfig(
         python_test_module="cocotb_tests.vector.test_vec_head_mmu",
         hdl_toplevel_module="vec_head_mmu",
-        description="Head vector translation, commit shield and partial faults at VLEN 512",
+        description=(
+            "Head vector translation, commit shield, partial faults and mid-run "
+            "interrupt boundaries at VLEN 512"
+        ),
         verilator_extra_args=("--assert", "-GVLEN=512"),
     ),
     "vec_vmu_v128": CocotbRunConfig(

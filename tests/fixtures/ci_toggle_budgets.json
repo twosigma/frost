@@ -93,6 +93,7 @@
           "name": "reserved forms and restart",
           "overhead_seconds": 2150,
           "case_seconds": {
+            "vec_vstart_irq_test_v256": 1200,
             "vec_vstart_reload_test_v256": 63,
             "vec_vtype_handoff_test_v256": 36,
             "vec_source_eew_test_v256": 42,

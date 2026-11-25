@@ -208,6 +208,8 @@ async def _strided_case(
     nf: int = 1,
     unit: bool = False,
     ff: bool = False,
+    irq_at_launch: int | None = None,
+    irq_withdraw_cycles: int | None = None,
 ) -> None:
     """Run one strided or indexed instruction; check every descriptor, fault and pulse.
 
@@ -348,7 +350,25 @@ async def _strided_case(
     completion = None
     commit_at = None
     freed = False
+    irq_boundary_seen = None
+    irq_flushed = False
+    completed_fields = 0
     for cycle in range(40 * (vl + 4) + 200):
+        armed = 0
+        if irq_at_launch is not None and len(launches) >= irq_at_launch:
+            if irq_withdraw_cycles is None:
+                armed = 0 if irq_flushed else 1
+            elif (
+                irq_boundary_seen is None
+                or cycle < irq_boundary_seen + irq_withdraw_cycles
+            ):
+                armed = 1
+        do_flush = (
+            irq_at_launch is not None
+            and irq_withdraw_cycles is None
+            and irq_boundary_seen is not None
+            and cycle == irq_boundary_seen + 2
+        )
         put(
             dut,
             walk_resp_valid=0,
@@ -357,10 +377,13 @@ async def _strided_case(
             grant=0,
             commit_valid=0,
             vmu_done=0,
-            # An interrupt becomes eligible after the first access; the run
-            # must neither stop nor give the head up.
-            int_take_armed=int(bool(launches)),
+            int_take_armed=armed,
+            flush_all=int(do_flush),
+            head_safe=0 if (do_flush or irq_flushed) else 1,
+            head_is_vmem=0 if irq_flushed else 1,
         )
+        if do_flush:
+            irq_flushed = True
         # The VRF read port answers the previous cycle's address.
         put(dut, vrf_read_data=vregs.get(vrf_pending, 0))
         # The extra read port reads combinationally.
@@ -389,6 +412,7 @@ async def _strided_case(
         if done_at == cycle:
             put(dut, vmu_done=1)
             done_at = None
+            completed_fields += 1
         if commit_at == cycle:
             put(dut, commit_valid=1)
         if completion is not None and cycle == completion + 3:
@@ -464,11 +488,43 @@ async def _strided_case(
             assert commit_at is not None and cycle == commit_at + 1
             assert int(dut.o_zero_vmt_done_idx.value) == 2
             freed = True
+        if (
+            irq_at_launch is not None
+            and irq_boundary_seen is None
+            and len(launches) >= irq_at_launch
+            and not int(dut.o_vmem_head_shield.value)
+        ):
+            # The shield drops only after all fields of the in-flight segment finish.
+            assert completed_fields % nf == 0, (completed_fields, nf)
+            assert len(launches) == completed_fields
+            last_done_elem = launches[-1]
+            assert int(dut.o_vmem_fault_vstart_valid.value) == 1
+            assert int(dut.o_vmem_fault_vstart.value) == last_done_elem + 1, (
+                int(dut.o_vmem_fault_vstart.value),
+                last_done_elem + 1,
+            )
+            irq_boundary_seen = cycle
+        if (
+            irq_flushed
+            and irq_boundary_seen is not None
+            and cycle >= irq_boundary_seen + 4
+        ):
+            assert int(dut.o_vmem_head_shield.value) == 0
+            assert int(dut.o_vmem_fault_vstart_valid.value) == 0
+            assert completion is None, "flushed run must not complete on CDB"
+            break
         if completion is not None and cycle == completion + 12:
             break
         await edge(dut)
     else:
         raise AssertionError("strided run did not complete")
+    if irq_at_launch is not None and irq_withdraw_cycles is None:
+        assert irq_flushed and irq_boundary_seen is not None
+        assert not freed
+        assert dirty == (0 if store else len(launches)), (dirty, launches)
+        return
+    if irq_at_launch is not None and irq_withdraw_cycles is not None:
+        assert irq_boundary_seen is not None
     assert freed == (fault is None), "the VMT entry is freed exactly at retirement"
     assert dirty == (0 if store else len(launches)), (dirty, launches)
 
@@ -658,4 +714,89 @@ async def test_fault_only_first_runs(dut: Any) -> None:
     # Segment form: two-field segments; segment 3 is the first on the page.
     await _strided_case(
         dut, store=0, eew_log2=1, base=0x401FF4, vl=5, nf=2, fault_vpn=0x402, ff=True
+    )
+
+
+@cocotb.test()
+async def test_run_interrupt_boundaries(dut: Any) -> None:
+    """Armed interrupts drop the shield at element/segment boundaries with exact vstart."""
+    for store in (0, 1):
+        # Strided: stop after element 0 and flush, and stop then withdraw to resume.
+        await _strided_case(
+            dut,
+            store=store,
+            eew_log2=2,
+            base=0x400FFE,
+            stride=0x800,
+            vl=4,
+            irq_at_launch=1,
+        )
+        await _strided_case(
+            dut,
+            store=store,
+            eew_log2=2,
+            base=0x400FFE,
+            stride=0x800,
+            vl=4,
+            irq_at_launch=1,
+            irq_withdraw_cycles=20,
+        )
+        # Indexed with nonzero vstart and mask: stop after first active element.
+        await _strided_case(
+            dut,
+            store=store,
+            eew_log2=2,
+            base=0x400F00,
+            vl=5,
+            vstart=1,
+            mask=0b11011,
+            indices=[0x00, 0x10, 0x20, 0x30, 0x40],
+            ieew_log2=1,
+            irq_at_launch=1,
+        )
+        # Segment (nf=3): armed during field 0 of segment 0; finishes fields 0..2
+        # under the shield, then drops the shield with vstart = 1 (next segment).
+        await _strided_case(
+            dut,
+            store=store,
+            eew_log2=2,
+            base=0x400FEC,
+            vl=4,
+            nf=3,
+            unit=True,
+            irq_at_launch=1,
+        )
+        await _strided_case(
+            dut,
+            store=store,
+            eew_log2=2,
+            base=0x400FEC,
+            vl=4,
+            nf=3,
+            unit=True,
+            irq_at_launch=1,
+            irq_withdraw_cycles=20,
+        )
+    # Fault-only-first: stop after element 0 before reaching faulting element 2,
+    # and yield at HM_RUN_TRIM then withdraw to retire with vl trimmed.
+    await _strided_case(
+        dut,
+        store=0,
+        eew_log2=2,
+        base=0x401FF6,
+        vl=4,
+        fault_vpn=0x402,
+        ff=True,
+        irq_at_launch=1,
+    )
+    await _strided_case(
+        dut,
+        store=0,
+        eew_log2=2,
+        base=0x401FF6,
+        vl=4,
+        fault_vpn=0x402,
+        ff=True,
+        irq_at_launch=2,
+        irq_withdraw_cycles=20,
     )
