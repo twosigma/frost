@@ -692,8 +692,8 @@ and targeted microbenchmarks give these items:
    flight or one read slot per line for loads to the same line would let one
    stream keep more lines in flight. In simulation, a dependent load that
    misses the L1D and hits the L2 takes 24 cycles. In a serial pointer
-   chase, a working set that overflows the L1D into the L2 adds about 23
-   cycles per step, and one that overflows the L2 adds about 35 more. The
+   chase, a working set that overflows the L1D into the L2 adds about 21
+   cycles per step, and one that overflows the L2 adds about 36 more. The
    L1D answers a load from its grant, and registered stages and arbitration
    add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
