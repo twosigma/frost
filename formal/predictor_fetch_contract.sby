@@ -56,6 +56,7 @@ cover_backing: connect -set raw_pd_redirect_taken 0
 cover_backing: connect -set raw_pd_redirect_target_hw 0
 cover_backing: connect -set raw_instr_valid 1
 cover_backing: connect -set i_disable_branch_prediction 0
+cover_backing: connect -set i_fetch_trap_hold 0
 cover_backing: connect -set i_fetch_translation_active 0
 cover_backing: connect -set i_btb_invalidate 0
 cover_backing: connect -set i_fetch_priv_u 0

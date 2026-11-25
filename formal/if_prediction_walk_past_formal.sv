@@ -15,15 +15,12 @@
  */
 
 /*
- * Formal integration harness for if_stage's pending-prediction walk-past and
- * post-prediction PC-hold rules. Runs the real if_stage, pc_controller,
- * pc_increment_calculator, pc_reg_precompute, control_flow_tracker,
- * c_ext_state, instruction_aligner, served_window_coverage, fetch_redirect,
- * pd_target_candidate, slot2_prediction_capture, prediction_metadata_tracker,
- * and branch_prediction_controller together. Predictor RAM arrays and IMMU
- * translation tables are replaced by unconstrained lookup stubs below so
- * arbitrary hits, targets, and translation/fault responses are explored
- * without array warm-up.
+ * Formal integration harness for decoupled if_stage's false-BTB resteer,
+ * packet-contract, and PC-continuity rules. Runs the real if_stage,
+ * fetch_pc_decoupled, fetch_parcel_queue, backing_btb, and return_address_stack
+ * together. Fast-BTB, direction-predictor, TAGE/ITTAGE, and IMMU lookup tables
+ * are replaced by unconstrained lookup stubs below so arbitrary hits, targets,
+ * and translation/fault responses are explored without array warm-up.
  *
  * Instruction windows are arbitrary 64-bit fetches for both providers; their
  * predecode sidebands, provider-parity replicas, and served-window word tags
@@ -51,6 +48,7 @@ module if_prediction_walk_past_formal (
   (* anyseq *) logic [XLEN-2:0] raw_pd_redirect_target_hw;
   (* anyseq *) logic i_btb_invalidate;
   (* anyseq *) logic i_disable_branch_prediction;
+  (* anyseq *) logic i_fetch_trap_hold;
   (* anyseq *) logic i_fetch_translation_active;
   (* anyseq *) logic i_fetch_priv_u;
   (* anyseq *) logic [riscv_pkg::AsidBits-1:0] i_fetch_asid;
@@ -92,9 +90,10 @@ module if_prediction_walk_past_formal (
   assign fence_i_flush  = raw_fence_i_flush && !i_reset;
   assign fence_i_target = {raw_fence_i_target_hw, 1'b0};
 
-  // Cached fetch_provider (fetch_provider.sv:482) gates o_instr_valid with
-  // !pipeline_stall_q, which if_stage.sv:1466-1470 relies on during replay.
-  assign i_instr_valid  = raw_instr_valid && !(provider_q && stall_q);
+  // Decoupled fetch_provider receives constant-zero stall from cpu_ooo, so
+  // valid windows from either provider may arrive on any cycle, including
+  // immediately after a pipeline stall.
+  assign i_instr_valid  = raw_instr_valid;
 
   always_comb begin
     trap_ctrl = '0;
@@ -254,6 +253,7 @@ module if_prediction_walk_past_formal (
       .i_fence_i_target(fence_i_target),
       .i_btb_invalidate,
       .i_disable_branch_prediction,
+      .i_fetch_trap_hold,
       .i_dir_update_valid(1'b0),
       .i_dir_update_idx('0),
       .i_dir_update_taken(1'b0),
