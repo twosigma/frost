@@ -1636,6 +1636,7 @@ provides Sail and the engine.
 ./scripts/frost.py run python3 tests/test_testrig.py --atomics 200
 ./scripts/frost.py run python3 tests/test_testrig.py --fp-ext 60 --test-length 250
 ./scripts/frost.py run python3 tests/test_testrig.py --zcb 50
+./scripts/frost.py run python3 tests/test_testrig.py --misaligned
 ./scripts/frost.py run python3 tests/test_testrig.py --wfi
 ```
 
@@ -1671,6 +1672,10 @@ is shrunk by default to a short counterexample
 in `tests/testrig_failures/`, which `--trace` replays; the logs and the
 engine's coverage table go to `tests/testrig_logs/`. The pytest entry point
 replays the saved counterexamples in `verif/testrig/traces/`.
+`--misaligned` replays five directed traces from `verif/testrig/misaligned.py`
+covering hardware misaligned loads and stores in cached DDR across every width,
+misaligned offset, and 8-byte, 32-byte, 64-byte, and 4 KiB page boundary,
+second-page faults, and region misaligned traps.
 `--wfi` replays directed wait, wake, and trap cases with a simulation-only
 wake timeout and compares them with Sail's normalised WFI replies. See the
 [WFI checks and limits](../verif/testrig/README.md#wfi).

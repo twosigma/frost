@@ -34,6 +34,7 @@ repository root:
     ./scripts/frost.py run python3 tests/test_testrig.py --fp-ext 60 --test-length 250
     ./scripts/frost.py run python3 tests/test_testrig.py --zcb 50
     ./scripts/frost.py run python3 tests/test_testrig.py --wfi
+    ./scripts/frost.py run python3 tests/test_testrig.py --misaligned
     ./scripts/frost.py run python3 tests/test_testrig.py --sscofpmf
 
 The image provides sail_riscv_sim and QCVEngine. Counterexamples go to
@@ -79,6 +80,7 @@ vector = importlib.import_module("testrig.vector")
 vector_segments = importlib.import_module("testrig.vector_segments")
 compressed_mops = importlib.import_module("testrig.compressed_mops")
 fp_ext = importlib.import_module("testrig.fp_ext")
+misaligned = importlib.import_module("testrig.misaligned")
 svinval = importlib.import_module("testrig.svinval")
 wfi = importlib.import_module("testrig.wfi")
 run_stats = importlib.import_module("testrig.run_stats")
@@ -433,6 +435,15 @@ def prepare_inputs(
             f"Wrote {len(wfi_strands)} directed WFI traces to {trace_dir}", flush=True
         )
         command += ["-d", str(trace_dir)]
+    elif arguments.misaligned:
+        trace_dir = work_dir / "misaligned"
+        shutil.rmtree(trace_dir, ignore_errors=True)
+        paths_written = misaligned.write_tests(trace_dir)
+        print(
+            f"Wrote {len(paths_written)} directed misaligned traces to {trace_dir}",
+            flush=True,
+        )
+        command += ["-d", str(trace_dir)]
     elif arguments.zcb:
         seed = (
             arguments.seed if arguments.seed is not None else random.randrange(1 << 32)
@@ -738,7 +749,7 @@ def run(arguments: argparse.Namespace) -> int:
     images = write_empty_images()
     architecture = arguments.arch or (
         ATOMICS_ARCHITECTURE
-        if (arguments.atomics or arguments.mmu or arguments.cmo)
+        if (arguments.atomics or arguments.mmu or arguments.cmo or arguments.misaligned)
         else vector.ARCHITECTURE
         if (arguments.vector or arguments.vector_segments or arguments.vector_ext)
         else DEFAULT_ARCHITECTURE
@@ -1009,6 +1020,11 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         help="replay directed WFI wait, wake and trap traces",
     )
     parser.add_argument(
+        "--misaligned",
+        action="store_true",
+        help="replay directed misaligned load/store traces from verif/testrig/misaligned.py",
+    )
+    parser.add_argument(
         "--sscofpmf",
         action="store_true",
         help="replay deterministic Sscofpmf controls and implemented counters "
@@ -1158,6 +1174,7 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
             arguments.trace,
             arguments.trace_dir,
             arguments.wfi,
+            arguments.misaligned,
             arguments.sscofpmf,
             arguments.atomics,
             arguments.crypto,
@@ -1175,9 +1192,10 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         active_modes == 2 and arguments.sscofpmf and arguments.trace
     ):
         parser.error(
-            "--trace, --trace-dir, --wfi, --sscofpmf, --atomics, --crypto, --zcb, "
-            "--fp-ext, --svinval, --mmu, --cmo, --vector, --vector-segments and "
-            "--vector-ext are mutually exclusive (except --sscofpmf --trace)"
+            "--trace, --trace-dir, --wfi, --misaligned, --sscofpmf, --atomics, "
+            "--crypto, --zcb, --fp-ext, --svinval, --mmu, --cmo, --vector, "
+            "--vector-segments and --vector-ext are mutually exclusive (except "
+            "--sscofpmf --trace)"
         )
     return arguments
 

@@ -158,6 +158,8 @@ depth6_bmc: opt_clean
 cover: select -assert-count 3 t:$check r:FLAVOR=cover %i c:cover_port0_through_alu2_* c:cover_head_done_result_held %u %i
 cover: chformal -cover -remove c:cover_port0_through_alu2_* c:cover_head_done_result_held %u
 cover: select -assert-count 15 t:$check r:FLAVOR=cover %i
+# Drop assertions before SBY formalff so cover_alu_issue converges on the concrete wrapper; the bmc tasks prove them.
+cover_alu_issue: chformal -assert -remove
 cover_alu_issue: chformal -cover -remove t:$check r:FLAVOR=cover %i c:cover_port0_through_alu2_* c:cover_head_done_result_held %u %d
 cover_alu_issue: select -assert-count 3 t:$check r:FLAVOR=cover %i
 

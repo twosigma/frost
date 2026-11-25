@@ -908,7 +908,7 @@ class Generator:
         insns = [alu_imm("addi", TMP_A, 0, 0), csrw("satp", TMP_A)]
         addr = rng.choice(
             (
-                PA_DDR_BUF + 3,  # mapped misaligned -> 4/6
+                PA_BRAM_BUF + 3,  # low BRAM misaligned -> 4/6
                 PA_MMIO + 5,  # device misaligned -> 4/6
                 PA_UNMAPPED_LOW + 3,  # unmapped misaligned -> access fault 5/7 first
                 PA_DEVICE_HOLE + 8,  # unmapped device page -> access fault 5/7

@@ -116,6 +116,7 @@ HARNESS_ERRORS = {
     7: "two control events in one cycle",
     8: "misprediction redirect not loaded into the fetch PC",
     9: "PD redirect from a PC outside the layout",
+    10: "misaligned-access assist sequence violation",
 }
 
 
