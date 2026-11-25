@@ -16,6 +16,10 @@ read_slang --top fetch_parcel_queue --single-unit -DSYNTHESIS -DFORMAL -GPARCEL_
 hierarchy -top fetch_parcel_queue
 script free_undefined.ys
 prep -top fetch_parcel_queue
+select -assert-count 30 t:$check r:FLAVOR=assert %i
+select -assert-count 6 t:$check r:FLAVOR=assume %i
+select -assert-count 5 t:$check r:FLAVOR=cover %i
+select -assert-none t:$assume
 bmc: chformal -cover -remove
 cover: chformal -assert -remove
 

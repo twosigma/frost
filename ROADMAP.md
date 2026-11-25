@@ -381,11 +381,10 @@ induction from the state after reset with every other register free.
 Two PDR tasks check maintenance with unspecified initial values left
 free. One proves all 286 ownership facts. The other assumes those
 facts and proves the remaining 89 assertions.
-Fifty-two other `.sby` files run such an optimization after their own
-`setundef` or without one, and twenty-one files in `DONT_CARE_OPEN` (three of
-them without `opt`: `coherence_l1d_twin.sby`, `coherence_read_capture.sby`,
-and `store_queue_twin.sby`) run a plain `memory_map`. Planned: `-keepdc` in
-those files, re-measured. In every command of every script, the fast check
+Forty-five other `.sby` files run such an optimization after their own
+`setundef` or without one, and nineteen files in `DONT_CARE_OPEN` (one of
+them without `opt`: `coherence_read_capture.sby`) run a plain `memory_map`.
+Planned: `-keepdc` in those files, re-measured. In every command of every script, the fast check
 of the scripts accepts only Yosys command forms that, apart from edits the
 script names itself, keep the unknown starting value of registers and
 memories and never merge two free inputs, and for each task of a script it
