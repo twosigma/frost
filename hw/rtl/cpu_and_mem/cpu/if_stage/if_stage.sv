@@ -476,10 +476,27 @@ module if_stage #(
   assign f0_btb_valid     = f0_pred_en && btb_taken_raw;
   assign f0_btb_steer_now = f0_pred_en && btb_steer_raw;
 
+  // Precompute word+1..word+3 directly from pc in parallel with BTB lookup
+  // so f0_btb_link selects with a 4:1 LUT mux instead of a 62-bit carry chain
+  // behind btb_taken_pos and btb_compressed.
+  logic [XLEN-3:0] pc_word_p1;
+  logic [XLEN-3:0] pc_word_p2;
+  logic [XLEN-3:0] pc_word_p3;
+  logic [XLEN-3:0] f0_btb_link_word;
+  assign pc_word_p1 = pc[XLEN-1:2] + (XLEN - 2)'(1);
+  assign pc_word_p2 = pc[XLEN-1:2] + (XLEN - 2)'(2);
+  assign pc_word_p3 = pc[XLEN-1:2] + (XLEN - 2)'(3);
+
   assign f0_btb_link_hw_sum = {1'b0, btb_taken_pos} + (btb_compressed ? 3'd1 : 3'd2);
-  assign f0_btb_link = {
-    pc[XLEN-1:2] + (XLEN - 2)'(f0_btb_link_hw_sum[2:1]), f0_btb_link_hw_sum[0], 1'b0
-  };
+  always_comb begin
+    unique case (f0_btb_link_hw_sum[2:1])
+      2'd0:    f0_btb_link_word = pc[XLEN-1:2];
+      2'd1:    f0_btb_link_word = pc_word_p1;
+      2'd2:    f0_btb_link_word = pc_word_p2;
+      default: f0_btb_link_word = pc_word_p3;
+    endcase
+  end
+  assign f0_btb_link = {f0_btb_link_word, f0_btb_link_hw_sum[0], 1'b0};
 
   // ===========================================================================
   // F0: Decoupled PC Controller (instance name kept for RVFI/testbench probes)
@@ -634,11 +651,13 @@ module if_stage #(
   end
 
   assign f0_ras_push = !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore &&
+      !fetch_fault0_live &&
       ((f0_launch && ((f0_btb_steer_now && btb_is_call) ||
                       (f0_span_btb_fire && span_btb_pending_q.is_call))) ||
        (f1_collapsed_btb_steer && f1_req_q.btb_is_call) ||
        (f1_collapsed_span_fire && span_btb_pending_q.is_call));
   assign f0_ras_pop = !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore &&
+      !fetch_fault0_live &&
       ((f0_launch && ((f0_btb_steer_now && btb_is_return) ||
                       (f0_span_btb_fire && span_btb_pending_q.is_return))) ||
        (f1_collapsed_btb_steer && f1_req_q.btb_is_return) ||
@@ -662,18 +681,17 @@ module if_stage #(
     f0_ras_link_q <= f0_ras_link;
   end
 
-  // Do not gate i_push/i_pop with !f1_ras_restore: return_address_stack already
-  // prioritizes i_misprediction (ras_restore) over pending ops on state update,
-  // and keeping f1_ras_restore off i_push/i_pop prevents a combinational path
-  // from F1 validation back through u_ras.o_top into F0 prediction.
+  // Drive i_push/i_pop directly from flops so PD redirects and flushes never
+  // enter u_ras.o_top or chain into F0 BTB lookup and next-PC logic. On PD,
+  // EX, and F1 restores, ras_restore already takes priority inside u_ras.
   return_address_stack #(
       .RAS_DEPTH(riscv_pkg::RasDepth),
       .RAS_PTR_BITS(RasPtrBits)
   ) u_ras (
       .i_clk,
       .i_rst(i_pipeline_ctrl.reset),
-      .i_push(f0_ras_push_q && !any_redirect),
-      .i_pop(f0_ras_pop_q && !any_redirect),
+      .i_push(f0_ras_push_q),
+      .i_pop(f0_ras_pop_q),
       .i_push_address(f0_ras_link_q),
       .i_misprediction(ras_restore),
       .i_restore_tos(ras_restore_tos),
@@ -835,16 +853,18 @@ module if_stage #(
     assign f1_tag_low_group[k]  = &f1_tag_low_chunk[6*k+:W];
     assign f1_tag_high_group[k] = &f1_tag_high_chunk[6*k+:W];
   end
-  (* keep = "true" *) logic f1_tag_match_low;
-  (* keep = "true" *) logic f1_tag_match_high;
+  logic f1_tag_match_low;
+  logic f1_tag_match_high;
   assign f1_tag_match_low  = &f1_tag_low_group;
   assign f1_tag_match_high = &f1_tag_high_group;
 
   logic f1_tag_match;
   assign f1_tag_match = i_instr_pc_metadata_served_high ? f1_tag_match_high : f1_tag_match_low;
   assign f1_accept_raw = f1_req_q.valid && i_instr_valid && f1_tag_match;
+  // collapsed_armed_q is only set after fetch_pa_valid was observed for this
+  // PC, so keep live u_immu translation valid off the F1 accept cone.
   assign f1_collapsed_accept_raw = !f1_req_q.valid && collapsed_armed_q &&
-      i_instr_valid && fetch_pa_valid && !f0_stop_fetch && f1_tag_match;
+      i_instr_valid && !f0_stop_fetch && f1_tag_match;
   assign f1_tag_resteer_raw = f1_req_q.valid && i_instr_valid && !f1_tag_match;
 
   assign f1_accept = !any_redirect && f1_accept_raw;
@@ -916,28 +936,23 @@ module if_stage #(
   assign hw_rvc_extra[3] = sb_w1[riscv_pkg::ImemSbRvcExtraHiLsb+:23];
 
   // Propagate launch-cycle spanning-branch fault vetoes into F1 word-0 fault
-  // without altering non-spanning fault behavior (such as simulation harnesses
-  // that filter bare-mode access faults on i_instr_fault0). Collapsed-lead
-  // accepts only occur when !f1_req_q.valid (where f1_cancel_span is 0), so
-  // read span_btb_pending_q.valid && fetch_fault0_live directly to avoid a
-  // structural loop through f1_cancel_span.
-  logic f1_collapsed_span_veto;
-  assign f1_collapsed_span_veto = (collapsed_armed_q && f1_req_q.span_veto) ||
-      (span_btb_pending_q.valid && fetch_fault0_live);
+  // purely from registered f1_req_q.span_veto (captured on both F0 launch and
+  // collapsed-lead arming) so live u_immu faults never enter F1, the parcel
+  // queue, or PD.
   logic f1_fault0_eff;
-  assign f1_fault0_eff = i_instr_fault0 ||
-      (f1_req_q.valid ? f1_req_q.span_veto : f1_collapsed_span_veto);
+  assign f1_fault0_eff = i_instr_fault0 || f1_req_q.span_veto;
   assign hw_fault      = {i_instr_fault1, i_instr_fault1, f1_fault0_eff, f1_fault0_eff};
   assign hw_fault_page = {
     i_instr_fault1_page, i_instr_fault1_page, i_instr_fault0_page, i_instr_fault0_page
   };
 
+  // Reuse predecoded hw_is_indirect (JALR / C.JR / C.JALR) so compressed
+  // control classification depends only on bits [15:13] and [1:0].
   for (genvar h = 0; h < 4; h++) begin : gen_hw_ctrl
-    assign hw_is_control[h] = hw_comp[h] ? riscv_pkg::imem_compressed_control(
-        hw_raw[h]
-    ) : riscv_pkg::imem_native_control(
-        hw_raw[h][6:0]
-    );
+    assign hw_is_control[h] = hw_comp[h] ?
+        (hw_is_indirect[h] ||
+         ((hw_raw[h][1:0] == 2'b01) && hw_raw[h][15] && (hw_raw[h][14] || hw_raw[h][13]))) :
+        ((hw_raw[h][6:4] == 3'b110) && (hw_raw[h][3:2] != 2'b10));
   end
 
   // Walk instruction boundaries across the window (flop-only span-tail select
@@ -962,7 +977,7 @@ module if_stage #(
   // Validate F0's registered fast-BTB prediction against actual instruction
   // boundaries, size, control-flow opcode class, and fetch faults. Both normal
   // F1 accepts and collapsed-lead accepts read from f1_req_q flops so F0's
-  // BTB/dir/RAS lookup never chains into F1, the parcel queue, or PD.
+  // BTB/dir/RAS/IMMU lookup never chains into F1, the parcel queue, or PD.
   logic f1_collapsed_btb_en;
   logic f1_src_btb_taken;
   logic f1_src_btb_is_span;
@@ -970,8 +985,7 @@ module if_stage #(
   logic f1_src_btb_comp;
   logic [XLEN-1:0] f1_src_btb_target;
 
-  assign f1_collapsed_btb_en = !i_disable_branch_prediction && !btb_invalidate_active &&
-      !fetch_fault0_live;
+  assign f1_collapsed_btb_en = !i_disable_branch_prediction && !btb_invalidate_active;
   assign f1_src_btb_taken   = f1_req_q.valid ?
       f1_req_q.btb_taken : (f1_req_q.btb_taken && f1_collapsed_btb_en);
   assign f1_src_btb_is_span = f1_req_q.btb_is_span;
@@ -992,11 +1006,11 @@ module if_stage #(
   assign f1_btb_ok = valid_start[f1_btb_pos] && (hw_comp[f1_btb_pos] == f1_src_btb_comp) &&
       hw_is_control[f1_btb_pos] && !f1_btb_fault;
 
-  // Redirect-free and tag-match-free taken flag for parcel packing and push
-  // count (f1_btb_ok implies !f1_cancel_span, so span veto reads
-  // span_btb_pending_q.valid && fetch_fault0_live directly).
-  assign f1_btb_taken_raw = !f1_is_span_tail && f1_src_btb_taken && f1_btb_ok &&
-      !(f1_src_btb_is_span && span_btb_pending_q.valid && fetch_fault0_live);
+  // Redirect-free, tag-match-free, and IMMU-free taken flag for parcel packing
+  // and push count. If a spanning branch's second word faults at F0, that next
+  // window carries fault=1 on hw[0], so drain clears btb_predicted_taken via
+  // s1_fault_hi / s2_fault when the 32-bit instruction assembles.
+  assign f1_btb_taken_raw = !f1_is_span_tail && f1_src_btb_taken && f1_btb_ok;
   assign f1_valid_btb_taken = (f1_accept || f1_collapsed_accept) && f1_btb_taken_raw;
 
   assign f1_false_btb_raw         = f1_accept_raw && !f1_req_q.span_tail && f1_req_q.btb_taken && !f1_btb_ok;
@@ -1013,7 +1027,7 @@ module if_stage #(
   assign f1_collapsed_btb_span = f1_collapsed_accept && !span_btb_pending_q.valid &&
       f1_req_q.btb_taken && f1_req_q.btb_is_span && f1_collapsed_btb_en && f1_btb_ok;
   assign f1_collapsed_span_fire_raw = span_btb_pending_q.valid &&
-      !i_instr_fault0 && !fetch_fault0_live;
+      !i_instr_fault0 && !f1_req_q.span_veto;
   assign f1_collapsed_span_fire = f1_collapsed_accept && f1_collapsed_span_fire_raw;
 
   assign f1_resteer_raw = f1_tag_resteer_raw || f1_false_btb_resteer_raw;
@@ -1028,10 +1042,11 @@ module if_stage #(
       !f1_resteer_raw && !f1_collapsed_accept_raw;
   assign f0_launch = !any_redirect && f0_launch_raw;
 
-  // Next f1_carry_hi_q after an accepted window: set when a non-taken,
-  // non-faulting 32-bit instruction starts at hw[3] and extends into W+2:0.
+  // Next f1_carry_hi_q after an accepted window: set when a non-taken (or
+  // spanning-taken, in case W+2 faults and drops span_tail) non-faulting
+  // 32-bit instruction starts at hw[3] and extends into W+2:0.
   logic f1_next_carry_hi;
-  assign f1_next_carry_hi = !f1_is_span_tail && !f1_btb_taken_raw &&
+  assign f1_next_carry_hi = !f1_is_span_tail && (!f1_btb_taken_raw || f1_src_btb_is_span) &&
       valid_start[3] && !hw_comp[3] && !hw_fault[3];
 
   // Build the four candidate parcels and pack them left-aligned for the queue.
@@ -1110,7 +1125,10 @@ module if_stage #(
   logic [1:0] btb_end_hw;
   // Pass redirect-free push valid to u_parcel_queue; u_parcel_queue resets
   // pointers and counts synchronously when i_flush (pqueue_flush) fires.
-  assign f1_push_valid = f1_accept_raw || f1_collapsed_accept_raw;
+  // Combine normal and collapsed accept directly so f1_push_valid takes one
+  // LUT after f1_tag_match.
+  assign f1_push_valid = (f1_req_q.valid || (collapsed_armed_q && !f0_stop_fetch)) &&
+      i_instr_valid && f1_tag_match;
   assign btb_end_hw = f1_btb_pos + (hw_comp[f1_btb_pos] ? 2'd0 : 2'd1);
 
   always_comb begin
@@ -1185,7 +1203,7 @@ module if_stage #(
       f1_resteer_nopred_q      <= 1'b0;
     end else if (f1_resteer) begin
       f1_req_q.valid           <= 1'b0;
-      span_btb_pending_q.valid <= f1_tag_resteer && f1_req_q.span_tail;
+      span_btb_pending_q.valid <= f1_tag_resteer && (f1_req_q.span_tail || f1_req_q.span_veto);
       f1_pred_fresh_q          <= 1'b0;
       collapsed_armed_q        <= 1'b0;
       f1_resteer_nopred_q      <= f1_tag_resteer;
@@ -1250,7 +1268,7 @@ module if_stage #(
         f1_req_q.valid  <= 1'b0;
         f1_pred_fresh_q <= 1'b0;
         f1_carry_hi_q   <= f1_next_carry_hi;
-        if (f1_cancel_span || f0_span_fault_veto) span_btb_pending_q.valid <= 1'b0;
+        if (f1_cancel_span) span_btb_pending_q.valid <= 1'b0;
       end else if (f1_req_q.valid && !i_instr_valid) begin
         if (f1_pred_fresh_q) begin
           f1_pred_hold_q  <= f1_pred_live;
@@ -2051,16 +2069,19 @@ module if_stage #(
       p_false_btb_blocks_f0_launch : assert (!f0_launch);
       p_false_btb_selects_arm5 : assert (npc_sel[5]);
     end
-    // Slot 2 never emits when slot 1 is a bubble, fault, or predicted-taken.
-    p_wp_slot2_order :
-    assert (!f_wp_s2_real || (f_wp_s1_real && !o_from_if_to_pd.fetch_fault &&
-                              !o_from_if_to_pd.btb_predicted_taken));
-    p_wp_slot2_pc_step :
-    assert (!f_wp_s2_real ||
-            (o_from_if_to_pd_2.program_counter ==
-             o_from_if_to_pd.program_counter +
-             (o_from_if_to_pd.sel_compressed ? riscv_pkg::PcIncrementCompressed :
-                                               riscv_pkg::PcIncrement32bit)));
+    // Slot 2 never emits when slot 1 is a bubble, fault, or predicted-taken
+    // (checked after reset once count_ge_q is initialized).
+    if (f_wp_past_valid && !i_pipeline_ctrl.reset) begin
+      p_wp_slot2_order :
+      assert (!f_wp_s2_real || (f_wp_s1_real && !o_from_if_to_pd.fetch_fault &&
+                                !o_from_if_to_pd.btb_predicted_taken));
+      p_wp_slot2_pc_step :
+      assert (!f_wp_s2_real ||
+              (o_from_if_to_pd_2.program_counter ==
+               o_from_if_to_pd.program_counter +
+               (o_from_if_to_pd.sel_compressed ? riscv_pkg::PcIncrementCompressed :
+                                                 riscv_pkg::PcIncrement32bit)));
+    end
   end
 
 `ifdef IF_CONTINUITY_PROOF

@@ -90,6 +90,8 @@ module fetch_parcel_queue #(
   logic [PtrBits-1:0] head_q;
   logic [PtrBits-1:0] tail_q;
   logic [CountBits-1:0] count_q;
+  logic [3:0] count_ge_q;
+  logic count_eq1_q;
   logic [3:0][RowBits-1:0] rd_row_q;
   logic [3:0][RowBits-1:0] wr_row_q;
 
@@ -138,9 +140,15 @@ module fetch_parcel_queue #(
   assign avail_sum = count_q + CountBits'(push_cnt_eff);
   assign o_avail   = avail_sum;
 
-  for (genvar k = 0; k < 4; k++) begin : gen_avail_ge
-    assign o_avail_ge[k] = avail_sum >= CountBits'(k + 1);
-  end
+  // Form o_avail_ge[3:0] from pre-registered count_ge_q and a 3-bit low-count
+  // sum rather than through the 5-bit avail_sum adder so i_push_valid and
+  // i_push_count reach drain validity in two shallow LUT levels.
+  logic [2:0] low_avail_sum;
+  assign low_avail_sum = {1'b0, count_q[1:0]} + i_push_count;
+  assign o_avail_ge[0] = count_ge_q[0] || i_push_valid;
+  assign o_avail_ge[1] = count_ge_q[1] || (i_push_valid && (count_q[0] || (i_push_count >= 3'd2)));
+  assign o_avail_ge[2] = count_ge_q[2] || (i_push_valid && (low_avail_sum >= 3'd3));
+  assign o_avail_ge[3] = count_ge_q[3] || (i_push_valid && (low_avail_sum >= 3'd4));
 
   // Read one entry per bank using precomputed row pointers from the FF ring,
   // then rotate by head_q[1:0].
@@ -163,7 +171,7 @@ module fetch_parcel_queue #(
     assign is_push_last = (3'(k) == (i_push_count - 3'd1));
     assign push_entries[k] = {is_push_last, i_push_parcels[k]};
 
-    assign from_ring = CountBits'(k) < count_q;
+    assign from_ring = count_ge_q[k];
     // When !from_ring, count_q is in 0..k <= 3, so k - count_q[1:0] selects the bypassed parcel.
     assign push_idx = 2'(k) - count_q[1:0];
 
@@ -174,8 +182,8 @@ module fetch_parcel_queue #(
   end
 
   assign o_ring_last = {ring_view[1][PARCEL_WIDTH], ring_view[0][PARCEL_WIDTH]};
-  assign o_count_eq1 = (count_q == CountBits'(1));
-  assign o_count_ge2 = (count_q >= CountBits'(2));
+  assign o_count_eq1 = count_eq1_q;
+  assign o_count_ge2 = count_ge_q[1];
 
   // Head and next-window metadata with zero-cycle bypass when queued windows <= 1.
   logic [META_WIDTH-1:0] meta_ring0;
@@ -252,6 +260,8 @@ module fetch_parcel_queue #(
       head_q               <= '0;
       tail_q               <= '0;
       count_q              <= '0;
+      count_ge_q           <= '0;
+      count_eq1_q          <= 1'b0;
       rd_row_q             <= '0;
       wr_row_q             <= '0;
       meta_head_q          <= '0;
@@ -263,6 +273,11 @@ module fetch_parcel_queue #(
       head_q               <= head_next;
       tail_q               <= tail_next;
       count_q              <= count_next;
+      count_ge_q[0]        <= (count_next >= CountBits'(1));
+      count_ge_q[1]        <= (count_next >= CountBits'(2));
+      count_ge_q[2]        <= (count_next >= CountBits'(3));
+      count_ge_q[3]        <= (count_next >= CountBits'(4));
+      count_eq1_q          <= (count_next == CountBits'(1));
       meta_head_q          <= meta_head_next;
       meta_tail_q          <= meta_tail_next;
       meta_count_q         <= meta_count_next;
@@ -399,6 +414,20 @@ module fetch_parcel_queue #(
               meta_head_q == f_mhead_q && meta_tail_q == f_mtail_q);
       p_f_avail_exact :
       assert (o_avail == (f_count_q + CountBits'(push_cnt_eff)));
+      p_f_count_ge_exact :
+      assert ((count_ge_q == {
+                 (f_count_q >= CountBits'(4)),
+                 (f_count_q >= CountBits'(3)),
+                 (f_count_q >= CountBits'(2)),
+                 (f_count_q >= CountBits'(1))
+               }) &&
+              (count_eq1_q == (f_count_q == CountBits'(1))) &&
+              (o_avail_ge == {
+                 (o_avail >= CountBits'(4)),
+                 (o_avail >= CountBits'(3)),
+                 (o_avail >= CountBits'(2)),
+                 (o_avail >= CountBits'(1))
+               }));
       p_f_meta_even_idx :
       assert (meta_head_even_idx_q ==
               (meta_head_q[MetaPtrBits-1:1] + MetaBankBits'(meta_head_q[0])));

@@ -374,7 +374,9 @@ module fetch_btb_2w #(
   assign w1_taken = !w0_raw_taken && w1_taken_cand;
 
   logic sel_bank1;
-  assign sel_bank1 = (w0_is_odd && w0_taken) || (!w0_is_odd && w1_taken);
+  // When o_taken is high, w0_taken and w1_taken are mutually exclusive, so
+  // sel_bank1 simplifies to w0_is_odd ^ w1_taken.
+  assign sel_bank1 = w0_is_odd ^ w1_taken;
 
   assign o_w0_hit              = w0_hit;
   assign o_w1_hit              = w1_hit;
@@ -384,7 +386,7 @@ module fetch_btb_2w #(
   assign o_target              = sel_bank1 ? bank_eff_target[1] : bank_eff_target[0];
   assign o_target_even_dir_idx = sel_bank1 ? bank_eff_even_dir[1] : bank_eff_even_dir[0];
   assign o_target_is_cached    = sel_bank1 ? bank_eff_cached[1] : bank_eff_cached[0];
-  assign o_compressed          = o_taken && (sel_bank1 ? bank_is_comp[1] : bank_is_comp[0]);
+  assign o_compressed          = sel_bank1 ? bank_is_comp[1] : bank_is_comp[0];
   assign o_is_call             = o_taken && (sel_bank1 ? bank_is_call[1] : bank_is_call[0]);
   assign o_is_return           = o_taken && (sel_bank1 ? bank_is_ret[1] : bank_is_ret[0]);
   assign o_is_span             = w1_taken && (w0_is_odd ? bank_is_span[0] : bank_is_span[1]);

@@ -363,7 +363,11 @@ module if_prediction_walk_past_formal (
     q_tail = u_if_stage.u_parcel_queue.tail_q;
     q_cnt  = u_if_stage.u_parcel_queue.count_q;
 
-    queue_source_ok = (q_cnt <= 5'd16) && (q_tail == (q_head + q_cnt[3:0]));
+    queue_source_ok = (q_cnt <= 5'd16) && (q_tail == (q_head + q_cnt[3:0])) &&
+        (u_if_stage.u_parcel_queue.count_ge_q == {
+           (q_cnt >= 5'd4), (q_cnt >= 5'd3), (q_cnt >= 5'd2), (q_cnt >= 5'd1)
+         }) &&
+        (u_if_stage.u_parcel_queue.count_eq1_q == (q_cnt == 5'd1));
     for (int b = 0; b < 4; b++) begin
       queue_source_ok = queue_source_ok &&
           (u_if_stage.u_parcel_queue.rd_row_q[b] ==
