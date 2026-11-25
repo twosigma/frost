@@ -53,7 +53,9 @@ module vec_engine #(
     input  logic             i_clk,
     input  logic             i_rst,
     input  logic             i_valid,
-    input  logic             i_aux_valid = 1'b0,
+    input  logic             i_int_valid = 1'b0,
+    input  logic             i_fp_valid = 1'b0,
+    input  logic             i_crypto_valid = 1'b0,
     output logic             o_idle,
     output logic             o_grp_ready,
     output logic [     31:0] o_wr_mask,
@@ -109,9 +111,6 @@ module vec_engine #(
   assign rf_wdata[1] = i_xw_data;
   assign rf_wbe[1]   = i_xw_be;
 
-  logic aux_valid_in;
-  assign aux_valid_in = SPLIT_ISSUE ? i_aux_valid : i_valid;
-
   logic aux_idle, aux_we;
   logic [3:0][4:0] aux_raddr, int_raddr;
   logic [4:0] aux_waddr, int_waddr;
@@ -124,7 +123,7 @@ module vec_engine #(
   ) u_int_exec (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(aux_valid_in && o_idle && d_extra),
+      .i_valid(SPLIT_ISSUE ? i_int_valid : (i_valid && o_idle && d_extra)),
       .i_insn(i_insn),
       .i_sew(i_vsew[1:0]),
       .i_lmul(i_vlmul),
@@ -152,7 +151,7 @@ module vec_engine #(
   ) u_fp_exec (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(aux_valid_in && o_idle && d_fp),
+      .i_valid(SPLIT_ISSUE ? i_fp_valid : (i_valid && o_idle && d_fp)),
       .i_insn(i_insn),
       .i_sew(i_vsew[1:0]),
       .i_vl(i_vl),
@@ -180,7 +179,7 @@ module vec_engine #(
   ) u_crypto_exec (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(aux_valid_in && o_idle && d_crypto),
+      .i_valid(SPLIT_ISSUE ? i_crypto_valid : (i_valid && o_idle && d_crypto)),
       .i_insn(i_insn),
       .i_sew(i_vsew[1:0]),
       .i_vl(i_vl),
@@ -401,18 +400,16 @@ module vec_engine #(
   end
   always_comb begin
     d_wr_mask = 32'd0;
-    if (d_ok && !d_no_body) begin
-      if (d_mask_dest) begin
-        d_wr_mask[d_vd] = 1'b1;
-      end else begin
-        for (int i = 0; i < 8; i++) begin
-          if (4'(i) >= d_first_g_raw[3:0] && 4'(i) <= d_eff_last_g)
-            d_wr_mask[5'(d_vd+5'(i))] = 1'b1;
-        end
+    if (d_mask_dest) begin
+      d_wr_mask[d_vd] = 1'b1;
+    end else begin
+      for (int i = 0; i < 8; i++) begin
+        if (4'(i) >= d_first_g_raw[3:0] && 4'(i) <= d_eff_last_g) d_wr_mask[5'(d_vd+5'(i))] = 1'b1;
       end
     end
   end
-  assign o_wr_mask = pipe_wr_mask | cmp_wr_mask | (seq_valid_q ? seq_wr_mask_q : 32'd0);
+  assign o_wr_mask = pipe_wr_mask | cmp_wr_mask |
+      ((seq_valid_q && seq_ok_q && !seq_no_body_q) ? seq_wr_mask_q : 32'd0);
 
   // Source read addresses for the current sequencer group (pure flops + 5-bit add).
   logic [4:0] r_vs2_addr, r_vs1_addr;
@@ -442,7 +439,7 @@ module vec_engine #(
   assign o_idle = !seq_valid_q && !grp_pipe_busy && aux_idle && fp_idle && crypto_idle;
   assign o_grp_ready = aux_idle && fp_idle && crypto_idle && !cmp_in_flight &&
       (!seq_valid_q || seq_finishing);
-  assign seq_accept = SPLIT_ISSUE ? (i_valid && o_grp_ready) :
+  assign seq_accept = SPLIT_ISSUE ? i_valid :
       (i_valid && o_grp_ready && !d_extra && !d_fp && !d_crypto);
 
   // --------------------------------------------------------------------------
@@ -554,7 +551,6 @@ module vec_engine #(
         seq_vl_q         <= i_vl;
         seq_vstart_q     <= i_vstart;
         seq_scalar_q     <= d_scalar_rep;
-        seq_wr_mask_q    <= d_wr_mask;
       end else if (seq_valid_q) begin
         if (!seq_ok_q || seq_no_body_q) begin
           seq_valid_q   <= 1'b0;
@@ -635,6 +631,11 @@ module vec_engine #(
         end
       end
     end
+  end
+
+  // Registered sequencer write mask (reset-free CE-only latch).
+  always_ff @(posedge i_clk) begin
+    if (seq_accept) seq_wr_mask_q <= d_wr_mask;
   end
 
   // Group-ALU VRF writes, driven directly from registered lane/mask outputs.
