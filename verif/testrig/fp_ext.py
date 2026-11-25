@@ -501,6 +501,7 @@ def _one(trace: Trace, rng: random.Random) -> None:
                     i_type(0x07, fp_f3, 3, BASE_REG, bad_off),
                     f"{fl_name} f3, misaligned {bad_off}(x{BASE_REG})",
                 )
+                trace.observe(3)
             else:
                 trace.emit(
                     s_type(0x27, fp_f3, BASE_REG, 4, bad_off),

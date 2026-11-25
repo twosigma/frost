@@ -82,7 +82,7 @@ the CPU starts when the board's image-reset timer expires (see the
 | `--expected-build-config-sha256 HASH` | With `--skip-build`, require the configuration hash reported by `--build-only` |
 | `--vlen BITS` | Override `VEC_VLEN` for vector-width applications (`128`, `256`, or `512`; `vec_state_test` also accepts `0` for scalar) |
 | `--vec-advertise` / `--no-vec-advertise` | Override `VEC_ADVERTISE` (`1` or `0`) for `vec_state_test` |
-| `--vector` / `--no-vector` | Target an opt-in VCU118 vector image: selects its CPU clock, enables vector-unit applications, defaults `VEC_VLEN=256` and `VEC_ADVERTISE=1`, and advertises V in the `linux_boot` device tree (default: on for X3, off for VCU118) |
+| `--vector` / `--no-vector` | Target an opt-in VCU118 vector image: selects its CPU clock, enables vector-unit applications, defaults `VEC_VLEN=256` and `VEC_ADVERTISE=1`, and advertises V and the implemented Zv extensions in the `linux_boot` device tree (default: on for X3, off for VCU118) |
 
 `--debug` and `--skip-build` apply to single-ELF applications, not the
 composite `linux_boot` and `opensbi_smoke` images. `--skip-build` does not

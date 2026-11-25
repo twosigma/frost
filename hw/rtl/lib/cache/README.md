@@ -153,7 +153,7 @@ DMA requester has its own reset.
 | Encoding | Values |
 | --- | --- |
 | D opcode | 0 GetS, 1 GetM, 2 LoadReserved, 3 Atomic, 4 StoreConditional, 5 ReadOnceIF, 6 ReadOncePTW, 7 DMARead, 8 DMAWrite, 9 Prefetch, 10 GetMZero, 11 CleanBlock, 12 FlushBlock, 13 InvalBlock |
-| P opcode | 0 ProbeRead, 1 ProbeInvalidate, 2 CheckSC |
+| P opcode | 0 ProbeRead, 1 ProbeInvalidate, 2 CheckSC, 3 ProbeSnapshot |
 | R opcode | 0 ProbeAck, 1 ProbeData, 2 CheckAck |
 | G opcode | 0 GrantS, 1 GrantE, 2 GrantM, 3 GrantData, 4 GrantAck, 5 GrantFail, 6 GrantMZero |
 | C status | 0 Consumed, 1 Killed, 2 Error |
@@ -344,7 +344,8 @@ banks. DMA, cache-block operations and the L2 stream prefetcher reach the
 L1D through home probes, which retain their existing ownership.
 A lookup marked `i_req_data_if_hit` needs data only on a hit, and one
 marked `i_req_data_if_victim_modified` only when it misses and its selected
-victim is Modified; a maintenance visit always waits for its data.
+victim is Modified and owes bytes to the home. A maintenance visit always
+waits for its data.
 Otherwise such a lookup replies without data in the first data-read cycle,
 from the registered tag result, and its data read goes unused; a reply held
 past that cycle keeps its contents until consumed. The L1D marks CPU read
@@ -929,7 +930,10 @@ address conflict; physical way pins and fill claims govern its reuse.
 
 Two ordinary PutM controls have frozen payload storage and independent array
 service. Round-robin arbitration rotates tag decisions, row reads, masked
-updates, probes, acknowledgements and results. Resident data reads overlap
+updates, probes, acknowledgements and results. Once the RAM samples a row,
+a masked update can proceed while its read result travels to the engine.
+An unresolved parallel read holds every way of its set.
+Resident data reads overlap
 probes. Dirty probe bytes override the resident snapshot regardless of arrival
 order; DMA byte enables apply after that merge. The final service edge
 combines every completed input before the masked update or result becomes
@@ -937,6 +941,24 @@ eligible. Error replies preserve dirty ownership. Probe replies have
 separate ownership from CPU reads, pending stores and PutM presentation.
 A pending probe reply prevents local grant selection until R acceptance.
 Grant application requires the private request endpoint to accept the grant.
+ReadOnceIF, ReadOncePTW and DMARead use ProbeSnapshot. It returns the
+installed sector and grants the reader no data-cache permission. A resident
+M sector keeps M. Its first snapshot supplies all 32 bytes and marks the
+tag home-current. The home persists those bytes in L2 before GrantData.
+A repeat snapshot of that version acknowledges M without reading private
+data. Each local data installation clears the bit. A displaced M sector
+needs a PutM only if its installed bytes are owed to the home. A matching
+frozen PutM supplies its full image and keeps its identity through WA.
+Keeping M saves a later successful SC a permission request.
+When the array is ready, a snapshot of newer resident bytes takes
+two data-read clocks and one tag-update clock to mark the sector
+home-current.
+A home replacement or `cbo.clean` that recalls a resident M sector
+uses the same two data-read clocks and one tag-update clock to
+downgrade it to S.
+A store fill that displaces an M victim whose bytes are owed to the
+home takes two clocks to read them and one to freeze them for PutM
+when the writeback slot is ready.
 A ProbeRead of M merges dirty bytes and leaves S. ProbeInvalidate leaves I
 after the CPU cut. CheckSC returns the selected reservation result.
 An ordinary probe starts its tag request on P capture when the array is ready.
@@ -949,8 +971,8 @@ before R readiness clears its valid bit. A simultaneous new reply takes priority
 over acceptance; reset clears the valid bit in its own flop.
 CheckSC samples the reservation after capture.
 Probe lookups read private data only for an M hit. A clean read probe leaves
-the tag and bytes untouched. A downgrade or invalidation updates the tag
-without writing the data row.
+the tag and bytes untouched. The first snapshot of an M version, a downgrade
+from M and an invalidation of a resident copy update only the tag.
 
 Every M sector has a resident L2 merge destination, or a fill that blocks
 its line until the destination is installed. Clean S and L0 copies

@@ -32,16 +32,17 @@
 			compatible = "riscv";
 			mmu-type = "riscv,sv39";
 			riscv,isa-base = "rv64i";
-			riscv,isa = "rv64imafdcv_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_zve32x_zve32f_zve64x_zve64f_zve64d_zvl32b_zvl64b_zvl128b_zvl256b_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_ssu64xl_svade_svinval_svnapot_svvptc";
+			riscv,isa = "rv64imafdcv_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_zvbb_zvbc_zve32f_zve32x_zve64d_zve64f_zve64x_zvfh_zvfhmin_zvkb_zvkg_zvkn_zvknc_zvkned_zvkng_zvknha_zvknhb_zvkt_zvl32b_zvl64b_zvl128b_zvl256b_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_ssu64xl_svade_svinval_svnapot_svvptc";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c", "v",
 				"zfa", "zfhmin", "zic64b", "zicbom", "zicbop", "zicboz", "ziccamoa", "ziccif",
 				"zicclsm", "ziccrse", "zicntr", "zicond", "zicsr", "zifencei",
 				"zihintntl", "zihintpause", "zihpm", "zimop", "za64rs", "zawrs", "zba", "zbb",
 				"zbc", "zbkb", "zbkc", "zbs", "zcb", "zcmop", "zkt",
-				"zve32x", "zve32f", "zve64x", "zve64f", "zve64d",
-				"zvl32b", "zvl64b", "zvl128b", "zvl256b", "smaia",
-				"ssaia", "ssccptr", "sscofpmf", "sscounterenw", "ssnpm", "sstc", "sstvala",
-				"sstvecd", "ssu64xl", "svade", "svinval", "svnapot", "svvptc";
+				"zvbb", "zvbc", "zve32f", "zve32x", "zve64d", "zve64f", "zve64x",
+				"zvfh", "zvfhmin", "zvkb", "zvkg", "zvkn", "zvknc", "zvkned", "zvkng",
+				"zvknha", "zvknhb", "zvkt", "zvl32b", "zvl64b", "zvl128b", "zvl256b",
+				"smaia", "ssaia", "ssccptr", "sscofpmf", "sscounterenw", "ssnpm", "sstc",
+				"sstvala", "sstvecd", "ssu64xl", "svade", "svinval", "svnapot", "svvptc";
 			/* cbo.clean/flush/inval act on one 64-byte L2 line; every bus master is coherent. */
 			riscv,cbom-block-size = <64>;
 			/* cbo.zero zeroes one 64-byte L2 line. */

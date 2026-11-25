@@ -20,7 +20,7 @@ import cocotb
 
 from cocotb_tests.cache.test_coherence_endpoints import pack
 from cocotb_tests.cache.test_coherence_home import unpack
-from cocotb_tests.cache.test_coherence_l1d import Private, snapshot, store
+from cocotb_tests.cache.test_coherence_l1d import Private, collect_modified, store
 
 
 class Stream(Private):
@@ -156,7 +156,7 @@ async def reverse_grants_combine_and_install_in_order(dut: Any) -> None:
     assert b.get("live") & 1
     await b.release(a)
     expected = sum((21 + word) << (64 * word) for word in range(4))
-    assert await snapshot(b, c) == expected
+    assert await collect_modified(b, c) == expected
     assert not b.get("o_fatal")
 
 
@@ -299,14 +299,14 @@ async def same_sector_and_home_set_keep_older_records_first(dut: Any) -> None:
             await b.wait("o_pending_store", 0)
             assert len(b.demands) == 2
             await b.release(a)
-            assert await snapshot(b, a) == 0xAA | (0xBB << 64)
+            assert await collect_modified(b, a) == 0xAA | (0xBB << 64)
         else:
             assert len(b.demands) == 2
             await b.release(a)
             await b.issued(younger)
             await b.grant(younger)
             await b.release(younger)
-            assert await snapshot(b, younger) == 0xBB << 64
+            assert await collect_modified(b, younger) == 0xBB << 64
         assert b.installs == [a, c, younger]
         assert not b.get("o_fatal")
 
@@ -320,7 +320,7 @@ async def queued_bytes_are_excluded_from_probe_replies(dut: Any) -> None:
     await store(b, c, 0x1234)
     await b.grant(c)
     await b.release(c)
-    assert await snapshot(b, c) == 0x1234
+    assert await collect_modified(b, c) == 0x1234
     b.demands.clear()
     b.completions.clear()
     await store(b, a, 0x11)
@@ -348,7 +348,7 @@ async def queued_bytes_are_excluded_from_probe_replies(dut: Any) -> None:
     await b.grant(a)
     await b.release(a)
     await b.release(c)
-    assert await snapshot(b, c) == 0x5678
+    assert await collect_modified(b, c) == 0x5678
 
 
 @cocotb.test()
@@ -470,7 +470,7 @@ async def queued_predecessor_blocks_duplicate_lookahead(dut: Any) -> None:
     assert not b.get("store_acquired") & (1 << x1)
     assert b.get("look_blocked") & (1 << x2)
     assert [d[2] for _, d in b.demands] == [h, y]
-    assert await snapshot(b, x, invalidate=True) == 0
+    assert await collect_modified(b, x, invalidate=True) == 0
     await b.grant(y)
     await b.grant(h)
     await b.release(h)
@@ -482,7 +482,7 @@ async def queued_predecessor_blocks_duplicate_lookahead(dut: Any) -> None:
     await b.wait("o_pending_store", 0)
     assert b.installs == [h, x, y, x]
     assert len(b.demands) == 3
-    assert await snapshot(b, x) == 0xAA | (0xBB << 64)
+    assert await collect_modified(b, x) == 0xAA | (0xBB << 64)
 
 
 @cocotb.test()
@@ -895,6 +895,6 @@ async def completed_load_grant_supplies_the_read_turn(dut: Any) -> None:
         assert b.installs[first_install:] == [a, c, a]
         assert sorted(b.read_results) == [(0, 0xBEEF), (1, 0xABC)]
         await b.release(miss)
-        assert await snapshot(b, a) == 0x333
-        assert await snapshot(b, c) == 0x222
+        assert await collect_modified(b, a) == 0x333
+        assert await collect_modified(b, c) == 0x222
         assert not b.get("o_fatal")

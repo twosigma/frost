@@ -8,6 +8,8 @@ coh_array4_port_bmc bram bounded four undefined port fourbram fourport
 coh_array_cover bram covers
 coh_array_uram_cover uram covers
 coh_array4_port_cover bram covers four port
+coh_array4_snapshot_cover bram covers four snapshot
+coh_array4_uram_snapshot_cover uram covers four snapshot
 
 coh_array_select_prove selection
 coh_array_select4_prove selection four
@@ -38,13 +40,14 @@ covers: smtbmc boolector
 selection: smtbmc boolector
 
 [script]
-read -formal -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
+snapshot: read -formal -D F_COH_ARRAY_SNAPSHOT_COVER -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
+~snapshot: read -formal -sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv
 chparam -set CACHE_BYTES 64 -set WAYS 1 coherence_array
 uram: chparam -set ULTRA 1 coherence_array
 four: chparam -set CACHE_BYTES 256 -set WAYS 4 coherence_array
 wide: chparam -set ADDR_WIDTH 56 coherence_array
 port: chparam -set HIT_PORT 1 coherence_array
-~selection: hierarchy -top coherence_array
+~selection: hierarchy -check -top coherence_array
 ~selection: script free_undefined.ys
 ~selection: prep -top coherence_array
 # Out-of-range bits of the four-way selections are unreachable constants.
@@ -75,8 +78,8 @@ selection: select -assert-count 1 t:$assert
 selection: select -assert-none t:$assume
 
 [files]
+free_undefined.ys
 ../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
 ../hw/rtl/lib/ram/sdp_ram_byte_en.sv
 ../hw/rtl/lib/cache/coherence_array.sv
-free_undefined.ys

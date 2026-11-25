@@ -105,7 +105,7 @@ BOOT_TO_LOGIN = (
     f"[    0.000000] {hw.KERNEL_BANNER}"
     "(debian-kernel@debian) (riscv64-linux-gnu-gcc-14 (Debian 14.2.0-19) "
     "14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Debian "
-    "6.12.113-1 (2026-10-15)\r\r\n"
+    "7.3.4-1~bpo13+1 (2026-11-18)\r\r\n"
     '[    0.000000] Unknown kernel command line parameters "boot=nfs '
     f'nfsroot={NFSROOT},vers=3,tcp,hard ip={BOARD_IP}", will be passed to '
     "user space.\r\r\n"
@@ -133,7 +133,7 @@ BOOT_TO_LOGIN = (
 # agetty.c, "%s%s (automatic login)"), then login and bash run.
 LOGIN_TO_SHELL = (
     "root (automatic login)\r\r\n"
-    f"Linux frost {hw.KERNEL_RELEASE} #1 SMP Debian 6.12.113-1 riscv64\r\r\n"
+    f"Linux frost {hw.KERNEL_RELEASE} #1 SMP Debian 7.3.4-1~bpo13+1 riscv64\r\r\n"
     "The programs included with the Debian GNU/Linux system are free "
     "software.\r\r\n"
     "Last login: Sun Sep 20 09:12:03 UTC 2026 on ttyS0\r\r\n" + PROMPT
@@ -199,6 +199,16 @@ ISA_PRESENT_LINES = (
     f"{hw.LINUX_ISA_PROBE_SUMMARY_TOKEN} id={ISA_RUN_ID} mode=present passed=8 failed=0 verdict=PASS\r\r\n"
     f"{hw.LINUX_ISA_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=0\r\r\n{PROMPT}"
 )
+SUPM_ECHO = hw.supm_probe_command(ISA_RUN_ID) + "\r\r\n"
+SUPM_LINES = (
+    f"{hw.LINUX_SUPM_PROBE_TOKEN} id={ISA_RUN_ID} case=discover verdict=PASS hwprobe=1 cpuinfo=1 init_ctrl=0\r\r\n"
+    f"{hw.LINUX_SUPM_PROBE_TOKEN} id={ISA_RUN_ID} case=pmlen7 verdict=PASS pmlen=7 loads=8 stores=8\r\r\n"
+    f"{hw.LINUX_SUPM_PROBE_TOKEN} id={ISA_RUN_ID} case=pmlen16 verdict=PASS pmlen=16 req8_pmlen=16 loads=8 stores=8 syscall=1 reject_pmlen32=1\r\r\n"
+    f"{hw.LINUX_SUPM_PROBE_TOKEN} id={ISA_RUN_ID} case=disable-fault verdict=PASS ctrl_off=1 untagged_ok=1 load_sigsegv=1 store_sigsegv=1 store_unmodified=1\r\r\n"
+    f"{hw.LINUX_SUPM_PROBE_SUMMARY_TOKEN} id={ISA_RUN_ID} passed=4 failed=0 verdict=PASS\r\r\n"
+    "FROST_SUPM_PROBE_PASS\r\r\n"
+    f"{hw.LINUX_SUPM_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=0\r\r\n{PROMPT}"
+)
 # What the program prints when perf_event_open on the child fails.
 COUNTER_FAIL_LINE = (
     f"FROST_COUNTERS: scope=exec-child counters=unavailable verdict=FAIL\r\r\n{PROMPT}"
@@ -230,7 +240,8 @@ TO_STRESS = TO_SYSTEMD + STRESS_ECHO + STRESS_OUT
 COUNTER_TRANSCRIPT = TO_STRESS + COUNTER_ECHO + COUNTER_LINE
 MEMERR_TRANSCRIPT = COUNTER_TRANSCRIPT + MEMERR_ECHO + MEMERR_LINE
 ISA_TRANSCRIPT = MEMERR_TRANSCRIPT + ISA_ABSENT_ECHO + ISA_ABSENT_LINES
-FULL_TRANSCRIPT = ISA_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS + NET_ALIVE
+SUPM_TRANSCRIPT = ISA_TRANSCRIPT + SUPM_ECHO + SUPM_LINES
+FULL_TRANSCRIPT = SUPM_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS + NET_ALIVE
 
 
 def stage() -> Any:
@@ -254,6 +265,7 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
     assert "systemd running" in note
     assert "cycles=4433680" in note and "instret=3275440" in note
     assert "no memory errors (1229 ECC polls)" in note
+    assert "supm probe (4/4 cases)" in note
     assert hw.LINUX_NET_COMMAND in note
 
 
@@ -267,9 +279,10 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
         (TO_STRESS, "no FROST_COUNTERS: count"),
         (COUNTER_TRANSCRIPT, f"no {hw.LINUX_MEMERR_TOKEN} line"),
         (MEMERR_TRANSCRIPT, f"no {hw.LINUX_ISA_PROBE_EXIT_TOKEN} line"),
-        (ISA_TRANSCRIPT, "FROST_NET_LOOPBACK_PASS"),
+        (ISA_TRANSCRIPT, f"no {hw.LINUX_SUPM_PROBE_EXIT_TOKEN} line"),
+        (SUPM_TRANSCRIPT, "FROST_NET_LOOPBACK_PASS"),
         (
-            ISA_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS,
+            SUPM_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS,
             f"no {hw.LINUX_ROOT_ALIVE_TOKEN}= status",
         ),
     ],
@@ -282,6 +295,7 @@ def test_stage_passes_on_the_whole_debian_transcript() -> None:
         "after-counters",
         "after-memerr",
         "after-isa-probe",
+        "after-supm-probe",
         "after-nettest",
     ],
 )
@@ -708,6 +722,8 @@ def test_the_memory_error_readback_must_be_clean(line: str, expected: str) -> No
         + f"{hw.LINUX_MEMERR_TOKEN} {line} {MEMERR_PROGRESS}\r\r\n{PROMPT}"
         + ISA_ABSENT_ECHO
         + ISA_ABSENT_LINES
+        + SUPM_ECHO
+        + SUPM_LINES
         + NET_ECHO
         + NET_START
         + NET_PASS
@@ -864,9 +880,10 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
         hw.LINUX_COUNTER_COMMAND + "\r",
         hw.LINUX_MEMERR_COMMAND + "\r",
         hw.isa_probe_command(ISA_RUN_ID, "absent") + "\r",
+        hw.supm_probe_command(ISA_RUN_ID) + "\r",
         hw.nettest_command("eth0") + "\r",
     ]
-    assert [trigger for trigger, _ in linux.stimuli[1:]] == [hw.LINUX_SHELL_PROMPT] * 8
+    assert [trigger for trigger, _ in linux.stimuli[1:]] == [hw.LINUX_SHELL_PROMPT] * 9
     # Nothing to type before the prompt, even though "# " could occur in a log.
     assert hw.next_stimulus(linux, "[    0.1] # not a prompt\r\n", 0, 0) is None
     text, after = hw.next_stimulus(linux, BOOT_TO_LOGIN, 0, 0)
@@ -883,7 +900,8 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
         (TO_STRESS, hw.LINUX_COUNTER_COMMAND),
         (COUNTER_TRANSCRIPT, hw.LINUX_MEMERR_COMMAND),
         (MEMERR_TRANSCRIPT, hw.isa_probe_command(ISA_RUN_ID, "absent")),
-        (ISA_TRANSCRIPT, hw.nettest_command("eth0")),
+        (ISA_TRANSCRIPT, hw.supm_probe_command(ISA_RUN_ID)),
+        (SUPM_TRANSCRIPT, hw.nettest_command("eth0")),
     ):
         # The prompt that took the previous command cannot fire this one.
         assert hw.next_stimulus(linux, transcript[: -len(PROMPT)], sent, after) is None
@@ -951,6 +969,21 @@ def test_the_autologin_stray_command_does_not_break_the_chain() -> None:
         + COUNTER_LINE
         + MEMERR_ECHO
         + MEMERR_LINE,
+        boot
+        + MOUNT_ECHO
+        + MOUNT_LINE
+        + DRIVER_ECHO
+        + DRIVER_LINE
+        + SYSTEMD_ECHO
+        + SYSTEMD_RUNNING
+        + STRESS_ECHO
+        + STRESS_OUT
+        + COUNTER_ECHO
+        + COUNTER_LINE
+        + MEMERR_ECHO
+        + MEMERR_LINE
+        + ISA_ABSENT_ECHO
+        + ISA_ABSENT_LINES,
     ):
         pending = hw.next_stimulus(linux, transcript, sent, after)
         assert pending is not None, sent
@@ -1134,7 +1167,7 @@ def test_the_kernel_and_initramfs_are_derived_when_unset() -> None:
     derived = hw.linux_root_from_env(site_only, site={})
     # The pinned release's own image, at the path debian_kernel.py computes.
     assert derived.kernel == hw.kernel_image()
-    assert hw.KERNEL_RELEASE in derived.kernel.name
+    assert hw.KERNEL_RELEASE in str(derived.kernel)
     # That release's initramfs, inside the export just named.
     assert derived.initrd == derived.export / "boot" / f"initrd.img-{hw.KERNEL_RELEASE}"
     # Both stay overridable, which is how a replacement kernel is tested.
@@ -1567,14 +1600,20 @@ def test_the_preflight_accepts_a_prepared_export_and_installs_the_programs(
     assert any(hw.KERNEL_RELEASE in note for note in notes)
     assert any("autologin" in note for note in notes)
     assert any(
-        "installed frost_stress, frost_nettest, frost_isa_probe" in note
+        "installed frost_stress, frost_nettest, frost_isa_probe, frost_supm_probe"
+        in note
         for note in notes
     )
     assert any(f"installed {hw.MEMERR.name}.ko" in note for note in notes)
     assert (
         export / f"usr/local/bin/{hw.MEMERR.name}.ko"
     ).read_bytes() == b"stub module"
-    for name in ("frost_stress", "frost_nettest", "frost_isa_probe"):
+    for name in (
+        "frost_stress",
+        "frost_nettest",
+        "frost_isa_probe",
+        "frost_supm_probe",
+    ):
         installed = export / "usr/local/bin" / name
         assert installed.read_bytes() == b"stub"
         assert installed.stat().st_mode & 0o111
@@ -1669,7 +1708,9 @@ def test_the_banner_is_found_across_a_read_boundary(tmp_path: Path) -> None:
 def test_the_banner_of_the_pinned_kernel_reads_as_the_pin() -> None:
     """The real pinned Image reads as the pin (skipped until it is fetched)."""
     images = sorted(
-        (REPO_ROOT / "linux/debian-kernel").glob(f"*/boot/vmlinux-{hw.KERNEL_RELEASE}")
+        (REPO_ROOT / "linux/debian-kernel").glob(
+            f"*/usr/lib/modules/{hw.KERNEL_RELEASE}/vmlinuz"
+        )
     )
     if not images:
         pytest.skip("linux/debian-kernel holds no extracted kernel")
@@ -1944,6 +1985,7 @@ def assert_captured_linux_console_passes(
     assert "scrub self-test" in note and "a full pass" in note
     expected_count = len(hw.LINUX_ISA_PROBE_CASES[isa_expect])
     assert f"isa probe {isa_expect} ({expected_count}/{expected_count} cases)" in note
+    assert "supm probe (4/4 cases)" in note
     assert "root alive" in note
     return note
 
@@ -2066,7 +2108,11 @@ def test_linux_stage_accepts_real_probe_capture() -> None:
         f"FROST_ISA_PROBE_SUMMARY id={synthetic_id} mode=absent passed=4 failed=0 verdict=PASS\r\n"
         f"FROST_ISA_PROBE_EXIT id={synthetic_id} rc=0\r\n"
     )
-    transcript = raw[:probe_start] + synthetic_block + raw[probe_end:]
+    transcript = (
+        raw[:probe_start]
+        + synthetic_block
+        + raw[probe_end:].replace(fixture_isa_run_id(raw), synthetic_id)
+    )
     assert fixture_isa_run_id(transcript) == synthetic_id
     assert_captured_linux_console_passes(transcript)
 
@@ -3133,7 +3179,7 @@ def test_vcu118_linux_loopback_exercises_the_rj45_root_interface(
     output, _, _ = _run_repeated(
         tmp_path, monkeypatch, repeat, interface=root.interface
     )
-    before_loopback = ISA_TRANSCRIPT.replace(
+    before_loopback = SUPM_TRANSCRIPT.replace(
         "active=1 polls=4113,5342", "active=0 polls=0,0"
     )
     transcript = (
@@ -3170,9 +3216,9 @@ def test_every_repetition_is_logged_and_only_the_last_ends_the_capture(
     echo = hw.nettest_command(ROOT.interface, 3) + "\r\r\n"
     # Nothing before the last repetition's lines ends the capture.
     last = output.index("FROST_NET_LOOPBACK: repetition 3 of 3")
-    early = ISA_TRANSCRIPT + echo + output[:last]
+    early = SUPM_TRANSCRIPT + echo + output[:last]
     assert not linux.failure_done(early) and not linux.success_done(early)
-    transcript = ISA_TRANSCRIPT + echo + output + PROMPT
+    transcript = SUPM_TRANSCRIPT + echo + output + PROMPT
     assert linux.success_done(transcript) and not linux.failure_done(transcript)
     ok, note = linux.judge(transcript)
     assert not ok
@@ -3186,7 +3232,7 @@ def test_all_repetitions_passing_pass_the_stage(
     output, _, _ = _run_repeated(tmp_path, monkeypatch, 3)
     linux = hw.linux_stage(ROOT, 3, isa_run_id=ISA_RUN_ID)
     transcript = (
-        ISA_TRANSCRIPT + hw.nettest_command(ROOT.interface, 3) + "\r\r\n" + output
+        SUPM_TRANSCRIPT + hw.nettest_command(ROOT.interface, 3) + "\r\r\n" + output
     )
     ok, note = linux.judge(transcript + PROMPT)
     assert ok, note
@@ -3209,7 +3255,7 @@ def test_a_failing_last_repetition_reports_the_earlier_ones(
     output, _, _ = _run_repeated(tmp_path, monkeypatch, 2, fail_rep=2)
     linux = hw.linux_stage(ROOT, 2, isa_run_id=ISA_RUN_ID)
     transcript = (
-        ISA_TRANSCRIPT + hw.nettest_command(ROOT.interface, 2) + "\r\r\n" + output
+        SUPM_TRANSCRIPT + hw.nettest_command(ROOT.interface, 2) + "\r\r\n" + output
     )
     assert linux.failure_done(transcript)
     ok, note = linux.judge(transcript)
@@ -3236,7 +3282,7 @@ def test_a_root_that_does_not_come_back_ends_the_repetitions(
     output, _, _ = _run_repeated(tmp_path, monkeypatch, 3, alive_status=124)
     assert output.count("repetition") == 1
     assert output.endswith("FROST_ROOT_ALIVE=124\r\r\n")
-    transcript = ISA_TRANSCRIPT + hw.nettest_command(ROOT.interface, 3) + output
+    transcript = SUPM_TRANSCRIPT + hw.nettest_command(ROOT.interface, 3) + output
     assert hw.linux_stage(ROOT, 3, isa_run_id=ISA_RUN_ID).failure_done(transcript)
 
 
@@ -3410,7 +3456,7 @@ def test_the_poke_is_scheduled_before_each_test_run_and_does_not_block(
     for rep in (1, 2, 3):
         at = lines.index(f"FROST_NET_LOOPBACK: repetition {rep} of 3")
         assert lines[at - 1] == scheduled
-    transcript = ISA_TRANSCRIPT + repeated + "\r\r\n" + output
+    transcript = SUPM_TRANSCRIPT + repeated + "\r\r\n" + output
     ok, note = linux.judge(transcript + PROMPT)
     assert ok, note
 
@@ -5329,6 +5375,8 @@ def test_f2_runtime_driver_version_before_login_cannot_satisfy_the_check() -> No
         + MEMERR_LINE
         + ISA_ABSENT_ECHO
         + ISA_ABSENT_LINES
+        + SUPM_ECHO
+        + SUPM_LINES
         + NET_ECHO
         + NET_START
         + NET_PASS
@@ -5401,8 +5449,8 @@ def test_isa_probe_command_carries_no_verdict_tokens_and_resists_wrapping() -> N
             fail, passed, _ = hw.isa_probe_verdict(wrapped, ISA_RUN_ID, expect)
             assert not fail and not passed, (expect, wrap)
     # Default stage generates distinct 8-hex-digit run IDs across calls.
-    first = hw.linux_stage(ROOT).stimuli[-2][1]
-    second = hw.linux_stage(ROOT).stimuli[-2][1]
+    first = hw.linux_stage(ROOT).stimuli[-3][1]
+    second = hw.linux_stage(ROOT).stimuli[-3][1]
     assert first != second
 
 
@@ -5413,6 +5461,8 @@ def test_isa_probe_present_transcript_passes_with_present_expectation() -> None:
         MEMERR_TRANSCRIPT
         + ISA_PRESENT_ECHO
         + ISA_PRESENT_LINES
+        + SUPM_ECHO
+        + SUPM_LINES
         + NET_ECHO
         + NET_START
         + NET_PASS
@@ -5436,6 +5486,8 @@ def test_isa_probe_rejects_mode_mismatch_in_both_directions() -> None:
         MEMERR_TRANSCRIPT
         + ISA_PRESENT_ECHO
         + ISA_PRESENT_LINES
+        + SUPM_ECHO
+        + SUPM_LINES
         + NET_ECHO
         + NET_START
         + NET_PASS
@@ -5477,6 +5529,8 @@ def test_isa_probe_rejects_zero_or_invalid_coverage_fields(
             MEMERR_TRANSCRIPT
             + ISA_PRESENT_ECHO
             + ISA_PRESENT_LINES
+            + SUPM_ECHO
+            + SUPM_LINES
             + NET_ECHO
             + NET_START
             + NET_PASS
@@ -5561,6 +5615,111 @@ def test_isa_probe_rejects_missing_stale_failed_and_nonzero_exit_records() -> No
         + f"{hw.LINUX_ISA_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=124"
     )
     assert not stage().failure_done(partial)
+
+
+def test_supm_probe_command_verdicts_and_failure_modes() -> None:
+    """Verify frost_supm_probe command wrapping resistance, coverage checks, and failures."""
+    cmd = hw.supm_probe_command(ISA_RUN_ID)
+    assert (
+        f"timeout -k 5 {hw.LINUX_SUPM_PROBE_TIMEOUT_S} "
+        f"/usr/local/bin/frost_supm_probe --run-id {ISA_RUN_ID}" in cmd
+    )
+    for wrap in range(len(cmd)):
+        wrapped = f"{ISA_TRANSCRIPT}{cmd[:wrap]}\r\r\n{cmd[wrap:]}\r\r\n"
+        fail, passed, _ = hw.supm_probe_verdict(wrapped, ISA_RUN_ID)
+        assert not fail and not passed, wrap
+
+    # Source file exists and is compiled as a plain scalar RV64GC program.
+    supm_src = (
+        REPO_ROOT
+        / "linux/buildroot-external/package/frost-stress/src/frost_supm_probe.c"
+    )
+    assert supm_src.is_file()
+    assert "frost_supm_probe" in hw.ROOT_PROGRAMS
+    assert "frost_supm_probe" not in hw.ROOT_PROGRAM_EXT_LEAF_PREFIXES
+
+    # Explicit case FAIL ends capture immediately.
+    failed = (
+        ISA_TRANSCRIPT
+        + SUPM_ECHO
+        + f"{hw.LINUX_SUPM_PROBE_TOKEN} id={ISA_RUN_ID} case=disable-fault "
+        "verdict=FAIL reason=tagged_load_did_not_fault\r\r\n"
+    )
+    assert stage().failure_done(failed)
+    ok, note = stage().judge(failed)
+    assert not ok and "disable-fault: FAIL (tagged_load_did_not_fault)" in note
+
+    # Missing case fails even with rc=0.
+    missing_case = FULL_TRANSCRIPT.replace(
+        f"{hw.LINUX_SUPM_PROBE_TOKEN} id={ISA_RUN_ID} case=pmlen7 "
+        "verdict=PASS pmlen=7 loads=8 stores=8\r\r\n",
+        "",
+    )
+    assert stage().failure_done(missing_case)
+    ok, note = stage().judge(missing_case)
+    assert not ok and "missing pmlen7" in note
+
+    # Zero or invalid positive coverage fields fail even with rc=0.
+    for before, after, expected in (
+        ("hwprobe=1", "hwprobe=0", "discover hwprobe=0"),
+        ("pmlen=7 loads=8", "pmlen=0 loads=8", "pmlen7 pmlen=0"),
+        ("syscall=1", "syscall=0", "syscall=0"),
+        ("store_sigsegv=1", "store_sigsegv=0", "disable-fault store_sigsegv='0'"),
+        (
+            "store_unmodified=1",
+            "store_unmodified=0",
+            "disable-fault store_unmodified='0'",
+        ),
+    ):
+        mutated = FULL_TRANSCRIPT.replace(before, after, 1)
+        assert mutated != FULL_TRANSCRIPT
+        assert stage().failure_done(mutated)
+        ok, note = stage().judge(mutated)
+        assert not ok and expected in note
+
+    # Nonzero wrapper exit code ends capture immediately; partial line waits.
+    timed_out = (
+        ISA_TRANSCRIPT
+        + SUPM_ECHO
+        + f"{hw.LINUX_SUPM_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=124\r\r\n"
+    )
+    assert stage().failure_done(timed_out)
+    ok, note = stage().judge(timed_out)
+    assert not ok and "exited 124" in note
+    partial = (
+        ISA_TRANSCRIPT
+        + SUPM_ECHO
+        + f"{hw.LINUX_SUPM_PROBE_EXIT_TOKEN} id={ISA_RUN_ID} rc=124"
+    )
+    assert not stage().failure_done(partial)
+
+    # Pre-login lines cannot satisfy the post-login check.
+    before_prompt = BOOT_TO_LOGIN[: -len(hw.LINUX_LOGIN_PROMPT)]
+    early = (
+        before_prompt
+        + SUPM_LINES
+        + hw.LINUX_LOGIN_PROMPT
+        + LOGIN_TO_SHELL
+        + MOUNT_ECHO
+        + MOUNT_LINE
+        + DRIVER_ECHO
+        + DRIVER_LINE
+        + SYSTEMD_ECHO
+        + SYSTEMD_RUNNING
+        + STRESS_ECHO
+        + STRESS_OUT
+        + COUNTER_ECHO
+        + COUNTER_LINE
+        + MEMERR_ECHO
+        + MEMERR_LINE
+        + ISA_ABSENT_ECHO
+        + ISA_ABSENT_LINES
+        + NET_ECHO
+        + NET_START
+        + NET_PASS
+        + NET_ALIVE
+    )
+    assert not stage().success_done(early)
 
 
 def test_linux_dtb_option_env_preflight_and_cli_dispatch(
@@ -5713,6 +5872,8 @@ def test_isa_probe_accepts_vlen_128_256_512_and_resolves_from_dtb_or_rtl(
             + hw.isa_probe_command(ISA_RUN_ID, "present", vlenb)
             + "\r\r\n"
             + lines
+            + SUPM_ECHO
+            + SUPM_LINES
             + NET_ECHO
             + NET_START
             + NET_PASS
@@ -5893,6 +6054,7 @@ def test_frost_isa_probe_host_selftest_and_sources(tmp_path: Path) -> None:
         "cpuinfo-zero",
         "first-use-budget",
         "progress-format",
+        "inactive-vreg-errno",
     ):
         assert f"FROST_ISA_SELFTEST {case}: pass\n" in done.stdout
 
@@ -6044,6 +6206,8 @@ def test_linux_stage_passes_with_synthetic_slow_first_use_setup() -> None:
         + hw.isa_probe_command(ISA_RUN_ID, "present", 32)
         + "\r\r\n"
         + progress_and_verdicts
+        + SUPM_ECHO
+        + SUPM_LINES
         + NET_ECHO
         + NET_START
         + NET_PASS
