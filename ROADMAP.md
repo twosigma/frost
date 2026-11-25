@@ -337,14 +337,14 @@ with the core's `SPLIT_RS_DISPATCH`, `ROB_SHARED_LINK_BANK`,
 four early-load-wakeup checks. The store queue's precise uncached rule is
 checked in simulation only, not proved of the ROB and cpu_ooo.
 
-Open: shorten the two deepest store-boundary proofs,
-`coherence_store_boundary:bmc_intervening` and
-`coherence_store_boundary:bmc_four`, which dominate formal CI time, and
-restore `coherence_store_boundary:bmc_four` to depth 120 with the L1D hit
-path. Splitting by selector, unbounded PDR, and switching from CaDiCaL to
-Glucose did not speed them up; reducing their runtime needs additional
-lemmas, smaller check cones, or model refinement so both tasks stay within
-their CI budgets.
+Open: restore the four-record store-boundary partitions
+(`coherence_store_boundary:bmc_four_control` and `bmc_four_value_0` through
+`bmc_four_value_3`, currently at depth 114 with the L1D hit path) to depth
+120, and further shorten `bmc_four_value_0` and
+`bmc_intervening_other_value`. Splitting by assertion partition and
+watched-store / sector case brought every partition under 15,840 s;
+restoring depth 120 needs additional lemmas, smaller check cones, or model
+refinement.
 
 Open: `coherence_store_boundary:cover_edges_same_combined` reaches its three
 covers on the back-to-back schedule without itself requiring that the two
@@ -413,10 +413,10 @@ or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
 `opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
 `prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). Of the 254 scripts, 231 require the shared opening
-(`hierarchy -top` or `hierarchy -check -top` followed by
-`script free_undefined.ys`) across every task; `free_undefined.ys` lowers
-processes pass by pass, frees the
+each case). All 257 scripts in `formal/` open undefined values before optimization.
+236 scripts require the shared opening (`hierarchy -top` or
+`hierarchy -check -top` followed by `script free_undefined.ys`) across
+every task; `free_undefined.ys` lowers processes pass by pass, frees the
 undefined inputs of every multiplexer and the undefined bits of every
 connection with `setundef -anyseq` before `proc_dlatch` and every other
 undefined bit before `proc_dff`, and then runs `proc`'s own closing
@@ -424,13 +424,14 @@ undefined bit before `proc_dff`, and then runs `proc`'s own closing
 port, a connection or a register when those passes run. Commands that a
 script's open entry pins are the exception: a plain `memory_map`, for one,
 writes x for words that nothing writes, and a plain `opt` after it can read
-them before SymbiYosys frees them. The fast check requires the shared
-opening for every task of those 231 scripts.
-
-Open: the 6 scripts listed in `UNDEFINED_OPENING_PENDING` in
-`tests/test_run_formal.py`, each to be opened with every task rerun. The 17
-scripts listed in `UNDEFINED_OPENING_TWINS` need an opening for each
-form and a pairing for corresponding free values.
+them before SymbiYosys frees them. The other 21 scripts (the 35 in-script
+equivalence tasks declared in `TWIN_COMPARISONS`) open both forms with
+`free_undefined.ys`, check matching compiled ports and initializers in
+`twin_ports.json`, cut every register, pin their free-cell counts and
+point floors, and prove every point with unrestricted `equiv_simple` and
+`equiv_status -assert`. The fast check enforces the opening across all
+257 scripts; both `UNDEFINED_OPENING_PENDING` and
+`UNDEFINED_OPENING_TWINS` in `tests/test_run_formal.py` are empty.
 
 Before the opening, a dump of every registered task's model
 before the first two `opt_muxtree` steps of each `opt` without `-fast` and

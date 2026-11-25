@@ -139,8 +139,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
     ("coherence_array", "coh_array4_port_bmc"): 6000,
-    ("coherence_l1d", "coh_l1d_bmc"): 10800,
-    ("coherence_l1d", "coh_l1d_multi_bmc"): 18000,
+    ("coherence_l1d", "coh_l1d_bmc"): 14400,
+    ("coherence_l1d", "coh_l1d_multi_bmc"): 20400,
     ("coherence_l1d", "coh_l1d_data_bmc"): 3900,
     ("coherence_l1d", "coh_l1d_data1_bmc"): 3900,
     ("coherence_l1d", "coh_l1d_data2_bmc"): 3900,
@@ -180,13 +180,25 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep2_bmc"): 1500,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
-    ("coherence_store_boundary", "bmc_four"): 18000,
+    ("coherence_store_boundary", "bmc_four_control"): 3600,
+    ("coherence_store_boundary", "bmc_four_value_0"): 15840,
+    ("coherence_store_boundary", "bmc_four_value_1"): 10800,
+    ("coherence_store_boundary", "bmc_four_value_2"): 8400,
+    ("coherence_store_boundary", "bmc_four_value_3"): 3600,
     ("coherence_store_boundary", "cover_four"): 7200,
-    ("coherence_store_boundary", "bmc_intervening"): 19800,
-    ("coherence_store_boundary", "bmc_amo_same"): 3300,
-    ("coherence_store_boundary", "bmc_amo_other"): 4800,
-    ("coherence_store_boundary", "bmc_probe_kept_same"): 3600,
-    ("coherence_store_boundary", "bmc_probe_kept_other"): 6000,
+    ("coherence_store_boundary", "bmc_intervening_same_flow"): 8400,
+    ("coherence_store_boundary", "bmc_intervening_other_flow"): 13200,
+    ("coherence_store_boundary", "bmc_intervening_same_value"): 10800,
+    ("coherence_store_boundary", "bmc_intervening_other_value"): 15840,
+    ("coherence_store_boundary", "bmc_intervening_fatal"): 1200,
+    ("coherence_store_boundary", "bmc_amo_same"): 6600,
+    ("coherence_store_boundary", "bmc_amo_other"): 9600,
+    ("coherence_store_boundary", "bmc_amo_same_owner"): 3000,
+    ("coherence_store_boundary", "bmc_amo_same_fatal"): 3000,
+    ("coherence_store_boundary", "bmc_amo_other_fatal"): 4800,
+    ("coherence_store_boundary", "bmc_load_same_probe_launch"): 3600,
+    ("coherence_store_boundary", "bmc_probe_kept_same"): 5400,
+    ("coherence_store_boundary", "bmc_probe_kept_other"): 8400,
     ("coherence_store_boundary", "bmc_sc"): 6000,
     ("coherence_store_home", "bmc_siblings"): 900,
     ("coherence_store_home", "bmc_siblings_second"): 900,
@@ -321,9 +333,18 @@ FORMAL_TARGETS = [
         "coherence_store_boundary.sby",
         "Production SQ, router, buffered L1D and LQ preserve credit, drain and atomic exclusion.",
         tasks=(
-            "bmc_four",
+            "bmc_four_control",
+            "bmc_four_value_0",
+            "bmc_four_value_1",
+            "bmc_four_value_2",
+            "bmc_four_value_3",
             "cover_four",
-            "bmc_intervening",
+            "bmc_intervening_same_flow",
+            "bmc_intervening_other_flow",
+            "bmc_intervening_same_value",
+            "bmc_intervening_other_value",
+            "bmc_intervening_fatal",
+            "prove_intervening_fatal_sticky",
             "bmc_load_same",
             "bmc_load_other",
             "bmc_load_same_probe_launch",
@@ -2718,14 +2739,53 @@ SBY_TASKS = [
         "Two held dirty victims yield to a probing DMA request and a waiting load.",
     ),
     (
-        "bmc_four",
-        "Four sector records preserve the production SQ and LQ handoff through 114 cycles.",
+        "bmc_four_control",
+        "Four sector records preserve credit, drain and completion identities through 114 cycles.",
+    ),
+    (
+        "bmc_four_value_0",
+        "Four sector records preserve the load value for watched store 0 through 114 cycles.",
+    ),
+    (
+        "bmc_four_value_1",
+        "Four sector records preserve the load value for watched store 1 through 114 cycles.",
+    ),
+    (
+        "bmc_four_value_2",
+        "Four sector records preserve the load value for watched store 2 through 114 cycles.",
+    ),
+    (
+        "bmc_four_value_3",
+        "Four sector records preserve the load value for watched store 3 through 114 cycles.",
     ),
     (
         "cover_four",
         "Four acknowledged holders drain with concurrent store acquisitions.",
     ),
-    ("bmc_intervening", "A younger store cannot change an intervening load result."),
+    (
+        "bmc_intervening_same_flow",
+        "Same-sector intervening load preserves credit, drain and completion identities.",
+    ),
+    (
+        "bmc_intervening_other_flow",
+        "Different-sector intervening load preserves credit, drain and completion identities.",
+    ),
+    (
+        "bmc_intervening_same_value",
+        "A younger same-sector store cannot change an intervening load result.",
+    ),
+    (
+        "bmc_intervening_other_value",
+        "A younger different-sector store cannot change an intervening load result.",
+    ),
+    (
+        "bmc_intervening_fatal",
+        "Intervening-load traffic raises no fatal L1D status through frame 139.",
+    ),
+    (
+        "prove_intervening_fatal_sticky",
+        "Intervening-load L1D fatal status persists after initial reset.",
+    ),
     (
         "coh_l1d_multi_data0_bmc",
         "Concurrent store acquisitions preserve array and probe bytes in word 0.",
@@ -4482,6 +4542,7 @@ FATAL_START_FRAME_TASKS: frozenset[tuple[str, str]] = frozenset(
     {
         ("coherence_store_boundary", "bmc_amo_same_fatal"),
         ("coherence_store_boundary", "bmc_amo_other_fatal"),
+        ("coherence_store_boundary", "bmc_intervening_fatal"),
     }
 )
 
@@ -4948,6 +5009,19 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "coh_hart_maint_free_prove",
         ],
         "coherence_store_boundary": [
+            "bmc_four_control",
+            "bmc_four_value_0",
+            "bmc_four_value_1",
+            "bmc_four_value_2",
+            "bmc_four_value_3",
+            "bmc_intervening_same_flow",
+            "bmc_intervening_other_flow",
+            "bmc_intervening_same_value",
+            "bmc_intervening_other_value",
+            "bmc_intervening_fatal",
+            "prove_intervening_fatal_sticky",
+        ]
+        + [
             f"{prefix}_amo_{sector}_{suffix}"
             for sector in ("same", "other")
             for prefix, suffix in (("bmc", "fatal"), ("prove", "fatal_sticky"))
@@ -5042,10 +5116,31 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_local_data_bmc": "Coherence L1D local data",
         "coherence_l1d_coh_l1d_local_hold_bmc": "Coherence L1D local holds",
         "coherence_l1d_coh_l1d_local_control_bmc": "Coherence L1D local control",
-        "coherence_store_boundary_bmc_four": "Store boundary four records",
-        "coherence_store_boundary_bmc_intervening": "Store boundary intervening load",
-        "coherence_store_boundary_bmc_amo_same": "Store boundary AMO flow",
-        "coherence_store_boundary_bmc_amo_other": "Store boundary AMO flow",
+        "coherence_store_boundary_bmc_four_control": "Store boundary four control",
+        "coherence_store_boundary_bmc_four_value_3": "Store boundary four control",
+        "coherence_store_boundary_bmc_four_value_0": "Store boundary four value 0",
+        "coherence_store_boundary_bmc_four_value_1": "Store boundary four value 1",
+        "coherence_store_boundary_bmc_four_value_2": "Store boundary four value 2",
+        "coherence_store_boundary_bmc_intervening_same_flow": (
+            "Store boundary intervening same flow"
+        ),
+        "coherence_store_boundary_bmc_intervening_fatal": (
+            "Store boundary intervening same flow"
+        ),
+        "coherence_store_boundary_prove_intervening_fatal_sticky": (
+            "Store boundary intervening same flow"
+        ),
+        "coherence_store_boundary_bmc_intervening_other_flow": (
+            "Store boundary intervening other flow"
+        ),
+        "coherence_store_boundary_bmc_intervening_same_value": (
+            "Store boundary intervening same value"
+        ),
+        "coherence_store_boundary_bmc_intervening_other_value": (
+            "Store boundary intervening other value"
+        ),
+        "coherence_store_boundary_bmc_amo_same": "Store boundary AMO same",
+        "coherence_store_boundary_bmc_amo_other": "Store boundary AMO other",
         "coherence_store_boundary_bmc_sc": "Store boundary",
     }
     # Shards sized directly from their tasks' allowances plus CI setup; the
@@ -5064,6 +5159,10 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "Coherence L1D full-line covers",
         "Coherence L1D full-line holds",
         "Coherence L1D withdrawn puts, payloads",
+        "Store boundary AMO fatal",
+        "Store boundary AMO checks",
+        "Store boundary probe launch other",
+        "Store boundary probe launch same",
         "Reorder buffer",
     }
     data_prefixes = (
@@ -5540,12 +5639,12 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_store_boundary": (
         "plain memory_map and opt: its BMC tasks run them before their setundef, its cover and sticky tasks have none",
         {
-            "bmc_four bmc_intervening bmc_load_same bmc_load_other bmc_load_same_probe_launch bmc_probe_kept_other bmc_probe_kept_same bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_fatal bmc_sc bmc_old": [
+            "bmc_four_control bmc_four_value_0 bmc_four_value_1 bmc_four_value_2 bmc_four_value_3 bmc_intervening_same_flow bmc_intervening_other_flow bmc_intervening_same_value bmc_intervening_other_value bmc_intervening_fatal bmc_load_same bmc_load_other bmc_load_same_probe_launch bmc_probe_kept_other bmc_probe_kept_same bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_fatal bmc_sc bmc_old": [
                 "memory_map",
                 "opt",
                 "opt -fast",
             ],
-            "cover_four prove_amo_same_fatal_sticky prove_amo_other_fatal_sticky cover_load cover_amo cover_amo_same cover_amo_same_two cover_amo_other_home cover_sc cover_old cover_edges_same cover_edges_same_combined cover_edges_other cover_probe_kept_other cover_probe_kept_same": [
+            "cover_four prove_intervening_fatal_sticky prove_amo_same_fatal_sticky prove_amo_other_fatal_sticky cover_load cover_amo cover_amo_same cover_amo_same_two cover_amo_other_home cover_sc cover_old cover_edges_same cover_edges_same_combined cover_edges_other cover_probe_kept_other cover_probe_kept_same": [
                 "memory_map",
                 "opt",
             ],
@@ -11932,6 +12031,219 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
         )
 
 
+def test_store_boundary_four_and_intervening_partitions_complete() -> None:
+    """Require disjoint, exhaustive assertion partitions for bmc_four and bmc_intervening."""
+    root = Path(__file__).resolve().parents[1]
+    sby_path = root / FORMAL_DIR / "coherence_store_boundary.sby"
+    configs = {
+        name: cfg.sections(sby_path.parent)
+        for name, cfg in sby_config.resolved(sby_path).items()
+    }
+
+    def partition_lines(script: list[str]) -> list[str]:
+        return [
+            line
+            for line in script
+            if line.startswith(("select -assert-", "chformal -assert -remove "))
+        ]
+
+    def model_without_specialization(
+        script: list[str], param: str
+    ) -> tuple[list[str], str | None]:
+        spec: str | None = None
+        base: list[str] = []
+        prefix = f"chparam -set {param} "
+        for line in script:
+            if line.startswith(prefix):
+                assert spec is None, line
+                spec = line
+            elif not line.startswith(("select -assert-", "chformal -assert -remove ")):
+                base.append(line)
+        return base, spec
+
+    def validate_four(tasks: dict[str, dict[str, list[str]]]) -> None:
+        ctrl = tasks["bmc_four_control"]
+        ctrl_model, ctrl_spec = model_without_specialization(
+            ctrl["[script]"], "WATCHED_STORE"
+        )
+        assert ctrl_spec is None
+        assert "free_undefined.ys" in ctrl["[files]"]
+        assert "setundef -anyseq t:$mux t:$pmux t:$bwmux w:*" in ctrl_model
+        assert not any(
+            line.startswith(("cutpoint ", "connect ", "chformal -assert2assume"))
+            for line in ctrl["[script]"]
+        )
+        assert partition_lines(ctrl["[script]"]) == [
+            "select -assert-count 23 t:$check r:FLAVOR=assert %i",
+            "chformal -assert -remove c:p_load_value",
+            "select -assert-count 22 t:$check r:FLAVOR=assert %i",
+        ]
+        # Disjoint union: control keeps 23 - 1 = 22 assertions across all four
+        # watched_store values; value_0..3 each keep the complementary 1
+        # assertion (p_load_value) across WATCHED_STORE = 0, 1, 2, 3.
+        seen_watched: set[int] = set()
+        for idx in range(4):
+            name = f"bmc_four_value_{idx}"
+            task = tasks[name]
+            assert task["[files]"] == ctrl["[files]"]
+            assert task["[engines]"] == ["abc bmc3 -c"]
+            model, spec = model_without_specialization(
+                task["[script]"], "WATCHED_STORE"
+            )
+            assert model == ctrl_model
+            assert (
+                spec
+                == f"chparam -set WATCHED_STORE {idx} coherence_store_boundary_formal"
+            )
+            seen_watched.add(idx)
+            assert partition_lines(task["[script]"]) == [
+                "select -assert-count 23 t:$check r:FLAVOR=assert %i",
+                "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_load_value %d",
+                "select -assert-count 1 t:$check r:FLAVOR=assert %i",
+                "select -assert-count 1 c:p_load_value",
+            ]
+        assert seen_watched == {0, 1, 2, 3}
+        for name in (
+            "bmc_four_control",
+            *(f"bmc_four_value_{idx}" for idx in range(4)),
+        ):
+            opts = dict(line.split(maxsplit=1) for line in tasks[name]["[options]"])
+            assert opts["mode"] == "bmc"
+            assert opts["depth"] == "114"
+            assert opts["aigsmt"] == "boolector"
+            assert int(opts["timeout"]) <= 15840
+            assert formal_task_timeout_s("coherence_store_boundary", name) <= 15840
+
+    def validate_intervening(tasks: dict[str, dict[str, list[str]]]) -> None:
+        fatal = tasks["bmc_intervening_fatal"]
+        fatal_model, fatal_spec = model_without_specialization(
+            fatal["[script]"], "SECTOR_CASE"
+        )
+        assert fatal_spec is None
+        assert "free_undefined.ys" in fatal["[files]"]
+        assert "setundef -anyseq t:$mux t:$pmux t:$bwmux w:*" in fatal_model
+        assert fatal["[engines]"] == ["abc bmc3 -c -S 139"]
+        assert ("coherence_store_boundary", "bmc_intervening_fatal") in (
+            FATAL_START_FRAME_TASKS
+        )
+        assert partition_lines(fatal["[script]"]) == [
+            "select -assert-count 19 t:$check r:FLAVOR=assert %i",
+            "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_fatal %d",
+            "select -assert-count 1 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 1 c:p_no_fatal",
+            "select -assert-none t:$assume",
+            "select -assert-none t:$check r:FLAVOR=assume %i",
+        ]
+        sticky = tasks["prove_intervening_fatal_sticky"]
+        sticky_opts = dict(line.split(maxsplit=1) for line in sticky["[options]"])
+        assert sticky_opts == {"mode": "prove", "depth": "2", "timeout": "120"}
+        assert sticky["[engines]"] == ["smtbmc boolector"]
+        assert partition_lines(sticky["[script]"]) == [
+            "select -assert-count 20 t:$check r:FLAVOR=assert %i",
+            "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_fatal_sticky %d",
+            "select -assert-count 1 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 1 c:p_fatal_sticky",
+            "select -assert-none t:$assume",
+            "select -assert-none t:$check r:FLAVOR=assume %i",
+        ]
+        # Disjoint union for both SECTOR_CASE in {0, 1}: 17 flow + 1 value
+        # (p_load_value) + 1 fatal (p_no_fatal, frame 139 + sticky induction)
+        # equals all 19 assertions of bmc_intervening with zero assumptions.
+        for sector, value in (("same", 0), ("other", 1)):
+            flow = tasks[f"bmc_intervening_{sector}_flow"]
+            val = tasks[f"bmc_intervening_{sector}_value"]
+            for name, task, expected_part in (
+                (
+                    f"bmc_intervening_{sector}_flow",
+                    flow,
+                    [
+                        "select -assert-count 19 t:$check r:FLAVOR=assert %i",
+                        "chformal -assert -remove c:p_load_value c:p_no_fatal",
+                        "select -assert-count 17 t:$check r:FLAVOR=assert %i",
+                    ],
+                ),
+                (
+                    f"bmc_intervening_{sector}_value",
+                    val,
+                    [
+                        "select -assert-count 19 t:$check r:FLAVOR=assert %i",
+                        "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_load_value %d",
+                        "select -assert-count 1 t:$check r:FLAVOR=assert %i",
+                        "select -assert-count 1 c:p_load_value",
+                    ],
+                ),
+            ):
+                assert task["[files]"] == fatal["[files]"]
+                assert task["[engines]"] == ["abc bmc3 -c"]
+                model, spec = model_without_specialization(
+                    task["[script]"], "SECTOR_CASE"
+                )
+                assert model == fatal_model
+                assert (
+                    spec
+                    == f"chparam -set SECTOR_CASE {value} coherence_store_boundary_formal"
+                )
+                assert partition_lines(task["[script]"]) == expected_part
+                assert not any(
+                    line.startswith(
+                        ("cutpoint ", "connect ", "chformal -assert2assume")
+                    )
+                    for line in task["[script]"]
+                )
+                opts = dict(line.split(maxsplit=1) for line in task["[options]"])
+                assert opts["mode"] == "bmc"
+                assert opts["depth"] == "140"
+                assert opts["aigsmt"] == "boolector"
+                assert int(opts["timeout"]) <= 15840
+                assert formal_task_timeout_s("coherence_store_boundary", name) <= 15840
+        fatal_opts = dict(line.split(maxsplit=1) for line in fatal["[options]"])
+        assert fatal_opts["mode"] == "bmc"
+        assert fatal_opts["depth"] == "140"
+        assert int(fatal_opts["timeout"]) <= 15840
+
+    validate_four(configs)
+    validate_intervening(configs)
+
+    # Negative self-checks: dropping an assertion, lowering depth, or adding an
+    # assumption/cutpoint must fail validation.
+    for validator, target_task, section, line in (
+        (
+            validate_four,
+            "bmc_four_control",
+            "[script]",
+            "chformal -assert -remove c:p_no_fatal",
+        ),
+        (validate_four, "bmc_four_value_0", "[options]", "depth 113"),
+        (
+            validate_four,
+            "bmc_four_value_1",
+            "[script]",
+            "chformal -assert2assume c:p_no_fatal",
+        ),
+        (validate_four, "bmc_four_value_0", "[options]", "timeout 15841"),
+        (
+            validate_intervening,
+            "bmc_intervening_same_flow",
+            "[script]",
+            "cutpoint w:l1_fatal",
+        ),
+        (validate_intervening, "bmc_intervening_other_value", "[options]", "depth 139"),
+        (
+            validate_intervening,
+            "bmc_intervening_fatal",
+            "[script]",
+            "chformal -assert -remove c:p_no_fatal",
+        ),
+    ):
+        altered = {
+            name: {sec: list(vals) for sec, vals in data.items()}
+            for name, data in configs.items()
+        }
+        altered[target_task][section].append(line)
+        with pytest.raises(AssertionError):
+            validator(altered)
+
+
 def test_local_data_partition_models_match() -> None:
     """Keep every scheduled real-array assertion at its original depth."""
     reference = l1d_task_config("coh_l1d_local_cover")
@@ -14247,7 +14559,10 @@ def test_unregistered_twin_declaration_through_registry_and_runner(
 
 
 @pytest.mark.parametrize("capture_output", (False, True))
-@pytest.mark.parametrize("task", ("bmc_amo_same_fatal", "bmc_amo_other_fatal"))
+@pytest.mark.parametrize(
+    "task",
+    ("bmc_amo_same_fatal", "bmc_amo_other_fatal", "bmc_intervening_fatal"),
+)
 @pytest.mark.parametrize(
     "case",
     (
@@ -14321,13 +14636,25 @@ def test_fatal_frame_validation(
         ("coherence_l1d", "coh_l1d_stream_outlier_prove", 2400),
         ("coherence_l1d", "coh_l1d_stream_hold_bmc", 3600),
         ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc", 3600),
-        ("coherence_l1d", "coh_l1d_bmc", 10800),
-        ("coherence_store_boundary", "bmc_four", 18000),
-        ("coherence_store_boundary", "bmc_intervening", 19800),
-        ("coherence_store_boundary", "bmc_amo_same", 3300),
-        ("coherence_store_boundary", "bmc_amo_other", 4800),
-        ("coherence_store_boundary", "bmc_probe_kept_same", 3600),
-        ("coherence_store_boundary", "bmc_probe_kept_other", 6000),
+        ("coherence_l1d", "coh_l1d_bmc", 14400),
+        ("coherence_store_boundary", "bmc_four_control", 3600),
+        ("coherence_store_boundary", "bmc_four_value_0", 15840),
+        ("coherence_store_boundary", "bmc_four_value_1", 10800),
+        ("coherence_store_boundary", "bmc_four_value_2", 8400),
+        ("coherence_store_boundary", "bmc_four_value_3", 3600),
+        ("coherence_store_boundary", "bmc_intervening_same_flow", 8400),
+        ("coherence_store_boundary", "bmc_intervening_other_flow", 13200),
+        ("coherence_store_boundary", "bmc_intervening_same_value", 10800),
+        ("coherence_store_boundary", "bmc_intervening_other_value", 15840),
+        ("coherence_store_boundary", "bmc_intervening_fatal", 1200),
+        ("coherence_store_boundary", "bmc_amo_same", 6600),
+        ("coherence_store_boundary", "bmc_amo_other", 9600),
+        ("coherence_store_boundary", "bmc_amo_same_owner", 3000),
+        ("coherence_store_boundary", "bmc_amo_same_fatal", 3000),
+        ("coherence_store_boundary", "bmc_amo_other_fatal", 4800),
+        ("coherence_store_boundary", "bmc_load_same_probe_launch", 3600),
+        ("coherence_store_boundary", "bmc_probe_kept_same", 5400),
+        ("coherence_store_boundary", "bmc_probe_kept_other", 8400),
         ("coherence_store_boundary", "bmc_sc", 6000),
         ("coherence_store_home", "bmc_siblings", 900),
         ("coherence_store_home", "bmc_siblings_second", 900),
@@ -14349,7 +14676,7 @@ def test_fatal_frame_validation(
         ("coherence_home_twin", "home_twin_four", 2400),
         ("coherence_home_twin", "home_twin_addr40", 600),
         ("coherence_l1d", "coh_l1d_stream_free_bmc", 10800),
-        ("coherence_l1d", "coh_l1d_multi_bmc", 18000),
+        ("coherence_l1d", "coh_l1d_multi_bmc", 20400),
         ("coherence_l1d", "coh_l1d_data_bmc", 3900),
         ("coherence_l1d", "coh_l1d_data1_bmc", 3900),
         ("coherence_l1d", "coh_l1d_data2_bmc", 3900),
@@ -14386,7 +14713,19 @@ def test_formal_runner_task_timeout(
     def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(kwargs)
         assert command[-1] == task
-        return subprocess.CompletedProcess(command, 0, "", "")
+        stdout = ""
+        if (target_name, task) in FATAL_START_FRAME_TASKS:
+            stdout = "\n".join(
+                (
+                    "engine_0: Params: FramesMax = 140. Start = 139. ConfLimit = 0. TimeOut = 0.",
+                    "engine_0: 139 + : Var = 100. UNSAT = 1.0 sec",
+                    "engine_0: No output asserted in 0 frames.",
+                    "engine_0: finished (returncode=0)",
+                    "engine_0: Status returned by engine: PASS",
+                    "DONE (PASS, rc=0)",
+                )
+            )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(

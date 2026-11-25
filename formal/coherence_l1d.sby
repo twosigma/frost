@@ -184,7 +184,11 @@ nostore: timeout 3600
 # look-ahead admission. Each runs in its own CI job.
 control_single: depth 40
 control_single: timeout 10800
+# With free_undefined.ys, coh_l1d_bmc measured 10,283 s and coh_l1d_multi_bmc
+# measured 15,407 s; give both headroom inside their dedicated CI jobs.
+coh_l1d_bmc: timeout 14400
 control_multi: timeout 18000
+coh_l1d_multi_bmc: timeout 20400
 # Data tasks get about twice their measured duration, rounded up to five
 # minutes; word variants share the word-0 representative's allowance.
 coh_l1d_data_bmc: timeout 3900
