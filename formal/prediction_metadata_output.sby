@@ -16,7 +16,7 @@ script free_undefined.ys
 prep -top prediction_metadata_tracker
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
-select -assert-count 3 t:$check
+select -assert-count 3 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

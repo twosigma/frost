@@ -63,8 +63,34 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_dma_ingress", "coh_dma_ingress_soc_prove"): 3120,
     ("pd_target_candidate_twin", "pdt_twin"): 60,
     ("decoded_bundle_queue_twin", "dbq_twin"): 60,
+    ("cached_tier_adapter_twin", "cached_tier_twin"): 60,
+    ("cached_tier_adapter_twin", "cached_tier_unsplit"): 60,
+    ("coherent_store_pma_twin", "store_pma_twin_ddr30"): 60,
+    ("coherent_store_pma_twin", "store_pma_twin_ddr31"): 60,
+    ("control_flow_tracker_twin", "cft_twin"): 60,
+    ("data_mem_request_router_twin", "router_twin"): 60,
+    ("csr_file_twin", "csr_twin"): 60,
+    ("csr_file_twin", "csr_twin_vector"): 60,
+    ("fp_engine_twin", "fp_engine_twin"): 60,
+    ("pc_controller_twin", "pc_controller_twin"): 120,
+    ("pc_controller_twin", "pc_controller_twin_slot2"): 120,
+    ("store_queue_twin", "sq_twin"): 120,
+    ("store_queue_twin", "sq_twin_cpu"): 120,
+    ("id_stage_kill_equiv", "id_kill_equiv"): 120,
+    ("id_stage_kill_equiv", "id_kill_equiv_vector"): 120,
+    ("immu_twin", "immu_twin"): 180,
+    ("immu_twin", "immu_twin_hold"): 180,
+    ("coherence_home_engine_twin", "home_engine_twin32"): 240,
+    ("coherence_home_engine_twin", "home_engine_twin64"): 240,
+    ("coherence_home_engine_twin", "home_engine_twin40"): 240,
+    ("dmmu_twin", "dmmu_twin"): 240,
+    ("coherence_l1d_twin", "l1d_twin_single"): 600,
+    ("coherence_l1d_twin", "l1d_twin_multi"): 600,
+    ("coherence_l1d_twin", "l1d_twin_stream"): 600,
+    ("reservation_station_twin", "rs_twin_indexed"): 600,
+    ("branch_predictor_twin", "bp_twin"): 900,
     ("coherence_home_twin", "home_twin_small"): 600,
-    ("coherence_home_twin", "home_twin_four"): 600,
+    ("coherence_home_twin", "home_twin_four"): 2400,
     ("coherence_home_twin", "home_twin_addr40"): 600,
     ("coherence_sc_wa", "sc_wa_s0_prove"): 600,
     ("coherence_sc_wa", "sc_wa_s1_prove"): 600,
@@ -113,8 +139,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
     ("coherence_array", "coh_array4_port_bmc"): 6000,
-    ("coherence_l1d", "coh_l1d_bmc"): 10800,
-    ("coherence_l1d", "coh_l1d_multi_bmc"): 18000,
+    ("coherence_l1d", "coh_l1d_bmc"): 14400,
+    ("coherence_l1d", "coh_l1d_multi_bmc"): 20400,
     ("coherence_l1d", "coh_l1d_data_bmc"): 3900,
     ("coherence_l1d", "coh_l1d_data1_bmc"): 3900,
     ("coherence_l1d", "coh_l1d_data2_bmc"): 3900,
@@ -154,13 +180,25 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_zero_stream_upper_ep2_bmc"): 1500,
     ("coherence_l1d", "coh_l1d_answer_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_stream_answer_bmc"): 3600,
-    ("coherence_store_boundary", "bmc_four"): 18000,
+    ("coherence_store_boundary", "bmc_four_control"): 3600,
+    ("coherence_store_boundary", "bmc_four_value_0"): 15840,
+    ("coherence_store_boundary", "bmc_four_value_1"): 10800,
+    ("coherence_store_boundary", "bmc_four_value_2"): 8400,
+    ("coherence_store_boundary", "bmc_four_value_3"): 3600,
     ("coherence_store_boundary", "cover_four"): 7200,
-    ("coherence_store_boundary", "bmc_intervening"): 19800,
-    ("coherence_store_boundary", "bmc_amo_same"): 3300,
-    ("coherence_store_boundary", "bmc_amo_other"): 4800,
-    ("coherence_store_boundary", "bmc_probe_kept_same"): 3600,
-    ("coherence_store_boundary", "bmc_probe_kept_other"): 6000,
+    ("coherence_store_boundary", "bmc_intervening_same_flow"): 8400,
+    ("coherence_store_boundary", "bmc_intervening_other_flow"): 13200,
+    ("coherence_store_boundary", "bmc_intervening_same_value"): 10800,
+    ("coherence_store_boundary", "bmc_intervening_other_value"): 15840,
+    ("coherence_store_boundary", "bmc_intervening_fatal"): 1200,
+    ("coherence_store_boundary", "bmc_amo_same"): 6600,
+    ("coherence_store_boundary", "bmc_amo_other"): 9600,
+    ("coherence_store_boundary", "bmc_amo_same_owner"): 3000,
+    ("coherence_store_boundary", "bmc_amo_same_fatal"): 3000,
+    ("coherence_store_boundary", "bmc_amo_other_fatal"): 4800,
+    ("coherence_store_boundary", "bmc_load_same_probe_launch"): 3600,
+    ("coherence_store_boundary", "bmc_probe_kept_same"): 5400,
+    ("coherence_store_boundary", "bmc_probe_kept_other"): 8400,
     ("coherence_store_boundary", "bmc_sc"): 6000,
     ("coherence_store_home", "bmc_siblings"): 900,
     ("coherence_store_home", "bmc_siblings_second"): 900,
@@ -295,9 +333,18 @@ FORMAL_TARGETS = [
         "coherence_store_boundary.sby",
         "Production SQ, router, buffered L1D and LQ preserve credit, drain and atomic exclusion.",
         tasks=(
-            "bmc_four",
+            "bmc_four_control",
+            "bmc_four_value_0",
+            "bmc_four_value_1",
+            "bmc_four_value_2",
+            "bmc_four_value_3",
             "cover_four",
-            "bmc_intervening",
+            "bmc_intervening_same_flow",
+            "bmc_intervening_other_flow",
+            "bmc_intervening_same_value",
+            "bmc_intervening_other_value",
+            "bmc_intervening_fatal",
+            "prove_intervening_fatal_sticky",
             "bmc_load_same",
             "bmc_load_other",
             "bmc_load_same_probe_launch",
@@ -2692,14 +2739,53 @@ SBY_TASKS = [
         "Two held dirty victims yield to a probing DMA request and a waiting load.",
     ),
     (
-        "bmc_four",
-        "Four sector records preserve the production SQ and LQ handoff through 114 cycles.",
+        "bmc_four_control",
+        "Four sector records preserve credit, drain and completion identities through 114 cycles.",
+    ),
+    (
+        "bmc_four_value_0",
+        "Four sector records preserve the load value for watched store 0 through 114 cycles.",
+    ),
+    (
+        "bmc_four_value_1",
+        "Four sector records preserve the load value for watched store 1 through 114 cycles.",
+    ),
+    (
+        "bmc_four_value_2",
+        "Four sector records preserve the load value for watched store 2 through 114 cycles.",
+    ),
+    (
+        "bmc_four_value_3",
+        "Four sector records preserve the load value for watched store 3 through 114 cycles.",
     ),
     (
         "cover_four",
         "Four acknowledged holders drain with concurrent store acquisitions.",
     ),
-    ("bmc_intervening", "A younger store cannot change an intervening load result."),
+    (
+        "bmc_intervening_same_flow",
+        "Same-sector intervening load preserves credit, drain and completion identities.",
+    ),
+    (
+        "bmc_intervening_other_flow",
+        "Different-sector intervening load preserves credit, drain and completion identities.",
+    ),
+    (
+        "bmc_intervening_same_value",
+        "A younger same-sector store cannot change an intervening load result.",
+    ),
+    (
+        "bmc_intervening_other_value",
+        "A younger different-sector store cannot change an intervening load result.",
+    ),
+    (
+        "bmc_intervening_fatal",
+        "Intervening-load traffic raises no fatal L1D status through frame 139.",
+    ),
+    (
+        "prove_intervening_fatal_sticky",
+        "Intervening-load L1D fatal status persists after initial reset.",
+    ),
     (
         "coh_l1d_multi_data0_bmc",
         "Concurrent store acquisitions preserve array and probe bytes in word 0.",
@@ -4456,6 +4542,7 @@ FATAL_START_FRAME_TASKS: frozenset[tuple[str, str]] = frozenset(
     {
         ("coherence_store_boundary", "bmc_amo_same_fatal"),
         ("coherence_store_boundary", "bmc_amo_other_fatal"),
+        ("coherence_store_boundary", "bmc_intervening_fatal"),
     }
 )
 
@@ -4922,6 +5009,19 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
             "coh_hart_maint_free_prove",
         ],
         "coherence_store_boundary": [
+            "bmc_four_control",
+            "bmc_four_value_0",
+            "bmc_four_value_1",
+            "bmc_four_value_2",
+            "bmc_four_value_3",
+            "bmc_intervening_same_flow",
+            "bmc_intervening_other_flow",
+            "bmc_intervening_same_value",
+            "bmc_intervening_other_value",
+            "bmc_intervening_fatal",
+            "prove_intervening_fatal_sticky",
+        ]
+        + [
             f"{prefix}_amo_{sector}_{suffix}"
             for sector in ("same", "other")
             for prefix, suffix in (("bmc", "fatal"), ("prove", "fatal_sticky"))
@@ -5016,10 +5116,31 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_local_data_bmc": "Coherence L1D local data",
         "coherence_l1d_coh_l1d_local_hold_bmc": "Coherence L1D local holds",
         "coherence_l1d_coh_l1d_local_control_bmc": "Coherence L1D local control",
-        "coherence_store_boundary_bmc_four": "Store boundary four records",
-        "coherence_store_boundary_bmc_intervening": "Store boundary intervening load",
-        "coherence_store_boundary_bmc_amo_same": "Store boundary AMO flow",
-        "coherence_store_boundary_bmc_amo_other": "Store boundary AMO flow",
+        "coherence_store_boundary_bmc_four_control": "Store boundary four control",
+        "coherence_store_boundary_bmc_four_value_3": "Store boundary four control",
+        "coherence_store_boundary_bmc_four_value_0": "Store boundary four value 0",
+        "coherence_store_boundary_bmc_four_value_1": "Store boundary four value 1",
+        "coherence_store_boundary_bmc_four_value_2": "Store boundary four value 2",
+        "coherence_store_boundary_bmc_intervening_same_flow": (
+            "Store boundary intervening same flow"
+        ),
+        "coherence_store_boundary_bmc_intervening_fatal": (
+            "Store boundary intervening same flow"
+        ),
+        "coherence_store_boundary_prove_intervening_fatal_sticky": (
+            "Store boundary intervening same flow"
+        ),
+        "coherence_store_boundary_bmc_intervening_other_flow": (
+            "Store boundary intervening other flow"
+        ),
+        "coherence_store_boundary_bmc_intervening_same_value": (
+            "Store boundary intervening same value"
+        ),
+        "coherence_store_boundary_bmc_intervening_other_value": (
+            "Store boundary intervening other value"
+        ),
+        "coherence_store_boundary_bmc_amo_same": "Store boundary AMO same",
+        "coherence_store_boundary_bmc_amo_other": "Store boundary AMO other",
         "coherence_store_boundary_bmc_sc": "Store boundary",
     }
     # Shards sized directly from their tasks' allowances plus CI setup; the
@@ -5038,6 +5159,10 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "Coherence L1D full-line covers",
         "Coherence L1D full-line holds",
         "Coherence L1D withdrawn puts, payloads",
+        "Store boundary AMO fatal",
+        "Store boundary AMO checks",
+        "Store boundary probe launch other",
+        "Store boundary probe launch same",
         "Reorder buffer",
     }
     data_prefixes = (
@@ -5364,9 +5489,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "branch_predictor_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_struct merges structurally equal cells and equiv_simple reads undefined bits as zero, after both forms open with free_undefined.ys",
         {
-            "bp_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+            "bp_twin": ["equiv_struct -icells", "equiv_simple"],
         },
     ),
     "btb_pending_relation": (
@@ -5403,13 +5528,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "cached_tier_adapter_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "cached_tier_twin cached_tier_unsplit": [
-                "setundef -zero",
-                "setundef -zero",
-                "equiv_simple @blk",
-            ],
+            "cached_tier_twin cached_tier_unsplit": ["equiv_simple"],
         },
     ),
     "cdc_mailbox": (
@@ -5446,23 +5567,17 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "coherence_home_engine_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
             "home_engine_twin32 home_engine_twin64 home_engine_twin40": [
-                "setundef -zero",
-                "setundef -zero",
-                "equiv_simple @blk",
+                "equiv_simple"
             ],
         },
     ),
     "coherence_home_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "home_twin_small home_twin_four home_twin_addr40": [
-                "setundef -zero",
-                "setundef -zero",
-                "equiv_simple @blk",
-            ],
+            "home_twin_small home_twin_four home_twin_addr40": ["equiv_simple"],
         },
     ),
     "coherence_l1d": (
@@ -5485,14 +5600,12 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "coherence_l1d_twin": (
-        "plain memory_map until converted together with coherence_l1d; zeroed undefined constants and equiv_simple as in every twin",
+        "the two autoname passes pair free cells before equiv_simple, which reads undefined bits as zero",
         {
             "l1d_twin_single l1d_twin_multi l1d_twin_stream": [
-                "memory_map",
-                "setundef -zero",
-                "memory_map",
-                "setundef -zero",
-                "equiv_simple @blk",
+                "autoname t:$anyseq",
+                "autoname t:$anyseq",
+                "equiv_simple",
             ],
         },
     ),
@@ -5526,12 +5639,12 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_store_boundary": (
         "plain memory_map and opt: its BMC tasks run them before their setundef, its cover and sticky tasks have none",
         {
-            "bmc_four bmc_intervening bmc_load_same bmc_load_other bmc_load_same_probe_launch bmc_probe_kept_other bmc_probe_kept_same bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_fatal bmc_sc bmc_old": [
+            "bmc_four_control bmc_four_value_0 bmc_four_value_1 bmc_four_value_2 bmc_four_value_3 bmc_intervening_same_flow bmc_intervening_other_flow bmc_intervening_same_value bmc_intervening_other_value bmc_intervening_fatal bmc_load_same bmc_load_other bmc_load_same_probe_launch bmc_probe_kept_other bmc_probe_kept_same bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_fatal bmc_sc bmc_old": [
                 "memory_map",
                 "opt",
                 "opt -fast",
             ],
-            "cover_four prove_amo_same_fatal_sticky prove_amo_other_fatal_sticky cover_load cover_amo cover_amo_same cover_amo_same_two cover_amo_other_home cover_sc cover_old cover_edges_same cover_edges_same_combined cover_edges_other cover_probe_kept_other cover_probe_kept_same": [
+            "cover_four prove_intervening_fatal_sticky prove_amo_same_fatal_sticky prove_amo_other_fatal_sticky cover_load cover_amo cover_amo_same cover_amo_same_two cover_amo_other_home cover_sc cover_old cover_edges_same cover_edges_same_combined cover_edges_other cover_probe_kept_other cover_probe_kept_same": [
                 "memory_map",
                 "opt",
             ],
@@ -5569,35 +5682,27 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "coherent_store_pma_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "store_pma_twin_ddr30 store_pma_twin_ddr31": [
-                "setundef -zero",
-                "setundef -zero",
-                "equiv_simple @blk",
-            ],
+            "store_pma_twin_ddr30 store_pma_twin_ddr31": ["equiv_simple"],
         },
     ),
     "control_flow_tracker_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "cft_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+            "cft_twin": ["equiv_simple"],
         },
     ),
     "csr_file_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "csr_twin csr_twin_vector": [
-                "setundef -zero",
-                "setundef -zero",
-                "equiv_simple @blk",
-            ],
+            "csr_twin csr_twin_vector": ["equiv_simple"],
         },
     ),
     "data_mem_request_router_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "router_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+            "router_twin": ["equiv_simple"],
         },
     ),
     "dc_fifo": (
@@ -5623,9 +5728,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "dmmu_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "dmmu_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+            "dmmu_twin": ["equiv_simple"],
         },
     ),
     "fetch_pc_mux": (
@@ -5635,18 +5740,17 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "fp_engine_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "fp_engine_twin": ["setundef -zero", "setundef -zero", "equiv_simple @blk"],
+            "fp_engine_twin": ["equiv_simple"],
         },
     ),
     "id_stage_kill_equiv": (
-        "in-script equivalence check: undefined constants zeroed, proved by equiv_simple, which reads an undefined bit as 0",
+        "the two autoname passes pair free cells before equiv_simple, which reads undefined bits as zero",
         {
-            "id_kill_equiv": ["setundef -zero", "setundef -zero", "equiv_simple"],
-            "id_kill_equiv_vector": [
-                "setundef -zero",
-                "setundef -zero",
+            "id_kill_equiv id_kill_equiv_vector": [
+                "autoname t:$anyseq",
+                "autoname t:$anyseq",
                 "equiv_simple",
             ],
         },
@@ -5680,13 +5784,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "immu_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "immu_twin immu_twin_hold": [
-                "setundef -zero",
-                "setundef -zero",
-                "equiv_simple @blk",
-            ],
+            "immu_twin immu_twin_hold": ["equiv_simple"],
         },
     ),
     "line_client_link": (
@@ -5739,13 +5839,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "pc_controller_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "pc_controller_twin pc_controller_twin_slot2": [
-                "setundef -zero",
-                "setundef -zero",
-                "equiv_simple @blk",
-            ],
+            "pc_controller_twin pc_controller_twin_slot2": ["equiv_simple"],
         },
     ),
     "pc_holdoff_cofactor": (
@@ -5806,13 +5902,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "reservation_station_twin": (
-        "primitive twin: its in-script equivalence check zeroes undefined constants and proves with equiv_simple, which reads an undefined bit as 0",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "rs_twin_indexed": [
-                "setundef -zero",
-                "setundef -zero",
-                "equiv_simple @blk",
-            ],
+            "rs_twin_indexed": ["equiv_simple"],
         },
     ),
     "rob_bypass_control": (
@@ -5864,12 +5956,10 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "rs_issue_tag_banks": (
-        "in-script equivalence check with every flop cut: undefined constants zeroed, equiv_struct merging, and sat and equiv_simple reading x as 0",
+        "in-script equivalence check with every flop cut: equiv_struct merging, and sat and equiv_simple reading x as 0 after opening with free_undefined.ys",
         {
             "int_equiv int_equiv_prims": [
-                "setundef -zero",
                 "sat -seq 1 -verify -prove entry_cdb_tag[0] i_issue_cdb_tag -prove entry_cdb_tag[5] i_issue_cdb_tag -prove entry_cdb_tag[10] i_issue_cdb_tag -prove entry_cdb_tag[15] i_issue_cdb_tag -prove entry_cdb_2_tag[0] i_issue_cdb_2_tag -prove entry_cdb_2_tag[5] i_issue_cdb_2_tag -prove entry_cdb_2_tag[10] i_issue_cdb_2_tag -prove entry_cdb_2_tag[15] i_issue_cdb_2_tag reservation_station",
-                "setundef -zero",
                 "sat -seq 1 -verify -prove entry_cdb_tag[0] i_issue_cdb_tag -prove entry_cdb_tag[5] i_issue_cdb_tag -prove entry_cdb_tag[10] i_issue_cdb_tag -prove entry_cdb_tag[15] i_issue_cdb_tag -prove entry_cdb_2_tag[0] i_issue_cdb_2_tag -prove entry_cdb_2_tag[5] i_issue_cdb_2_tag -prove entry_cdb_2_tag[10] i_issue_cdb_2_tag -prove entry_cdb_2_tag[15] i_issue_cdb_2_tag reservation_station",
                 "equiv_struct -icells",
                 "equiv_simple",
@@ -5934,15 +6024,9 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         },
     ),
     "store_queue_twin": (
-        "plain memory_map until converted together with coherence_l1d; zeroed undefined constants and equiv_simple as in every twin",
+        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
-            "sq_twin sq_twin_cpu": [
-                "memory_map",
-                "setundef -zero",
-                "memory_map",
-                "setundef -zero",
-                "equiv_simple @blk",
-            ],
+            "sq_twin sq_twin_cpu": ["equiv_simple"],
         },
     ),
     "sync_dist_ram_fifo": (
@@ -6216,45 +6300,16 @@ UNDEFINED_OPENING_FILE = "free_undefined.ys"
 UNDEFINED_OPENING_MARK = ["script", UNDEFINED_OPENING_FILE]
 # Scripts that do not open that way yet. The list only shrinks: a listed script
 # whose every task opens fails the check.
-UNDEFINED_OPENING_PENDING = (
-    "coherence_array_equiv",
-    "coherence_home",
-    "coherence_l1d",
-    "coherence_store_boundary",
-    "reorder_buffer",
-    "sq_forwarding_unit",
-)
+UNDEFINED_OPENING_PENDING: tuple[str, ...] = ()
 # Each exception names the existing tasks that still prove a selected cone.
-UNDEFINED_OPENING_TWINS = {
-    "branch_predictor_twin": ("bp_twin",),
-    "cached_tier_adapter_twin": ("cached_tier_twin", "cached_tier_unsplit"),
-    "coherence_home_engine_twin": (
-        "home_engine_twin32",
-        "home_engine_twin64",
-        "home_engine_twin40",
-    ),
-    "coherence_home_twin": ("home_twin_small", "home_twin_four", "home_twin_addr40"),
-    "coherence_l1d_twin": ("l1d_twin_single", "l1d_twin_multi", "l1d_twin_stream"),
-    "coherent_store_pma_twin": ("store_pma_twin_ddr30", "store_pma_twin_ddr31"),
-    "control_flow_tracker_twin": ("cft_twin",),
-    "csr_file_twin": ("csr_twin", "csr_twin_vector"),
-    "data_mem_request_router_twin": ("router_twin",),
-    "dmmu_twin": ("dmmu_twin",),
-    "fp_engine_twin": ("fp_engine_twin",),
-    "id_stage_kill_equiv": ("id_kill_equiv", "id_kill_equiv_vector"),
-    "immu_twin": ("immu_twin", "immu_twin_hold"),
-    "pc_controller_twin": ("pc_controller_twin", "pc_controller_twin_slot2"),
-    "reservation_station_twin": ("rs_twin_indexed",),
-    "rs_issue_tag_banks": ("int_equiv", "int_equiv_prims"),
-    "store_queue_twin": ("sq_twin", "sq_twin_cpu"),
-}
+UNDEFINED_OPENING_TWINS: dict[str, tuple[str, ...]] = {}
 
 
 @dataclass(frozen=True)
 class TwinComparison:
     """Inputs, cut state and comparison points for one pair of compiled forms."""
 
-    primitive_points: int
+    primitive_points: int | None
     all_points: int
     top: str
     gold_inputs: tuple[str, ...]
@@ -6264,12 +6319,169 @@ class TwinComparison:
     paired_free: int = 0
     gold_only_free: int = 0
     gate_only_free: int = 0
+    equiv_free: int = 0
     name_free: bool = False
+    hide_wires: tuple[str, ...] = ()
+    clean_hidden: bool = False
+    opt_clean_purge: bool = False
+    pre_initialized_nets: int = 0
+    initialized_nets: int = 0
+    delete_after_copy: bool = False
+    equiv_struct: bool = False
+    gold_post_open: tuple[str, ...] = ()
+    gold_post_flatten: tuple[str, ...] = ()
+    gate_post_flatten: tuple[str, ...] = ()
+    post_cut_checks: tuple[str, ...] = ()
+    equiv_extra_checks: tuple[str, ...] = ()
 
 
 DBQ_TWIN_PARAMETERS = (
     "chparam -set WIDTH 8 -set SHADOW_WIDTH 3 -set SPLIT_SHADOW_STALL 1 "
     "-set STALL_LATE_COPIES 4 decoded_bundle_queue"
+)
+HIDE_FUNC_AND_LOOP_TEMPS = ("w:*$func$*", "w:*$fordecl_block$*")
+HOME_ENGINE_TWIN_GOLD = (
+    "read -sv -D SYNTHESIS coherence_pkg.sv coherence_home_engine.sv",
+    "chparam -set LINE_BYTES 32 -set WAYS 1 coherence_home_engine",
+)
+HOME_ENGINE_TWIN_GATE = (
+    "read_verilog -formal +/xilinx/cells_sim.v",
+    "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS coherence_pkg.sv coherence_home_engine.sv",
+    "chparam -set LINE_BYTES 32 -set WAYS 1 coherence_home_engine",
+)
+HOME_TWIN_GOLD_READS = (
+    "read -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv",
+    "read -sv -D SYNTHESIS sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv",
+    "read -sv -D SYNTHESIS coherence_seat_select.sv coherence_work_select.sv "
+    "coherence_home_endpoint.sv coherence_d_arbiter.sv coherence_home_completions.sv "
+    "coherence_home_array.sv coherence_home_engine.sv coherence_home.sv",
+)
+HOME_TWIN_GATE_READS = (
+    "read_verilog -formal +/xilinx/cells_sim.v",
+    "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS cache_perf_pkg.sv coherence_pkg.sv",
+    "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS sdp_block_ram.sv "
+    "sdp_packed_tag_uram.sv sdp_ram_byte_en.sv",
+    "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS coherence_seat_select.sv "
+    "coherence_work_select.sv coherence_home_endpoint.sv coherence_d_arbiter.sv "
+    "coherence_home_completions.sv coherence_home_array.sv coherence_home_engine.sv "
+    "coherence_home.sv",
+)
+HOME_TWIN_SMALL_PARAMS = (
+    "chparam -set CACHE_BYTES 128 -set WAYS 1 -set ULTRA 0 -set COMPLETIONS 2 "
+    "-set RESULTS 2 -set FILLS 2 -set PREFETCH_SLOTS 0 coherence_home"
+)
+HOME_TWIN_FOUR_PARAMS = (
+    "chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 -set COMPLETIONS 4 "
+    "-set RESULTS 3 -set FILLS 3 -set PREFETCH_RESERVE 1 -set PREFETCH_SLOTS 0 "
+    "coherence_home"
+)
+L1D_TWIN_GOLD_READS = (
+    "read -sv -D SYNTHESIS cache_perf_pkg.sv coherence_pkg.sv",
+    "read -sv -D SYNTHESIS coherence_read_stream.sv coherence_request_endpoint.sv",
+    "read -sv -D SYNTHESIS coherence_put_endpoint.sv coherence_read_owners.sv "
+    "coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv "
+    "coherence_read_payload.sv coherence_store_buffer.sv",
+    "read -sv -D SYNTHESIS coherence_read_select.sv",
+    "read -sv -D SYNTHESIS sdp_block_ram.sv sdp_packed_tag_uram.sv "
+    "sdp_ram_byte_en.sv coherence_array.sv coherence_l1d.sv",
+)
+L1D_TWIN_GATE_READS = (
+    "read_verilog -formal +/xilinx/cells_sim.v",
+    "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS cache_perf_pkg.sv coherence_pkg.sv",
+    "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS coherence_read_stream.sv "
+    "coherence_request_endpoint.sv",
+    "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS coherence_put_endpoint.sv "
+    "coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv "
+    "coherence_grant_select.sv coherence_read_payload.sv coherence_store_buffer.sv",
+    "read -sv -D SYNTHESIS coherence_read_select.sv",
+    "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS sdp_block_ram.sv "
+    "sdp_packed_tag_uram.sv sdp_ram_byte_en.sv coherence_array.sv coherence_l1d.sv",
+)
+RS_TWIN_SOURCES = (
+    "riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv "
+    "rs_issue2_selector.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv "
+    "coherent_rs_payload_store.sv reservation_station.sv"
+)
+RS_TWIN_INDEXED_PARAMS = (
+    "chparam -set PREPARE_ISSUE_CONTROLS 1 -set TAG_INDEXED_BRANCH_PAYLOAD 1 "
+    "-set DUAL_ISSUE 1 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 "
+    "-set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 "
+    "-set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 "
+    "-set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE_CDB_TAG_SHADOW 1 "
+    "-set ISSUE_CDB_META_ANCHORS 1 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 "
+    "-set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 "
+    "reservation_station"
+)
+RS_BANKS_GOLD_PARAMS = (
+    "chparam -set PREPARE_ISSUE_CONTROLS 1 -set DEPTH 16 -set HAS_SRC3 0 "
+    "-set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 "
+    "-set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 "
+    "-set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 "
+    "-set ISSUE2_WINDOW 8 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 "
+    "-set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 "
+    "-set TRUST_DISPATCH_VALID 1 -set DUAL_ISSUE 1 -set TAG_INDEXED_BRANCH_PAYLOAD 1 "
+    "-set FORMAL_STANDALONE_ENV 0 reservation_station"
+)
+RS_BANKS_GATE_PARAMS = (
+    "chparam -set PREPARE_ISSUE_CONTROLS 1 -set DEPTH 16 -set HAS_SRC3 0 "
+    "-set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 "
+    "-set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 "
+    "-set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 "
+    "-set ISSUE2_WINDOW 8 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 "
+    "-set ISSUE_CDB_TAG_BANKS 4 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 "
+    "-set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 "
+    "-set DUAL_ISSUE 1 -set TAG_INDEXED_BRANCH_PAYLOAD 1 "
+    "-set FORMAL_STANDALONE_ENV 0 reservation_station"
+)
+RS_BANKS_SAT = (
+    "sat -seq 1 -verify "
+    "-prove entry_cdb_tag[0] i_issue_cdb_tag "
+    "-prove entry_cdb_tag[5] i_issue_cdb_tag "
+    "-prove entry_cdb_tag[10] i_issue_cdb_tag "
+    "-prove entry_cdb_tag[15] i_issue_cdb_tag "
+    "-prove entry_cdb_2_tag[0] i_issue_cdb_2_tag "
+    "-prove entry_cdb_2_tag[5] i_issue_cdb_2_tag "
+    "-prove entry_cdb_2_tag[10] i_issue_cdb_2_tag "
+    "-prove entry_cdb_2_tag[15] i_issue_cdb_2_tag reservation_station",
+)
+ID_KILL_READ = (
+    "read -sv -D SYNTHESIS riscv_pkg.sv instr_decoder.sv instr_operand_classifier.sv "
+    "immediate_decoder.sv instruction_type_decoder.sv branch_target_precompute.sv "
+    "id_stage.sv"
+)
+ID_KILL_GOLD_POST_OPEN = (
+    "opt_clean",
+    "select -module id_stage",
+    r"connect -port operand_classifier \i_illegal \is_illegal_instruction",
+    r"connect -port operand_classifier \i_fetch_fault \is_fetch_fault",
+    r"connect -port operand_classifier_2 \i_illegal \is_illegal_instruction_2",
+    r"connect -port operand_classifier_2 \i_fetch_fault \is_fetch_fault_2",
+    r"delete w:\id_kill %ci t:$* %i",
+    r"delete w:\id_kill_2 %ci t:$* %i",
+    r"connect -set \id_kill 1'b0",
+    r"connect -set \id_kill_2 1'b0",
+    "select -clear",
+)
+ID_KILL_HIDE_WIRES = (
+    "w:id_kill*",
+    "w:*_nokill*",
+    "w:operand_classifier.*",
+    "w:operand_classifier_2.*",
+)
+ID_KILL_EXTRA_CHECKS = (
+    "select -assert-count 34 w:has_int_dest_pre_gold w:has_fp_dest_pre_gold "
+    "w:uses_int_rs1_pre_gold w:uses_int_rs2_pre_gold w:uses_fp_rs1_pre_gold "
+    "w:uses_fp_rs2_pre_gold w:uses_fp_rs3_pre_gold w:rs_type_pre_gold "
+    "w:is_int_store_pre_gold w:is_branch_or_jump_pre_gold w:is_fence_pre_gold "
+    "w:is_fence_i_pre_gold w:is_sfence_vma_pre_gold w:is_csr_imm_pre_gold "
+    "w:has_fp_flags_pre_gold w:needs_lq_pre_gold w:needs_sq_pre_gold "
+    "w:has_int_dest_pre_2_gold w:has_fp_dest_pre_2_gold w:uses_int_rs1_pre_2_gold "
+    "w:uses_int_rs2_pre_2_gold w:uses_fp_rs1_pre_2_gold w:uses_fp_rs2_pre_2_gold "
+    "w:uses_fp_rs3_pre_2_gold w:rs_type_pre_2_gold w:is_int_store_pre_2_gold "
+    "w:is_branch_or_jump_pre_2_gold w:is_fence_pre_2_gold w:is_fence_i_pre_2_gold "
+    "w:is_sfence_vma_pre_2_gold w:is_csr_imm_pre_2_gold w:has_fp_flags_pre_2_gold "
+    "w:needs_lq_pre_2_gold w:needs_sq_pre_2_gold",
+    "select -assert-count 8 o:o_from_id_to_ex*",
 )
 
 # Each declaration pins both forms, their state cuts and the full point proof.
@@ -6339,6 +6551,611 @@ TWIN_COMPARISONS = {
         clock="i_clk",
         gold_only_free=6,
         gate_only_free=6,
+    ),
+    ("cached_tier_adapter_twin", "cached_tier_twin"): TwinComparison(
+        primitive_points=64,
+        all_points=2515,
+        top="cached_tier_adapter",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS riscv_pkg.sv cached_tier_adapter.sv",
+            "chparam -set SPLIT_READ_REQ 1 cached_tier_adapter",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv cached_tier_adapter.sv",
+            "chparam -set SPLIT_READ_REQ 1 cached_tier_adapter",
+        ),
+        registers=43,
+        clock="i_clk",
+        gold_only_free=15,
+        gate_only_free=15,
+    ),
+    ("cached_tier_adapter_twin", "cached_tier_unsplit"): TwinComparison(
+        primitive_points=64,
+        all_points=2515,
+        top="cached_tier_adapter",
+        gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv cached_tier_adapter.sv",),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv cached_tier_adapter.sv",
+        ),
+        registers=43,
+        clock="i_clk",
+        gold_only_free=15,
+        gate_only_free=15,
+    ),
+    ("coherent_store_pma_twin", "store_pma_twin_ddr30"): TwinComparison(
+        primitive_points=17,
+        all_points=235,
+        top="coherent_store_pma",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS -D FROST_DDR_CAPACITY_LOG2_BYTES=30 riscv_pkg.sv tomasulo_wrapper.sv",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS -D FROST_DDR_CAPACITY_LOG2_BYTES=30 riscv_pkg.sv tomasulo_wrapper.sv",
+        ),
+        registers=0,
+        clock=None,
+        gold_only_free=29,
+        gate_only_free=29,
+    ),
+    ("coherent_store_pma_twin", "store_pma_twin_ddr31"): TwinComparison(
+        primitive_points=17,
+        all_points=235,
+        top="coherent_store_pma",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS -D FROST_DDR_CAPACITY_LOG2_BYTES=31 riscv_pkg.sv tomasulo_wrapper.sv",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS -D FROST_DDR_CAPACITY_LOG2_BYTES=31 riscv_pkg.sv tomasulo_wrapper.sv",
+        ),
+        registers=0,
+        clock=None,
+        gold_only_free=29,
+        gate_only_free=29,
+    ),
+    ("control_flow_tracker_twin", "cft_twin"): TwinComparison(
+        primitive_points=1,
+        all_points=20,
+        top="control_flow_tracker",
+        gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv control_flow_tracker.sv",),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv control_flow_tracker.sv",
+        ),
+        registers=4,
+        clock="i_clk",
+    ),
+    ("data_mem_request_router_twin", "router_twin"): TwinComparison(
+        primitive_points=1,
+        all_points=990,
+        top="data_mem_request_router",
+        gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv data_mem_request_router.sv",),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv data_mem_request_router.sv",
+        ),
+        registers=16,
+        clock="i_clk",
+        gold_only_free=15,
+        gate_only_free=15,
+    ),
+    ("immu_twin", "immu_twin"): TwinComparison(
+        primitive_points=6,
+        all_points=6437,
+        top="immu",
+        gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv dtlb.sv immu.sv",),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv dtlb.sv immu.sv",
+        ),
+        registers=117,
+        clock="i_clk",
+        gold_only_free=1402,
+        gate_only_free=1402,
+    ),
+    ("immu_twin", "immu_twin_hold"): TwinComparison(
+        primitive_points=12,
+        all_points=6443,
+        top="immu",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS riscv_pkg.sv dtlb.sv immu.sv",
+            "chparam -set PA_VALID_COPIES 4 -set PA_COPY_HOLD 1 immu",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv dtlb.sv immu.sv",
+            "chparam -set PA_VALID_COPIES 4 -set PA_COPY_HOLD 1 immu",
+        ),
+        registers=117,
+        clock="i_clk",
+        gold_only_free=1402,
+        gate_only_free=1402,
+    ),
+    ("pc_controller_twin", "pc_controller_twin"): TwinComparison(
+        primitive_points=3708,
+        all_points=11638,
+        top="pc_controller",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS riscv_pkg.sv control_flow_tracker.sv "
+            "pc_reg_precompute.sv pc_increment_calculator.sv pc_controller.sv",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
+            "control_flow_tracker.sv pc_reg_precompute.sv pc_increment_calculator.sv "
+            "pc_controller.sv",
+        ),
+        registers=28,
+        clock="i_clk",
+        gold_only_free=80,
+        gate_only_free=75,
+    ),
+    ("pc_controller_twin", "pc_controller_twin_slot2"): TwinComparison(
+        primitive_points=3708,
+        all_points=11638,
+        top="pc_controller",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS riscv_pkg.sv control_flow_tracker.sv "
+            "pc_reg_precompute.sv pc_increment_calculator.sv pc_controller.sv",
+            "chparam -set PENDING_HANDOFF_EXCLUDES_SLOT2 1 pc_controller",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
+            "control_flow_tracker.sv pc_reg_precompute.sv pc_increment_calculator.sv "
+            "pc_controller.sv",
+            "chparam -set PENDING_HANDOFF_EXCLUDES_SLOT2 1 pc_controller",
+        ),
+        registers=28,
+        clock="i_clk",
+        gold_only_free=80,
+        gate_only_free=75,
+    ),
+    ("coherence_home_engine_twin", "home_engine_twin32"): TwinComparison(
+        primitive_points=1,
+        all_points=2751,
+        top="coherence_home_engine",
+        gold_inputs=HOME_ENGINE_TWIN_GOLD,
+        gate_inputs=HOME_ENGINE_TWIN_GATE,
+        registers=16,
+        clock="i_clk",
+        gold_only_free=144,
+        gate_only_free=144,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+    ),
+    ("coherence_home_engine_twin", "home_engine_twin64"): TwinComparison(
+        primitive_points=1,
+        all_points=3295,
+        top="coherence_home_engine",
+        gold_inputs=(
+            *HOME_ENGINE_TWIN_GOLD,
+            "chparam -set LINE_BYTES 64 coherence_home_engine",
+        ),
+        gate_inputs=(
+            *HOME_ENGINE_TWIN_GATE,
+            "chparam -set LINE_BYTES 64 coherence_home_engine",
+        ),
+        registers=16,
+        clock="i_clk",
+        gold_only_free=149,
+        gate_only_free=149,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+    ),
+    ("coherence_home_engine_twin", "home_engine_twin40"): TwinComparison(
+        primitive_points=1,
+        all_points=2840,
+        top="coherence_home_engine",
+        gold_inputs=(
+            *HOME_ENGINE_TWIN_GOLD,
+            "chparam -set ADDR_WIDTH 40 coherence_home_engine",
+        ),
+        gate_inputs=(
+            *HOME_ENGINE_TWIN_GATE,
+            "chparam -set ADDR_WIDTH 40 coherence_home_engine",
+        ),
+        registers=16,
+        clock="i_clk",
+        gold_only_free=144,
+        gate_only_free=144,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+    ),
+    ("coherence_home_twin", "home_twin_small"): TwinComparison(
+        primitive_points=4177,
+        all_points=61950,
+        top="coherence_home",
+        gold_inputs=(*HOME_TWIN_GOLD_READS, HOME_TWIN_SMALL_PARAMS),
+        gate_inputs=(*HOME_TWIN_GATE_READS, HOME_TWIN_SMALL_PARAMS),
+        registers=321,
+        clock="i_clk",
+        gold_only_free=629,
+        gate_only_free=629,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        initialized_nets=2,
+        delete_after_copy=True,
+    ),
+    ("coherence_home_twin", "home_twin_four"): TwinComparison(
+        primitive_points=5261,
+        all_points=112256,
+        top="coherence_home",
+        gold_inputs=(*HOME_TWIN_GOLD_READS, HOME_TWIN_FOUR_PARAMS),
+        gate_inputs=(*HOME_TWIN_GATE_READS, HOME_TWIN_FOUR_PARAMS),
+        registers=512,
+        clock="i_clk",
+        gold_only_free=1452,
+        gate_only_free=1452,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        initialized_nets=4,
+        delete_after_copy=True,
+    ),
+    ("coherence_home_twin", "home_twin_addr40"): TwinComparison(
+        primitive_points=4177,
+        all_points=63954,
+        top="coherence_home",
+        gold_inputs=(
+            *HOME_TWIN_GOLD_READS,
+            HOME_TWIN_SMALL_PARAMS,
+            "chparam -set ADDR_WIDTH 40 coherence_home",
+        ),
+        gate_inputs=(
+            *HOME_TWIN_GATE_READS,
+            HOME_TWIN_SMALL_PARAMS,
+            "chparam -set ADDR_WIDTH 40 coherence_home",
+        ),
+        registers=321,
+        clock="i_clk",
+        gold_only_free=629,
+        gate_only_free=629,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        initialized_nets=2,
+        delete_after_copy=True,
+    ),
+    ("csr_file_twin", "csr_twin"): TwinComparison(
+        primitive_points=2,
+        all_points=14717,
+        top="csr_file",
+        gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv csr_file.sv",),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv csr_file.sv",
+        ),
+        registers=105,
+        clock="i_clk",
+        gold_only_free=250,
+        gate_only_free=250,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+    ),
+    ("csr_file_twin", "csr_twin_vector"): TwinComparison(
+        primitive_points=2,
+        all_points=14949,
+        top="csr_file",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS riscv_pkg.sv csr_file.sv",
+            "chparam -set VECTOR 1 -set VLEN 256 csr_file",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv csr_file.sv",
+            "chparam -set VECTOR 1 -set VLEN 256 csr_file",
+        ),
+        registers=114,
+        clock="i_clk",
+        gold_only_free=250,
+        gate_only_free=250,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+    ),
+    ("dmmu_twin", "dmmu_twin"): TwinComparison(
+        primitive_points=600,
+        all_points=11870,
+        top="dmmu",
+        gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv dtlb.sv dmmu.sv",),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv dtlb.sv dmmu.sv",
+        ),
+        registers=195,
+        clock="i_clk",
+        gold_only_free=171,
+        gate_only_free=171,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+    ),
+    ("fp_engine_twin", "fp_engine_twin"): TwinComparison(
+        primitive_points=43,
+        all_points=7930,
+        top="fp_engine",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS riscv_pkg.sv dsp_tiled_multiplier_unsigned.sv fp_engine.sv",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
+            "dsp_tiled_multiplier_unsigned.sv fp_engine.sv",
+        ),
+        registers=63,
+        clock="i_clk",
+        gold_only_free=679,
+        gate_only_free=679,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+    ),
+    ("store_queue_twin", "sq_twin"): TwinComparison(
+        primitive_points=87,
+        all_points=9057,
+        top="store_queue",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
+            "sq_forwarding_unit.sv store_queue.sv",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
+            "vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv",
+        ),
+        registers=117,
+        clock="i_clk",
+        gold_only_free=243,
+        gate_only_free=243,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        initialized_nets=16,
+    ),
+    ("store_queue_twin", "sq_twin_cpu"): TwinComparison(
+        primitive_points=87,
+        all_points=9066,
+        top="store_queue",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
+            "sq_forwarding_unit.sv store_queue.sv",
+            "chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 "
+            "-set CACHE_NORMAL_MEMORY 1 store_queue",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
+            "vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv",
+            "chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 "
+            "-set CACHE_NORMAL_MEMORY 1 store_queue",
+        ),
+        registers=121,
+        clock="i_clk",
+        gold_only_free=246,
+        gate_only_free=246,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        initialized_nets=16,
+    ),
+    ("coherence_l1d_twin", "l1d_twin_single"): TwinComparison(
+        primitive_points=9,
+        all_points=31351,
+        top="coherence_l1d",
+        gold_inputs=(
+            *L1D_TWIN_GOLD_READS,
+            "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d",
+        ),
+        gate_inputs=(
+            *L1D_TWIN_GATE_READS,
+            "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d",
+        ),
+        registers=298,
+        clock="i_clk",
+        paired_free=467,
+        gold_only_free=103,
+        gate_only_free=103,
+        equiv_free=40,
+        name_free=True,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        initialized_nets=4,
+    ),
+    ("coherence_l1d_twin", "l1d_twin_multi"): TwinComparison(
+        primitive_points=12,
+        all_points=40268,
+        top="coherence_l1d",
+        gold_inputs=(
+            *L1D_TWIN_GOLD_READS,
+            "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d",
+        ),
+        gate_inputs=(
+            *L1D_TWIN_GATE_READS,
+            "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d",
+        ),
+        registers=333,
+        clock="i_clk",
+        paired_free=547,
+        gold_only_free=52,
+        gate_only_free=52,
+        equiv_free=28,
+        name_free=True,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        initialized_nets=4,
+    ),
+    ("coherence_l1d_twin", "l1d_twin_stream"): TwinComparison(
+        primitive_points=14,
+        all_points=62326,
+        top="coherence_l1d",
+        gold_inputs=(
+            *L1D_TWIN_GOLD_READS,
+            "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d",
+        ),
+        gate_inputs=(
+            *L1D_TWIN_GATE_READS,
+            "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d",
+        ),
+        registers=432,
+        clock="i_clk",
+        paired_free=579,
+        gold_only_free=56,
+        gate_only_free=56,
+        equiv_free=3,
+        name_free=True,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        initialized_nets=4,
+    ),
+    ("reservation_station_twin", "rs_twin_indexed"): TwinComparison(
+        primitive_points=2144,
+        all_points=32414,
+        top="reservation_station",
+        gold_inputs=(
+            f"read -sv -D SYNTHESIS {RS_TWIN_SOURCES}",
+            RS_TWIN_INDEXED_PARAMS,
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            f"read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS {RS_TWIN_SOURCES}",
+            RS_TWIN_INDEXED_PARAMS,
+        ),
+        registers=288,
+        clock="i_clk",
+        gold_only_free=155,
+        gate_only_free=155,
+        equiv_free=12,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        pre_initialized_nets=18,
+        initialized_nets=139,
+    ),
+    ("branch_predictor_twin", "bp_twin"): TwinComparison(
+        primitive_points=220,
+        all_points=126988,
+        top="branch_predictor",
+        gold_inputs=(
+            "read -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv sdp_block_ram.sv "
+            "backing_btb.sv branch_predictor.sv direction_predictor.sv "
+            "tage_predictor.sv return_address_stack.sv",
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
+            "sdp_dist_ram.sv sdp_block_ram.sv backing_btb.sv branch_predictor.sv "
+            "direction_predictor.sv tage_predictor.sv return_address_stack.sv",
+        ),
+        registers=4882,
+        clock="i_clk",
+        gold_only_free=60,
+        gate_only_free=60,
+        equiv_free=4,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        initialized_nets=3840,
+        delete_after_copy=True,
+        equiv_struct=True,
+    ),
+    ("id_stage_kill_equiv", "id_kill_equiv"): TwinComparison(
+        primitive_points=None,
+        all_points=7375,
+        top="id_stage",
+        gold_inputs=(ID_KILL_READ, "chparam -set VECTOR 0 id_stage"),
+        gate_inputs=(ID_KILL_READ, "chparam -set VECTOR 0 id_stage"),
+        registers=2,
+        clock="i_clk",
+        paired_free=1032,
+        gold_only_free=198,
+        gate_only_free=198,
+        name_free=True,
+        hide_wires=ID_KILL_HIDE_WIRES,
+        clean_hidden=True,
+        opt_clean_purge=True,
+        gold_post_open=ID_KILL_GOLD_POST_OPEN,
+        equiv_extra_checks=ID_KILL_EXTRA_CHECKS,
+    ),
+    ("id_stage_kill_equiv", "id_kill_equiv_vector"): TwinComparison(
+        primitive_points=None,
+        all_points=7375,
+        top="id_stage",
+        gold_inputs=(ID_KILL_READ, "chparam -set VECTOR 1 id_stage"),
+        gate_inputs=(ID_KILL_READ, "chparam -set VECTOR 1 id_stage"),
+        registers=2,
+        clock="i_clk",
+        paired_free=1126,
+        gold_only_free=226,
+        gate_only_free=226,
+        name_free=True,
+        hide_wires=ID_KILL_HIDE_WIRES,
+        clean_hidden=True,
+        opt_clean_purge=True,
+        gold_post_open=ID_KILL_GOLD_POST_OPEN,
+        equiv_extra_checks=ID_KILL_EXTRA_CHECKS,
+    ),
+    ("rs_issue_tag_banks", "int_equiv"): TwinComparison(
+        primitive_points=None,
+        all_points=44316,
+        top="reservation_station",
+        gold_inputs=(f"read -sv -D SYNTHESIS {RS_TWIN_SOURCES}", RS_BANKS_GOLD_PARAMS),
+        gate_inputs=(f"read -sv -D SYNTHESIS {RS_TWIN_SOURCES}", RS_BANKS_GATE_PARAMS),
+        registers=388,
+        clock="i_clk",
+        gold_only_free=271,
+        gate_only_free=271,
+        equiv_free=15,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        pre_initialized_nets=34,
+        initialized_nets=181,
+        equiv_struct=True,
+        gold_post_flatten=(
+            "delete reservation_station/w:i_issue_cdb_tag_bank "
+            "reservation_station/w:i_issue_cdb_2_tag_bank",
+        ),
+        gate_post_flatten=(
+            "cd reservation_station",
+            "delete -port w:i_issue_cdb_tag_bank w:i_issue_cdb_2_tag_bank",
+            "connect -nounset -set i_issue_cdb_tag_bank "
+            "i_issue_cdb_tag,i_issue_cdb_tag,i_issue_cdb_tag,i_issue_cdb_tag",
+            "connect -nounset -set i_issue_cdb_2_tag_bank "
+            "i_issue_cdb_2_tag,i_issue_cdb_2_tag,i_issue_cdb_2_tag,i_issue_cdb_2_tag",
+            "cd ..",
+        ),
+        post_cut_checks=RS_BANKS_SAT,
+    ),
+    ("rs_issue_tag_banks", "int_equiv_prims"): TwinComparison(
+        primitive_points=None,
+        all_points=48956,
+        top="reservation_station",
+        gold_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            f"read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS {RS_TWIN_SOURCES}",
+            RS_BANKS_GOLD_PARAMS,
+        ),
+        gate_inputs=(
+            "read_verilog -formal +/xilinx/cells_sim.v",
+            f"read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS {RS_TWIN_SOURCES}",
+            RS_BANKS_GATE_PARAMS,
+        ),
+        registers=388,
+        clock="i_clk",
+        gold_only_free=271,
+        gate_only_free=271,
+        equiv_free=15,
+        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
+        clean_hidden=True,
+        pre_initialized_nets=34,
+        initialized_nets=181,
+        equiv_struct=True,
+        gold_post_flatten=(
+            "delete reservation_station/w:i_issue_cdb_tag_bank "
+            "reservation_station/w:i_issue_cdb_2_tag_bank",
+        ),
+        gate_post_flatten=(
+            "cd reservation_station",
+            "delete -port w:i_issue_cdb_tag_bank w:i_issue_cdb_2_tag_bank",
+            "connect -nounset -set i_issue_cdb_tag_bank "
+            "i_issue_cdb_tag,i_issue_cdb_tag,i_issue_cdb_tag,i_issue_cdb_tag",
+            "connect -nounset -set i_issue_cdb_2_tag_bank "
+            "i_issue_cdb_2_tag,i_issue_cdb_2_tag,i_issue_cdb_2_tag,i_issue_cdb_2_tag",
+            "cd ..",
+        ),
+        post_cut_checks=RS_BANKS_SAT,
     ),
 }
 
@@ -6467,25 +7284,61 @@ def twin_form_commands(spec: TwinComparison, form: str) -> list[str]:
         [
             f"hierarchy -check -top {spec.top}",
             "script free_undefined.ys",
-            "select -assert-none a:init t:$initstate t:$anyinit",
-            "setattr -mod -unset keep_hierarchy *",
         ]
     )
-    if gate:
+    if spec.pre_initialized_nets:
+        commands.extend(
+            [
+                "select -assert-none t:$initstate t:$anyinit",
+                f"select -assert-count {spec.pre_initialized_nets} a:init",
+            ]
+        )
+    else:
+        commands.append("select -assert-none a:init t:$initstate t:$anyinit")
+    if not gate and spec.gold_post_open:
+        commands.extend(spec.gold_post_open)
+    commands.append("setattr -mod -unset keep_hierarchy *")
+    if gate and spec.primitive_points is not None:
         commands.append(
             "setattr -set from_prim 1 $paramod*LUT*/* $paramod*MUXF*/* "
             "$paramod*CARRY*/* $paramod*FD*/* LUT*/* MUXF*/* CARRY*/* FD*/*"
         )
+    commands.append("flatten")
+    post_flatten = spec.gate_post_flatten if gate else spec.gold_post_flatten
+    if post_flatten:
+        commands.extend(post_flatten)
     commands.extend(
         [
-            "flatten",
             "memory_map -keepdc",
             "dffunmap",
             "setundef -undriven -anyseq",
+        ]
+    )
+    clean_cmd = "opt_clean -purge" if spec.opt_clean_purge else "opt_clean"
+    if spec.hide_wires:
+        commands.append(f"rename -hide {' '.join(spec.hide_wires)}")
+        if spec.clean_hidden:
+            commands.append(clean_cmd)
+    commands.extend(
+        [
             "setattr -set keep 1 w:* w:$* %d",
-            "opt_clean",
+            clean_cmd,
             "check -assert",
-            "select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d",
+        ]
+    )
+    if spec.initialized_nets:
+        commands.extend(
+            [
+                "select -assert-none t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d",
+                f"select -assert-count {spec.initialized_nets} a:init",
+            ]
+        )
+    else:
+        commands.append(
+            "select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d"
+        )
+    commands.extend(
+        [
             "select -assert-none i:* o:* %i",
             f"select -assert-count {spec.registers} t:$dff",
         ]
@@ -6502,6 +7355,8 @@ def twin_form_commands(spec: TwinComparison, form: str) -> list[str]:
     )
     if spec.name_free:
         commands.append("autoname t:$anyseq")
+    if spec.post_cut_checks:
+        commands.extend(spec.post_cut_checks)
     return [*commands, f"rename -top {form}", f"design -stash {form}"]
 
 
@@ -6601,7 +7456,11 @@ def formal_input_requirements(
             pending = None
         elif cmd.form.transition == "source":
             pending = " ".join(cmd.args)
-        elif pending and cmd.form.transition not in ("define", "design_copy_from"):
+        elif pending and cmd.form.transition not in (
+            "define",
+            "design_copy_from",
+            "design_delete",
+        ):
             # A partition can omit properties or remove named modules/instances
             # before elaboration. Neither operation assigns a value to a retained net.
             if cmd.form.id == "chformal_remove" or (
@@ -6637,14 +7496,14 @@ def formal_input_requirements(
             for cmd in parsed
             if cmd.form.id == "design_copy_from"
         }
-        unopened_sq = (
+        sq_tree = (
             (target, task) == ("sq_forwarding_unit", "tree_equiv")
             and copies == {"shipped", "formal_sel"}
-            and "script free_undefined.ys" not in commands
+            and "script free_undefined.ys" in commands
         )
         if (
             not named_twin
-            and (len(copies) < 2 or unopened_sq)
+            and (len(copies) < 2 or sq_tree)
             and not any(
                 cmd.args[0].startswith("equiv_") or "prim_twin_done.sv" in cmd.args
                 for cmd in parsed
@@ -6665,7 +7524,9 @@ def formal_input_requirements(
         "design -reset",
         "read -sv twin_both.sv",
         "design -copy-from gold -as gold gold",
+        *(["design -delete gold"] if declaration.delete_after_copy else []),
         "design -copy-from gate -as gate gate",
+        *(["design -delete gate"] if declaration.delete_after_copy else []),
         "hierarchy -top twin_both",
         "script free_undefined.ys",
         "write_json twin_ports.json",
@@ -6675,10 +7536,18 @@ def formal_input_requirements(
         "select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate",
     ]
     proof = [
-        "select -set prim t:* a:from_prim %i",
-        "select -set blk @prim %co*:-$equiv[Y] t:$equiv %i",
-        f"select -assert-min {declaration.primitive_points} @blk",
+        *declaration.equiv_extra_checks,
+        *(
+            [
+                "select -set prim t:* a:from_prim %i",
+                "select -set blk @prim %co*:-$equiv[Y] t:$equiv %i",
+                f"select -assert-min {declaration.primitive_points} @blk",
+            ]
+            if declaration.primitive_points is not None
+            else []
+        ),
         f"select -assert-min {declaration.all_points} t:$equiv",
+        *(["equiv_struct -icells"] if declaration.equiv_struct else []),
         "equiv_simple",
         "equiv_status -assert",
         "design -reset",
@@ -6687,7 +7556,12 @@ def formal_input_requirements(
         "script free_undefined.ys",
         "prep -top prim_twin_done",
     ]
-    if not 0 < declaration.primitive_points <= declaration.all_points:
+    if declaration.primitive_points is not None:
+        if not 0 < declaration.primitive_points <= declaration.all_points:
+            raise sby_config.ConfigError(
+                f"{target}:{task}: invalid comparison point floors"
+            )
+    elif declaration.all_points <= 0:
         raise sby_config.ConfigError(
             f"{target}:{task}: invalid comparison point floors"
         )
@@ -6829,7 +7703,16 @@ def test_opened_primitive_twin_comparison(target: str, task: str) -> None:
     spec = TWIN_COMPARISONS[target, task]
     script = [" ".join(c.args) for c in cfg.parsed(formal, expand_opening=False)]
     start = script.index("select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate") + 1
-    count = spec.paired_free + spec.gold_only_free + spec.gate_only_free
+    end_marker = (
+        spec.equiv_extra_checks[0]
+        if spec.equiv_extra_checks
+        else "select -set prim t:* a:from_prim %i"
+        if spec.primitive_points is not None
+        else f"select -assert-min {spec.all_points} t:$equiv"
+    )
+    count = (
+        spec.paired_free + spec.gold_only_free + spec.gate_only_free + spec.equiv_free
+    )
     expected = [f"select -assert-count {count} t:$anyseq"]
     if spec.gold_only_free or spec.gate_only_free:
         expected.extend(
@@ -6842,9 +7725,7 @@ def test_opened_primitive_twin_comparison(target: str, task: str) -> None:
         expected.append(
             "select -assert-none t:$anyseq n:*_gold %i t:$anyseq n:*_gate %i"
         )
-    assert (
-        script[start : script.index("select -set prim t:* a:from_prim %i")] == expected
-    )
+    assert script[start : script.index(end_marker)] == expected
 
 
 def script_write_gaps(sby_path: Path, cfg: sby_config.TaskConfig) -> list[str]:
@@ -7448,6 +8329,47 @@ def test_scripts_free_undefined_constants_first() -> None:
     ] == UNDEFINED_OPENING
 
 
+def unqualified_check_count_guards(
+    commands: list[sby_config.ParsedCommand],
+) -> list[str]:
+    """Return select -assert-count/-assert-min lines that select t:$check without a FLAVOR filter."""
+    bad: list[str] = []
+    for cmd in commands:
+        if cmd.form.id not in ("select_assert_count", "select_assert_min"):
+            continue
+        selection = cmd.args[3:]
+        if "t:$check" not in selection:
+            continue
+        has_flavor = any(
+            tok in ("r:FLAVOR=assert", "r:FLAVOR=assume", "r:FLAVOR=cover")
+            for tok in selection
+        )
+        if not (has_flavor and "%i" in selection):
+            bad.append(" ".join(cmd.args))
+    return bad
+
+
+def test_check_count_guards_specify_flavor() -> None:
+    """Every select -assert-count/-assert-min over t:$check qualifies its FLAVOR."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
+    lacking: list[str] = []
+    for sby_path in sorted(formal.glob("*.sby")):
+        for task, cfg in sby_config.resolved(sby_path).items():
+            parsed = cfg.parsed(sby_path.parent, expand_opening=False)
+            lacking.extend(
+                f"{sby_path.name} {task}: {line}"
+                for line in unqualified_check_count_guards(parsed)
+            )
+    assert not lacking, lacking
+    bare = sby_config.parse_script_lines(["select -assert-count 2 t:$check"])
+    assert unqualified_check_count_guards(bare) == ["select -assert-count 2 t:$check"]
+    qualified = sby_config.parse_script_lines(
+        ["select -assert-count 2 t:$check r:FLAVOR=assert %i"]
+    )
+    assert unqualified_check_count_guards(qualified) == []
+
+
 DONT_CARE_NO_STATE = (
     "select -assert-none t:*ff* t:*FF* t:*latch* t:*LATCH* t:$sr t:$_SR_* t:$mem* "
     "t:$anyinit t:$fsm"
@@ -7738,12 +8660,8 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
         "branch_predictor_twin",
         (
             (
-                "setundef -zero\nsetattr -unset init\ndffunmap\n"
-                "# Keep every named net so that registers and signals pair by name.\n"
-                "setattr -set keep 1 w:* w:$* %d\nopt_clean\nrename -top gold\n",
-                "setundef -one\nsetattr -unset init\ndffunmap\n"
-                "# Keep every named net so that registers and signals pair by name.\n"
-                "setattr -set keep 1 w:* w:$* %d\nopt_clean\nrename -top gold\n",
+                "select -assert-count 60 t:$anyseq\nrename -top gold\n",
+                "select -assert-count 60 t:$anyseq\nsetundef -one\nrename -top gold\n",
             ),
         ),
     ),
@@ -9609,24 +10527,25 @@ def test_store_home_cover_budgets() -> None:
 
 def test_home_twin_snapshot_budget() -> None:
     """Equivalence construction releases saved copies without changing geometry."""
-    for task, floor in (
-        ("home_twin_small", 4296),
-        ("home_twin_four", 4870),
-        ("home_twin_addr40", 4328),
+    for task, blk_floor, all_floor, timeout in (
+        ("home_twin_small", 4177, 61950, 600),
+        ("home_twin_four", 5261, 112256, 2400),
+        ("home_twin_addr40", 4177, 63954, 600),
     ):
         config = formal_task_config("coherence_home_twin", task)
         options = dict(line.split(None, 1) for line in config["[options]"])
-        assert options == {"mode": "bmc", "depth": "1", "timeout": "600"}
-        assert formal_task_timeout_s("coherence_home_twin", task) == 600
+        assert options == {"mode": "bmc", "depth": "1", "timeout": str(timeout)}
+        assert formal_task_timeout_s("coherence_home_twin", task) == timeout
         script = config["[script]"]
         make = script.index("equiv_make gold gate equiv")
         for variant in ("gold", "gate"):
             copy = f"design -copy-from {variant} -as {variant} {variant}"
             release = f"design -delete {variant}"
             assert script.index(copy) < script.index(release) < make
-        assert f"select -assert-min {floor} @blk" in script
-        assert "equiv_simple @blk" in script
-        assert "equiv_status -assert @blk" in script
+        assert f"select -assert-min {blk_floor} @blk" in script
+        assert f"select -assert-min {all_floor} t:$equiv" in script
+        assert "equiv_simple" in script
+        assert "equiv_status -assert" in script
         if task == "home_twin_four":
             geometry = (
                 "chparam -set CACHE_BYTES 1024 -set WAYS 4 -set ULTRA 1 "
@@ -10298,30 +11217,34 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
         "coherence_miss_credit.sv coherence_read_flags.sv "
         "coherence_grant_select.sv coherence_read_select.sv",
     ]
-    files = [
-        "../hw/rtl/lib/cache/coherence_read_stream.sv",
-        "../hw/rtl/lib/ram/sdp_block_ram.sv",
-        "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
-        "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
-    ] + [
-        f"../hw/rtl/lib/cache/{name}"
-        for name in (
-            "coherence_pkg.sv",
-            "coherence_types.svh",
-            "coherence_array.sv",
-            "coherence_request_endpoint.sv",
-            "coherence_put_endpoint.sv",
-            "coherence_l1d.sv",
-            "coherence_read_owners.sv",
-            "coherence_miss_credit.sv",
-            "coherence_read_flags.sv",
-            "coherence_grant_select.sv",
-            "coherence_read_select.sv",
-            "coherence_read_payload.sv",
-            "cache_perf_pkg.sv",
-            "coherence_store_buffer.sv",
-        )
-    ]
+    files = (
+        [
+            "../hw/rtl/lib/cache/coherence_read_stream.sv",
+            "../hw/rtl/lib/ram/sdp_block_ram.sv",
+            "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
+            "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
+        ]
+        + [
+            f"../hw/rtl/lib/cache/{name}"
+            for name in (
+                "coherence_pkg.sv",
+                "coherence_types.svh",
+                "coherence_array.sv",
+                "coherence_request_endpoint.sv",
+                "coherence_put_endpoint.sv",
+                "coherence_l1d.sv",
+                "coherence_read_owners.sv",
+                "coherence_miss_credit.sv",
+                "coherence_read_flags.sv",
+                "coherence_grant_select.sv",
+                "coherence_read_select.sv",
+                "coherence_read_payload.sv",
+                "cache_perf_pkg.sv",
+                "coherence_store_buffer.sv",
+            )
+        ]
+        + ["free_undefined.ys"]
+    )
     control_properties = [
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",
@@ -10410,7 +11333,11 @@ def test_zero_safety_models_reject_cover_constraints() -> None:
                 f"chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2{endpoints} coherence_l1d",
             ]
             + (["chparam -set STREAM_PREFETCH 1 coherence_l1d"] if turn else [])
-            + ["prep -flatten -top coherence_l1d"]
+            + [
+                "hierarchy -top coherence_l1d",
+                *(" ".join(c) for c in UNDEFINED_OPENING),
+                "prep -flatten -top coherence_l1d",
+            ]
             + properties
             + [
                 "memory_map",
@@ -10592,6 +11519,8 @@ def zero_stream_checks(config: dict[str, list[str]]) -> set[tuple[str | int, ...
         "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 "
         f"-set MISSES {ZERO_STREAM_ENDPOINTS} coherence_l1d",
         "chparam -set STREAM_PREFETCH 1 coherence_l1d",
+        "hierarchy -top coherence_l1d",
+        *(" ".join(c) for c in UNDEFINED_OPENING),
         "prep -flatten -top coherence_l1d",
         "memory_map",
         "opt",
@@ -10600,30 +11529,34 @@ def zero_stream_checks(config: dict[str, list[str]]) -> set[tuple[str | int, ...
         "setundef -anyseq",
         "opt_clean",
     ]
-    files = [
-        "../hw/rtl/lib/cache/coherence_read_stream.sv",
-        "../hw/rtl/lib/ram/sdp_block_ram.sv",
-        "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
-        "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
-    ] + [
-        f"../hw/rtl/lib/cache/{name}"
-        for name in (
-            "coherence_pkg.sv",
-            "coherence_types.svh",
-            "coherence_array.sv",
-            "coherence_request_endpoint.sv",
-            "coherence_put_endpoint.sv",
-            "coherence_l1d.sv",
-            "coherence_read_owners.sv",
-            "coherence_miss_credit.sv",
-            "coherence_read_flags.sv",
-            "coherence_grant_select.sv",
-            "coherence_read_select.sv",
-            "coherence_read_payload.sv",
-            "cache_perf_pkg.sv",
-            "coherence_store_buffer.sv",
-        )
-    ]
+    files = (
+        [
+            "../hw/rtl/lib/cache/coherence_read_stream.sv",
+            "../hw/rtl/lib/ram/sdp_block_ram.sv",
+            "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
+            "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
+        ]
+        + [
+            f"../hw/rtl/lib/cache/{name}"
+            for name in (
+                "coherence_pkg.sv",
+                "coherence_types.svh",
+                "coherence_array.sv",
+                "coherence_request_endpoint.sv",
+                "coherence_put_endpoint.sv",
+                "coherence_l1d.sv",
+                "coherence_read_owners.sv",
+                "coherence_miss_credit.sv",
+                "coherence_read_flags.sv",
+                "coherence_grant_select.sv",
+                "coherence_read_select.sv",
+                "coherence_read_payload.sv",
+                "cache_perf_pkg.sv",
+                "coherence_store_buffer.sv",
+            )
+        ]
+        + ["free_undefined.ys"]
+    )
     options = dict(line.split(maxsplit=1) for line in config.get("[options]", []))
     if options.get("mode") != "bmc" or int(options.get("depth", "0")) < 31:
         return set()
@@ -10739,7 +11672,9 @@ def test_zero_stream_properties_checked_with_hints_free() -> None:
     def narrowed(task: str, names: list[str]) -> dict[str, dict[str, list[str]]]:
         changed = copied()
         script = changed[task]["[script]"]
-        start = next(i for i, line in enumerate(script) if line.startswith("select "))
+        start = next(
+            i for i, line in enumerate(script) if line.startswith("select -assert-")
+        )
         script[start : start + 4] = zero_stream_selection(names)
         return changed
 
@@ -10784,30 +11719,34 @@ def test_full_line_safety_models_pinned() -> None:
         "coherence_miss_credit.sv coherence_read_flags.sv "
         "coherence_grant_select.sv coherence_read_select.sv",
     ]
-    files = [
-        "../hw/rtl/lib/cache/coherence_read_stream.sv",
-        "../hw/rtl/lib/ram/sdp_block_ram.sv",
-        "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
-        "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
-    ] + [
-        f"../hw/rtl/lib/cache/{name}"
-        for name in (
-            "coherence_pkg.sv",
-            "coherence_types.svh",
-            "coherence_array.sv",
-            "coherence_request_endpoint.sv",
-            "coherence_put_endpoint.sv",
-            "coherence_l1d.sv",
-            "coherence_read_owners.sv",
-            "coherence_miss_credit.sv",
-            "coherence_read_flags.sv",
-            "coherence_grant_select.sv",
-            "coherence_read_select.sv",
-            "coherence_read_payload.sv",
-            "cache_perf_pkg.sv",
-            "coherence_store_buffer.sv",
-        )
-    ]
+    files = (
+        [
+            "../hw/rtl/lib/cache/coherence_read_stream.sv",
+            "../hw/rtl/lib/ram/sdp_block_ram.sv",
+            "../hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
+            "../hw/rtl/lib/ram/sdp_ram_byte_en.sv",
+        ]
+        + [
+            f"../hw/rtl/lib/cache/{name}"
+            for name in (
+                "coherence_pkg.sv",
+                "coherence_types.svh",
+                "coherence_array.sv",
+                "coherence_request_endpoint.sv",
+                "coherence_put_endpoint.sv",
+                "coherence_l1d.sv",
+                "coherence_read_owners.sv",
+                "coherence_miss_credit.sv",
+                "coherence_read_flags.sv",
+                "coherence_grant_select.sv",
+                "coherence_read_select.sv",
+                "coherence_read_payload.sv",
+                "cache_perf_pkg.sv",
+                "coherence_store_buffer.sv",
+            )
+        ]
+        + ["free_undefined.ys"]
+    )
     data = " ".join(f"c:p_store_data_{index}" for index in range(1, 6))
     payload_properties = [
         f"select -assert-count 5 {data}",
@@ -10850,7 +11789,11 @@ def test_full_line_safety_models_pinned() -> None:
                 f"chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2{endpoints} coherence_l1d",
             ]
             + withdraw
-            + ["prep -flatten -top coherence_l1d"]
+            + [
+                "hierarchy -top coherence_l1d",
+                *(" ".join(c) for c in UNDEFINED_OPENING),
+                "prep -flatten -top coherence_l1d",
+            ]
             + (payload_properties if payload else control_properties)
             + (["connect -set i_write_zero 1'b0"] if full else [])
             + [
@@ -11086,6 +12029,219 @@ def test_zero_cover_keeps_reset_and_legal_input_profile() -> None:
         assert all(
             line not in l1d_task_config(task_name)["[script]"] for line in profile
         )
+
+
+def test_store_boundary_four_and_intervening_partitions_complete() -> None:
+    """Require disjoint, exhaustive assertion partitions for bmc_four and bmc_intervening."""
+    root = Path(__file__).resolve().parents[1]
+    sby_path = root / FORMAL_DIR / "coherence_store_boundary.sby"
+    configs = {
+        name: cfg.sections(sby_path.parent)
+        for name, cfg in sby_config.resolved(sby_path).items()
+    }
+
+    def partition_lines(script: list[str]) -> list[str]:
+        return [
+            line
+            for line in script
+            if line.startswith(("select -assert-", "chformal -assert -remove "))
+        ]
+
+    def model_without_specialization(
+        script: list[str], param: str
+    ) -> tuple[list[str], str | None]:
+        spec: str | None = None
+        base: list[str] = []
+        prefix = f"chparam -set {param} "
+        for line in script:
+            if line.startswith(prefix):
+                assert spec is None, line
+                spec = line
+            elif not line.startswith(("select -assert-", "chformal -assert -remove ")):
+                base.append(line)
+        return base, spec
+
+    def validate_four(tasks: dict[str, dict[str, list[str]]]) -> None:
+        ctrl = tasks["bmc_four_control"]
+        ctrl_model, ctrl_spec = model_without_specialization(
+            ctrl["[script]"], "WATCHED_STORE"
+        )
+        assert ctrl_spec is None
+        assert "free_undefined.ys" in ctrl["[files]"]
+        assert "setundef -anyseq t:$mux t:$pmux t:$bwmux w:*" in ctrl_model
+        assert not any(
+            line.startswith(("cutpoint ", "connect ", "chformal -assert2assume"))
+            for line in ctrl["[script]"]
+        )
+        assert partition_lines(ctrl["[script]"]) == [
+            "select -assert-count 23 t:$check r:FLAVOR=assert %i",
+            "chformal -assert -remove c:p_load_value",
+            "select -assert-count 22 t:$check r:FLAVOR=assert %i",
+        ]
+        # Disjoint union: control keeps 23 - 1 = 22 assertions across all four
+        # watched_store values; value_0..3 each keep the complementary 1
+        # assertion (p_load_value) across WATCHED_STORE = 0, 1, 2, 3.
+        seen_watched: set[int] = set()
+        for idx in range(4):
+            name = f"bmc_four_value_{idx}"
+            task = tasks[name]
+            assert task["[files]"] == ctrl["[files]"]
+            assert task["[engines]"] == ["abc bmc3 -c"]
+            model, spec = model_without_specialization(
+                task["[script]"], "WATCHED_STORE"
+            )
+            assert model == ctrl_model
+            assert (
+                spec
+                == f"chparam -set WATCHED_STORE {idx} coherence_store_boundary_formal"
+            )
+            seen_watched.add(idx)
+            assert partition_lines(task["[script]"]) == [
+                "select -assert-count 23 t:$check r:FLAVOR=assert %i",
+                "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_load_value %d",
+                "select -assert-count 1 t:$check r:FLAVOR=assert %i",
+                "select -assert-count 1 c:p_load_value",
+            ]
+        assert seen_watched == {0, 1, 2, 3}
+        for name in (
+            "bmc_four_control",
+            *(f"bmc_four_value_{idx}" for idx in range(4)),
+        ):
+            opts = dict(line.split(maxsplit=1) for line in tasks[name]["[options]"])
+            assert opts["mode"] == "bmc"
+            assert opts["depth"] == "114"
+            assert opts["aigsmt"] == "boolector"
+            assert int(opts["timeout"]) <= 15840
+            assert formal_task_timeout_s("coherence_store_boundary", name) <= 15840
+
+    def validate_intervening(tasks: dict[str, dict[str, list[str]]]) -> None:
+        fatal = tasks["bmc_intervening_fatal"]
+        fatal_model, fatal_spec = model_without_specialization(
+            fatal["[script]"], "SECTOR_CASE"
+        )
+        assert fatal_spec is None
+        assert "free_undefined.ys" in fatal["[files]"]
+        assert "setundef -anyseq t:$mux t:$pmux t:$bwmux w:*" in fatal_model
+        assert fatal["[engines]"] == ["abc bmc3 -c -S 139"]
+        assert ("coherence_store_boundary", "bmc_intervening_fatal") in (
+            FATAL_START_FRAME_TASKS
+        )
+        assert partition_lines(fatal["[script]"]) == [
+            "select -assert-count 19 t:$check r:FLAVOR=assert %i",
+            "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_fatal %d",
+            "select -assert-count 1 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 1 c:p_no_fatal",
+            "select -assert-none t:$assume",
+            "select -assert-none t:$check r:FLAVOR=assume %i",
+        ]
+        sticky = tasks["prove_intervening_fatal_sticky"]
+        sticky_opts = dict(line.split(maxsplit=1) for line in sticky["[options]"])
+        assert sticky_opts == {"mode": "prove", "depth": "2", "timeout": "120"}
+        assert sticky["[engines]"] == ["smtbmc boolector"]
+        assert partition_lines(sticky["[script]"]) == [
+            "select -assert-count 20 t:$check r:FLAVOR=assert %i",
+            "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_fatal_sticky %d",
+            "select -assert-count 1 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 1 c:p_fatal_sticky",
+            "select -assert-none t:$assume",
+            "select -assert-none t:$check r:FLAVOR=assume %i",
+        ]
+        # Disjoint union for both SECTOR_CASE in {0, 1}: 17 flow + 1 value
+        # (p_load_value) + 1 fatal (p_no_fatal, frame 139 + sticky induction)
+        # equals all 19 assertions of bmc_intervening with zero assumptions.
+        for sector, value in (("same", 0), ("other", 1)):
+            flow = tasks[f"bmc_intervening_{sector}_flow"]
+            val = tasks[f"bmc_intervening_{sector}_value"]
+            for name, task, expected_part in (
+                (
+                    f"bmc_intervening_{sector}_flow",
+                    flow,
+                    [
+                        "select -assert-count 19 t:$check r:FLAVOR=assert %i",
+                        "chformal -assert -remove c:p_load_value c:p_no_fatal",
+                        "select -assert-count 17 t:$check r:FLAVOR=assert %i",
+                    ],
+                ),
+                (
+                    f"bmc_intervening_{sector}_value",
+                    val,
+                    [
+                        "select -assert-count 19 t:$check r:FLAVOR=assert %i",
+                        "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_load_value %d",
+                        "select -assert-count 1 t:$check r:FLAVOR=assert %i",
+                        "select -assert-count 1 c:p_load_value",
+                    ],
+                ),
+            ):
+                assert task["[files]"] == fatal["[files]"]
+                assert task["[engines]"] == ["abc bmc3 -c"]
+                model, spec = model_without_specialization(
+                    task["[script]"], "SECTOR_CASE"
+                )
+                assert model == fatal_model
+                assert (
+                    spec
+                    == f"chparam -set SECTOR_CASE {value} coherence_store_boundary_formal"
+                )
+                assert partition_lines(task["[script]"]) == expected_part
+                assert not any(
+                    line.startswith(
+                        ("cutpoint ", "connect ", "chformal -assert2assume")
+                    )
+                    for line in task["[script]"]
+                )
+                opts = dict(line.split(maxsplit=1) for line in task["[options]"])
+                assert opts["mode"] == "bmc"
+                assert opts["depth"] == "140"
+                assert opts["aigsmt"] == "boolector"
+                assert int(opts["timeout"]) <= 15840
+                assert formal_task_timeout_s("coherence_store_boundary", name) <= 15840
+        fatal_opts = dict(line.split(maxsplit=1) for line in fatal["[options]"])
+        assert fatal_opts["mode"] == "bmc"
+        assert fatal_opts["depth"] == "140"
+        assert int(fatal_opts["timeout"]) <= 15840
+
+    validate_four(configs)
+    validate_intervening(configs)
+
+    # Negative self-checks: dropping an assertion, lowering depth, or adding an
+    # assumption/cutpoint must fail validation.
+    for validator, target_task, section, line in (
+        (
+            validate_four,
+            "bmc_four_control",
+            "[script]",
+            "chformal -assert -remove c:p_no_fatal",
+        ),
+        (validate_four, "bmc_four_value_0", "[options]", "depth 113"),
+        (
+            validate_four,
+            "bmc_four_value_1",
+            "[script]",
+            "chformal -assert2assume c:p_no_fatal",
+        ),
+        (validate_four, "bmc_four_value_0", "[options]", "timeout 15841"),
+        (
+            validate_intervening,
+            "bmc_intervening_same_flow",
+            "[script]",
+            "cutpoint w:l1_fatal",
+        ),
+        (validate_intervening, "bmc_intervening_other_value", "[options]", "depth 139"),
+        (
+            validate_intervening,
+            "bmc_intervening_fatal",
+            "[script]",
+            "chformal -assert -remove c:p_no_fatal",
+        ),
+    ):
+        altered = {
+            name: {sec: list(vals) for sec, vals in data.items()}
+            for name, data in configs.items()
+        }
+        altered[target_task][section].append(line)
+        with pytest.raises(AssertionError):
+            validator(altered)
 
 
 def test_local_data_partition_models_match() -> None:
@@ -11533,6 +12689,8 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d",
         "chparam -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d",
         "chparam -set ZERO_LINE 0 -set FULL_LINE 0 coherence_l1d",
+        "hierarchy -top coherence_l1d",
+        *(" ".join(c) for c in UNDEFINED_OPENING),
         "prep -flatten -top coherence_l1d",
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",
@@ -11586,6 +12744,7 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "../hw/rtl/lib/cache/coherence_read_payload.sv",
         "../hw/rtl/lib/cache/cache_perf_pkg.sv",
         "../hw/rtl/lib/cache/coherence_store_buffer.sv",
+        "free_undefined.ys",
     ]
 
     def validate(config: dict[str, list[str]]) -> None:
@@ -12192,12 +13351,24 @@ def check_twin_interfaces(path: Path, comparison: TwinComparison) -> None:
     try:
         modules = json.loads(path.read_bytes())["modules"]
         interfaces = []
+        inits_by_form: dict[str, dict[str, object]] = {}
         for form in ("gold", "gate"):
             module = modules[form]
             ports = module["ports"]
-            for name, net in module["netnames"].items():
-                if "init" in net["attributes"]:
+            inits = {
+                name: net["attributes"]["init"]
+                for name, net in module["netnames"].items()
+                if "init" in net["attributes"]
+            }
+            if comparison.initialized_nets == 0:
+                for name in inits:
                     raise ValueError(f"{form}: {name} has a compiled initial value")
+            elif len(inits) != comparison.initialized_nets:
+                raise ValueError(
+                    f"{form}: expected {comparison.initialized_nets} compiled initial values, "
+                    f"found {len(inits)}"
+                )
+            inits_by_form[form] = inits
             dffs = {
                 name: cell
                 for name, cell in module["cells"].items()
@@ -12241,6 +13412,8 @@ def check_twin_interfaces(path: Path, comparison: TwinComparison) -> None:
             )
     except (KeyError, TypeError, AttributeError) as error:
         raise ValueError(f"invalid compiled twin interfaces in {path.name}") from error
+    if inits_by_form["gold"] != inits_by_form["gate"]:
+        raise ValueError("compiled twin initial values differ")
     for gold, gate in zip_longest(*interfaces):
         if gold != gate:
             raise ValueError(f"compiled twin ports differ: gold {gold}, gate {gate}")
@@ -12367,6 +13540,48 @@ def test_twin_compiled_state(
     else:
         with pytest.raises(ValueError, match=re.escape(reason)):
             check_twin_interfaces(path, spec)
+
+
+def test_twin_compiled_initialized_nets_must_match(tmp_path: Path) -> None:
+    """Declared RAM initializers must agree in count, net name, and bit value."""
+    path = tmp_path / "twin_ports.json"
+    spec = replace(
+        TWIN_COMPARISONS["store_queue_twin", "sq_twin"],
+        registers=1,
+        clock="clk",
+        initialized_nets=1,
+    )
+
+    def write(gold_inits: dict[str, str], gate_inits: dict[str, str]) -> None:
+        modules = {
+            form: {
+                "ports": {"clk": {"direction": "input", "bits": [bit]}},
+                "netnames": {
+                    name: {"attributes": {"init": val}} for name, val in inits.items()
+                },
+                "cells": {
+                    "q": {
+                        "type": "$dff",
+                        "parameters": {"CLK_POLARITY": "1"},
+                        "connections": {"CLK": [bit]},
+                    }
+                },
+            }
+            for form, bit, inits in (
+                ("gold", 2, gold_inits),
+                ("gate", 7, gate_inits),
+            )
+        }
+        path.write_text(json.dumps({"modules": modules}))
+
+    write({"ram[0]": "0000"}, {"ram[0]": "0000"})
+    check_twin_interfaces(path, spec)
+    write({"ram[0]": "0000"}, {"ram[0]": "0001"})
+    with pytest.raises(ValueError, match="compiled twin initial values differ"):
+        check_twin_interfaces(path, spec)
+    write({"ram[0]": "0000"}, {})
+    with pytest.raises(ValueError, match="expected 1 compiled initial values, found 0"):
+        check_twin_interfaces(path, spec)
 
 
 def _verify_staged_engine_pass(workdir: Path, cfg: sby_config.TaskConfig) -> str | None:
@@ -13292,7 +14507,7 @@ def test_twin_register_edge_selected_in_common_code(tmp_path: Path) -> None:
         ("equiv_status -assert\n", "equiv_status -assert @blk\n", "unselected proof"),
         (
             "hierarchy -check -top pd_target_candidate",
-            "proc\nhierarchy -check -top pd_target_candidate",
+            "opt_clean\nhierarchy -check -top pd_target_candidate",
             "requires hierarchy",
         ),
     ],
@@ -13344,7 +14559,10 @@ def test_unregistered_twin_declaration_through_registry_and_runner(
 
 
 @pytest.mark.parametrize("capture_output", (False, True))
-@pytest.mark.parametrize("task", ("bmc_amo_same_fatal", "bmc_amo_other_fatal"))
+@pytest.mark.parametrize(
+    "task",
+    ("bmc_amo_same_fatal", "bmc_amo_other_fatal", "bmc_intervening_fatal"),
+)
 @pytest.mark.parametrize(
     "case",
     (
@@ -13418,13 +14636,25 @@ def test_fatal_frame_validation(
         ("coherence_l1d", "coh_l1d_stream_outlier_prove", 2400),
         ("coherence_l1d", "coh_l1d_stream_hold_bmc", 3600),
         ("coherence_l1d", "coh_l1d_stream_free_nostore_hold_bmc", 3600),
-        ("coherence_l1d", "coh_l1d_bmc", 10800),
-        ("coherence_store_boundary", "bmc_four", 18000),
-        ("coherence_store_boundary", "bmc_intervening", 19800),
-        ("coherence_store_boundary", "bmc_amo_same", 3300),
-        ("coherence_store_boundary", "bmc_amo_other", 4800),
-        ("coherence_store_boundary", "bmc_probe_kept_same", 3600),
-        ("coherence_store_boundary", "bmc_probe_kept_other", 6000),
+        ("coherence_l1d", "coh_l1d_bmc", 14400),
+        ("coherence_store_boundary", "bmc_four_control", 3600),
+        ("coherence_store_boundary", "bmc_four_value_0", 15840),
+        ("coherence_store_boundary", "bmc_four_value_1", 10800),
+        ("coherence_store_boundary", "bmc_four_value_2", 8400),
+        ("coherence_store_boundary", "bmc_four_value_3", 3600),
+        ("coherence_store_boundary", "bmc_intervening_same_flow", 8400),
+        ("coherence_store_boundary", "bmc_intervening_other_flow", 13200),
+        ("coherence_store_boundary", "bmc_intervening_same_value", 10800),
+        ("coherence_store_boundary", "bmc_intervening_other_value", 15840),
+        ("coherence_store_boundary", "bmc_intervening_fatal", 1200),
+        ("coherence_store_boundary", "bmc_amo_same", 6600),
+        ("coherence_store_boundary", "bmc_amo_other", 9600),
+        ("coherence_store_boundary", "bmc_amo_same_owner", 3000),
+        ("coherence_store_boundary", "bmc_amo_same_fatal", 3000),
+        ("coherence_store_boundary", "bmc_amo_other_fatal", 4800),
+        ("coherence_store_boundary", "bmc_load_same_probe_launch", 3600),
+        ("coherence_store_boundary", "bmc_probe_kept_same", 5400),
+        ("coherence_store_boundary", "bmc_probe_kept_other", 8400),
         ("coherence_store_boundary", "bmc_sc", 6000),
         ("coherence_store_home", "bmc_siblings", 900),
         ("coherence_store_home", "bmc_siblings_second", 900),
@@ -13443,10 +14673,10 @@ def test_fatal_frame_validation(
         ("coherence_store_home", "cover_pressure", 900),
         ("coherence_store_home", "link_cover_pressure", 900),
         ("coherence_home_twin", "home_twin_small", 600),
-        ("coherence_home_twin", "home_twin_four", 600),
+        ("coherence_home_twin", "home_twin_four", 2400),
         ("coherence_home_twin", "home_twin_addr40", 600),
         ("coherence_l1d", "coh_l1d_stream_free_bmc", 10800),
-        ("coherence_l1d", "coh_l1d_multi_bmc", 18000),
+        ("coherence_l1d", "coh_l1d_multi_bmc", 20400),
         ("coherence_l1d", "coh_l1d_data_bmc", 3900),
         ("coherence_l1d", "coh_l1d_data1_bmc", 3900),
         ("coherence_l1d", "coh_l1d_data2_bmc", 3900),
@@ -13483,7 +14713,19 @@ def test_formal_runner_task_timeout(
     def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(kwargs)
         assert command[-1] == task
-        return subprocess.CompletedProcess(command, 0, "", "")
+        stdout = ""
+        if (target_name, task) in FATAL_START_FRAME_TASKS:
+            stdout = "\n".join(
+                (
+                    "engine_0: Params: FramesMax = 140. Start = 139. ConfLimit = 0. TimeOut = 0.",
+                    "engine_0: 139 + : Var = 100. UNSAT = 1.0 sec",
+                    "engine_0: No output asserted in 0 frames.",
+                    "engine_0: finished (returncode=0)",
+                    "engine_0: Status returned by engine: PASS",
+                    "DONE (PASS, rc=0)",
+                )
+            )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
 
     monkeypatch.setattr(subprocess, "run", run)
     monkeypatch.setattr(

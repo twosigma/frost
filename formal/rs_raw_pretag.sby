@@ -35,9 +35,10 @@ setundef -undriven -anyseq
 opt
 prep -top rs_raw_pretag_equiv
 select -assert-none t:$assume
-bmc: select -assert-count 1 t:$check
-bmc_export: select -assert-count 11 t:$check
-bmc_ready_vector: select -assert-count 12 t:$check
+select -assert-none t:$check r:FLAVOR=assume %i
+bmc: select -assert-count 1 t:$check r:FLAVOR=assert %i
+bmc_export: select -assert-count 11 t:$check r:FLAVOR=assert %i
+bmc_ready_vector: select -assert-count 12 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

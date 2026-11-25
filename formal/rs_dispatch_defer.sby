@@ -22,7 +22,7 @@ script free_undefined.ys
 prep -top reservation_station
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
-select -assert-count 7 t:$check
+select -assert-count 7 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

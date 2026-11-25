@@ -397,14 +397,6 @@ SCRIPT_FORMS: tuple[CommandForm, ...] = (
         log_kind="pass",
     ),
     CommandForm(
-        "proc",
-        "proc",
-        flags=frozenset({"-noopt"}),
-        safe_reason="lowers processes into cells and registers with the same initial values",
-        transition="act",
-        log_kind="pass",
-    ),
-    CommandForm(
         "proc_clean",
         "proc_clean",
         safe_reason="removes empty switches; it folds only defined switch signals",

@@ -21,7 +21,7 @@ script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top pc_controller
-select -assert-count 3 t:$check
+select -assert-count 3 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
 

@@ -26,6 +26,7 @@ module coherence_store_boundary_formal #(
     parameter bit COVER_AMO_HOME = 1'b0,
     parameter bit DELAY_SECOND_STORE = 1'b0,
     parameter bit FOUR_STORES = 1'b0,
+    parameter int unsigned WATCHED_STORE = 4,
     parameter bit PROBE_LAUNCH = 1'b0,
     parameter bit PROBE_READ_FIRST = 1'b0,
     parameter bit COVER_PROBE_KEPT = 1'b0,
@@ -231,7 +232,13 @@ module coherence_store_boundary_formal #(
   wire [RsDepth-1:0] pre_issue_ready = RsDepth'(pre_issue);
   wire [RsDepth*ReorderBufferTagWidth-1:0] pre_issue_entry_tags =
       (RsDepth*ReorderBufferTagWidth)'(pre_issue_tag);
-  (* anyconst *) logic [1:0] watched_store;
+  wire [1:0] watched_store;
+  if (WATCHED_STORE == 4) begin : gen_watched_store_choice
+    (* anyconst *) logic [1:0] choice;
+    assign watched_store = choice;
+  end else begin : gen_watched_store_constant
+    assign watched_store = 2'(WATCHED_STORE);
+  end
   wire [63:0] address0 = 64'h80000000;
   wire [63:0] address1 = address0 + (different_sector ? 64'd32 :
       (PROBE_READ_FIRST ? 64'd8 : 64'd0));

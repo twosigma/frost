@@ -18,7 +18,8 @@ hierarchy -top misprediction_flush_controller
 script free_undefined.ys
 prep -top misprediction_flush_controller
 select -assert-none t:$assume
-select -assert-count 4 t:$check
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 4 t:$check r:FLAVOR=assert %i
 select -assert-count 1 w:o_fetch_flush %a %ci1 t:$dff %i
 
 [files]

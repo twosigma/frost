@@ -1631,15 +1631,16 @@ jobs:
           - shard: Coherence links pressure
             pytest_filter: coherence_store_home_link_bmc_pressure
             timeout_minutes: 180
-          # The single-endpoint control BMC has a three-hour allowance for
-          # its 40 frames; image setup has another twenty minutes.
+          # The single-endpoint control BMC has a four-hour allowance for
+          # its 40 frames with free_undefined.ys; image setup has twenty minutes.
           - shard: Coherence L1D control
             pytest_filter: coh_l1d_bmc
-            timeout_minutes: 200
-          # The three-endpoint control BMC has a five-hour allowance.
+            timeout_minutes: 260
+          # The three-endpoint control BMC has a 340-minute allowance plus
+          # twenty minutes for image setup inside the 360-minute job cap.
           - shard: Coherence L1D multi-endpoint
             pytest_filter: coh_l1d_multi_bmc
-            timeout_minutes: 349
+            timeout_minutes: 360
           # Word variants share their representative's measured allowance:
           # 65 minutes each for one endpoint, 70 for three endpoints. The
           # sums use 79% and 85% of their respective job limits.
@@ -1754,27 +1755,63 @@ jobs:
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))
             timeout_minutes: 330
-          # The four-record boundary BMC runs 114 frames with the hit path;
-          # the intervening-load BMC keeps 140. Each has a job of its own.
-          - shard: Store boundary four records
-            pytest_filter: coherence_store_boundary_bmc_four
-            timeout_minutes: 360
-          - shard: Store boundary intervening load
-            pytest_filter: coherence_store_boundary_bmc_intervening
-            timeout_minutes: 350
-          # The AMO flow BMCs have 55- and 80-minute allowances. The owner
-          # and fatal checks and the AMO covers have a job of their own.
-          - shard: Store boundary AMO flow
+          # The four-record boundary checks run to depth 114 with the hit path,
+          # split into control (22 assertions) and the four watched-store load
+          # value checks (1 assertion each) so every partition finishes under
+          # 15,840 s with headroom.
+          - shard: Store boundary four control
             pytest_filter: >-
-              coherence_store_boundary and (bmc_amo_same or bmc_amo_other) and
-              not (fatal or owner)
+              coherence_store_boundary_bmc_four_control or
+              coherence_store_boundary_bmc_four_value_3
+            timeout_minutes: 140
+          - shard: Store boundary four value 0
+            pytest_filter: coherence_store_boundary_bmc_four_value_0
+            timeout_minutes: 284
+          - shard: Store boundary four value 1
+            pytest_filter: coherence_store_boundary_bmc_four_value_1
+            timeout_minutes: 200
+          - shard: Store boundary four value 2
+            pytest_filter: coherence_store_boundary_bmc_four_value_2
+            timeout_minutes: 160
+          # The intervening-load boundary checks keep depth 140, split into
+          # same/other flow (17 assertions), same/other value (1 assertion),
+          # and the frame-139 fatal check plus sticky induction across both
+          # sector cases so every partition finishes under 15,840 s.
+          - shard: Store boundary intervening same flow
+            pytest_filter: >-
+              coherence_store_boundary_bmc_intervening_same_flow or
+              coherence_store_boundary_bmc_intervening_fatal or
+              coherence_store_boundary_prove_intervening_fatal_sticky
+            timeout_minutes: 182
+          - shard: Store boundary intervening other flow
+            pytest_filter: coherence_store_boundary_bmc_intervening_other_flow
+            timeout_minutes: 240
+          - shard: Store boundary intervening same value
+            pytest_filter: coherence_store_boundary_bmc_intervening_same_value
+            timeout_minutes: 200
+          - shard: Store boundary intervening other value
+            pytest_filter: coherence_store_boundary_bmc_intervening_other_value
+            timeout_minutes: 284
+          # The AMO flow BMCs have 110- and 160-minute allowances with
+          # free_undefined.ys, each in its own job with 20 minutes of setup.
+          - shard: Store boundary AMO same
+            pytest_filter: >-
+              coherence_store_boundary and bmc_amo_same and not (fatal or owner)
+            timeout_minutes: 130
+          - shard: Store boundary AMO other
+            pytest_filter: >-
+              coherence_store_boundary and bmc_amo_other and not fatal
             timeout_minutes: 180
-          # The AMO owner and fatal checks, their sticky proofs and the AMO
-          # covers. With full-line stores they take up to about 2.3 times as
-          # long as before, so they are sized from that.
+          # The AMO fatal checks (50 and 80 minutes) and sticky inductions
+          # (2 minutes each) run in their own 150-minute job.
+          - shard: Store boundary AMO fatal
+            pytest_filter: coherence_store_boundary and amo and fatal
+            timeout_minutes: 150
+          # The AMO owner check (50 minutes) and the four AMO covers (40 minutes
+          # each) total 210 minutes within a 240-minute job.
           - shard: Store boundary AMO checks
             pytest_filter: >-
-              coherence_store_boundary and amo and (fatal or owner or cover)
+              coherence_store_boundary and amo and (owner or cover)
             timeout_minutes: 240
           # SC (a 100-minute allowance) and the load, old-order, four-record
           # cover and edge tasks. The job's limit leaves room for the whole
@@ -1784,18 +1821,20 @@ jobs:
             pytest_filter: >-
               coherence_store_boundary and not
               (coherence_store_boundary_bmc_four or
-              coherence_store_boundary_bmc_intervening or amo or probe)
+              coherence_store_boundary_bmc_intervening or
+              coherence_store_boundary_prove_intervening_fatal_sticky or amo or probe)
             timeout_minutes: 330
           # Composed probe-launch and C2b store_ack boundary checks: other-sector
-          # BMC (100 min) and cover (40 min) in one shard; same-sector BMCs
-          # (60 + 40 min), cover (40 min) and mutation controls in a second shard.
+          # BMC (140 min) and cover (40 min) in one 200-minute shard; same-sector
+          # BMCs (90 + 60 min), cover (40 min) and mutation controls in a 220-minute
+          # shard.
           - shard: Store boundary probe launch other
             pytest_filter: coherence_store_boundary and probe and other
-            timeout_minutes: 160
+            timeout_minutes: 200
           - shard: Store boundary probe launch same
             pytest_filter: >-
               (coherence_store_boundary and probe and same) or test_probe_launch_mutations
-            timeout_minutes: 180
+            timeout_minutes: 220
           # The eight-endpoint L1D stream BMC with arbitrary inputs and
           # stores runs to depth 32, and the four-way hit-port array BMC,
           # about 50 minutes, shares its job.

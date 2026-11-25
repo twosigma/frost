@@ -17,18 +17,22 @@ smtbmc boolector
 [script]
 ~tree_equiv: read -formal -sv riscv_pkg.sv sq_forwarding_unit.sv sq_forwarding_unit_formal.sv
 ~tree_equiv: chparam -set DEPTH 8 sq_forwarding_unit_formal
+~tree_equiv: hierarchy -top sq_forwarding_unit_formal
+~tree_equiv: script free_undefined.ys
 ~tree_equiv: prep -top sq_forwarding_unit_formal
+~tree_equiv: select -assert-count 9 t:$check r:FLAVOR=assert %i
+~tree_equiv: select -assert-count 11 t:$check r:FLAVOR=cover %i
 
 tree_equiv: read_slang --top sq_forwarding_unit --single-unit -DSYNTHESIS riscv_pkg.sv sq_forwarding_unit.sv
 tree_equiv: hierarchy -check -top sq_forwarding_unit
-tree_equiv: proc
+tree_equiv: script free_undefined.ys
 tree_equiv: opt_clean
 tree_equiv: rename -top sq_forwarding_unit_shipped
 tree_equiv: design -stash shipped
 tree_equiv: design -reset
 tree_equiv: read -sv -D SYNTHESIS -D FORMAL riscv_pkg.sv sq_forwarding_unit.sv
 tree_equiv: hierarchy -check -top sq_forwarding_unit
-tree_equiv: proc
+tree_equiv: script free_undefined.ys
 tree_equiv: chformal -remove
 tree_equiv: opt_clean -purge
 tree_equiv: rename -top sq_forwarding_unit_formal_sel
@@ -38,7 +42,10 @@ tree_equiv: read -formal -sv riscv_pkg.sv sq_forwarding_unit_tree_equiv.sv
 tree_equiv: delete sq_forwarding_unit_shipped sq_forwarding_unit_formal_sel
 tree_equiv: design -copy-from shipped -as sq_forwarding_unit_shipped sq_forwarding_unit_shipped
 tree_equiv: design -copy-from formal_sel -as sq_forwarding_unit_formal_sel sq_forwarding_unit_formal_sel
+tree_equiv: hierarchy -top sq_forwarding_unit_tree_equiv
+tree_equiv: script free_undefined.ys
 tree_equiv: prep -top sq_forwarding_unit_tree_equiv -flatten
+tree_equiv: select -assert-count 4 t:$check r:FLAVOR=assert %i
 tree_equiv: opt -fast
 
 [files]
@@ -46,3 +53,4 @@ tree_equiv: opt -fast
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv
 sq_forwarding_unit_formal.sv
 sq_forwarding_unit_tree_equiv.sv
+free_undefined.ys

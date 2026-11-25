@@ -15,39 +15,41 @@ smtbmc boolector
 # (ISSUE_CDB_TAG_BANKS at its default of 1); gate is INT_RS with four copies,
 # each bank input driven by its lane's tag as tomasulo_wrapper's registers
 # hold them. int_equiv_prims builds both with FROST_XILINX_PRIMS and Yosys's
-# Xilinx primitive models. Both are flattened with memories as registers,
-# enable and reset flops unmapped and undefined constants zeroed. Every flop
-# is then cut: its readers take a free input in its place (the state) and the
-# flop drives an output (the next state). With every named net kept,
-# equiv_make pairs these ports and the other nets by name, equiv_struct adds a
-# point for each pair of matching cells, and equiv_simple must prove every
-# point: for any register state and input, every output and every next state
-# are the same.
+# Xilinx primitive models. Both forms open undefined constants with
+# free_undefined.ys, keep matching RAM initial values, cut every register,
+# verify matching compiled ports, and prove every comparison point.
 int_equiv_prims: read_verilog -formal +/xilinx/cells_sim.v
 int_equiv: read -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv reservation_station.sv
 int_equiv_prims: read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv reservation_station.sv
 chparam -set PREPARE_ISSUE_CONTROLS 1 -set DEPTH 16 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE2_WINDOW 8 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 -set DUAL_ISSUE 1 -set TAG_INDEXED_BRANCH_PAYLOAD 1 -set FORMAL_STANDALONE_ENV 0 reservation_station
 hierarchy -check -top reservation_station
-proc
+script free_undefined.ys
+select -assert-none t:$initstate t:$anyinit
+select -assert-count 34 a:init
 setattr -mod -unset keep_hierarchy *
 flatten
 # The single-tag station does not read its bank inputs.
 delete reservation_station/w:i_issue_cdb_tag_bank reservation_station/w:i_issue_cdb_2_tag_bank
 memory_map -keepdc
-setundef -zero
-setattr -unset init
 dffunmap
+setundef -undriven -anyseq
 # Function calls in clocked blocks leave flops for their temporaries, which
 # this configuration never reads; their generated names differ between the
 # builds. Hide and remove them.
-rename -hide w:*$func$*
+rename -hide w:*$func$* w:*$fordecl_block$*
 opt_clean
+setattr -set keep 1 w:* w:$* %d
+opt_clean
+check -assert
+select -assert-none t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
+select -assert-count 181 a:init
+select -assert-none i:* o:* %i
+select -assert-count 388 t:$dff
+select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
 # Cut every flop. No cell may read a flop output after the cut.
 expose -dff -cut reservation_station/w:*
 select -assert-none reservation_station/t:$dff %co:+[Q] reservation_station/w:* %i %co1 reservation_station/t:* %i
-# Keep every named net so that registers and signals pair by name.
-setattr -set keep 1 w:* w:$* %d
-opt_clean
+select -assert-count 271 t:$anyseq
 # One entry of each quarter compares against its lane's tag.
 sat -seq 1 -verify -prove entry_cdb_tag[0] i_issue_cdb_tag -prove entry_cdb_tag[5] i_issue_cdb_tag -prove entry_cdb_tag[10] i_issue_cdb_tag -prove entry_cdb_tag[15] i_issue_cdb_tag -prove entry_cdb_2_tag[0] i_issue_cdb_2_tag -prove entry_cdb_2_tag[5] i_issue_cdb_2_tag -prove entry_cdb_2_tag[10] i_issue_cdb_2_tag -prove entry_cdb_2_tag[15] i_issue_cdb_2_tag reservation_station
 rename -top gold
@@ -58,7 +60,9 @@ int_equiv: read -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mw
 int_equiv_prims: read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv coherent_rs_capacity.sv coherent_rs_issue2_selector.sv coherent_rs_payload_store.sv reservation_station.sv
 chparam -set PREPARE_ISSUE_CONTROLS 1 -set DEPTH 16 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE2_WINDOW 8 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set ISSUE_CDB_TAG_BANKS 4 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 -set DUAL_ISSUE 1 -set TAG_INDEXED_BRANCH_PAYLOAD 1 -set FORMAL_STANDALONE_ENV 0 reservation_station
 hierarchy -check -top reservation_station
-proc
+script free_undefined.ys
+select -assert-none t:$initstate t:$anyinit
+select -assert-count 34 a:init
 setattr -mod -unset keep_hierarchy *
 flatten
 # Drive every copy from its lane's tag. -nounset keeps the entries' reads of
@@ -69,36 +73,50 @@ connect -nounset -set i_issue_cdb_tag_bank i_issue_cdb_tag,i_issue_cdb_tag,i_iss
 connect -nounset -set i_issue_cdb_2_tag_bank i_issue_cdb_2_tag,i_issue_cdb_2_tag,i_issue_cdb_2_tag,i_issue_cdb_2_tag
 cd ..
 memory_map -keepdc
-setundef -zero
-setattr -unset init
 dffunmap
-# Function calls in clocked blocks leave flops for their temporaries, which
-# this configuration never reads; their generated names differ between the
-# builds. Hide and remove them.
-rename -hide w:*$func$*
+setundef -undriven -anyseq
+rename -hide w:*$func$* w:*$fordecl_block$*
 opt_clean
-# Cut every flop. No cell may read a flop output after the cut.
-expose -dff -cut reservation_station/w:*
-select -assert-none reservation_station/t:$dff %co:+[Q] reservation_station/w:* %i %co1 reservation_station/t:* %i
-# Keep every named net so that registers and signals pair by name.
 setattr -set keep 1 w:* w:$* %d
 opt_clean
+check -assert
+select -assert-none t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
+select -assert-count 181 a:init
+select -assert-none i:* o:* %i
+select -assert-count 388 t:$dff
+select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
+expose -dff -cut reservation_station/w:*
+select -assert-none reservation_station/t:$dff %co:+[Q] reservation_station/w:* %i %co1 reservation_station/t:* %i
+select -assert-count 271 t:$anyseq
 # One entry of each quarter compares against its lane's tag through its copy.
 sat -seq 1 -verify -prove entry_cdb_tag[0] i_issue_cdb_tag -prove entry_cdb_tag[5] i_issue_cdb_tag -prove entry_cdb_tag[10] i_issue_cdb_tag -prove entry_cdb_tag[15] i_issue_cdb_tag -prove entry_cdb_2_tag[0] i_issue_cdb_2_tag -prove entry_cdb_2_tag[5] i_issue_cdb_2_tag -prove entry_cdb_2_tag[10] i_issue_cdb_2_tag -prove entry_cdb_2_tag[15] i_issue_cdb_2_tag reservation_station
 rename -top gate
 design -stash gate
 design -reset
+read -sv twin_both.sv
 design -copy-from gold -as gold gold
 design -copy-from gate -as gate gate
+hierarchy -top twin_both
+script free_undefined.ys
+# The runner checks the two compiled port lists and matching initial values.
+write_json twin_ports.json
 equiv_make gold gate equiv
-hierarchy -top equiv
+delete gold gate twin_both
+setundef -anyseq
+select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate
+select -assert-count 557 t:$anyseq
+select -assert-count 271 t:$anyseq n:*_gold %i
+select -assert-count 271 t:$anyseq n:*_gate %i
 # A floor on the compared points, so that a pairing that collapses fails.
-select -assert-min 40000 t:$equiv
+int_equiv: select -assert-min 44316 t:$equiv
+int_equiv_prims: select -assert-min 48956 t:$equiv
 equiv_struct -icells
 equiv_simple
 equiv_status -assert
 design -reset
 read -formal -sv prim_twin_done.sv
+hierarchy -top prim_twin_done
+script free_undefined.ys
 prep -top prim_twin_done
 
 [files]
@@ -112,3 +130,5 @@ prep -top prim_twin_done
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/coherent_rs_payload_store.sv
 prim_twin_done.sv
+free_undefined.ys
+twin_both.sv

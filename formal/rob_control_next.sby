@@ -17,7 +17,7 @@ script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top reorder_buffer
-select -assert-count 4 t:$check
+select -assert-count 4 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
 select -assert-none a:init=*

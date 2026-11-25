@@ -22,9 +22,10 @@ prep -top frost_cache -flatten
 memory_map
 opt
 select -assert-none t:$assume
-bmc: select -assert-count 6 t:$check
-bmc_ways1: select -assert-count 3 t:$check
-bmc_delayed: select -assert-count 6 t:$check
+select -assert-none t:$check r:FLAVOR=assume %i
+bmc: select -assert-count 6 t:$check r:FLAVOR=assert %i
+bmc_ways1: select -assert-count 3 t:$check r:FLAVOR=assert %i
+bmc_delayed: select -assert-count 6 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/cache/cache_perf_pkg.sv

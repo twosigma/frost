@@ -1,7 +1,16 @@
 [tasks]
-bmc_four bmc regular load four
+bmc_four_control bmc regular load four four_partition four_control
+bmc_four_value_0 bmc regular load four four_partition four_value watched0
+bmc_four_value_1 bmc regular load four four_partition four_value watched1
+bmc_four_value_2 bmc regular load four four_partition four_value watched2
+bmc_four_value_3 bmc regular load four four_partition four_value watched3
 cover_four cover lifecycle load four
-bmc_intervening bmc regular intervening
+bmc_intervening_same_flow bmc regular intervening same int_partition int_flow
+bmc_intervening_other_flow bmc regular intervening other int_partition int_flow
+bmc_intervening_same_value bmc regular intervening same int_partition int_value
+bmc_intervening_other_value bmc regular intervening other int_partition int_value
+bmc_intervening_fatal bmc intervening int_partition int_fatal
+prove_intervening_fatal_sticky intervening sticky
 bmc_load_same bmc regular load same ordinary
 bmc_load_other bmc regular load other ordinary
 bmc_load_same_probe_launch bmc regular load same ordinary probe_launch
@@ -34,21 +43,39 @@ bmc: mode bmc
 cover: mode cover
 ordinary: depth 80
 four: depth 120
-# Frame 113 finishes in about four hours with the hit path; the covers reach
-# handoff at 57 and drain at 92. Keep cover_four's search depth at 120.
-bmc_four: depth 114
+# Frame 113 finishes within the split partitions' limits with the hit path;
+# the covers reach handoff at 57 and drain at 92. Keep cover_four's search
+# depth at 120.
+four_partition: depth 114
 intervening: depth 140
 old: depth 80
 amo: depth 140
 sc: depth 140
 timeout 2400
-bmc_four: timeout 18000
+# Opening undefined values with free_undefined.ys prevents merging duplicate
+# RAM write-enable muxes across the store queue, load queue and L1D. The
+# four-record and intervening-load tasks are split by assertion partition
+# (control/flow, value, and fatal) and watched-store / sector case so every
+# partition finishes cleanly under 15,840 s with headroom for slower runners.
+bmc_four_control: timeout 3600
+bmc_four_value_0: timeout 15840
+bmc_four_value_1: timeout 10800
+bmc_four_value_2: timeout 8400
+bmc_four_value_3: timeout 3600
 cover_four: timeout 7200
-intervening: timeout 19800
-bmc_amo_same: timeout 3300
-bmc_amo_other: timeout 4800
-bmc_probe_kept_same: timeout 3600
-bmc_probe_kept_other: timeout 6000
+bmc_intervening_same_flow: timeout 8400
+bmc_intervening_other_flow: timeout 13200
+bmc_intervening_same_value: timeout 10800
+bmc_intervening_other_value: timeout 15840
+bmc_intervening_fatal: timeout 1200
+bmc_amo_same: timeout 6600
+bmc_amo_other: timeout 9600
+bmc_amo_same_owner: timeout 3000
+bmc_amo_same_fatal: timeout 3000
+bmc_amo_other_fatal: timeout 4800
+bmc_load_same_probe_launch: timeout 3600
+bmc_probe_kept_same: timeout 5400
+bmc_probe_kept_other: timeout 8400
 # The SC handoff BMC takes about 45 minutes; CI runners take up to about 2.2
 # times as long.
 bmc_sc: timeout 6000
@@ -63,6 +90,7 @@ regular: abc bmc3 -c
 # checks together exclude every fatal sample in the 140-frame horizon.
 # Run through test_run_formal.py, which validates the selected-frame result.
 amo_fatal: abc bmc3 -c -S 139
+int_fatal: abc bmc3 -c -S 139
 sticky: smtbmc boolector
 cover: smtbmc boolector
 
@@ -113,10 +141,16 @@ other: chparam -set SECTOR_CASE 1 coherence_store_boundary_formal
 old: chparam -set SECTOR_CASE 1 coherence_store_boundary_formal
 load: chparam -set MODE 0 coherence_store_boundary_formal
 four: chparam -set FOUR_STORES 1 coherence_store_boundary_formal
+watched0: chparam -set WATCHED_STORE 0 coherence_store_boundary_formal
+watched1: chparam -set WATCHED_STORE 1 coherence_store_boundary_formal
+watched2: chparam -set WATCHED_STORE 2 coherence_store_boundary_formal
+watched3: chparam -set WATCHED_STORE 3 coherence_store_boundary_formal
 intervening: chparam -set MODE 4 coherence_store_boundary_formal
 amo: chparam -set MODE 1 coherence_store_boundary_formal
 sc: chparam -set MODE 2 coherence_store_boundary_formal
 old: chparam -set MODE 3 coherence_store_boundary_formal
+hierarchy -top coherence_store_boundary_formal
+script free_undefined.ys
 prep -flatten -top coherence_store_boundary_formal
 check -assert
 chformal -assert -cover -remove c:*sq_forwarding_unit_inst*
@@ -125,6 +159,21 @@ load: chformal -cover -remove c:*p_amo_* c:*p_sc_* c:*p_old_*
 amo: chformal -cover -remove c:*p_load_* c:*p_sc_* c:*p_old_*
 sc: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_old_*
 old: chformal -cover -remove c:*p_load_* c:*p_amo_* c:*p_sc_*
+four_partition: select -assert-count 23 t:$check r:FLAVOR=assert %i
+four_control: chformal -assert -remove c:p_load_value
+four_control: select -assert-count 22 t:$check r:FLAVOR=assert %i
+four_value: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_load_value %d
+four_value: select -assert-count 1 t:$check r:FLAVOR=assert %i
+four_value: select -assert-count 1 c:p_load_value
+int_partition: select -assert-count 19 t:$check r:FLAVOR=assert %i
+int_flow: chformal -assert -remove c:p_load_value c:p_no_fatal
+int_flow: select -assert-count 17 t:$check r:FLAVOR=assert %i
+int_value: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_load_value %d
+int_value: select -assert-count 1 t:$check r:FLAVOR=assert %i
+int_value: select -assert-count 1 c:p_load_value
+int_fatal: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_fatal %d
+int_fatal: select -assert-count 1 t:$check r:FLAVOR=assert %i
+int_fatal: select -assert-count 1 c:p_no_fatal
 amo_partition: select -assert-count 19 t:$check r:FLAVOR=assert %i
 amo_flow: chformal -assert -remove c:p_no_buffered_atomic c:p_no_buffered_guard c:p_no_fatal
 amo_flow: select -assert-count 16 t:$check r:FLAVOR=assert %i
@@ -143,6 +192,8 @@ sticky: select -assert-count 1 c:p_fatal_sticky
 # Every finite prefix extends because these tasks have no environment assumptions.
 amo_fatal: select -assert-none t:$assume
 amo_fatal: select -assert-none t:$check r:FLAVOR=assume %i
+int_fatal: select -assert-none t:$assume
+int_fatal: select -assert-none t:$check r:FLAVOR=assume %i
 sticky: select -assert-none t:$assume
 sticky: select -assert-none t:$check r:FLAVOR=assume %i
 memory_map
@@ -190,3 +241,4 @@ coherence_store_boundary_formal.sv
 ../hw/rtl/lib/cache/coherence_array.sv
 ../hw/rtl/lib/cache/coherence_l1d.sv
 ../hw/rtl/lib/cache/coherence_types.svh
+free_undefined.ys

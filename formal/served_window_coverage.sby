@@ -40,7 +40,7 @@ cover: chparam -set WORD_BITS 62 served_window_coverage_formal
 hierarchy -top served_window_coverage_formal
 script free_undefined.ys
 prep -top served_window_coverage_formal -flatten
-~cover: select -assert-count 4 t:$check
+~cover: select -assert-count 4 t:$check r:FLAVOR=assert %i
 cover: select -assert-count 4 t:$check r:FLAVOR=cover %i
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i

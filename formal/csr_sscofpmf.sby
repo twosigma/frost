@@ -18,8 +18,9 @@ prove_perf_off: chparam -set COMMIT_EXCLUDES_CONTROL_TAKE 1 -set PERF_COUNTERS 0
 hierarchy -top csr_file
 script free_undefined.ys
 prep -top csr_file
-select -assert-count 149 t:$check
+select -assert-count 149 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

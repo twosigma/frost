@@ -184,7 +184,11 @@ nostore: timeout 3600
 # look-ahead admission. Each runs in its own CI job.
 control_single: depth 40
 control_single: timeout 10800
+# With free_undefined.ys, coh_l1d_bmc measured 10,283 s and coh_l1d_multi_bmc
+# measured 15,407 s; give both headroom inside their dedicated CI jobs.
+coh_l1d_bmc: timeout 14400
 control_multi: timeout 18000
+coh_l1d_multi_bmc: timeout 20400
 # Data tasks get about twice their measured duration, rounded up to five
 # minutes; word variants share the word-0 representative's allowance.
 coh_l1d_data_bmc: timeout 3900
@@ -357,9 +361,11 @@ ways: chparam -set CACHE_BYTES 256 -set WAYS 4 -set TAG_BITS 2 -set MISSES 3 coh
 # Tasks that drive no cbo.zero writes build the L1D without the zero path
 # and without full-line stores; the zero and full tasks build both.
 ~zero: chparam -set ZERO_LINE 0 -set FULL_LINE 0 coherence_l1d
+~conflict: hierarchy -top coherence_l1d
+~conflict: script free_undefined.ys
 ~conflict: prep -flatten -top coherence_l1d
 conflict: hierarchy -check -top coherence_l1d
-conflict: proc -noopt
+conflict: script free_undefined.ys
 conflict: flatten
 conflict: opt_expr -keepdc -noclkinv
 # The matching conflict proof supplies this guarded, clocked identity.
@@ -667,6 +673,7 @@ conflict: design -save conflict_cases
 conflict: connect -set prefetch_busy 1'b0
 conflict: opt -full
 conflict: async2sync
+conflict: setundef -anyseq
 conflict: chformal -lower
 conflict: select -assert-count 1 t:$assert
 conflict: sat -seq 2 -prove-asserts -verify -timeout 60
@@ -674,6 +681,7 @@ conflict: design -load conflict_cases
 conflict: connect -set prefetch_busy 1'b1
 conflict: opt -full
 conflict: async2sync
+conflict: setundef -anyseq
 conflict: chformal -lower
 conflict: select -assert-count 1 t:$assert
 conflict: sat -seq 2 -prove-asserts -verify -timeout 60
@@ -697,3 +705,4 @@ conflict: sat -seq 2 -prove-asserts -verify -timeout 60
 ../hw/rtl/lib/cache/coherence_read_payload.sv
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
 ../hw/rtl/lib/cache/coherence_store_buffer.sv
+free_undefined.ys
