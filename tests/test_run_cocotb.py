@@ -4157,14 +4157,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 "sdp_block_ram",
                 "L1D tag array of one way",
                 "1x1",
-                ("-GADDR_WIDTH=10", "-GDATA_WIDTH=19"),
+                ("-GADDR_WIDTH=10", "-GDATA_WIDTH=20"),
             ),
             (
                 "sram_macros_l1d_tags_clear",
                 "sdp_block_ram",
                 "L1D tag array of one way with simulation's bulk clear",
                 "1x1",
-                ("-GADDR_WIDTH=10", "-GDATA_WIDTH=19", "-GSUPPORT_BULK_CLEAR=1"),
+                ("-GADDR_WIDTH=10", "-GDATA_WIDTH=20", "-GSUPPORT_BULK_CLEAR=1"),
             ),
             (
                 "sram_macros_btb_payload",
