@@ -90,6 +90,7 @@ module vec_int_exec #(
   logic active_q, sat_q, source_valid_q, insert_q, write_element_q;
   logic [15:0] source_idx_q;
   logic [3:0][4:0] raddr_q;
+  logic we_q;
   logic [4:0] waddr_q;
   logic [VLEN-1:0] wdata_q;
   logic [Bytes-1:0] wbe_q;
@@ -513,27 +514,24 @@ module vec_int_exec #(
     end
   end
 
-  logic gm_direct_wr, gr_direct_wr;
-  assign gm_direct_wr = (state == GM_WAIT) && mul_lane_ovalid[0] && !wide_mac;
-  assign gr_direct_wr = (state == GR_WAIT) && red_last_sr_q[5];
-  assign o_idle = state == IDLE;
-  assign o_we   = (state == WRITE && write_element_q) || (state == GM_WR_LO) ||
-                  (state == GM_WR_HI) || gm_direct_wr || gr_direct_wr;
-  assign o_waddr = gr_direct_wr ? vd : gm_direct_wr ? gm_waddr_lo_q : waddr_q;
-  assign o_wdata = gr_direct_wr ? VLEN'(red_result) :
-                   gm_direct_wr ? (wide_mul ? wide_lo_vec : mul_res_vec) : wdata_q;
-  assign o_wbe = gr_direct_wr ? red_wbe_q : gm_direct_wr ? wbe_lo_q : wbe_q;
+  assign o_idle = (state == IDLE) && !we_q;
+  assign o_we = we_q;
+  assign o_waddr = waddr_q;
+  assign o_wdata = wdata_q;
+  assign o_wbe = wbe_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       state <= IDLE;
+      we_q <= 1'b0;
       o_sat <= 1'b0;
       red_last_sr_q <= 6'd0;
     end else begin
+      we_q <= 1'b0;
       o_sat <= 1'b0;
       red_last_sr_q <= {red_last_sr_q[4:0], (state == GR_FEED) && (red_lane_q == red_last_lane_q)};
       case (state)
         IDLE:
-        if (i_valid) begin
+        if (i_valid && !we_q) begin
           insn_q <= i_insn;
           sew_q <= i_sew;
           lmul_q <= i_lmul;
@@ -624,50 +622,27 @@ module vec_int_exec #(
           end else if (gm_wait_cnt_q == 3'd2) begin
             wbe_lo_q <= wbe_lo_d;
             wbe_hi_q <= wbe_hi_d;
-          end else if (gm_wait_cnt_q == 3'd4) begin
-            if (!wide_mac && !gm_has_hi_q && (g_q < last_g_q)) begin
+          end
+          if (mul_lane_ovalid[0]) begin
+            we_q <= 1'b1;
+            waddr_q <= gm_waddr_lo_q;
+            wbe_q <= wbe_lo_q;
+            wdata_q <= wide_mac ? wide_acc_vec : (wide_mul ? wide_lo_vec : mul_res_vec);
+            wide_hi_q <= wide_hi_vec;
+            if (!gm_has_hi_q && (g_q < last_g_q)) begin
               raddr_q[0] <= vs2 + 5'(g_q + 4'd1);
               raddr_q[1] <= vs1 + 5'(g_q + 4'd1);
               raddr_q[2] <= vd + (wide_mul ? {g_q[3:0] + 4'd1, 1'b0} : 5'(g_q + 4'd1));
             end
-          end
-          if (mul_lane_ovalid[0]) begin
-            if (!wide_mac) begin
-              if (gm_has_hi_q) begin
-                waddr_q <= vd + {g_q[3:0], 1'b1};
-                wbe_q   <= wbe_hi_q;
-                wdata_q <= wide_hi_vec;
-                if (g_q < last_g_q) begin
-                  raddr_q[0] <= vs2 + 5'(g_q + 4'd1);
-                  raddr_q[1] <= vs1 + 5'(g_q + 4'd1);
-                  raddr_q[2] <= vd + {g_q[3:0] + 4'd1, 1'b0};
-                end
-                state <= GM_WR_HI;
-              end else if (g_q < last_g_q) begin
-                g_q   <= g_q + 4'd1;
-                state <= GM_LAUNCH;
-              end else begin
-                state <= IDLE;
-              end
-            end else begin
-              waddr_q <= gm_waddr_lo_q;
-              wbe_q <= wbe_lo_q;
-              wdata_q <= wide_acc_vec;
-              wide_hi_q <= wide_hi_vec;
-              if (!gm_has_hi_q && (g_q < last_g_q)) begin
-                raddr_q[0] <= vs2 + 5'(g_q + 4'd1);
-                raddr_q[1] <= vs1 + 5'(g_q + 4'd1);
-                raddr_q[2] <= vd + {g_q[3:0] + 4'd1, 1'b0};
-              end
-              state <= GM_WR_LO;
-            end
+            state <= GM_WR_LO;
           end
         end
         GM_WR_LO: begin
           if (gm_has_hi_q) begin
+            we_q    <= 1'b1;
             waddr_q <= vd + {g_q[3:0], 1'b1};
             wbe_q   <= wbe_hi_q;
-            wdata_q <= wide_acc_vec;
+            wdata_q <= wide_mac ? wide_acc_vec : wide_hi_q;
             if (g_q < last_g_q) begin
               raddr_q[0] <= vs2 + 5'(g_q + 4'd1);
               raddr_q[1] <= vs1 + 5'(g_q + 4'd1);
@@ -710,7 +685,13 @@ module vec_int_exec #(
           end
         end
         GR_WAIT: begin
-          if (red_last_sr_q[5]) state <= IDLE;
+          if (red_last_sr_q[5]) begin
+            we_q    <= 1'b1;
+            waddr_q <= vd;
+            wbe_q   <= red_wbe_q;
+            wdata_q <= VLEN'(red_result);
+            state   <= IDLE;
+          end
         end
         // ------------------------------------------------------------------
         // Element-by-element sequencer for remaining operations
@@ -809,6 +790,7 @@ module vec_int_exec #(
           state <= FORMAT;
         end
         FORMAT: begin
+          we_q    <= write_element_q;
           waddr_q <= vd + 5'(dbyte >> ByteBits);
           wdata_q <= VLEN'(result_q) << (8 * int'(dbyte[ByteBits-1:0]));
           wbe_q   <= ((Bytes'(1) << (4'd1 << dw)) - Bytes'(1)) << int'(dbyte[ByteBits-1:0]);

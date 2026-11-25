@@ -44,14 +44,16 @@
   (registered, one cycle) and a byte-enabled write of one register.
 */
 module vec_engine #(
-    parameter  int unsigned VLEN     = 256,
-    localparam int unsigned Lanes    = VLEN / 64,
-    localparam int unsigned Bytes    = VLEN / 8,
-    localparam int unsigned ByteBits = $clog2(Bytes)
+    parameter  int unsigned VLEN        = 256,
+    parameter  bit          SPLIT_ISSUE = 1'b0,
+    localparam int unsigned Lanes       = VLEN / 64,
+    localparam int unsigned Bytes       = VLEN / 8,
+    localparam int unsigned ByteBits    = $clog2(Bytes)
 ) (
     input  logic             i_clk,
     input  logic             i_rst,
     input  logic             i_valid,
+    input  logic             i_aux_valid = 1'b0,
     output logic             o_idle,
     output logic             o_grp_ready,
     output logic [     31:0] o_wr_mask,
@@ -107,6 +109,9 @@ module vec_engine #(
   assign rf_wdata[1] = i_xw_data;
   assign rf_wbe[1]   = i_xw_be;
 
+  logic aux_valid_in;
+  assign aux_valid_in = SPLIT_ISSUE ? i_aux_valid : i_valid;
+
   logic aux_idle, aux_we;
   logic [3:0][4:0] aux_raddr, int_raddr;
   logic [4:0] aux_waddr, int_waddr;
@@ -119,7 +124,7 @@ module vec_engine #(
   ) u_int_exec (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(i_valid && o_idle && d_extra),
+      .i_valid(aux_valid_in && o_idle && d_extra),
       .i_insn(i_insn),
       .i_sew(i_vsew[1:0]),
       .i_lmul(i_vlmul),
@@ -147,7 +152,7 @@ module vec_engine #(
   ) u_fp_exec (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(i_valid && o_idle && d_fp),
+      .i_valid(aux_valid_in && o_idle && d_fp),
       .i_insn(i_insn),
       .i_sew(i_vsew[1:0]),
       .i_vl(i_vl),
@@ -175,7 +180,7 @@ module vec_engine #(
   ) u_crypto_exec (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_valid(i_valid && o_idle && d_crypto),
+      .i_valid(aux_valid_in && o_idle && d_crypto),
       .i_insn(i_insn),
       .i_sew(i_vsew[1:0]),
       .i_vl(i_vl),
@@ -199,14 +204,18 @@ module vec_engine #(
   assign rf_wbe[0] = !crypto_idle ? crypto_wbe : !fp_idle ? fp_wbe : aux_idle ? int_wbe : aux_wbe;
 
   // --------------------------------------------------------------------------
-  // Pipelined group-ALU sequencer (Stage R) and decode from registered entry
+  // Pipelined group-ALU sequencer (Stage R): pre-decoded on seq_accept
   // --------------------------------------------------------------------------
-  logic seq_valid_q, seq_started_q, seq_vstart_nz_q;
-  logic [31:0] seq_insn_q;
-  logic [ 1:0] seq_sew_q;
-  logic [3:0] seq_groups_q, seq_g_q, seq_last_g_q;
+  logic seq_valid_q, seq_started_q;
+  logic seq_ok_q, seq_no_body_q, seq_mask_dest_q, seq_unary_q;
+  logic seq_use_scalar_q, seq_masked_q, seq_need_vs2_q, seq_need_vs1_q, seq_need_v0_q;
+  vec_pkg::int_op_e seq_op_q;
+  logic [4:0] seq_vd_q, seq_vs2_q, seq_vs1_q;
+  logic [1:0] seq_sew_q;
+  logic [2:0] seq_epr_shift_q;
+  logic [3:0] seq_g_q, seq_last_g_q;
   logic [15:0] seq_vl_q, seq_vstart_q;
-  logic [63:0] seq_rs1_q;
+  logic [63:0] seq_scalar_q;
 
   // Pipeline stages aligned with vec_int_lane:
   //   R  -> VRF read address presented (seq_*_q)
@@ -244,94 +253,94 @@ module vec_engine #(
   logic [4:0] mwr_vd_q;
   logic [VLEN-1:0] mres_q;
 
-  // Decode the registered sequencer instruction.
-  wire [5:0] s_funct6 = seq_insn_q[31:26];
-  wire [2:0] s_funct3 = seq_insn_q[14:12];
-  wire s_vm_bit = seq_insn_q[25];
-  wire [4:0] s_vs2 = seq_insn_q[24:20];
-  wire [4:0] s_vs1 = seq_insn_q[19:15];
-  wire [4:0] s_vd = seq_insn_q[11:7];
+  // Pre-decode incoming group-ALU instruction (latched on seq_accept).
+  wire [5:0] d_funct6 = i_insn[31:26];
+  wire [2:0] d_funct3 = i_insn[14:12];
+  wire d_vm_bit = i_insn[25];
+  wire [4:0] d_vs2 = i_insn[24:20];
+  wire [4:0] d_vs1 = i_insn[19:15];
+  wire [4:0] d_vd = i_insn[11:7];
 
-  logic s_ok, s_mask_dest, s_unary, s_uimm, s_imm6;
-  vec_pkg::int_op_e s_op;
+  logic d_ok, d_mask_dest, d_unary, d_uimm, d_imm6;
+  vec_pkg::int_op_e d_op;
   always_comb begin
-    s_ok = 1'b0;
-    s_op = vec_pkg::VI_ADD;
-    s_mask_dest = 1'b0;
-    s_unary = 1'b0;
-    s_uimm = 1'b0;
-    s_imm6 = 1'b0;
-    if (seq_insn_q[6:0] == 7'b1010111) begin
-      if (s_funct3 == 3'b000 || s_funct3 == 3'b100 || s_funct3 == 3'b011) begin
-        s_ok = 1'b1;
-        unique casez (s_funct6)
-          6'b000000: s_op = vec_pkg::VI_ADD;
-          6'b000001: s_op = vec_pkg::VI_ANDN;
-          6'b000010: s_op = vec_pkg::VI_SUB;
-          6'b000011: s_op = vec_pkg::VI_RSUB;
-          6'b000100: s_op = vec_pkg::VI_MINU;
-          6'b000101: s_op = vec_pkg::VI_MIN;
-          6'b000110: s_op = vec_pkg::VI_MAXU;
-          6'b000111: s_op = vec_pkg::VI_MAX;
-          6'b001001: s_op = vec_pkg::VI_AND;
-          6'b001010: s_op = vec_pkg::VI_OR;
-          6'b001011: s_op = vec_pkg::VI_XOR;
+    d_ok = 1'b0;
+    d_op = vec_pkg::VI_ADD;
+    d_mask_dest = 1'b0;
+    d_unary = 1'b0;
+    d_uimm = 1'b0;
+    d_imm6 = 1'b0;
+    if (i_insn[6:0] == 7'b1010111) begin
+      if (d_funct3 == 3'b000 || d_funct3 == 3'b100 || d_funct3 == 3'b011) begin
+        d_ok = 1'b1;
+        unique casez (d_funct6)
+          6'b000000: d_op = vec_pkg::VI_ADD;
+          6'b000001: d_op = vec_pkg::VI_ANDN;
+          6'b000010: d_op = vec_pkg::VI_SUB;
+          6'b000011: d_op = vec_pkg::VI_RSUB;
+          6'b000100: d_op = vec_pkg::VI_MINU;
+          6'b000101: d_op = vec_pkg::VI_MIN;
+          6'b000110: d_op = vec_pkg::VI_MAXU;
+          6'b000111: d_op = vec_pkg::VI_MAX;
+          6'b001001: d_op = vec_pkg::VI_AND;
+          6'b001010: d_op = vec_pkg::VI_OR;
+          6'b001011: d_op = vec_pkg::VI_XOR;
           6'b010100: begin
-            s_op   = vec_pkg::VI_ROR;
-            s_uimm = 1'b1;
+            d_op   = vec_pkg::VI_ROR;
+            d_uimm = 1'b1;
           end
           6'b010101: begin
             // vrol.vv/.vx; with .vi it is vror.vi with imm[5] set
-            s_op   = (s_funct3 == 3'b011) ? vec_pkg::VI_ROR : vec_pkg::VI_ROL;
-            s_uimm = 1'b1;
-            s_imm6 = (s_funct3 == 3'b011);
+            d_op   = (d_funct3 == 3'b011) ? vec_pkg::VI_ROR : vec_pkg::VI_ROL;
+            d_uimm = 1'b1;
+            d_imm6 = (d_funct3 == 3'b011);
           end
-          6'b010111: s_op = s_vm_bit ? vec_pkg::VI_MV : vec_pkg::VI_MERGE;
-          6'b011000: s_op = vec_pkg::VI_MSEQ;
-          6'b011001: s_op = vec_pkg::VI_MSNE;
-          6'b011010: s_op = vec_pkg::VI_MSLTU;
-          6'b011011: s_op = vec_pkg::VI_MSLT;
-          6'b011100: s_op = vec_pkg::VI_MSLEU;
-          6'b011101: s_op = vec_pkg::VI_MSLE;
-          6'b011110: s_op = vec_pkg::VI_MSGTU;
-          6'b011111: s_op = vec_pkg::VI_MSGT;
+          6'b010111: d_op = d_vm_bit ? vec_pkg::VI_MV : vec_pkg::VI_MERGE;
+          6'b011000: d_op = vec_pkg::VI_MSEQ;
+          6'b011001: d_op = vec_pkg::VI_MSNE;
+          6'b011010: d_op = vec_pkg::VI_MSLTU;
+          6'b011011: d_op = vec_pkg::VI_MSLT;
+          6'b011100: d_op = vec_pkg::VI_MSLEU;
+          6'b011101: d_op = vec_pkg::VI_MSLE;
+          6'b011110: d_op = vec_pkg::VI_MSGTU;
+          6'b011111: d_op = vec_pkg::VI_MSGT;
           6'b100101: begin
-            s_op   = vec_pkg::VI_SLL;
-            s_uimm = 1'b1;
+            d_op   = vec_pkg::VI_SLL;
+            d_uimm = 1'b1;
           end
           6'b101000: begin
-            s_op   = vec_pkg::VI_SRL;
-            s_uimm = 1'b1;
+            d_op   = vec_pkg::VI_SRL;
+            d_uimm = 1'b1;
           end
           6'b101001: begin
-            s_op   = vec_pkg::VI_SRA;
-            s_uimm = 1'b1;
+            d_op   = vec_pkg::VI_SRA;
+            d_uimm = 1'b1;
           end
-          default:   s_ok = 1'b0;
+          default:   d_ok = 1'b0;
         endcase
-        s_mask_dest = (s_funct6[5:3] == 3'b011);
-        if (s_funct6 == 6'b010100 && s_funct3 == 3'b011) s_imm6 = 1'b0;
-      end else if (s_funct3 == 3'b010 && s_funct6 == 6'b010010) begin
-        s_unary = 1'b1;
-        s_ok = 1'b1;
-        unique case (s_vs1)
-          5'b01000: s_op = vec_pkg::VI_BREV8;
-          5'b01001: s_op = vec_pkg::VI_REV8;
-          5'b01010: s_op = vec_pkg::VI_BREV;
-          5'b01100: s_op = vec_pkg::VI_CLZ;
-          5'b01101: s_op = vec_pkg::VI_CTZ;
-          5'b01110: s_op = vec_pkg::VI_CPOP;
-          default:  s_ok = 1'b0;
+        d_mask_dest = (d_funct6[5:3] == 3'b011);
+        if (d_funct6 == 6'b010100 && d_funct3 == 3'b011) d_imm6 = 1'b0;
+      end else if (d_funct3 == 3'b010 && d_funct6 == 6'b010010) begin
+        d_unary = 1'b1;
+        d_ok = 1'b1;
+        unique case (d_vs1)
+          5'b01000: d_op = vec_pkg::VI_BREV8;
+          5'b01001: d_op = vec_pkg::VI_REV8;
+          5'b01010: d_op = vec_pkg::VI_BREV;
+          5'b01100: d_op = vec_pkg::VI_CLZ;
+          5'b01101: d_op = vec_pkg::VI_CTZ;
+          5'b01110: d_op = vec_pkg::VI_CPOP;
+          default:  d_ok = 1'b0;
         endcase
       end
     end
   end
 
-  logic s_use_scalar, s_masked, s_merge;
-  assign s_use_scalar = (s_funct3 == 3'b100) || (s_funct3 == 3'b011);
+  logic d_use_scalar, d_masked, d_merge;
+  assign d_use_scalar = (d_funct3 == 3'b100) || (d_funct3 == 3'b011);
   // vmerge reads v0 as its select and writes every body element.
-  assign s_masked     = !s_vm_bit && !(s_op == vec_pkg::VI_MERGE);
-  assign s_merge      = (s_op == vec_pkg::VI_MERGE);
+  assign d_masked     = !d_vm_bit && !(d_op == vec_pkg::VI_MERGE);
+  assign d_merge      = (d_op == vec_pkg::VI_MERGE);
 
   function automatic logic [63:0] replicate(input logic [63:0] x, input logic [1:0] sew);
     unique case (sew)
@@ -342,31 +351,28 @@ module vec_engine #(
     endcase
   endfunction
 
-  logic [63:0] s_scalar_raw, s_scalar_rep;
+  logic [63:0] d_scalar_raw, d_scalar_rep;
   always_comb begin
-    if (s_funct3 == 3'b011) begin
-      if (s_uimm) s_scalar_raw = 64'({s_imm6 ? seq_insn_q[26] : 1'b0, seq_insn_q[19:15]});
-      else s_scalar_raw = {{59{seq_insn_q[19]}}, seq_insn_q[19:15]};
+    if (d_funct3 == 3'b011) begin
+      if (d_uimm) d_scalar_raw = 64'({d_imm6 ? i_insn[26] : 1'b0, i_insn[19:15]});
+      else d_scalar_raw = {{59{i_insn[19]}}, i_insn[19:15]};
     end else begin
-      s_scalar_raw = seq_rs1_q;
+      d_scalar_raw = i_rs1;
     end
-    s_scalar_rep = replicate(s_scalar_raw, seq_sew_q);
+    d_scalar_rep = replicate(d_scalar_raw, i_vsew[1:0]);
   end
 
-  // Active register-group range for [seq_vstart_q, seq_vl_q), computed from
-  // registered sequencer state.
-  logic [2:0] s_epr_shift;
-  logic [15:0] s_first_g_raw, s_last_g_raw;
-  logic s_no_body;
-  logic [3:0] s_eff_last_g, cur_last_g;
-  assign s_epr_shift = 3'(ByteBits) - {1'b0, seq_sew_q};
-  assign s_first_g_raw = seq_vstart_q >> s_epr_shift;
-  assign s_last_g_raw = (seq_vl_q - 16'd1) >> s_epr_shift;
-  assign s_no_body = (seq_vl_q == 16'd0) || (seq_vstart_q >= seq_vl_q) ||
-      (s_first_g_raw >= {12'd0, seq_groups_q});
-  assign s_eff_last_g = (s_last_g_raw >= {12'd0, seq_groups_q}) ? (seq_groups_q - 4'd1) :
-      s_last_g_raw[3:0];
-  assign cur_last_g = seq_started_q ? seq_last_g_q : s_eff_last_g;
+  // Active register-group range for [i_vstart, i_vl), precomputed for seq_accept.
+  logic [3:0] d_groups, d_eff_last_g;
+  logic [2:0] d_epr_shift;
+  logic [15:0] d_first_g_raw, d_last_g_raw;
+  logic d_no_body;
+  assign d_groups = i_vlmul[2] ? 4'd1 : (4'd1 << i_vlmul[1:0]);
+  assign d_epr_shift = 3'(ByteBits) - {1'b0, i_vsew[1:0]};
+  assign d_first_g_raw = i_vstart >> d_epr_shift;
+  assign d_last_g_raw = (i_vl - 16'd1) >> d_epr_shift;
+  assign d_no_body = (i_vl == 16'd0) || (i_vstart >= i_vl) || (d_first_g_raw >= {12'd0, d_groups});
+  assign d_eff_last_g = (d_last_g_raw >= {12'd0, d_groups}) ? (d_groups - 4'd1) : d_last_g_raw[3:0];
 
   // In-flight register write mask across stages E0, E1, E2, W and compare MWR.
   // Because vec_vrf reads return pre-edge data, a register stays hazardous
@@ -393,12 +399,12 @@ module vec_engine #(
   end
   always_comb begin
     seq_wr_mask = 32'd0;
-    if (seq_valid_q) begin
-      if (s_mask_dest) begin
-        seq_wr_mask[s_vd] = 1'b1;
+    if (seq_valid_q && seq_ok_q && !seq_no_body_q) begin
+      if (seq_mask_dest_q) begin
+        seq_wr_mask[seq_vd_q] = 1'b1;
       end else begin
         for (int i = 0; i < 8; i++) begin
-          if (4'(i) >= seq_g_q && 4'(i) < seq_groups_q) seq_wr_mask[5'(s_vd+5'(i))] = 1'b1;
+          if (4'(i) >= seq_g_q && 4'(i) <= seq_last_g_q) seq_wr_mask[5'(seq_vd_q+5'(i))] = 1'b1;
         end
       end
     end
@@ -407,37 +413,34 @@ module vec_engine #(
 
   // Source read addresses for the current sequencer group (pure flops + 5-bit add).
   logic [4:0] r_vs2_addr, r_vs1_addr;
-  assign r_vs2_addr   = s_vs2 + 5'(seq_g_q);
-  assign r_vs1_addr   = s_unary ? s_vs2 : (s_vs1 + 5'(seq_g_q));
+  assign r_vs2_addr   = seq_vs2_q + 5'(seq_g_q);
+  assign r_vs1_addr   = seq_unary_q ? seq_vs2_q : (seq_vs1_q + 5'(seq_g_q));
   assign int_raddr[0] = r_vs2_addr;
   assign int_raddr[1] = r_vs1_addr;
-  assign int_raddr[2] = s_vd;
+  assign int_raddr[2] = seq_vd_q;
   assign int_raddr[3] = 5'd0;
 
-  // RAW hazard check for the current sequencer group.
-  logic need_vs2, need_vs1, need_v0, need_old_vd, raw_hazard;
-  assign need_vs2 = (s_op != vec_pkg::VI_MV);
-  assign need_vs1 = !s_use_scalar && !s_unary;
-  assign need_v0 = s_masked || s_merge;
-  assign need_old_vd = s_mask_dest;
-  assign raw_hazard = (need_vs2 && pipe_wr_mask[r_vs2_addr]) ||
-      (need_vs1 && pipe_wr_mask[r_vs1_addr]) || (need_v0 && pipe_wr_mask[0]) ||
-      (need_old_vd && pipe_wr_mask[s_vd]);
+  // RAW hazard check for the current sequencer group (pure flops -> 3 LUTs).
+  logic raw_hazard;
+  assign raw_hazard = (seq_need_vs2_q && pipe_wr_mask[r_vs2_addr]) ||
+      (seq_need_vs1_q && pipe_wr_mask[r_vs1_addr]) || (seq_need_v0_q && pipe_wr_mask[0]) ||
+      (seq_mask_dest_q && pipe_wr_mask[seq_vd_q]);
 
-  logic grp_pipe_busy, cmp_in_flight, seq_prep_needed, seq_issue_fire, seq_finishing, seq_accept;
+  logic grp_pipe_busy, cmp_in_flight, seq_issue_fire, seq_finishing, seq_accept;
   assign grp_pipe_busy = e0_valid_q || e1_valid_q || e2_valid_q || w_valid_q || mwr_pending_q;
-  assign cmp_in_flight = (seq_valid_q && s_mask_dest) || (e0_valid_q && e0_mask_dest_q) ||
+  assign cmp_in_flight = (seq_valid_q && seq_mask_dest_q) || (e0_valid_q && e0_mask_dest_q) ||
       (e1_valid_q && e1_mask_dest_q) || (e2_valid_q && e2_mask_dest_q) ||
       (w_valid_q && w_mask_dest_q) || mwr_pending_q;
-  assign seq_prep_needed = seq_vstart_nz_q && !seq_started_q;
-  assign seq_issue_fire = seq_valid_q && s_ok && !s_no_body && !seq_prep_needed && !raw_hazard;
-  assign seq_finishing = seq_valid_q &&
-      (!s_ok || s_no_body || (seq_issue_fire && !s_mask_dest && (seq_g_q == cur_last_g)));
+  logic seq_last_fire;
+  assign seq_issue_fire = seq_valid_q && seq_ok_q && !seq_no_body_q && !raw_hazard;
+  assign seq_last_fire = seq_issue_fire && !seq_mask_dest_q && (seq_g_q == seq_last_g_q);
+  assign seq_finishing = seq_valid_q && (!seq_ok_q || seq_no_body_q || seq_last_fire);
 
   assign o_idle = !seq_valid_q && !grp_pipe_busy && aux_idle && fp_idle && crypto_idle;
   assign o_grp_ready = aux_idle && fp_idle && crypto_idle && !cmp_in_flight &&
       (!seq_valid_q || seq_finishing);
-  assign seq_accept = i_valid && o_grp_ready && !d_extra && !d_fp && !d_crypto;
+  assign seq_accept = SPLIT_ISSUE ? (i_valid && o_grp_ready) :
+      (i_valid && o_grp_ready && !d_extra && !d_fp && !d_crypto);
 
   // --------------------------------------------------------------------------
   // Stage E0 -> vec_int_lane instances -> Stage W
@@ -522,38 +525,42 @@ module vec_engine #(
       mwr_pending_q <= 1'b0;
       o_unsupported <= 1'b0;
     end else begin
-      o_unsupported <= seq_valid_q && !s_ok;
+      o_unsupported <= seq_valid_q && !seq_ok_q;
 
       // Sequencer (Stage R)
       if (seq_accept) begin
-        seq_valid_q     <= 1'b1;
-        seq_started_q   <= 1'b0;
-        seq_vstart_nz_q <= |i_vstart;
-        seq_insn_q      <= i_insn;
-        seq_sew_q       <= i_vsew[1:0];
-        seq_groups_q    <= i_vlmul[2] ? 4'd1 : (4'd1 << i_vlmul[1:0]);
-        seq_g_q         <= 4'd0;
-        seq_vl_q        <= i_vl;
-        seq_vstart_q    <= i_vstart;
-        seq_rs1_q       <= i_rs1;
+        seq_valid_q      <= 1'b1;
+        seq_started_q    <= 1'b0;
+        seq_ok_q         <= d_ok;
+        seq_no_body_q    <= d_no_body;
+        seq_mask_dest_q  <= d_mask_dest;
+        seq_unary_q      <= d_unary;
+        seq_use_scalar_q <= d_use_scalar;
+        seq_masked_q     <= d_masked;
+        seq_need_vs2_q   <= (d_op != vec_pkg::VI_MV);
+        seq_need_vs1_q   <= !d_use_scalar && !d_unary;
+        seq_need_v0_q    <= d_masked || d_merge;
+        seq_op_q         <= d_op;
+        seq_vd_q         <= d_vd;
+        seq_vs2_q        <= d_vs2;
+        seq_vs1_q        <= d_vs1;
+        seq_sew_q        <= i_vsew[1:0];
+        seq_epr_shift_q  <= d_epr_shift;
+        seq_g_q          <= d_first_g_raw[3:0];
+        seq_last_g_q     <= d_eff_last_g;
+        seq_vl_q         <= i_vl;
+        seq_vstart_q     <= i_vstart;
+        seq_scalar_q     <= d_scalar_rep;
       end else if (seq_valid_q) begin
-        if (!s_ok) begin
+        if (!seq_ok_q || seq_no_body_q) begin
           seq_valid_q   <= 1'b0;
           seq_started_q <= 1'b0;
-        end else if (s_no_body) begin
-          seq_valid_q   <= 1'b0;
-          seq_started_q <= 1'b0;
-        end else if (seq_prep_needed) begin
-          seq_g_q       <= s_first_g_raw[3:0];
-          seq_last_g_q  <= s_eff_last_g;
-          seq_started_q <= 1'b1;
         end else if (seq_issue_fire) begin
-          if (seq_g_q == cur_last_g) begin
+          if (seq_g_q == seq_last_g_q) begin
             seq_valid_q   <= 1'b0;
             seq_started_q <= 1'b0;
           end else begin
             seq_g_q       <= seq_g_q + 4'd1;
-            seq_last_g_q  <= cur_last_g;
             seq_started_q <= 1'b1;
           end
         end
@@ -562,18 +569,18 @@ module vec_engine #(
       // Stage R -> E0
       e0_valid_q <= seq_issue_fire;
       if (seq_issue_fire) begin
-        e0_op_q         <= s_op;
+        e0_op_q         <= seq_op_q;
         e0_sew_q        <= seq_sew_q;
-        e0_mask_dest_q  <= s_mask_dest;
-        e0_masked_q     <= s_masked;
-        e0_use_scalar_q <= s_use_scalar;
-        e0_first_q      <= !seq_started_q || (seq_g_q == s_first_g_raw[3:0]);
-        e0_last_q       <= (seq_g_q == cur_last_g);
-        e0_vd_reg_q     <= s_mask_dest ? s_vd : (s_vd + 5'(seq_g_q));
-        e0_gbase_q      <= {12'd0, seq_g_q} << s_epr_shift;
+        e0_mask_dest_q  <= seq_mask_dest_q;
+        e0_masked_q     <= seq_masked_q;
+        e0_use_scalar_q <= seq_use_scalar_q;
+        e0_first_q      <= !seq_started_q;
+        e0_last_q       <= (seq_g_q == seq_last_g_q);
+        e0_vd_reg_q     <= seq_mask_dest_q ? seq_vd_q : (seq_vd_q + 5'(seq_g_q));
+        e0_gbase_q      <= {12'd0, seq_g_q} << seq_epr_shift_q;
         e0_vl_q         <= seq_vl_q;
         e0_vstart_q     <= seq_vstart_q;
-        e0_scalar_q     <= s_scalar_rep;
+        e0_scalar_q     <= seq_scalar_q;
       end
 
       // Stage E0 -> E1 (aligned with vec_int_lane s0)
