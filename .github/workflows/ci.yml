@@ -1733,9 +1733,10 @@ jobs:
           - shard: Coherence L1D local holds
             pytest_filter: coh_l1d_local_hold_bmc
             timeout_minutes: 30
+          # 60-minute task allowance plus 20 minutes for image setup.
           - shard: Coherence L1D local control
             pytest_filter: coh_l1d_local_control_bmc
-            timeout_minutes: 30
+            timeout_minutes: 80
           # Keep the scripted stream's payload holds at the same depth as
           # its control assertions, in parallel with the hart job.
           - shard: Coherence L1D scripted holds

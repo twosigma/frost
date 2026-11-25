@@ -121,6 +121,8 @@ streamsnap: mode prove
 streamsnap: depth 3
 localschedule: depth 80
 ~covermode: timeout 1200
+# Measured locally at 1,105 s at depth 80; allow 3,600 s for slower CI runners.
+coh_l1d_local_control_bmc: timeout 3600
 streamsnap: timeout 600
 covermode: mode cover
 covermode: depth 80
