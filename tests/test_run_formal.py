@@ -1304,9 +1304,9 @@ FORMAL_TARGETS = [
     FormalTarget(
         "vec_head_mmu.sby",
         "Head vector translation before access, precise partial faults, commit shield "
-        "and consumption of every commit; strided and indexed element runs in order with "
-        "each element translated first, mid-run interrupt boundaries, precise mid-run "
-        "faults and pointer masking",
+        "and consumption of every commit; strided, indexed and uncached element runs in "
+        "order with each element translated first, mid-run interrupt boundaries, precise "
+        "mid-run faults and pointer masking",
         tasks=(
             "bmc",
             "cover",
@@ -1314,6 +1314,8 @@ FORMAL_TARGETS = [
             "stride_cover",
             "index_bmc",
             "index_cover",
+            "uncached_bmc",
+            "uncached_cover",
         ),
     ),
     FormalTarget(
@@ -3925,6 +3927,14 @@ SBY_TASKS = [
         "Indexed head run: index reads, order, translation first, precise faults, 60 frames.",
     ),
     ("index_cover", "Indexed head run reachability: retirement, mid-run fault."),
+    (
+        "uncached_bmc",
+        "Uncached head run: order, settled shield, bus errors, FoF trim, IRQ stop, 40 frames.",
+    ),
+    (
+        "uncached_cover",
+        "Uncached head run reachability: retirement, alignment/bus faults, FoF trim, IRQ stop.",
+    ),
     ("bmc", "Check assertions up to the configured depth"),
     ("bmc_cdb", "Compare the first valid CDB packet across wrapper copies."),
     ("bmc_cdb_2", "Compare the second valid CDB packet across wrapper copies."),

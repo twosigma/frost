@@ -5,6 +5,8 @@ stride_bmc
 stride_cover
 index_bmc
 index_cover
+uncached_bmc
+uncached_cover
 
 [options]
 bmc: mode bmc
@@ -19,12 +21,18 @@ index_bmc: mode bmc
 index_bmc: depth 60
 index_cover: mode cover
 index_cover: depth 60
+uncached_bmc: mode bmc
+uncached_bmc: depth 40
+uncached_cover: mode cover
+uncached_cover: depth 40
 bmc: timeout 180
 cover: timeout 180
 stride_bmc: timeout 900
 stride_cover: timeout 900
 index_bmc: timeout 900
 index_cover: timeout 900
+uncached_bmc: timeout 600
+uncached_cover: timeout 300
 
 [engines]
 smtbmc boolector
@@ -38,12 +46,16 @@ stride_bmc: read -formal -D VEC_HEAD_MMU_STRIDE_PROOF -sv vec_head_mmu.sv
 stride_cover: read -formal -D VEC_HEAD_MMU_STRIDE_PROOF -sv vec_head_mmu.sv
 index_bmc: read -formal -D VEC_HEAD_MMU_STRIDE_PROOF -D VEC_HEAD_MMU_INDEXED -sv vec_head_mmu.sv
 index_cover: read -formal -D VEC_HEAD_MMU_STRIDE_PROOF -D VEC_HEAD_MMU_INDEXED -sv vec_head_mmu.sv
+uncached_bmc: read -formal -D VEC_HEAD_MMU_UNCACHED_PROOF -sv vec_head_mmu.sv
+uncached_cover: read -formal -D VEC_HEAD_MMU_UNCACHED_PROOF -sv vec_head_mmu.sv
 bmc: chparam -set VLEN 256 vec_head_mmu
 cover: chparam -set VLEN 256 vec_head_mmu
 stride_bmc: chparam -set VLEN 128 vec_head_mmu
 stride_cover: chparam -set VLEN 128 vec_head_mmu
 index_bmc: chparam -set VLEN 128 vec_head_mmu
 index_cover: chparam -set VLEN 128 vec_head_mmu
+uncached_bmc: chparam -set VLEN 128 vec_head_mmu
+uncached_cover: chparam -set VLEN 128 vec_head_mmu
 hierarchy -top vec_head_mmu
 script free_undefined.ys
 prep -top vec_head_mmu

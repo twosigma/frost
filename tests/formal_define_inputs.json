@@ -1151,6 +1151,8 @@
   "vec_head_mmu:index_cover": ["design 0 read 3: read -formal -DVEC_HEAD_MMU_STRIDE_PROOF -DVEC_HEAD_MMU_INDEXED -sv vec_head_mmu.sv"],
   "vec_head_mmu:stride_bmc": ["design 0 read 3: read -formal -DVEC_HEAD_MMU_STRIDE_PROOF -sv vec_head_mmu.sv"],
   "vec_head_mmu:stride_cover": ["design 0 read 3: read -formal -DVEC_HEAD_MMU_STRIDE_PROOF -sv vec_head_mmu.sv"],
+  "vec_head_mmu:uncached_bmc": ["design 0 read 3: read -formal -DVEC_HEAD_MMU_UNCACHED_PROOF -sv vec_head_mmu.sv"],
+  "vec_head_mmu:uncached_cover": ["design 0 read 3: read -formal -DVEC_HEAD_MMU_UNCACHED_PROOF -sv vec_head_mmu.sv"],
   "vec_hold_rows:cover": [],
   "vec_hold_rows:vhold_lq_bmc": [],
   "vec_hold_rows:vhold_lq_cover": [],
