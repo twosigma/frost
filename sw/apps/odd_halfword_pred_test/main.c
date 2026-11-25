@@ -73,8 +73,23 @@ extern void ohp_m_trap_handler(void);
 #define VA_PAGE0 0x00602000ul
 #define VA_PAGE1 0x00603000ul
 #define VA_SPAN_PC (VA_PAGE0 + 0xffeul)
-#define EVICT_STRIDE 0x00080000ul
-#define EVICT_PAGES 20u
+/*
+ * Unmapping VA_PAGE1 cannot use sfence.vma here because sfence.vma also clears
+ * the fast BTB, which must stay live at VA_SPAN_PC to exercise the slot-1 BTB
+ * fault veto. Instead, evict VA_PAGE1 in two phases:
+ *   1. EVICT_L2_PAGES (7) pages at stride 2 MiB (512 pages) all alias VA_PAGE1's
+ *      L2 TLB set for any power-of-two L2TLB_SETS <= 512, guaranteeing >= 4
+ *      consecutive misses to that set (evicting VA_PAGE1 under both round-robin
+ *      and tree-PLRU) while keeping total L1 regions at 1 + 7 = 8 so VA_PAGE1's
+ *      region stays resident in the 8-entry PTW walk cache.
+ *   2. EVICT_ITLB_PAGES (16) pages inside VA_PAGE1's own 2 MiB region (L2 sets
+ *      4..19) evict VA_PAGE1 from the 16-entry ITLB without touching VA_CALLER
+ *      (set 0), VA_PAGE0 (set 2), VA_PAGE1 (set 3), or extra L1 regions.
+ */
+#define EVICT_L2_STRIDE 0x00200000ul
+#define EVICT_L2_PAGES 7u
+#define EVICT_ITLB_STRIDE 0x00001000ul
+#define EVICT_ITLB_PAGES 16u
 /* Training calls and one faulting call per attempt (cases.S, ohp_page_caller). */
 #define TRAIN_ITERS 8u
 #define FAULT_ATTEMPTS 2u
@@ -104,6 +119,8 @@ struct ohp_s_ctx {
     uint64_t outer_ret_mispred;
     uint64_t exit_mcause;
     uint64_t fault_attempts;
+    uint64_t va_itlb_evict_base;
+    uint64_t itlb_evict_count;
 };
 
 _Static_assert(offsetof(struct ohp_s_ctx, va_page0_entry) == 0, "offset 0");
@@ -121,6 +138,8 @@ _Static_assert(offsetof(struct ohp_s_ctx, post_fault_a3) == 88, "offset 88");
 _Static_assert(offsetof(struct ohp_s_ctx, outer_ret_mispred) == 96, "offset 96");
 _Static_assert(offsetof(struct ohp_s_ctx, exit_mcause) == 104, "offset 104");
 _Static_assert(offsetof(struct ohp_s_ctx, fault_attempts) == 112, "offset 112");
+_Static_assert(offsetof(struct ohp_s_ctx, va_itlb_evict_base) == 120, "offset 120");
+_Static_assert(offsetof(struct ohp_s_ctx, itlb_evict_count) == 128, "offset 128");
 
 static inline uint64_t read_mhpm3(void)
 {
@@ -209,7 +228,7 @@ static int run_page_end_case(const char *name, int delegate_to_s)
         root[i] = 0;
         l1[i] = 0;
     }
-    for (unsigned tbl = 0; tbl < 6; tbl++) {
+    for (unsigned tbl = 0; tbl < (1u + EVICT_L2_PAGES); tbl++) {
         volatile unsigned long *l0 =
             (volatile unsigned long *) (PT_L0_BASE + (unsigned long) tbl * 0x1000ul);
         for (unsigned i = 0; i < 512; i++)
@@ -226,16 +245,22 @@ static int run_page_end_case(const char *name, int delegate_to_s)
         map_va_4k(VA_PAGE1, (unsigned long) ohp_page1, PTE_V | PTE_R | PTE_X | PTE_A);
     unsigned long valid_p1_pte = *(volatile unsigned long *) pte_p1_addr;
 
-    for (unsigned k = 0; k < EVICT_PAGES; k++) {
-        unsigned long va = VA_PAGE1 + (unsigned long) (k + 1u) * EVICT_STRIDE;
+    for (unsigned k = 0; k < EVICT_L2_PAGES; k++) {
+        unsigned long va = VA_PAGE1 + (unsigned long) (k + 1u) * EVICT_L2_STRIDE;
+        map_va_4k(va, (unsigned long) ohp_page_evict, PTE_V | PTE_R | PTE_X | PTE_A);
+    }
+    for (unsigned k = 0; k < EVICT_ITLB_PAGES; k++) {
+        unsigned long va = VA_PAGE1 + (unsigned long) (k + 1u) * EVICT_ITLB_STRIDE;
         map_va_4k(va, (unsigned long) ohp_page_evict, PTE_V | PTE_R | PTE_X | PTE_A);
     }
 
     ctx->va_page0_entry = VA_PAGE0 + 0xfb0ul;
     ctx->pte_page1_ptr = pte_p1_addr;
     ctx->pte_page1_valid = valid_p1_pte;
-    ctx->va_evict_base = VA_PAGE1 + EVICT_STRIDE + 0x100ul;
-    ctx->evict_count = EVICT_PAGES;
+    ctx->va_evict_base = VA_PAGE1 + EVICT_L2_STRIDE + 0x100ul;
+    ctx->evict_count = EVICT_L2_PAGES;
+    ctx->va_itlb_evict_base = VA_PAGE1 + EVICT_ITLB_STRIDE + 0x100ul;
+    ctx->itlb_evict_count = EVICT_ITLB_PAGES;
     ctx->train_iters = TRAIN_ITERS;
     ctx->fault_attempts = FAULT_ATTEMPTS;
     ctx->seen_faults = 0u;
