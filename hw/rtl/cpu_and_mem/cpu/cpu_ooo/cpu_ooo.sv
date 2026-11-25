@@ -1212,7 +1212,7 @@ module cpu_ooo #(
   logic [255:0] vec_lc_req_data;
   logic [31:0] vec_lc_req_mask;
   logic [3:0] vec_lc_req_id;
-  logic vec_unc_port_ready;
+  logic vec_unc_port_ready, vec_unc_bus_busy;
   logic vec_unc_req_valid, vec_unc_req_write;
   logic [riscv_pkg::PhysAddrBits-1:0] vec_unc_req_addr;
   riscv_pkg::mem_size_e vec_unc_req_size;
@@ -2844,7 +2844,9 @@ module cpu_ooo #(
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
       .i_backend_recovery_hold(backend_recovery_hold || (step_done_q) || ma_hold_q),
       .i_slow_write_inflight(slow_write_inflight),
-      .i_uncached_read_busy(VARIABLE_UNCACHED && !i_uncached_read_request_ready),
+      .i_uncached_read_busy(
+          (VARIABLE_UNCACHED && !i_uncached_read_request_ready) || vec_unc_bus_busy
+      ),
       .i_coh_admit_valid(i_coh_admit_valid),
       .i_coh_admit_slot(i_coh_admit_slot),
       .i_coh_admit_addr(i_coh_admit_addr),
@@ -4402,6 +4404,8 @@ module cpu_ooo #(
     assign vec_l0_inval_valid = vec_l0_inval_valid_q;
     assign vec_l0_inval_addr  = vec_l0_inval_addr_q;
 
+    assign vec_unc_bus_busy = vec_unc_launch || vec_unc_read_active_q || vec_unc_write_active_q ||
+        vec_unc_fast_read_q || vec_unc_fast_write_done_q;
     assign vec_unc_port_ready = !i_fatal_stop &&
         !vec_unc_read_active_q && !vec_unc_write_active_q &&
         !vec_unc_fast_read_q && !vec_unc_fast_write_done_q &&
@@ -4470,6 +4474,7 @@ module cpu_ooo #(
     end
 `endif
   end else begin : gen_no_vec_uncached_bus
+    assign vec_unc_bus_busy = 1'b0;
     assign vec_unc_port_ready = 1'b0;
     assign vec_unc_resp_valid = 1'b0;
     assign vec_unc_resp_data  = '0;
