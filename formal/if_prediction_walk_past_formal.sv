@@ -369,11 +369,15 @@ module if_prediction_walk_past_formal (
          }) &&
         (u_if_stage.u_parcel_queue.count_eq1_q == (q_cnt == 5'd1));
     for (int b = 0; b < 4; b++) begin
+      logic [1:0] wr_off;
+      wr_off = 2'(b) - q_tail[1:0];
       queue_source_ok = queue_source_ok &&
           (u_if_stage.u_parcel_queue.rd_row_q[b] ==
            (q_head[3:2] + ((2'(b) < q_head[1:0]) ? 2'd1 : 2'd0))) &&
           (u_if_stage.u_parcel_queue.wr_row_q[b] ==
-           (q_tail[3:2] + ((2'(b) < q_tail[1:0]) ? 2'd1 : 2'd0)));
+           (q_tail[3:2] + ((2'(b) < q_tail[1:0]) ? 2'd1 : 2'd0))) &&
+          (u_if_stage.u_parcel_queue.bank_free_q[b] ==
+           (5'(wr_off) < (5'd16 - q_cnt)));
     end
     for (int k = 0; k < 16; k++) begin
       logic [3:0] idx;

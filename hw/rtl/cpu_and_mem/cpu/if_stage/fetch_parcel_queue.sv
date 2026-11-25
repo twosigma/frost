@@ -58,6 +58,7 @@ module fetch_parcel_queue #(
     // Head view (0..3) with zero-cycle empty and partial bypass
     output logic [                  4:0] o_avail,
     output logic [                  3:0] o_avail_ge,     // [k]: o_avail >= k + 1
+    output logic [                  3:0] o_count_ge,     // [k]: count_q >= k + 1 (registered)
     output logic [3:0][PARCEL_WIDTH-1:0] o_view_parcels,
     output logic [                  3:0] o_view_last,
     // Ring-only last-of-window flags and occupancy qualifiers for metadata select
@@ -94,6 +95,7 @@ module fetch_parcel_queue #(
   logic count_eq1_q;
   logic [3:0][RowBits-1:0] rd_row_q;
   logic [3:0][RowBits-1:0] wr_row_q;
+  logic [3:0] bank_free_q;
 
   // ===========================================================================
   // Window Metadata Ring State (2 banks x META_DEPTH/2 entries in dist RAM)
@@ -149,6 +151,7 @@ module fetch_parcel_queue #(
   assign o_avail_ge[1] = count_ge_q[1] || (i_push_valid && (count_q[0] || (i_push_count >= 3'd2)));
   assign o_avail_ge[2] = count_ge_q[2] || (i_push_valid && (low_avail_sum >= 3'd3));
   assign o_avail_ge[3] = count_ge_q[3] || (i_push_valid && (low_avail_sum >= 3'd4));
+  assign o_count_ge    = count_ge_q;
 
   // Read one entry per bank using precomputed row pointers from the FF ring,
   // then rotate by head_q[1:0].
@@ -199,8 +202,18 @@ module fetch_parcel_queue #(
   // ===========================================================================
   // Next-State Pointers, Counts, and Backpressure
   // ===========================================================================
+  // In reachable operation i_pop_count <= avail_sum always holds. Clamping
+  // the pointer/count pop amount to avail_sum when avail_sum < 4 (1 LUT6 per
+  // bit from {avail_ge4, low_avail_eff[1:0], i_pop_count[2:0]}) keeps parcel
+  // occupancy non-negative under unbounded formal induction without feeding
+  // i_push_count back to drain or into metadata retirement.
+  logic [2:0] low_avail_eff;
+  logic avail_ge4;
   logic [2:0] pop_cnt_eff;
-  assign pop_cnt_eff = i_pop_count;
+  assign low_avail_eff = i_push_valid ? low_avail_sum : {1'b0, count_q[1:0]};
+  assign avail_ge4     = count_ge_q[3] || low_avail_eff[2];
+  assign pop_cnt_eff   = (!avail_ge4 && (i_pop_count > {1'b0, low_avail_eff[1:0]})) ?
+      {1'b0, low_avail_eff[1:0]} : i_pop_count;
 
   logic [PtrBits-1:0] head_next;
   logic [PtrBits-1:0] tail_next;
@@ -212,7 +225,7 @@ module fetch_parcel_queue #(
   // Count metadata entries freed from the ring independently of push inputs,
   // and detect whether the pushed window's own last parcel is bypassed and
   // popped in the same cycle (possible only when count_q <= 3 and every
-  // available parcel is consumed: low_avail_sum == pop_cnt_eff).
+  // available parcel is consumed: low_avail_sum == i_pop_count).
   logic meta_push_eff;
   logic [3:0] ring_last_valid;
   logic [2:0] ring_meta_freed_cand[5];
@@ -239,7 +252,7 @@ module fetch_parcel_queue #(
                                    3'(ring_last_valid[2]) + 3'(ring_last_valid[3]);
 
   always_comb begin
-    unique case (pop_cnt_eff)
+    unique case (i_pop_count)
       3'd0:    ring_meta_freed = ring_meta_freed_cand[0];
       3'd1:    ring_meta_freed = ring_meta_freed_cand[1];
       3'd2:    ring_meta_freed = ring_meta_freed_cand[2];
@@ -248,7 +261,7 @@ module fetch_parcel_queue #(
     endcase
   end
 
-  assign push_meta_freed = i_push_valid && !count_ge_q[3] && (low_avail_sum == pop_cnt_eff);
+  assign push_meta_freed = i_push_valid && !count_ge_q[3] && (low_avail_sum == i_pop_count);
   assign meta_freed      = ring_meta_freed + 3'(push_meta_freed);
   assign meta_head_next  = meta_head_q + MetaPtrBits'(meta_freed);
   assign meta_head_plus1 = meta_head_next + MetaPtrBits'(1);
@@ -266,13 +279,17 @@ module fetch_parcel_queue #(
                             MetaCountBits'(STOP_META_THRESH));
 
   // Per-bank write controls (at most one write per bank per cycle since push_count <= 4).
+  // Write every bank whose tail slot is currently unoccupied (bank_free_q[b]):
+  // since i_push_count <= DEPTH - count_q, every pushed parcel is written and
+  // any extra write targets unoccupied slots past tail_next, keeping i_push_count
+  // off all ring_q clock enables.
   (* keep = "true", max_fanout = 64 *) logic [3:0] bank_we;
   logic [EntryBits-1:0] bank_wdata[4];
   for (genvar b = 0; b < 4; b++) begin : gen_bank_wr
     logic [1:0] wr_off;
     assign wr_off = 2'(b) - tail_q[1:0];
     // Flush clears count_q and tail_q on the same edge; keep !i_flush off the write enables.
-    assign bank_we[b] = i_push_valid && (3'(wr_off) < i_push_count);
+    assign bank_we[b] = i_push_valid && bank_free_q[b];
     assign bank_wdata[b] = push_entries[wr_off];
   end
 
@@ -284,6 +301,11 @@ module fetch_parcel_queue #(
     end
   end
 
+  logic [3:0][1:0] wr_off_next;
+  for (genvar b = 0; b < 4; b++) begin : gen_wr_off_next
+    assign wr_off_next[b] = 2'(b) - tail_next[1:0];
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush) begin
       head_q               <= '0;
@@ -293,6 +315,7 @@ module fetch_parcel_queue #(
       count_eq1_q          <= 1'b0;
       rd_row_q             <= '0;
       wr_row_q             <= '0;
+      bank_free_q          <= 4'b1111;
       meta_head_q          <= '0;
       meta_tail_q          <= '0;
       meta_count_q         <= '0;
@@ -313,8 +336,9 @@ module fetch_parcel_queue #(
       meta_head_even_idx_q <= meta_head_even_idx_next;
       stop_fetch_q         <= stop_fetch_next;
       for (int b = 0; b < 4; b++) begin
-        rd_row_q[b] <= head_next[PtrBits-1:2] + ((2'(b) < head_next[1:0]) ? RowBits'(1) : '0);
-        wr_row_q[b] <= tail_next[PtrBits-1:2] + ((2'(b) < tail_next[1:0]) ? RowBits'(1) : '0);
+        rd_row_q[b]    <= head_next[PtrBits-1:2] + ((2'(b) < head_next[1:0]) ? RowBits'(1) : '0);
+        wr_row_q[b]    <= tail_next[PtrBits-1:2] + ((2'(b) < tail_next[1:0]) ? RowBits'(1) : '0);
+        bank_free_q[b] <= (CountBits'(wr_off_next[b]) < (CountBits'(DEPTH) - count_next));
       end
     end
   end
@@ -478,6 +502,8 @@ module fetch_parcel_queue #(
   end
 
   for (genvar b = 0; b < 4; b++) begin : gen_f_row_check
+    logic [1:0] f_wr_off;
+    assign f_wr_off = 2'(b) - tail_q[1:0];
     always_comb begin
       if (f_past_valid && !i_rst) begin
         p_f_rd_row :
@@ -486,6 +512,8 @@ module fetch_parcel_queue #(
         p_f_wr_row :
         assert (wr_row_q[b] ==
                 (tail_q[PtrBits-1:2] + ((2'(b) < tail_q[1:0]) ? RowBits'(1) : '0)));
+        p_f_bank_free :
+        assert (bank_free_q[b] == (CountBits'(f_wr_off) < (CountBits'(DEPTH) - f_count_q)));
       end
     end
   end

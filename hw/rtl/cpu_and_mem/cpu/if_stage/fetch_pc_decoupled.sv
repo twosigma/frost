@@ -75,6 +75,7 @@ module fetch_pc_decoupled #(
     input logic                i_collapsed_btb_taken,
     input logic [    XLEN-1:0] i_collapsed_btb_target,
     input logic [BIM_BITS-3:0] i_collapsed_btb_even_dir_idx,
+    input logic                i_btb_en,
     input logic                i_btb_taken,
     input logic [    XLEN-1:0] i_btb_target,
     input logic [BIM_BITS-3:0] i_btb_even_dir_idx,
@@ -130,7 +131,7 @@ module fetch_pc_decoupled #(
   logic [NPcArms-1:0] npc_cond;
   logic [NPcArms-1:0] npc_sel;
   logic [XLEN-1:0] npc_val[NPcArms];
-  logic pc_update_en;
+  (* max_fanout = 24 *) logic pc_update_en;
   logic [XLEN-1:0] next_pc;
 
   always_comb begin
@@ -142,7 +143,8 @@ module fetch_pc_decoupled #(
     npc_cond[5]  = f1_resteer_qual;
     npc_cond[6]  = !f0_step_qual;
     npc_cond[7]  = f0_step_qual && i_span_btb_fire;
-    npc_cond[8]  = f0_step_qual && (i_f1_collapsed_accept ? i_collapsed_btb_taken : i_btb_taken);
+    npc_cond[8]  = f0_step_qual &&
+        (i_f1_collapsed_accept ? i_collapsed_btb_taken : (i_btb_en && i_btb_taken));
     npc_cond[13] = 1'b1;
 
     for (int unsigned k = 0; k < NPcArms; k++) npc_val[k] = pc_q;
@@ -238,11 +240,13 @@ module fetch_pc_decoupled #(
   assign early_next_pc  = early_next_pc_comb;
   assign early_even_dir = early_even_dir_comb;
 
-  logic use_pd_redir;
-  logic use_f0_btb;
+  (* keep = "true" *) logic f0_btb_qual;
+  (* max_fanout = 24 *) logic use_pd_redir;
+  (* max_fanout = 24 *) logic use_f0_btb;
+  assign f0_btb_qual  = !i_any_redirect && !i_f1_resteer && !i_f1_collapsed_accept &&
+                        !i_span_btb_fire && i_btb_en;
   assign use_pd_redir = !trap_or_mret && !i_fence_i_flush && !i_branch_taken && i_pd_redirect;
-  assign use_f0_btb   = !i_any_redirect && !i_f1_resteer && !i_f1_collapsed_accept &&
-                        !i_span_btb_fire && i_btb_taken;
+  assign use_f0_btb   = f0_btb_qual && i_btb_taken;
 
   logic [XLEN-1:0] next_pc_load;
   logic [EvenDirBits-1:0] next_even_dir_idx;

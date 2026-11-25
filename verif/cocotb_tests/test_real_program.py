@@ -1995,7 +1995,8 @@ class OddHalfwordPredictionCoverage:
             "f1_false_btb": f"{stage}.f1_false_btb",
             "f0_span_fault_veto": f"{stage}.f0_span_fault_veto",
             "f1_span_tail_fault": f"{stage}.f1_span_tail_fault",
-            "f1_ras_restore": f"{stage}.f1_ras_restore",
+            "f1_ras_restore_comb": f"{stage}.f1_ras_restore_comb",
+            "ras_restore_q": f"{stage}.ras_restore_q",
             "ras_push": f"{stage}.f0_ras_push",
             "ras_pop": f"{stage}.f0_ras_pop",
             "s1_valid": f"{stage}.s1_valid",
@@ -2017,6 +2018,7 @@ class OddHalfwordPredictionCoverage:
         self.fault_vetoed_btb_pred = 0
         self.stale_pending_drops = 0
         self._armed_odd_target: int | None = None
+        self._expect_ras_restore_q = False
 
     async def run(self) -> None:
         """Count front-end odd-halfword prediction and fault-veto events."""
@@ -2027,7 +2029,13 @@ class OddHalfwordPredictionCoverage:
             await ReadOnly()
             if _read_bool(s["reset"]):
                 self._armed_odd_target = None
+                self._expect_ras_restore_q = False
                 continue
+            if self._expect_ras_restore_q:
+                assert _read_bool(s["ras_restore_q"]), (
+                    "fault-vetoed BTB prediction did not latch ras_restore_q"
+                )
+                self._expect_ras_restore_q = False
             f0_fire = _read_bool(s["f0_launch"]) or _read_bool(s["f1_collapsed"])
             btb_pos = _read_int(s["btb_pos"]) or 0
             if (
@@ -2068,9 +2076,10 @@ class OddHalfwordPredictionCoverage:
                     "faulted packet with BTB prediction updated the RAS"
                 )
                 if not (f0_fire and _read_bool(s["f0_span_fault_veto"])):
-                    assert _read_bool(s["f1_ras_restore"]), (
-                        "fault-vetoed BTB prediction did not restore the RAS"
+                    assert _read_bool(s["f1_ras_restore_comb"]), (
+                        "fault-vetoed BTB prediction did not request a RAS restore"
                     )
+                    self._expect_ras_restore_q = True
                 self.fault_vetoed_btb_pred += 1
 
             walk_past = _read_bool(s["f1_false_btb"]) or (

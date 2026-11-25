@@ -307,7 +307,7 @@ module fetch_btb_2w #(
   logic [1:0] bank_tgt_cached;
   logic [1:0] bank_use_ras;
   logic [1:0] bank_eff_cached;
-  logic [1:0] bank_same_tier;
+  (* keep = "true" *) logic [1:0] bank_same_tier;
   logic [1:0] bank_w0_elig;
   logic [1:0] bank_is_span;
   logic [XLEN-1:0] bank_eff_target[2];
@@ -322,7 +322,11 @@ module fetch_btb_2w #(
     assign bank_tgt_cached[b]   = bank_payload_lookup[b][3];
     assign bank_use_ras[b]      = bank_is_ret[b] && i_ras_nonempty;
     assign bank_eff_cached[b]   = bank_use_ras[b] ? i_ras_top_is_cached : bank_tgt_cached[b];
-    assign bank_same_tier[b]    = i_fetch_translation_active || (bank_eff_cached[b] == i_pc_is_cached);
+    // Evaluate tier match directly from its 6 scalar inputs in one LUT6 rather
+    // than routing through high-fanout bank_use_ras[b].
+    assign bank_same_tier[b]    = i_fetch_translation_active ||
+        (((bank_is_ret[b] && i_ras_nonempty) ? i_ras_top_is_cached : bank_tgt_cached[b]) ==
+         i_pc_is_cached);
     assign bank_w0_elig[b]      = !i_pc[1] || bank_hw_lookup[b];
     assign bank_is_span[b]      = bank_hw_lookup[b] && !bank_is_comp[b];
     assign bank_eff_target[b]   = bank_use_ras[b] ?
@@ -331,16 +335,15 @@ module fetch_btb_2w #(
         i_ras_even_dir_idx : bank_payload_lookup[b][4+:EvenDirBits];
   end
 
-  // Pre-combine valid, counter direction, tier check, W0 halfword eligibility,
-  // and span qualification in parallel with the upper-tag reduction tree so
-  // each bank's final taken/steer decision folds with the 3-bit upper-tag
-  // result into one 4-input LUT.
-  (* keep = "true" *) logic [1:0] bank_meta_ok;
-  (* keep = "true" *) logic [1:0] bank_meta_w0_raw_ok;
-  (* keep = "true" *) logic [1:0] bank_meta_w0_ok;
-  (* keep = "true" *) logic [1:0] bank_meta_w1_steer_ok;
+  // Combine valid, counter direction, tier check, W0 halfword eligibility, and
+  // span qualification with the 3-bit upper-tag reduction without extra keep
+  // barriers so late tier/RAS signals enter at the final LUT level.
+  logic [1:0] bank_meta_ok;
+  logic [1:0] bank_meta_w0_raw_ok;
+  logic [1:0] bank_meta_w0_ok;
+  logic [1:0] bank_meta_w1_steer_ok;
   logic [1:0] bank_w0_raw_taken;
-  (* keep = "true" *) logic [1:0] bank_w0_taken;
+  logic [1:0] bank_w0_taken;
   logic [1:0] bank_w1_taken;
   logic [1:0] bank_w1_steer;
   for (genvar b = 0; b < 2; b++) begin : gen_bank_taken
@@ -409,8 +412,9 @@ module fetch_btb_2w #(
   assign o_w1_link_inc         = w1_hw || !w1_comp;
   assign o_w0_link_hw          = w0_hw ^ w0_comp;
   assign o_w1_link_hw          = w1_hw ^ w1_comp;
-  assign o_taken               = w0_taken || w1_taken;
-  assign o_taken_steer         = w0_taken || (!w0_raw_taken && w1_steer_cand);
+  assign o_taken               = (w0_is_odd ? bank_w0_taken[1] : bank_w0_taken[0]) || w1_taken;
+  assign o_taken_steer         = (w0_is_odd ? bank_w0_taken[1] : bank_w0_taken[0]) ||
+                                 (!w0_raw_taken && w1_steer_cand);
   assign o_taken_pos           = {!w0_taken, sel_bank1 ? bank_hw_lookup[1] : bank_hw_lookup[0]};
   assign o_target              = sel_bank1 ? bank_eff_target[1] : bank_eff_target[0];
   assign o_target_even_dir_idx = sel_bank1 ? bank_eff_even_dir[1] : bank_eff_even_dir[0];
