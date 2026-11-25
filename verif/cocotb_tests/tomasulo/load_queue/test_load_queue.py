@@ -5407,3 +5407,98 @@ async def test_probe_launch_excludes_uncached_and_lr(dut: Any) -> None:
         result = await wait_for_fu_complete(dut_if)
         assert result.valid and result.value == 0x5555_6666_7777_8888, kind
         await accept_fu_complete(dut_if)
+
+
+# ============================================================================
+# Hole reuse must not starve an older ready load behind a younger staged load
+# ============================================================================
+@cocotb.test()
+async def test_hole_reuse_does_not_starve_older_ready_load(dut: Any) -> None:
+    """An older ready load evicts a younger blocked staged load despite hole reuse.
+
+    Physical slot layout after freeing and reusing slot 1:
+      slot 0: anchor load (tag 2, unaddressed)
+      slot 1: youngest load (tag 7, ready, reused hole ahead of slot 2 in ring order)
+      slot 2: older load (tag 4, ready, NOT at ROB head)
+      slot 3: staged younger load (tag 6, blocked by an older unresolved store)
+      slots 4..7: younger unaddressed loads (tags 8..11)
+    With ROB head at tag 1 (representing draining MMIO stores), tag 4 is older
+    than staged tag 6 and must evict it from sq_check even though slot 1 holds
+    a ready younger load ahead of slot 2 in physical ring order.
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(1)
+
+    for tag in (2, 3, 4, 6, 8, 9, 10, 11):
+        dut_if.drive_alloc(rob_tag=tag, size=MEM_SIZE_WORD)
+        model.alloc(tag, False, MEM_SIZE_WORD, False)
+        await dut_if.step()
+        dut_if.clear_alloc()
+    assert dut_if.full
+
+    # Complete and free tag 3 (slot 1) so slot 1 is the sole free hole.
+    dut_if.drive_addr_update(rob_tag=3, address=0x1000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"] and mem_req["addr"] == 0x1000
+    await dut_if.step()
+    dut_if.drive_mem_response(0x1111_2222)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    res = await wait_for_fu_complete(dut_if, max_cycles=8)
+    assert res.valid and res.tag == 3
+    await accept_fu_complete(dut_if)
+    assert int(dut.lq_valid.value) == 0b1111_1101
+
+    # Stage younger load tag 6 (slot 3) and block it on an unresolved older store.
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_addr_update(rob_tag=6, address=0x3000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    sq_check = await wait_for_sq_check(dut_if, max_cycles=6)
+    assert sq_check["valid"] and sq_check["rob_tag"] == 6
+
+    # Reuse the hole in slot 1 for an even younger ready load (tag 7).
+    dut_if.drive_alloc(rob_tag=7, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    assert int(dut.lq_valid.value) == 0xFF
+    assert int(dut.lq_rob_tag[1].value) == 7
+    dut_if.drive_addr_update(rob_tag=7, address=0x4000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    # Resolve the older load (tag 4 in slot 2). ROB head remains at tag 1.
+    dut_if.drive_addr_update(rob_tag=4, address=0x2000)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+
+    evicted_to_older = False
+    for _ in range(8):
+        sq_check = dut_if.read_sq_check()
+        if sq_check["valid"] and sq_check["rob_tag"] == 4:
+            assert sq_check["addr"] == 0x2000
+            evicted_to_older = True
+            break
+        await dut_if.step()
+    assert evicted_to_older, (
+        "Older ready load (tag 4, slot 2) was starved behind younger staged load "
+        f"(tag 6) and reused-hole candidate (tag 7, slot 1); sq_check={sq_check}"
+    )
+
+    # Disambiguate tag 4 (older stores known, non-overlapping) and verify launch.
+    dut_if.drive_sq_all_older_known(True)
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=6)
+    assert mem_req["en"] and mem_req["addr"] == 0x2000
+    await dut_if.step()
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.drive_mem_response(0xCAFE_4444)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    res = await wait_for_fu_complete(dut_if, max_cycles=6)
+    assert res.valid and res.tag == 4 and res.value == 0xCAFE_4444
+    await accept_fu_complete(dut_if)

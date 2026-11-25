@@ -23,7 +23,8 @@ coh_lq_selector16_prove selector selector16
 
 [options]
 mode prove
-depth 4
+~selector: depth 4
+selector: depth 1
 ~lq: timeout 180
 lq: timeout 360
 
@@ -58,6 +59,7 @@ selector16: chparam -set DEPTH 16 coherent_lq_issue_selector
 selector: hierarchy -top coherent_lq_issue_selector
 selector: script free_undefined.ys
 selector: prep -flatten -top coherent_lq_issue_selector
+selector: select -assert-none t:$*ff* t:$*latch* t:$sr
 
 candidate: read -formal -sv coherent_lq_candidate_select.sv
 candidate: hierarchy -top coherent_lq_candidate_select

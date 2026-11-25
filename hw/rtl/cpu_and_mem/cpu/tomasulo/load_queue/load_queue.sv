@@ -403,17 +403,6 @@ module load_queue #(
     end
   endfunction
 
-  function automatic logic [DEPTH-1:0] rotate_mask_from_head(input logic [DEPTH-1:0] mask,
-                                                             input logic [IdxWidth-1:0] start_idx);
-    logic [(2*DEPTH)-1:0] doubled;
-    logic [(2*DEPTH)-1:0] shifted;
-    begin
-      doubled = {mask, mask};
-      shifted = doubled >> start_idx;
-      rotate_mask_from_head = shifted[DEPTH-1:0];
-    end
-  endfunction
-
   function automatic logic is_load_misaligned(input riscv_pkg::mem_size_e size,
                                               input logic [XLEN-1:0] addr);
     unique case (size)
@@ -487,13 +476,9 @@ module load_queue #(
   // Storage: sparse queue with FF-based control plus LUTRAM payloads
   // ===========================================================================
 
-  // Ring cursors: head_ptr starts the issue scans, tail_ptr the free-entry
-  // search. Only their low IdxWidth bits are used; full and empty come from
-  // lq_valid.
-  logic [PtrWidth-1:0] head_ptr;
+  // Ring search cursor: tail_ptr starts the free-entry search. Only its low
+  // IdxWidth bits are used; full and empty come from lq_valid.
   logic [PtrWidth-1:0] tail_ptr;
-
-  wire [IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
   // Per-entry 1-bit flags (packed vectors for bulk operations)
   logic [DEPTH-1:0] lq_valid;
   // The memory issue launch as the LQ's own logic reads it; o_mem_read_en
@@ -854,8 +839,7 @@ module load_queue #(
   logic free_entry_en;
   logic [IdxWidth-1:0] free_entry_idx;
 
-  // Head/tail search targets for the sparse valid-bit queue.
-  logic [PtrWidth-1:0] head_advance_target;
+  // Free-entry search target for the sparse valid-bit queue.
   logic [PtrWidth-1:0] alloc_target;
   logic [DEPTH-1:0] lq_addr_update_match;
   logic lq_addr_update_we;
@@ -1479,6 +1463,22 @@ module load_queue #(
     end
   end
 
+  // Register ROB-head-relative age per entry for oldest-ready issue selection.
+  // A newly allocated entry cannot be eligible on its first valid cycle
+  // (p_replaced_dep_address_not_stored / _not_pre_matched), so updating from
+  // lq_rob_tag is ready before the entry can enter any scan and keeps
+  // allocation out of the age path.
+  logic [DEPTH-1:0][ReorderBufferTagWidth-1:0] lq_entry_age_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      lq_entry_age_q <= '0;
+    end else begin
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        lq_entry_age_q[i] <= lq_rob_tag[i] - i_rob_head_tag;
+      end
+    end
+  end
+
   // Qualify the registered address pre-match with current issue valid.
   logic [DEPTH-1:0] entry_addr_valid_now;
   always_comb begin
@@ -1492,16 +1492,17 @@ module load_queue #(
   // Issue selection (lq_issue_selector.sv). issue_cdb_idx is the read
   // address of the lq_data LUTRAM, which lives in this module.
   // ===========================================================================
+  localparam int unsigned ScanPosWidth = ReorderBufferTagWidth + IdxWidth;
   logic [DEPTH-1:0] merged_scan_onehot;
   logic stored_scan_found;
   logic [IdxWidth-1:0] stored_scan_idx;
-  logic [IdxWidth-1:0] stored_scan_pos;
+  logic [ScanPosWidth-1:0] stored_scan_pos;
   logic [DEPTH-1:0] stored_scan_onehot;
   logic [ReorderBufferTagWidth-1:0] stored_scan_rob_tag;
 
   logic update_scan_found;
   logic [IdxWidth-1:0] update_scan_idx;
-  logic [IdxWidth-1:0] update_scan_pos;
+  logic [ScanPosWidth-1:0] update_scan_pos;
   logic [DEPTH-1:0] update_scan_onehot;
   logic [ReorderBufferTagWidth-1:0] update_scan_rob_tag;
   logic head_mem_stored_found;
@@ -1513,10 +1514,13 @@ module load_queue #(
   logic [DEPTH-1:0] head_mem_update_onehot;
   logic [ReorderBufferTagWidth-1:0] head_mem_update_rob_tag;
   logic [DEPTH*ReorderBufferTagWidth-1:0] lq_rob_tag_flat;
+  logic [DEPTH*ReorderBufferTagWidth-1:0] lq_entry_age_flat;
 
   for (genvar g_lq_tag = 0; g_lq_tag < DEPTH; g_lq_tag++) begin : gen_lq_rob_tag_flat
     assign lq_rob_tag_flat[g_lq_tag*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
         lq_rob_tag[g_lq_tag];
+    assign lq_entry_age_flat[g_lq_tag*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
+        lq_entry_age_q[g_lq_tag];
   end
 
   logic [DEPTH-1:0] coherent_parked_q;
@@ -1591,8 +1595,8 @@ module load_queue #(
         .addr_update_pre_match_q(addr_update_pre_match_q),
         .rob_head_match_q(rob_head_match_q),
         .lq_rob_tag_flat(lq_rob_tag_flat),
+        .i_entry_age_flat(lq_entry_age_flat),
         .blocked_by_amo_phys_q(issue_block_q),
-        .head_idx(head_idx),
         .i_sq_committed_empty(i_sq_committed_empty),
         .i_staged_younger(staged_younger_than_entry),
         .i_staged_younger_head(staged_younger_than_head),
@@ -3982,37 +3986,6 @@ module load_queue #(
                                     {DEPTH{slot2_alloc_en_reference}};
 `endif
 
-  // ===========================================================================
-  // Head Advancement (find-first-valid from head)
-  // ===========================================================================
-  // Rotate from head_ptr, select the first valid offset, and add it to head
-  // to skip holes in one cycle.
-
-  logic [DEPTH-1:0] lq_head_valid_rotated;
-  logic [IdxWidth-1:0] lq_head_first_valid_offset;
-  logic lq_head_first_valid_found;
-
-  always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      lq_head_valid_rotated[i] = lq_valid[IdxWidth'(head_idx+IdxWidth'(i))];
-    end
-  end
-
-  // Priority encoder: find lowest-index set bit (first valid entry)
-  always_comb begin
-    lq_head_first_valid_offset = '0;
-    lq_head_first_valid_found  = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (lq_head_valid_rotated[i] && !lq_head_first_valid_found) begin
-        lq_head_first_valid_offset = IdxWidth'(i);
-        lq_head_first_valid_found  = 1'b1;
-      end
-    end
-  end
-
-  // Add offset back to head_ptr (when empty: offset=0, head stays put)
-  assign head_advance_target = head_ptr + PtrWidth'({1'b0, lq_head_first_valid_offset});
-
   // Update control flops each cycle for timing. sq_check_pending qualifies
   // sideband state; completion clears it and the next capture replaces the
   // stale sideband values.
@@ -4453,7 +4426,6 @@ module load_queue #(
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      head_ptr                  <= '0;
       tail_ptr                  <= '0;
       lq_valid                  <= '0;
       mem_outstanding           <= 1'b0;
@@ -4467,7 +4439,6 @@ module load_queue #(
       amo_state                 <= AMO_IDLE;
     end else if (i_flush_all) begin
       // Full flush: reset control signals
-      head_ptr <= '0;
       tail_ptr <= '0;
       lq_valid <= '0;
       mem_outstanding <= 1'b0;
@@ -4601,9 +4572,6 @@ module load_queue #(
       // vectors are disjoint.
       // lq_valid_next, and flag_kept below, apply the allocations.
       lq_valid <= lq_valid_next;
-
-      // Advance head past all contiguous invalid entries (including freed)
-      head_ptr <= head_advance_target;
 
     end  // !flush_all
   end
@@ -5248,22 +5216,25 @@ module load_queue #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Check Phase A against the first valid, data-ready entry in ring order.
+  // Check Phase A against the oldest valid, data-ready entry by registered age.
   logic sim_issue_cdb_found_ref;
   logic [IdxWidth-1:0] sim_issue_cdb_idx_ref;
+  logic [ReorderBufferTagWidth-1:0] sim_issue_cdb_age_ref;
   always_comb begin
     sim_issue_cdb_found_ref = 1'b0;
     sim_issue_cdb_idx_ref   = '0;
+    sim_issue_cdb_age_ref   = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (lq_valid[IdxWidth'(head_idx + IdxWidth'(i))] &&
-          lq_data_valid[IdxWidth'(head_idx + IdxWidth'(i))] && !sim_issue_cdb_found_ref) begin
+      if (lq_valid[i] && lq_data_valid[i] &&
+          (!sim_issue_cdb_found_ref || (lq_entry_age_q[i] < sim_issue_cdb_age_ref))) begin
         sim_issue_cdb_found_ref = 1'b1;
-        sim_issue_cdb_idx_ref   = IdxWidth'(head_idx + IdxWidth'(i));
+        sim_issue_cdb_idx_ref   = IdxWidth'(i);
+        sim_issue_cdb_age_ref   = lq_entry_age_q[i];
       end
     end
   end
   always_ff @(posedge i_clk) begin
-    if (reset_seen_q && i_rst_n && !$isunknown({lq_valid, lq_data_valid, head_idx})) begin
+    if (reset_seen_q && i_rst_n && !$isunknown({lq_valid, lq_data_valid, lq_entry_age_q})) begin
       p_issue_cdb_physical_select_exact :
       assert (issue_cdb_found == sim_issue_cdb_found_ref && issue_cdb_idx == sim_issue_cdb_idx_ref);
     end

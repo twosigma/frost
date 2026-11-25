@@ -108,14 +108,15 @@ compares `i_pre_issue_direct_tag` instead. The DMMU can announce a load before
 its lookup settles. The registered match takes effect only when the load's
 address-update packet arrives.
 
-[`lq_issue_selector.sv`](lq_issue_selector.sv) scans in ring order from
-`head_idx` and finds, in parallel: the first entry holding a result, which
-moves into `cdb_stage`; the first entry ready for memory (address known or
-arriving, not issued, not staged, not fenced by an older AMO or held behind a
-vector memory instruction); and the ROB-head load if it is ready for memory and
-not held, which wins. A device load may be staged before
-it reaches the ROB head, but device loads, LRs and AMOs neither probe the SQ
-nor leave the LQ until they are at the head.
+[`lq_issue_selector.sv`](lq_issue_selector.sv) orders entries by registered
+ROB-head-relative age (`lq_entry_age_q[i] = lq_rob_tag[i] - i_rob_head_tag`,
+with physical index as tie-break) and finds, in parallel: the oldest entry
+holding a result, which moves into `cdb_stage`; the oldest entry ready for
+memory (address known or arriving, not issued, not staged, not fenced by an
+older AMO or held behind a vector memory instruction); and the ROB-head load
+if it is ready for memory and not held, which wins. A device load may be staged
+before it reaches the ROB head, but device loads, LRs and AMOs neither probe
+the SQ nor leave the LQ until they are at the head.
 
 The capture, issue and forwarding control banks compute memory candidates for
 both SQ drain states in
@@ -131,14 +132,16 @@ tag, since at most one entry matches the head. The selector passes each drain
 case's groups and head-candidate flags to the LQ, which forms replacement: the
 pending, gate, drain and address-update selects arrive before the groups, so
 each case's select meets its groups in one kept term, and the four terms and
-the head term meet in one more before the final capture LUTs. Both cases use the same ring order and ROB-head priority. Each entry has a cyclic
-precedence mask derived from the queue head. An eligible entry wins when none
-of its predecessors is eligible. Scan indices and tags decode from the
-winning-entry masks. Selection is combinational. The coherent memory identity
-uses the merged ring mask when an address update is valid and the stored mask
-otherwise. Eligible ROB-head entries precede the ring scan. The coherent ring
-index and ROB tag decode from the selected ring mask. Head matches use the
-head selector's index and tag. The pre-issue selector registers a one-hot mask
+the head term meet in one more before the final capture LUTs. Both cases use
+the same ROB-head-relative age order and ROB-head priority. Each entry has a
+precedence mask derived from pairwise comparisons of `lq_entry_age_q`, broken
+by physical index. An eligible entry wins when none of its predecessors is
+eligible. Scan indices and tags decode from the winning-entry masks. Selection
+is combinational. The coherent memory identity uses the merged age-order mask
+when an address update is valid and the stored mask otherwise. Eligible
+ROB-head entries precede the age-order scan. The coherent scan index and ROB
+tag decode from the selected age-order mask. Head matches use the head
+selector's index and tag. The pre-issue selector registers a one-hot mask
 alongside the candidate matches. Staging capture uses candidate presence
 independently of ring ordering. A helper prepares capture and clear outcomes
 for launch hold, an unheld miss and an unheld hit. These outcomes include the
@@ -202,19 +205,17 @@ final LUT selectors preserve these decisions in the primitive build. Portable
 logic implements the same functions. The result-RAM write enables and these
 decisions use the same cycle's lookup and completion signals.
 
-### ROB-head priority
+### Age-ordered replacement and ROB-head priority
 
-Holes make ring order differ from age, so the ROB-head load H gets priority
-for the single staging register and evicts a younger staged load
-(`sq_check_replace`). Without it the queue can deadlock. Suppose a younger
-load Y holds the staging register while it waits on an older store S that
-overlaps it but cannot forward (S covers only part of Y, say), and a load Z,
-younger than Y but ahead of H in ring order, wins the normal scan every cycle.
-Z cannot evict the older Y, so H is never selected. If S has not committed, it
-is younger than H, so it cannot commit or drain until H retires, and Y never
-leaves. Priority for H is always safe: every store older than H has committed
-and drains on its own. A head AMO or LR takes priority only once the
-committed-store queue is empty.
+Holes make physical slot order differ from program age, so issue selection
+orders eligible entries by their registered ROB-head-relative age
+(`lq_entry_age_q`). Whenever a younger load Y holds the single staging register
+(for example, waiting on an unresolved older store S) and any older ready load O
+becomes eligible, O wins the age-ordered scan even if a younger load Z reused a
+lower physical slot, so `sq_check_replace` evicts Y for O without waiting for O
+to reach the ROB head. The ROB-head load H also gets explicit priority and
+evicts any younger staged load; this guarantees forward progress for head
+device loads, LRs, and AMOs once the committed-store queue is empty.
 
 ### Staging and the SQ check
 
