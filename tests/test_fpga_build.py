@@ -2572,7 +2572,8 @@ def test_vcu118_vector_wiring() -> None:
     assert subsystem is not None
     assert re.search(r"\.CLK_FREQ_HZ\s*\(\s*CPU_CLK_HZ\s*\)", subsystem[1])
     assert re.search(r"\.VECTOR\s*\(\s*VECTOR\s*\)", subsystem[1])
-    assert re.search(r"\.VLEN\s*\(\s*256\s*\)", subsystem[1])
+    assert re.search(r"\.VLEN\s*\(\s*VLEN\s*\)", subsystem[1])
+    assert re.search(r"\bparameter\s+int\s+unsigned\s+VLEN\s*=\s*256\b", top)
     assert re.search(r"\.VECTOR_ADVERTISE\s*\(\s*VECTOR_ADVERTISE\s*\)", subsystem[1])
 
     clock_rtl = (REPO_ROOT / "boards/vcu118/vcu118_clock.sv").read_text()
@@ -2616,6 +2617,70 @@ def test_vcu118_vector_wiring() -> None:
     )
     assert "remove_cells_from_pblock [get_pblocks pblock_slr2]" in vector_xdc
     assert "add_cells_to_pblock [get_pblocks pblock_vec_slr1]" in vector_xdc
+
+
+@pytest.mark.parametrize(
+    "options,expected_vlen",
+    [
+        (["--vector"], "256"),
+        (["--vector", "--vlen", "128"], "128"),
+        (["--vector", "--vlen=512"], "512"),
+    ],
+)
+def test_vcu118_vector_length_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    options: list[str],
+    expected_vlen: str,
+) -> None:
+    """build.py --vlen sets the opt-in vector build's VLEN; the default stays 256."""
+    monkeypatch.setenv("FROST_VLEN", "64")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "vcu118",
+            "--build-dir",
+            str(tmp_path),
+            "--stop-after",
+            "synth",
+            *options,
+        ],
+    )
+    monkeypatch.setattr(fpga_build, "compile_hello_world", lambda *args, **kwargs: True)
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+
+    def check_synthesis(*args: Any, **kwargs: Any) -> tuple[bool, float, str]:
+        assert os.environ["FROST_VECTOR"] == "1"
+        assert os.environ["FROST_VLEN"] == expected_vlen
+        return True, 0.0, "post_synth"
+
+    monkeypatch.setattr(fpga_build, "run_step", check_synthesis)
+    fpga_build.main()
+
+
+@pytest.mark.parametrize(
+    "argv,message",
+    [
+        (["build.py", "vcu118", "--vlen", "128"], "--vlen needs --vector"),
+        (["build.py", "x3", "--vlen", "128"], "--vlen is only supported for vcu118"),
+    ],
+)
+def test_vector_length_option_rejections(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    message: str,
+) -> None:
+    """--vlen belongs to the VCU118 opt-in vector build."""
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

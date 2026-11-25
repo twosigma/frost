@@ -693,7 +693,15 @@ if {$step eq "synth"} {
         }
         if {[vcu118_vector_enabled] eq "1"} {
             lappend synth_args -generic CPU_CLK_HZ=162500000 -generic VECTOR=1 -generic VECTOR_ADVERTISE=1
-            puts "VCU118 vector unit included (CPU_CLK_HZ=162500000, VECTOR=1, VLEN=256, VECTOR_ADVERTISE=1)"
+            # build.py --vlen exports FROST_VLEN; the board top's default is 256.
+            set vector_vlen [getenv_default FROST_VLEN 256]
+            if {$vector_vlen ni {128 256 512}} {
+                error "FROST_VLEN must be 128, 256 or 512 (got '$vector_vlen')"
+            }
+            if {$vector_vlen != 256} {
+                lappend synth_args -generic VLEN=$vector_vlen
+            }
+            puts "VCU118 vector unit included (CPU_CLK_HZ=162500000, VECTOR=1, VLEN=$vector_vlen, VECTOR_ADVERTISE=1)"
         }
     }
     # A name used before its declaration becomes an implicit net. Verilator

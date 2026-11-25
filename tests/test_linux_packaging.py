@@ -626,9 +626,39 @@ def test_vector_device_tree_matches_board(board: str, tmp_path: Path) -> None:
         assert re.search(r"\bparameter\s+bit\s+VECTOR_ADVERTISE\s*=\s*1'b0\b", top)
         assert re.search(r"\.VECTOR\s*\(\s*VECTOR\s*\)", top)
         assert re.search(r"\.VECTOR_ADVERTISE\s*\(\s*VECTOR_ADVERTISE\s*\)", top)
-        assert re.search(r"\.VLEN\s*\(\s*256\s*\)", top)
+        assert re.search(r"\bparameter\s+int\s+unsigned\s+VLEN\s*=\s*256\b", top)
+        assert re.search(r"\.VLEN\s*\(\s*VLEN\s*\)", top)
     subsystem = (REPO_ROOT / "boards/xilinx_frost_subsystem.sv").read_text()
     assert ".VECTOR_ADVERTISE(VECTOR_ADVERTISE)" in subsystem
+
+
+@pytest.mark.parametrize("vlen", [128, 256, 512])
+def test_vcu118_vector_device_tree_names_zvl_up_to_vlen(vlen: int) -> None:
+    """--vlen bounds the Zvl*b names of a VCU118 vector tree; the rest of the list stays."""
+    packer = _load_module(SBI_PACKER)
+    dts = packer.gen_dts(
+        clk_hz=162_500_000,
+        initrd_range=None,
+        bootargs="",
+        model="frost",
+        board="vcu118",
+        vector=True,
+        vlen=vlen,
+    )
+    isa_match = re.search(r'riscv,isa = "([^"]+)"', dts)
+    assert isa_match is not None
+    isa = isa_match.group(1)
+    zvl = [ext for ext in isa.split("_") if re.fullmatch(r"zvl\d+b", ext)]
+    assert zvl == [f"zvl{bits}b" for bits in (32, 64, 128, 256, 512) if bits <= vlen]
+    plain = [ext for ext in isa.split("_") if not re.fullmatch(r"zvl\d+b", ext)]
+    base = [
+        ext
+        for ext in packer.VCU118_VECTOR_ISA_STRING.split("_")
+        if not re.fullmatch(r"zvl\d+b", ext)
+    ]
+    assert plain == base
+    if vlen == 256:
+        assert isa == packer.VCU118_VECTOR_ISA_STRING
 
 
 def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:

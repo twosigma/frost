@@ -132,6 +132,17 @@ VCU118_VECTOR_ISA_EXTENSIONS = tuple(
 )
 VCU118_VECTOR_ISA_STRING = "rv64imafdcv_" + "_".join(VCU118_VECTOR_ISA_EXTENSIONS[7:])
 
+
+def vector_length_extensions(extensions: tuple[str, ...], vlen: int) -> tuple[str, ...]:
+    """Name Zvl32b up to Zvl<vlen>b, in place of the VLEN 256 list's Zvl*b names."""
+    zvl = [f"zvl{bits}b" for bits in (32, 64, 128, 256, 512, 1024) if bits <= vlen]
+    plain = [
+        ext for ext in extensions if not (ext.startswith("zvl") and ext.endswith("b"))
+    ]
+    at = plain.index("smaia")
+    return (*plain[:at], *zvl, *plain[at:])
+
+
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
 DEFAULT_BOOTARGS = "earlycon console=ttyS0 rdinit=/sbin/init ipv6.disable=1"
@@ -306,12 +317,14 @@ def gen_dts(
     mem_size: int = MEM_SIZE,
     board: str = "x3",
     vector: bool | None = None,
+    vlen: int = 256,
 ) -> str:
     """Return the FROST device tree source for the OpenSBI + Sv39 boot.
 
     mac is the NIC's local-mac-address as DT bytes ("02 11 22 33 44 55");
     mem_size is the size of the memory node at DDR_BASE; vector overrides
-    whether the CPU node advertises V (default: True for x3, False for vcu118).
+    whether the CPU node advertises V (default: True for x3, False for vcu118);
+    vlen is the vector register length, which bounds the Zvl*b names.
     """
     has_vector = (board == "x3") if vector is None else vector
     if board == "x3":
@@ -322,6 +335,9 @@ def gen_dts(
             VCU118_VECTOR_ISA_EXTENSIONS if has_vector else VCU118_ISA_EXTENSIONS
         )
         isa_string = VCU118_VECTOR_ISA_STRING if has_vector else VCU118_ISA_STRING
+    if has_vector and vlen != 256:
+        isa_extensions = vector_length_extensions(isa_extensions, vlen)
+        isa_string = "rv64imafdcv_" + "_".join(isa_extensions[7:])
     ext_list = ",\n\t\t\t\t".join(
         ", ".join(f'"{e}"' for e in isa_extensions[i : i + 6])
         for i in range(0, len(isa_extensions), 6)
@@ -832,6 +848,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="advertise the V extension in the generated device tree "
         "(default: on for x3, off for vcu118)",
     )
+    parser.add_argument(
+        "--vlen",
+        type=int,
+        choices=(128, 256, 512),
+        default=256,
+        help="vector register length in bits; names Zvl*b up to it (default: 256)",
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "--dtb",
@@ -885,6 +908,7 @@ def main(argv: list[str] | None = None) -> int:
                 mem_size=args.mem_size,
                 board=args.board,
                 vector=args.vector,
+                vlen=args.vlen,
             ),
             out_dir,
             args.dtc,

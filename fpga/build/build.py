@@ -82,6 +82,9 @@ BOARD_CONFIG = {
 # Opt-in VCU118 vector build (VLEN 256, misa.V advertised, SLR1 vector pblock).
 VCU118_VECTOR_CLOCK_FREQ = 162500000
 VCU118_VECTOR_ROUTE_DIRECTIVE = "AggressiveExplore"
+# Vector length of the opt-in VCU118 vector build unless --vlen selects another.
+VCU118_VECTOR_VLEN = 256
+VECTOR_VLENS = (128, 256, 512)
 
 
 def board_ddr_capacity_log2_bytes(design: Path) -> int:
@@ -3538,6 +3541,14 @@ Examples:
         "SLR1 and selects the 162500000 Hz CPU clock; x3 always includes it",
     )
     parser.add_argument(
+        "--vlen",
+        type=int,
+        choices=VECTOR_VLENS,
+        default=None,
+        help="vcu118 --vector only: vector register length in bits "
+        f"(default: {VCU118_VECTOR_VLEN})",
+    )
+    parser.add_argument(
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
@@ -3570,6 +3581,12 @@ Examples:
         parser.error("--no-misaligned-hw is only supported for vcu118")
     elif args.vector is False:
         parser.error("--no-vector is only supported for vcu118")
+    if board_name == "vcu118":
+        if args.vlen is not None and not vcu118_vector:
+            parser.error("--vlen needs --vector")
+        os.environ["FROST_VLEN"] = str(args.vlen or VCU118_VECTOR_VLEN)
+    elif args.vlen is not None:
+        parser.error("--vlen is only supported for vcu118")
     if args.start_at == "bitstream":
         if args.stop_after is not None:
             parser.error("--start-at bitstream cannot be combined with --stop-after")
