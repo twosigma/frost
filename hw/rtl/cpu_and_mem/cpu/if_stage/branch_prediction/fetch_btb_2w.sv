@@ -67,7 +67,7 @@ module fetch_btb_2w #(
     output logic                o_compressed,
     output logic                o_is_call,
     output logic                o_is_return,
-    output logic                o_is_span,              // 32-bit taken branch at W+1 upper halfword (pos 3)
+    output logic                o_is_span,              // 32-bit branch at W+1 hi half (pos 3)
     output logic                o_target_is_cached,
     output logic                o_w0_hit,
     output logic                o_w1_hit,
@@ -330,7 +330,8 @@ module fetch_btb_2w #(
     assign bank_w0_elig[b]      = !i_pc[1] || bank_hw_lookup[b];
     assign bank_is_span[b]      = bank_hw_lookup[b] && !bank_is_comp[b];
     assign bank_eff_target[b]   = bank_use_ras[b] ?
-        i_ras_top : {i_pc[XLEN-1:TargetBits], bank_payload_lookup[b][PayloadBits-1:4+EvenDirBits], 1'b0};
+        i_ras_top :
+        {i_pc[XLEN-1:TargetBits], bank_payload_lookup[b][PayloadBits-1:4+EvenDirBits], 1'b0};
     assign bank_eff_even_dir[b] = bank_use_ras[b] ?
         i_ras_even_dir_idx : bank_payload_lookup[b][4+:EvenDirBits];
   end

@@ -349,7 +349,8 @@ module fetch_parcel_queue #(
     if (i_rst) reset_seen_q <= 1'b1;
     if (reset_seen_q && !i_rst && !i_flush) begin
       if (!$isunknown({i_push_valid, i_push_count, count_q, i_pop_count, meta_count_q})) begin
-        p_push_count_range : assert (!i_push_valid || (i_push_count >= 3'd1 && i_push_count <= 3'd4));
+        p_push_count_range :
+        assert (!i_push_valid || (i_push_count >= 3'd1 && i_push_count <= 3'd4));
         p_pop_within_avail : assert (CountBits'(i_pop_count) <= avail_sum);
         p_no_parcel_overflow : assert (avail_sum <= CountBits'(DEPTH));
         p_no_meta_overflow :

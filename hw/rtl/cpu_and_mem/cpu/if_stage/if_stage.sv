@@ -686,7 +686,8 @@ module if_stage #(
   logic [RasPtrBits:0] f1_eff_ras_ckpt_cnt;
   logic [XLEN-1:0] f1_eff_ras_ckpt_top;
   assign f1_eff_ras_ckpt_tos = f1_req_q.ras_ckpt_from_live ? ras_tos : f1_req_q.ras_ckpt_tos;
-  assign f1_eff_ras_ckpt_cnt = f1_req_q.ras_ckpt_from_live ? ras_valid_count : f1_req_q.ras_ckpt_cnt;
+  assign f1_eff_ras_ckpt_cnt = f1_req_q.ras_ckpt_from_live ?
+      ras_valid_count : f1_req_q.ras_ckpt_cnt;
   assign f1_eff_ras_ckpt_top = f1_req_q.ras_ckpt_from_live ? ras_top : f1_req_q.ras_ckpt_top;
 
   // Register unified EX/PD/F1 RAS restores and their precomputed cached-region
@@ -701,7 +702,8 @@ module if_stage #(
   logic pd_ras_link_cached;
   logic f1_ras_top_cached;
   assign ex_ras_top_cached  = riscv_pkg::pma_cached_ok(i_from_ex_comb.ras_restore_top);
-  assign ex_ras_link_cached = riscv_pkg::pma_cached_ok(i_from_ex_comb.ras_push_address_after_restore);
+  assign ex_ras_link_cached =
+      riscv_pkg::pma_cached_ok(i_from_ex_comb.ras_push_address_after_restore);
   assign pd_ras_top_cached  = riscv_pkg::pma_cached_ok(pd_ras_ckpt_top_q);
   assign pd_ras_link_cached = riscv_pkg::pma_cached_ok(i_pd_redirect_ras_link);
   assign f1_ras_top_cached  = f1_req_q.ras_ckpt_from_live ?
@@ -776,7 +778,8 @@ module if_stage #(
       ras_restore_link_cached_q <= 1'b0;
     end else begin
       ras_restore_q             <= ras_restore_comb;
-      ras_restore_pure_pop_q    <= ras_restore_comb && ras_restore_pop_comb && !ras_restore_push_comb;
+      ras_restore_pure_pop_q    <=
+          ras_restore_comb && ras_restore_pop_comb && !ras_restore_push_comb;
       ras_restore_nonempty_q    <= ras_restore_comb && ras_restore_nonempty_comb;
       ras_restore_uses_link_q   <= ras_restore_comb && ras_restore_push_comb &&
           (!ras_restore_pop_comb || (ras_restore_cnt_comb != '0));
@@ -850,7 +853,8 @@ module if_stage #(
   assign ras_sh_cnt_after_push = (ras_cached_cnt_q != (RasPtrBits + 1)'(riscv_pkg::RasDepth)) ?
       (ras_cached_cnt_q + (RasPtrBits + 1)'(1)) : ras_cached_cnt_q;
   assign ras_sh_restore_swap_req = ras_restore_pop_q && ras_restore_push_q;
-  assign ras_sh_do_restore_swap  = ras_restore_q && ras_sh_restore_swap_req && (ras_restore_cnt_q != '0);
+  assign ras_sh_do_restore_swap  =
+      ras_restore_q && ras_sh_restore_swap_req && (ras_restore_cnt_q != '0);
   assign ras_sh_do_restore_push  = ras_restore_q && ras_restore_push_q && !ras_sh_restore_swap_req;
   assign ras_sh_do_swap          = !ras_restore_q && ras_sh_pending_swap;
   assign ras_sh_do_push          = !ras_restore_q && ras_sh_pending_push;
@@ -1264,7 +1268,8 @@ module if_stage #(
   assign f1_btb_taken_raw   = !f1_is_span_tail && f1_src_btb_taken && f1_btb_ok;
   assign f1_valid_btb_taken = (f1_accept || f1_collapsed_accept) && f1_btb_taken_raw;
 
-  assign f1_false_btb_raw         = f1_accept_raw && !f1_req_q.span_tail && f1_req_q.btb_taken && !f1_btb_ok;
+  assign f1_false_btb_raw         =
+      f1_accept_raw && !f1_req_q.span_tail && f1_req_q.btb_taken && !f1_btb_ok;
   assign f1_cancel_span_raw       = f1_false_btb_raw && f1_req_q.btb_is_span;
   assign f1_false_btb_resteer_raw = f1_false_btb_raw && !f1_req_q.btb_is_span;
   assign f1_false_btb             = !any_redirect && f1_false_btb_raw;
@@ -1430,8 +1435,10 @@ module if_stage #(
     f1_push_meta.tage_w1       = f1_w0_odd ? f1_pred.tage_bank0 : f1_pred.tage_bank1;
     f1_push_meta.itt_w0        = f1_w0_odd ? f1_pred.itt_bank1 : f1_pred.itt_bank0;
     f1_push_meta.itt_w1        = f1_w0_odd ? f1_pred.itt_bank0 : f1_pred.itt_bank1;
-    f1_push_meta.itt_hit[0]    = f1_tage_cov[0] && (f1_w0_odd ? f1_pred.itt_hit[1] : f1_pred.itt_hit[0]);
-    f1_push_meta.itt_hit[1]    = f1_tage_cov[1] && (f1_w0_odd ? f1_pred.itt_hit[0] : f1_pred.itt_hit[1]);
+    f1_push_meta.itt_hit[0]    =
+        f1_tage_cov[0] && (f1_w0_odd ? f1_pred.itt_hit[1] : f1_pred.itt_hit[0]);
+    f1_push_meta.itt_hit[1]    =
+        f1_tage_cov[1] && (f1_w0_odd ? f1_pred.itt_hit[0] : f1_pred.itt_hit[1]);
     f1_push_meta.itt_target[0] = f1_w0_odd ? f1_pred.itt_target[1] : f1_pred.itt_target[0];
     f1_push_meta.itt_target[1] = f1_w0_odd ? f1_pred.itt_target[0] : f1_pred.itt_target[1];
     f1_push_meta.itt_hist      = f1_pred.itt_hist;
@@ -1875,7 +1882,8 @@ module if_stage #(
     o_from_if_to_pd.ras_checkpoint_top               = s1_m.ras_ckpt_top;
     o_from_if_to_pd.bp_dir_taken                     = s1_p.bp_dir_taken;
     o_from_if_to_pd.bp_dir_idx                       = s1_pc[riscv_pkg::BpDirIdxBits:1];
-    o_from_if_to_pd.tage_valid                       = s1_tage_cov && (|s1_tage_lookup.hit) && !s1_fault;
+    o_from_if_to_pd.tage_valid                       =
+        s1_tage_cov && (|s1_tage_lookup.hit) && !s1_fault;
     o_from_if_to_pd.tage_taken                       = s1_tage_lookup.taken;
     o_from_if_to_pd.fetch_fault                      = s1_fault;
     o_from_if_to_pd.fetch_fault_page                 = s1_fault_page;
@@ -1883,9 +1891,11 @@ module if_stage #(
     o_from_if_to_pd.decomp_illegal                   = 1'b0;
     o_from_if_to_pd.is_cond_branch                   = 1'b0;
     o_from_if_to_pd.pd_target_native_low             = s1_native_sum[riscv_pkg::PdTargetSplit-1:0];
-    o_from_if_to_pd.pd_target_native_high_select     = {s1_instr[31], s1_native_sum[riscv_pkg::PdTargetSplit]};
+    o_from_if_to_pd.pd_target_native_high_select     =
+        {s1_instr[31], s1_native_sum[riscv_pkg::PdTargetSplit]};
     o_from_if_to_pd.pd_target_compressed_low         = s1_comp_sum[riscv_pkg::PdTargetSplit-1:0];
-    o_from_if_to_pd.pd_target_compressed_high_select = {s1_p.parcel[12], s1_comp_sum[riscv_pkg::PdTargetSplit]};
+    o_from_if_to_pd.pd_target_compressed_high_select =
+        {s1_p.parcel[12], s1_comp_sum[riscv_pkg::PdTargetSplit]};
   end
 
   always_comb begin
@@ -1905,7 +1915,8 @@ module if_stage #(
     o_from_if_to_pd_2.ras_checkpoint_top               = s1_m.ras_ckpt_top;
     o_from_if_to_pd_2.bp_dir_taken                     = 1'b0;
     o_from_if_to_pd_2.bp_dir_idx                       = s2_pc[riscv_pkg::BpDirIdxBits:1];
-    o_from_if_to_pd_2.tage_valid                       = s2_tage_cov && (|s2_tage_lookup.hit) && !s2_fault;
+    o_from_if_to_pd_2.tage_valid                       =
+        s2_tage_cov && (|s2_tage_lookup.hit) && !s2_fault;
     o_from_if_to_pd_2.tage_taken                       = s2_tage_lookup.taken;
     o_from_if_to_pd_2.fetch_fault                      = 1'b0;
     o_from_if_to_pd_2.fetch_fault_page                 = 1'b0;
@@ -2001,7 +2012,8 @@ module if_stage #(
   assign kill_class               = !s1_fault && s1_p.allows_slot2_after &&
       s2_have_bytes && !s2_fault && !s2_p.slot2_start_valid;
   assign kill_window_limit        = !s1_fault && s1_p.allows_slot2_after && !s2_have_bytes;
-  assign kill_transient           = s1_fault || (s1_p.allows_slot2_after && s2_have_bytes && s2_fault);
+  assign kill_transient           =
+      s1_fault || (s1_p.allows_slot2_after && s2_have_bytes && s2_fault);
 
   riscv_pkg::if_width_events_t width_events_q;
   always_ff @(posedge i_clk) begin
@@ -2097,7 +2109,9 @@ module if_stage #(
 
   initial begin
     if ($bits(check_parcel) != ParcelBits)
-      $fatal(1, "if_stage: ParcelBits (%0d) != $bits(parcel_t) (%0d)", ParcelBits, $bits(check_parcel));
+      $fatal(
+          1, "if_stage: ParcelBits (%0d) != $bits(parcel_t) (%0d)", ParcelBits, $bits(check_parcel)
+      );
     if ($bits(check_meta) != MetaBits)
       $fatal(1, "if_stage: MetaBits (%0d) != $bits(meta_t) (%0d)", MetaBits, $bits(check_meta));
   end
@@ -2168,7 +2182,8 @@ module if_stage #(
         p_if_ras_cached_shadow_exact :
         assert (ras_top_is_cached == riscv_pkg::pma_cached_ok(ras_top));
       end
-      if (eff_ras_nonempty && !ras_restore_pure_pop_q && !$isunknown({eff_ras_top, eff_ras_top_cached})) begin
+      if (eff_ras_nonempty && !ras_restore_pure_pop_q &&
+          !$isunknown({eff_ras_top, eff_ras_top_cached})) begin
         p_if_eff_ras_cached_exact :
         assert (eff_ras_top_cached == riscv_pkg::pma_cached_ok(eff_ras_top));
       end
@@ -2181,7 +2196,8 @@ module if_stage #(
         assert (s1_have_bytes == (s1_need_2 ? q_avail_ge[1] : q_avail_ge[0]));
       end
       if (!pqueue_flush && !i_fetch_trap_hold && !s1_fault && s1_p.allows_slot2_after &&
-          !s2_fault && s2_p.slot2_start_valid && !$isunknown({s2_have_bytes, s1_comp, s2_comp, q_avail_ge})) begin
+          !s2_fault && s2_p.slot2_start_valid &&
+          !$isunknown({s2_have_bytes, s1_comp, s2_comp, q_avail_ge})) begin
         p_if_drain_avail_s2_exact :
         assert (s2_have_bytes ==
                 (s1_comp ? (s2_comp ? q_avail_ge[1] : q_avail_ge[2]) :
