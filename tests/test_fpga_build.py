@@ -1123,8 +1123,8 @@ def test_optional_predecode_metadata_uses_scalar_overlay() -> None:
     assert ".i_clk," in pc_block
     for port, signal in (
         ("i_reset", "i_pipeline_ctrl.reset"),
-        ("i_f1_resteer", "f1_resteer"),
-        ("i_f0_launch", "f0_launch"),
+        ("i_f1_resteer", "f1_resteer_raw"),
+        ("i_f0_launch", "f0_launch_raw"),
         ("o_fetch_redirect", "o_fetch_redirect"),
         ("o_fetch_cached_retarget", "o_fetch_cached_retarget"),
     ):
@@ -1140,7 +1140,7 @@ def test_optional_predecode_metadata_uses_scalar_overlay() -> None:
     assert "cpu_and_mem/cpu/if_stage/fetch_pc_decoupled.sv" in if_stage_files
     assert "cpu_and_mem/cpu/if_stage/fetch_parcel_queue.sv" in if_stage_files
     assert (
-        "assign o_fetch_live_claim = (f1_accept || f1_collapsed_accept) && "
+        "assign o_fetch_live_claim = !any_redirect && f1_push_valid && "
         "!f0_self_loop;" in if_stage
     )
 
