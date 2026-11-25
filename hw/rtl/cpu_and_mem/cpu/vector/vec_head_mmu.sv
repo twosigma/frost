@@ -1168,8 +1168,10 @@ module vec_head_mmu #(
           end
 
           // Both pages of the element are translated. The first access waits
-          // for committed scalar stores. Each element raises the shield while
-          // no interrupt or debug halt is armed and drops it on completion.
+          // for committed scalar stores and settles the shield before launch;
+          // later elements raise the shield and launch directly once no
+          // interrupt or debug halt is armed (a flush from an earlier take
+          // cancels the launch through cancel_outputs and flush_q).
           HM_RUN_ARM: begin
             if (!head_matches_q || i_int_take_armed) begin
               if (!run_started_q) state_q <= HM_IDLE;
@@ -1177,7 +1179,7 @@ module vec_head_mmu #(
               seg0_q   <= full_seg0_d;
               seg1_q   <= full_seg1_d;
               shield_q <= 1'b1;
-              state_q  <= HM_RUN_SETTLE;
+              state_q  <= run_started_q ? HM_RUN_LAUNCH : HM_RUN_SETTLE;
             end
           end
 
@@ -1216,7 +1218,9 @@ module vec_head_mmu #(
 
           // The run stops at a faulting element above 0 and completes; vl
           // becomes that element at retirement. Yield while unshielded if an
-          // interrupt or debug halt is armed; otherwise raise the shield first.
+          // interrupt or debug halt is armed; otherwise raise the shield and,
+          // once elements have already run, complete directly without a settle
+          // cycle (a flush from an earlier take cancels completion).
           HM_RUN_TRIM: begin
             trim_q    <= 1'b1;
             trim_vl_q <= run_elem_q;
@@ -1224,7 +1228,7 @@ module vec_head_mmu #(
               if (!run_started_q) state_q <= HM_IDLE;
             end else begin
               shield_q <= 1'b1;
-              state_q  <= HM_RUN_TRIM_SETTLE;
+              state_q  <= run_started_q ? HM_CDB_OK : HM_RUN_TRIM_SETTLE;
             end
           end
 
@@ -1502,20 +1506,21 @@ module vec_head_mmu #(
   (* anyconst *) logic [1:0] f_fault_page;  // 0..2: that page faults; 3: none
   (* anyconst *) logic [6:0] f_tag;
   (* anyconst *) riscv_pkg::pm_mode_t f_pm;
-  // 0: uninterrupted; 1: interrupt or debug halt arms during element 0 and
-  // holds until flush; 3: arms during element 0, pauses, and withdraws without
-  // a flush so the run resumes to completion or a later fault.
+  // 0: uninterrupted; 1: interrupt or debug halt arms during element 0, pauses
+  // element 1 in HM_RUN_ARM, then drops on the flush edge (the take-to-flush
+  // cycle where HM_RUN_ARM enters HM_RUN_LAUNCH under cancel_outputs); 3: arms
+  // during element 0, pauses element 1 in HM_RUN_ARM, and withdraws without a
+  // flush so the run resumes to completion or a later fault.
   (* anyconst *) logic [1:0] f_irq_mode;
   logic [1:0] f_irq_wait_q = '0;
   logic f_irq_flushed_q = 1'b0;
   logic f_irq_arm_now;
   logic f_irq_flush_now;
+  assign f_irq_flush_now = (f_irq_mode == 2'd1) && !f_irq_flushed_q && (f_irq_wait_q == 2'd2);
   assign f_irq_arm_now =
-      ((f_irq_mode == 2'd1) && (f_launches >= 3'd1) && !f_irq_flushed_q) ||
-      ((f_irq_mode == 2'd3) && (f_launches >= 3'd1) && (f_irq_wait_q < 2'd3));
-  assign f_irq_flush_now =
-      (f_irq_mode == 2'd1) && !f_irq_flushed_q &&
-      (f_dones == 3'd1) && !o_vmem_head_shield && (f_irq_wait_q == 2'd1);
+      ((f_irq_mode == 2'd1) && (f_launches >= 3'd1) &&
+       !f_irq_flush_now && !f_irq_flushed_q) ||
+      ((f_irq_mode == 2'd3) && (f_launches >= 3'd1) && (f_irq_wait_q < 2'd2));
   // The indexed variant is its own task (VEC_HEAD_MMU_INDEXED).
 `ifdef VEC_HEAD_MMU_INDEXED
   // Pointer masking is the same logic for both forms; the strided task
@@ -1623,9 +1628,9 @@ module vec_head_mmu #(
       f_irq_flushed_q <= 1'b0;
     end else begin
       if (f_irq_flush_now) f_irq_flushed_q <= 1'b1;
-      if (((f_irq_mode == 2'd1) && (f_dones == 3'd1) && !o_vmem_head_shield) ||
-          ((f_irq_mode == 2'd3) && (f_dones >= 3'd1))) begin
-        if (f_irq_wait_q != 2'd3) f_irq_wait_q <= f_irq_wait_q + 2'd1;
+      if (((f_irq_mode == 2'd1) || (f_irq_mode == 2'd3)) &&
+          (f_dones == 3'd1) && (state_q == HM_RUN_ARM)) begin
+        if (f_irq_wait_q != 2'd2) f_irq_wait_q <= f_irq_wait_q + 2'd1;
       end
       if (o_walk_req_valid && i_walk_req_ready) begin
         f_walk_pending <= 1'b1;
@@ -1668,7 +1673,14 @@ module vec_head_mmu #(
         ) || o_desc_ppn1 == 20'h83100 + 20'(f_first_page(
             f_launches
         )) * 20'h100) && o_desc_is_store == f_store && !o_desc_free_vmt_on_done);
-        p_launch_shield : assert (o_vmem_head_shield && $past(o_vmem_head_shield));
+        p_launch_shield :
+        assert (o_vmem_head_shield && ($past(
+            o_vmem_head_shield
+        ) || ((f_launches != 3'd0) && !$past(
+            i_int_take_armed
+        ) && !$past(
+            i_flush_all
+        ))));
         p_one_at_a_time : assert (!f_vmu_busy);
       end
       if (i_vmu_done) begin
@@ -1717,6 +1729,7 @@ module vec_head_mmu #(
         p_async_vstart_exact :
         assert (o_vmem_fault_vstart_valid && (o_vmem_fault_vstart == 16'(f_dones)));
       end
+      if (f_irq_flushed_q) p_flushed_no_launch : assert (!o_desc_valid);
       if (f_past_valid && $past(f_irq_flushed_q)) begin
         p_flushed_clean :
         assert (!o_vmem_head_shield && !o_vmem_fault_vstart_valid && !o_desc_valid);

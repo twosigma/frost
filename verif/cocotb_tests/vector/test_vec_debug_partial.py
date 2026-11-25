@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""A partial vector load in Debug Mode must dirty the architectural VS field."""
+"""Debug Mode partial loads, mid-run halts with vstart, and vector single-stepping."""
 
 from typing import Any
 
@@ -28,7 +28,9 @@ from cocotb_tests.debug.jtag_dtm import (
     DCSR_CAUSE_HALTREQ,
     DCSR_CAUSE_MASK,
     DCSR_CAUSE_SHIFT,
+    DCSR_CAUSE_STEP,
     DCSR_EBREAKM,
+    DCSR_STEP,
     DM_DMCONTROL,
     DMCONTROL_DMACTIVE,
     DMCONTROL_HALTREQ,
@@ -36,6 +38,7 @@ from cocotb_tests.debug.jtag_dtm import (
     DMSTATUS_ALLHALTED,
     INSN_EBREAK,
     INSN_FENCE,
+    INSN_NOP,
     DebugModule,
     Dtm,
     JtagDriver,
@@ -742,3 +745,226 @@ async def test_mid_run_halt_sets_vstart_and_resumes(dut: Any) -> None:
                     else:
                         want = (seed + elem + (0x40 if f else 0)) & 0xFF
                     assert got == want, (name, "final_st", elem, f, hex(got), hex(want))
+
+
+@cocotb.test()
+@takes_last_edge
+async def test_single_step_strided_load_and_store(dut: Any) -> None:
+    """Single-stepping over a strided load or store completes the whole instruction."""
+    start_clocks((dut.i_clk,), CLK_PERIOD_NS * 1000)
+    start_cpu_clock(dut)
+    cocotb.start_soon(generate_divided_clock(dut))
+    await _reset(dut)
+    jtag = JtagDriver(dut, half_period=2)
+    await jtag.reset()
+    dm = DebugModule(Dtm(jtag, idle_cycles=0), cocotb.log)
+    await dm.activate()
+    await dm.halt()
+
+    t2, t3, t4, t5 = 7, 28, 29, 30
+    a0, a1, a2, a3, a4 = 10, 11, 12, 13, 14
+
+    async def fast_rd_csr(csr: int) -> int:
+        await dm.exec_progbuf([csrr(t2, csr)])
+        return await dm.read_gpr(t2)
+
+    async def fast_wr_csr(csr: int, val: int) -> None:
+        await dm.write_gpr(t2, val)
+        await dm.exec_progbuf([csrw(csr, t2)])
+
+    async def fast_rd_m(addr: int, size: int) -> int:
+        await dm.write_gpr(t2, addr)
+        await dm.exec_progbuf([load(t3, t2, size, unsigned=True)])
+        return await dm.read_gpr(t3)
+
+    async def fast_wr_m(addr: int, size: int, val: int) -> None:
+        await dm.write_gpr(t2, addr)
+        await dm.write_gpr(t3, val)
+        await dm.exec_progbuf([store(t3, t2, size)])
+
+    # Enable ebreak -> Debug Mode in M-mode and enable VS.
+    dcsr_base = (await fast_rd_csr(CSR_DCSR)) | DCSR_EBREAKM
+    await fast_wr_csr(CSR_DCSR, dcsr_base & ~DCSR_STEP)
+    await fast_wr_csr(CSR_MSTATUS, (await fast_rd_csr(CSR_MSTATUS)) | (3 << 9))
+
+    code_pc = 0x8350_6000
+    init_pc = 0x8350_6100
+    src_base = 0x8355_0000
+    dst_base = 0x8356_0000
+    vrf_buf = 0x8357_0000
+    dump_buf = 0x8357_0400
+
+    # Native helper at init_pc: stores (a3 + i) & 0xff at a0 + i*a1 for a2 elements,
+    # optionally cbo.flush-ing each line when a4 != 0, then fence + ebreak.
+    init_prog = [
+        store(a3, a0, 1, 0),  # 0: sb a3, 0(a0)
+        ((0 << 31) | (0 << 25) | (0 << 20) | (a4 << 15) | (0 << 12) | (4 << 8) | 0x63),
+        _enc_cbo_flush(a0),  # 8: cbo.flush (a0)
+        (0 << 25) | (a1 << 20) | (a0 << 15) | (0 << 12) | (a0 << 7) | 0x33,
+        addi(a3, a3, 1),  # 16: addi a3, a3, 1
+        addi(a2, a2, -1),  # 20: addi a2, a2, -1
+        _enc_bne(a2, 0, -24),  # 24: bne a2, zero, loop
+        INSN_FENCE,  # 28: fence
+        INSN_EBREAK,  # 32: ebreak
+    ]
+    for i, word in enumerate(init_prog):
+        await dm.write_mem(init_pc + 4 * i, 4, word, fence=False)
+    await dm.fence_i()
+
+    async def run_init(
+        base: int, stride: int, count: int, seed: int, *, flush: bool
+    ) -> None:
+        await fast_wr_csr(CSR_DCSR, dcsr_base & ~DCSR_STEP)
+        await dm.write_gpr(a0, base)
+        await dm.write_gpr(a1, stride)
+        await dm.write_gpr(a2, count)
+        await dm.write_gpr(a3, seed)
+        await dm.write_gpr(a4, int(flush))
+        await fast_wr_csr(CSR_DPC, init_pc)
+        await dm.resume(wait_halted=True)
+        assert await fast_rd_csr(CSR_DPC) == init_pc + 32
+
+    vl = 16
+    stride = 64
+    # vsetivli x0, 16, e8, m1, tu, mu -> vl = 16
+    vsetivli_16_e8 = (3 << 30) | (0x00 << 20) | (16 << 15) | (7 << 12) | (0 << 7) | 0x57
+    vl1re8_v8 = (
+        (0 << 29) | (1 << 25) | (8 << 20) | (dm.S0 << 15) | (0 << 12) | (8 << 7) | 0x07
+    )
+    vs1r_v8 = (
+        (0 << 29) | (1 << 25) | (8 << 20) | (dm.S0 << 15) | (0 << 12) | (8 << 7) | 0x27
+    )
+    vlse8_v8 = _enc_vmem(False, 1, 2, 1, dm.S1, dm.S0, 0, 8)
+    vsse8_v8 = _enc_vmem(True, 1, 2, 1, dm.S1, dm.S0, 0, 8)
+
+    async def check_v8_bytes(tag: str, seed: int) -> None:
+        await dm.write_gpr(dm.S0, dump_buf)
+        await dm.exec_progbuf([vs1r_v8])
+        lo = await fast_rd_m(dump_buf, 8)
+        hi = await fast_rd_m(dump_buf + 8, 8)
+        for elem in range(vl):
+            word = lo if elem < 8 else hi
+            got = (word >> (8 * (elem & 7))) & 0xFF
+            want = (seed + elem) & 0xFF
+            assert got == want, (tag, elem, hex(got), hex(want))
+
+    # 1. Single-step over a cold-line strided load (16 elements across 16 cache lines).
+    #    Verify the whole load completes before halting, vstart returns to 0, VS becomes
+    #    Dirty, and all 16 elements land in v8.
+    await run_init(src_base, stride, vl, 0x31, flush=True)
+    await run_init(vrf_buf, 1, vl, 0xA0, flush=False)
+    await fast_wr_csr(0x008, 0)
+    await dm.write_gpr(dm.S0, vrf_buf)
+    await dm.exec_progbuf([vsetivli_16_e8, vl1re8_v8])
+    assert await fast_rd_csr(0xC20) == vl
+    await fast_wr_m(code_pc + 0, 4, vlse8_v8)
+    await fast_wr_m(code_pc + 4, 4, INSN_NOP)
+    await fast_wr_m(code_pc + 8, 4, INSN_EBREAK)
+    await dm.fence_i()
+
+    mstatus_clean = ((await fast_rd_csr(CSR_MSTATUS)) & ~(3 << 9)) | (2 << 9)
+    await fast_wr_csr(CSR_MSTATUS, mstatus_clean)
+    await dm.write_gpr(dm.S0, src_base)
+    await dm.write_gpr(dm.S1, stride)
+    await fast_wr_csr(CSR_DPC, code_pc)
+    await fast_wr_csr(CSR_DCSR, dcsr_base | DCSR_STEP)
+    await dm.resume(wait_halted=True)
+
+    await dm.exec_progbuf(
+        [csrr(t2, CSR_DPC), csrr(t3, CSR_DCSR), csrr(t4, 0x008), csrr(t5, CSR_MSTATUS)]
+    )
+    dpc = await dm.read_gpr(t2)
+    cause = ((await dm.read_gpr(t3)) & DCSR_CAUSE_MASK) >> DCSR_CAUSE_SHIFT
+    vstart_after = await dm.read_gpr(t4)
+    vs_after = ((await dm.read_gpr(t5)) >> 9) & 3
+    cocotb.log.info(
+        "STEP strided_ld dpc=%#x cause=%d vstart=%d vs=%d",
+        dpc,
+        cause,
+        vstart_after,
+        vs_after,
+    )
+    assert dpc == code_pc + 4, (hex(dpc), hex(code_pc + 4))
+    assert cause == DCSR_CAUSE_STEP, cause
+    assert vstart_after == 0, vstart_after
+    assert vs_after == 3, vs_after
+    await check_v8_bytes("step_ld", 0x31)
+
+    # 2. Single-step over a cold-line strided store (16 elements across 16 cache lines).
+    #    Verify the whole store completes before halting, vstart == 0, and all 16
+    #    memory locations receive their stored bytes.
+    await run_init(dst_base, stride, vl, 0x90, flush=True)
+    await run_init(vrf_buf, 1, vl, 0x51, flush=False)
+    await fast_wr_csr(0x008, 0)
+    await dm.write_gpr(dm.S0, vrf_buf)
+    await dm.exec_progbuf([vsetivli_16_e8, vl1re8_v8])
+    assert await fast_rd_csr(0xC20) == vl
+    await fast_wr_m(code_pc + 0, 4, vsse8_v8)
+    await fast_wr_m(code_pc + 4, 4, INSN_NOP)
+    await fast_wr_m(code_pc + 8, 4, INSN_EBREAK)
+    await dm.fence_i()
+
+    await dm.write_gpr(dm.S0, dst_base)
+    await dm.write_gpr(dm.S1, stride)
+    await fast_wr_csr(CSR_DPC, code_pc)
+    await fast_wr_csr(CSR_DCSR, dcsr_base | DCSR_STEP)
+    await dm.resume(wait_halted=True)
+
+    await dm.exec_progbuf([csrr(t2, CSR_DPC), csrr(t3, CSR_DCSR), csrr(t4, 0x008)])
+    dpc = await dm.read_gpr(t2)
+    cause = ((await dm.read_gpr(t3)) & DCSR_CAUSE_MASK) >> DCSR_CAUSE_SHIFT
+    vstart_after = await dm.read_gpr(t4)
+    cocotb.log.info(
+        "STEP strided_st dpc=%#x cause=%d vstart=%d", dpc, cause, vstart_after
+    )
+    assert dpc == code_pc + 4, (hex(dpc), hex(code_pc + 4))
+    assert cause == DCSR_CAUSE_STEP, cause
+    assert vstart_after == 0, vstart_after
+
+    for elem in range(vl):
+        got = await fast_rd_m(dst_base + elem * stride, 1)
+        want = (0x51 + elem) & 0xFF
+        assert got == want, ("step_st", elem, hex(got), hex(want))
+
+    # 3. Single-step over a cold-line strided load with an enabled MTI pending
+    #    (dcsr.stepie is hardwired 0): the step masks the interrupt throughout the
+    #    run, completes all 16 elements, clears vstart, and halts at code_pc + 4.
+    await run_init(src_base, stride, vl, 0x71, flush=True)
+    await run_init(vrf_buf, 1, vl, 0xC0, flush=False)
+    await fast_wr_csr(0x008, 0)
+    await dm.write_gpr(dm.S0, vrf_buf)
+    await dm.exec_progbuf([vsetivli_16_e8, vl1re8_v8])
+    assert await fast_rd_csr(0xC20) == vl
+    await fast_wr_m(code_pc + 0, 4, vlse8_v8)
+    await fast_wr_m(code_pc + 4, 4, INSN_NOP)
+    await fast_wr_m(code_pc + 8, 4, INSN_EBREAK)
+    await dm.fence_i()
+
+    # Arm MTI immediately (mtimecmp = 0, mie.MTIE = 1, mstatus.MIE = 1).
+    await fast_wr_m(0x4000_0018, 4, 0)
+    await fast_wr_m(0x4000_001C, 4, 0)
+    await fast_wr_csr(0x304, 1 << 7)  # mie.MTIE
+    await fast_wr_csr(CSR_MSTATUS, (await fast_rd_csr(CSR_MSTATUS)) | (1 << 3))
+    await dm.write_gpr(dm.S0, src_base)
+    await dm.write_gpr(dm.S1, stride)
+    await fast_wr_csr(CSR_DPC, code_pc)
+    await fast_wr_csr(CSR_DCSR, dcsr_base | DCSR_STEP)
+    await dm.resume(wait_halted=True)
+
+    await dm.exec_progbuf([csrr(t2, CSR_DPC), csrr(t3, CSR_DCSR), csrr(t4, 0x008)])
+    dpc = await dm.read_gpr(t2)
+    cause = ((await dm.read_gpr(t3)) & DCSR_CAUSE_MASK) >> DCSR_CAUSE_SHIFT
+    vstart_after = await dm.read_gpr(t4)
+    # Disarm MTI cleanly before reading back v8.
+    await fast_wr_m(0x4000_001C, 4, 0xFFFF_FFFF)
+    await fast_wr_csr(0x304, 0)
+    await fast_wr_csr(CSR_MSTATUS, (await fast_rd_csr(CSR_MSTATUS)) & ~(1 << 3))
+    await fast_wr_csr(CSR_DCSR, dcsr_base & ~DCSR_STEP)
+
+    cocotb.log.info(
+        "STEP strided_ld_mti dpc=%#x cause=%d vstart=%d", dpc, cause, vstart_after
+    )
+    assert dpc == code_pc + 4, (hex(dpc), hex(code_pc + 4))
+    assert cause == DCSR_CAUSE_STEP, cause
+    assert vstart_after == 0, vstart_after
+    await check_v8_bytes("step_ld_mti", 0x71)

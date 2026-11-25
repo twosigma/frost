@@ -350,7 +350,7 @@ async def test_run_async_boundary_and_settle_flush(dut: Any) -> None:
     assert sample["o_vmem_fault_vstart_valid"] == 0
     assert int(dut.o_vmem_fault_vstart_valid.value) == 0
 
-    # 2. One-cycle flush arriving on the RUN_ARM -> RUN_SETTLE transition after element 0.
+    # 2. One-cycle flush arriving on the RUN_ARM -> RUN_LAUNCH transition after element 0.
     await start_run(vlse32)
     elem0_done = False
     for _ in range(80):
@@ -366,12 +366,12 @@ async def test_run_async_boundary_and_settle_flush(dut: Any) -> None:
     else:
         raise AssertionError("vlse32 did not reach RUN_ARM for element 1")
     no_publication(await b.tick(i_flush_all=1))
-    assert int(dut.state_q.value) == RUN_SETTLE
+    assert int(dut.state_q.value) == RUN_LAUNCH
     no_publication(await b.tick(i_flush_all=0, i_rob_empty=1, i_head_is_vmem=0))
     assert int(dut.state_q.value) == IDLE
     assert int(dut.run_started_q.value) == 0
 
-    # 3. One-cycle flush arriving on RUN_TRIM -> RUN_TRIM_SETTLE (FoF element 1 faults).
+    # 3. One-cycle flush arriving on RUN_TRIM -> CDB_OK (FoF element 1 faults).
     await start_run(vle32ff, translate=1, base=0x80000FFC)
     elem0_done = False
     for _ in range(100):
@@ -403,8 +403,136 @@ async def test_run_async_boundary_and_settle_flush(dut: Any) -> None:
         )
     else:
         raise AssertionError("vle32ff did not reach RUN_TRIM")
-    no_publication(await b.tick(i_flush_all=1, i_walk_resp_valid=0, i_vmu_done=0))
-    assert int(dut.state_q.value) == RUN_TRIM_SETTLE
+    no_publication(
+        await b.tick(i_flush_all=1, i_walk_resp_valid=0, i_vmu_done=0, i_grant=1)
+    )
+    assert int(dut.state_q.value) == CDB_OK
+    no_publication(
+        await b.tick(i_flush_all=0, i_rob_empty=1, i_head_is_vmem=0, i_grant=1)
+    )
+    assert int(dut.state_q.value) == IDLE
+    assert int(dut.run_started_q.value) == 0
+
+
+@cocotb.test()
+async def test_fault_arm_irq_pause_after_started_elem(dut: Any) -> None:
+    """An interrupt armed in HM_FAULT_ARM after started elements pauses unshielded."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    b = Bench(dut)
+    # vlse32.v v8, (x1), x2: unmasked strided load, vl=3, stride=0x1000.
+    # Element 0 is on page 0x80000 (valid); element 1 is on page 0x80001 (fault).
+    vlse32 = (2 << 26) | (1 << 25) | (2 << 20) | (1 << 15) | (6 << 12) | (8 << 7) | 0x07
+
+    async def reach_elem1_fault_arm() -> None:
+        await b.reset(fault=True)
+        await b.tick(
+            i_rst=1,
+            i_head_insn=vlse32,
+            i_vl=3,
+            i_vtype=0x10,
+            i_vstart=0,
+            i_rf_read_data=0x80000100,
+            i_translate=1,
+        )
+        await b.tick(i_rst=0)
+        elem0_done = False
+        for _ in range(100):
+            state = int(dut.state_q.value)
+            if elem0_done and state == FAULT_ARM:
+                return
+            resp = state in (WALK_WAIT_P0, WALK_WAIT_P1)
+            vpn = int(dut.o_walk_vpn.value)
+            leaf = pack_struct(
+                PTW_RESP_FIELDS,
+                {
+                    "vpn": vpn,
+                    "ppn": 0x80000,
+                    "level": 0,
+                    "fault_kind": 2 if elem0_done else 0,
+                    "perm_r": 1,
+                    "perm_w": 1,
+                    "perm_d": 1,
+                },
+            )
+            done = int(state == RUN_WAIT)
+            if done:
+                elem0_done = True
+            rf_data = 0x1000 if int(dut.o_rf_read_addr.value) == 2 else 0x80000100
+            await b.tick(
+                i_walk_resp_valid=int(resp),
+                i_walk_resp=leaf,
+                i_vmu_done=done,
+                i_rf_read_data=rf_data,
+                i_int_take_armed=0,
+            )
+        raise AssertionError(
+            f"vlse32 did not reach FAULT_ARM for element 1, at {int(dut.state_q.value)}"
+        )
+
+    # 1. Pause in HM_FAULT_ARM while interrupt is armed, then take and flush to IDLE.
+    await reach_elem1_fault_arm()
+    assert int(dut.run_started_q.value) == 1
+    for _ in range(3):
+        sample = await b.tick(
+            i_walk_resp_valid=0,
+            i_vmu_done=0,
+            i_int_take_armed=1,
+            i_grant=1,
+        )
+        no_publication(sample)
+        assert sample["o_vmem_fault_vstart_valid"] == 1
+        assert sample["o_vmem_fault_vstart"] == 1
+        assert int(dut.state_q.value) == FAULT_ARM
+        assert int(dut.o_vmem_head_shield.value) == 0
+        assert int(dut.run_started_q.value) == 1
+
+    # Flush edge simulates interrupt take: sideband stays valid on the take edge,
+    # then clears with local state on the cleanup edge.
+    sample = await b.tick(i_flush_all=1, i_head_safe=0, i_int_take_armed=0, i_grant=1)
+    no_publication(sample)
+    assert sample["o_vmem_fault_vstart_valid"] == 1
+    assert sample["o_vmem_fault_vstart"] == 1
+    sample = await b.tick(i_flush_all=0, i_rob_empty=1, i_head_is_vmem=0, i_grant=1)
+    no_publication(sample)
+    assert int(dut.state_q.value) == IDLE
+    assert int(dut.run_started_q.value) == 0
+    assert int(dut.o_vmem_head_shield.value) == 0
+    assert sample["o_vmem_fault_vstart_valid"] == 0
+    assert int(dut.o_vmem_fault_vstart_valid.value) == 0
+
+    # 2. Pause in HM_FAULT_ARM, then withdraw interrupt -> shield rises and
+    #    synchronous fault completes on CDB with vstart == 1.
+    await reach_elem1_fault_arm()
+    for _ in range(2):
+        sample = await b.tick(
+            i_walk_resp_valid=0, i_vmu_done=0, i_int_take_armed=1, i_grant=1
+        )
+        no_publication(sample)
+        assert int(dut.state_q.value) == FAULT_ARM
+        assert int(dut.o_vmem_head_shield.value) == 0
+        assert sample["o_vmem_fault_vstart_valid"] == 1
+        assert sample["o_vmem_fault_vstart"] == 1
+
+    # Withdraw interrupt: FAULT_ARM -> FAULT_SETTLE (shield rises) -> CDB_FAULT.
+    no_publication(await b.tick(i_int_take_armed=0, i_grant=1))
+    assert int(dut.state_q.value) == FAULT_SETTLE
+    assert int(dut.o_vmem_head_shield.value) == 1
+    no_publication(await b.tick(i_int_take_armed=0, i_grant=1))
+    assert int(dut.state_q.value) == CDB_FAULT
+    assert int(dut.o_vmem_head_shield.value) == 1
+    sample = await b.tick(i_int_take_armed=0, i_grant=1)
+    assert sample["o_cdb_done"] == 1
+    assert sample["o_vmem_fault_vstart_valid"] == 1
+    assert sample["o_vmem_fault_vstart"] == 1
+    # Next cycle moves to WAIT_TRAP; synchronous trap flush clears back to IDLE.
+    sample = await b.tick(i_grant=0)
+    assert int(dut.state_q.value) == WAIT_TRAP
+    assert int(dut.o_vmem_head_shield.value) == 1
+    sample = await b.tick(i_flush_all=1, i_head_safe=0)
+    no_publication(sample)
+    assert sample["o_vmem_fault_vstart_valid"] == 1
+    assert sample["o_vmem_fault_vstart"] == 1
     no_publication(await b.tick(i_flush_all=0, i_rob_empty=1, i_head_is_vmem=0))
     assert int(dut.state_q.value) == IDLE
     assert int(dut.run_started_q.value) == 0
+    assert int(dut.o_vmem_head_shield.value) == 0
