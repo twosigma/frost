@@ -508,8 +508,8 @@ def test_cocotb_partial_verilation_without_binary_requires_clean(
 ) -> None:
     """A failed compile's Vtop.mk must not build the next test's wrong model."""
     runner = test_run_cocotb.CocotbRunner(
-        python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
-        hdl_toplevel_module="instruction_aligner",
+        python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
+        hdl_toplevel_module="rvc_decompressor",
     )
     (tmp_path / "Vtop.mk").write_text("# Generated before a fatal IMMU warning\n")
     if missing_marker is not None:
@@ -525,15 +525,15 @@ def test_cocotb_fresh_and_matching_builds_keep_incremental_compilation(
 ) -> None:
     """Allow fresh builds and reuse only artifacts with matching metadata."""
     runner = test_run_cocotb.CocotbRunner(
-        python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
-        hdl_toplevel_module="instruction_aligner",
+        python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
+        hdl_toplevel_module="rvc_decompressor",
     )
     build = tmp_path / "sim_build"
     assert not runner._verilator_needs_rebuild(build)
     build.mkdir()
     assert not runner._verilator_needs_rebuild(build)
 
-    (build / "Vtop.mk").write_text("# Correct instruction_aligner build\n")
+    (build / "Vtop.mk").write_text("# Correct rvc_decompressor build\n")
     runner._update_verilator_toplevel_marker(build)
     assert not runner._verilator_needs_rebuild(build)
     (build / ".last_toplevel").write_text("immu_test_harness")
@@ -640,8 +640,8 @@ def test_ddr_model_timing_needs_a_seed_and_the_soc(
     )
     monkeypatch.setenv("FROST_DDR_MODEL_SEED", "7")
     unit_bench = test_run_cocotb.CocotbRunner(
-        python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
-        hdl_toplevel_module="instruction_aligner",
+        python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
+        hdl_toplevel_module="rvc_decompressor",
     )
     assert unit_bench.verilator_extra_args == ()
 

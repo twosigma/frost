@@ -254,25 +254,12 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv
 VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),branch_predictor)
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
-        $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
-VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),backing_btb)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/backing_btb.sv
-VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),direction_predictor)
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),tage_predictor)
 COMPILE_ARGS := \
@@ -286,40 +273,6 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ittage_predictor.sv
 VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),branch_prediction_controller)
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
-        $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
-VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),prediction_metadata_tracker)
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
-VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),control_flow_tracker)
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv
-VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),pc_increment_calculator)
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
-VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),pc_controller)
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
-VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),dmmu)
 # Data-MMU resolution, pipeline throughput, and recovery tests
 COMPILE_ARGS := \
@@ -328,27 +281,17 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),immu_test_harness)
-# Instruction MMU behind a model of pc_controller's fetch-PC register
+# Instruction MMU behind a model of the fetch-PC register
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/immu.sv \
         $(ROOT)/hw/sim/immu_test_harness.sv
 VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),instruction_aligner)
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/instruction_aligner.sv
-VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),rvc_decompressor)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
-VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),c_ext_state)
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_ext_state.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),if_stage)
 # IF-stage top-level integration test (the ITLB's generic TLB module comes

@@ -11,20 +11,23 @@ depth 3
 smtbmc boolector
 
 [script]
-read -sv riscv_pkg.sv
-read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_TAGE_EVENTS_LOCAL_PROOF -sv pc_controller.sv
-delete t:control_flow_tracker t:pc_increment_calculator
-hierarchy -top pc_controller
+read_slang --top pc_tage_events_formal --single-unit -DSYNTHESIS riscv_pkg.sv fetch_pc_decoupled.sv pc_tage_events_formal.sv
+hierarchy -top pc_tage_events_formal
 script free_undefined.ys
-setundef -undriven -anyseq
-opt
-prep -top pc_controller
-select -assert-count 8 t:$check r:FLAVOR=assert %i
-select -assert-count 4 t:$check r:FLAVOR=cover %i
+setattr -unset keep
+setattr -unset keep_hierarchy
+setattr -mod -unset keep
+setattr -mod -unset keep_hierarchy
+prep -top pc_tage_events_formal -flatten
+select -assert-count 6 t:$check r:FLAVOR=assert %i
+select -assert-count 7 t:$check r:FLAVOR=cover %i
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
+pc_tage_events_prove: chformal -cover -remove
+pc_tage_events_cover: chformal -assert -remove
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_pc_decoupled.sv
+pc_tage_events_formal.sv
 free_undefined.ys

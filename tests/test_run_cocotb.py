@@ -6318,11 +6318,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="return_address_stack",
         description="Return-stack prediction, checkpoints, and recovery",
     ),
-    "branch_predictor": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.branch_prediction.test_branch_predictor",
-        hdl_toplevel_module="branch_predictor",
-        description="Branch-target lookup and predictor training",
-    ),
     "backing_btb": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_backing_btb",
         hdl_toplevel_module="backing_btb",
@@ -6334,11 +6329,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Backing BTB with four ways",
         verilator_extra_args=("-GWAYS=4",),
     ),
-    "direction_predictor": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.branch_prediction.test_direction_predictor",
-        hdl_toplevel_module="direction_predictor",
-        description="Branch-direction prediction and training",
-    ),
     "tage_predictor": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_tage_predictor",
         hdl_toplevel_module="tage_predictor",
@@ -6348,36 +6338,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_ittage_predictor",
         hdl_toplevel_module="ittage_predictor",
         description="Indirect target prediction, allocation, confidence and replacement",
-    ),
-    "branch_prediction_controller": CocotbRunConfig(
-        python_test_module=(
-            "cocotb_tests.if_stage.branch_prediction.test_branch_prediction_controller"
-        ),
-        hdl_toplevel_module="branch_prediction_controller",
-        description="Branch-prediction control and metadata through stalls and "
-        "redirects",
-    ),
-    "prediction_metadata_tracker": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.branch_prediction.test_prediction_metadata_tracker",
-        hdl_toplevel_module="prediction_metadata_tracker",
-        description="Prediction metadata stays with the right instruction through "
-        "stalls and replay",
-    ),
-    "control_flow_tracker": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_control_flow_tracker",
-        hdl_toplevel_module="control_flow_tracker",
-        description="Fetch holdoffs after reset and control-flow redirects",
-    ),
-    "pc_increment_calculator": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_pc_increment_calculator",
-        hdl_toplevel_module="pc_increment_calculator",
-        description="Fetch PC increments across bundle shapes, holdoffs, and address "
-        "wraparound",
-    ),
-    "pc_controller": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_pc_controller",
-        hdl_toplevel_module="pc_controller",
-        description="Fetch PC selection, stalls, and redirect priority",
     ),
     "dmmu": CocotbRunConfig(
         python_test_module="cocotb_tests.test_dmmu",
@@ -6410,11 +6370,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
         verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30", "--assert"),
     ),
-    "instruction_aligner": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
-        hdl_toplevel_module="instruction_aligner",
-        description="Instruction alignment and metadata selection across fetch windows",
-    ),
     "rvc_decompressor": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
         hdl_toplevel_module="rvc_decompressor",
@@ -6422,12 +6377,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "RV64C/Zcb/Zcmop expansion and illegal flags match the specification "
             "oracle and predecode mirror for every parcel"
         ),
-    ),
-    "c_ext_state": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_c_ext_state",
-        hdl_toplevel_module="c_ext_state",
-        description="Compressed-instruction buffering through stalls and control-flow "
-        "changes",
     ),
     "if_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_if_stage",
@@ -6878,8 +6827,6 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "axi_coherent_bridge",
         "axi_coherent_bridge_32",
         "branch_jump_unit",
-        "branch_prediction_controller",
-        "branch_predictor",
         "branch_resolution",
         "cached_tier_adapter_split",
         "cdc_mailbox",
@@ -6926,7 +6873,6 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "coherent_cpu_local_contention",
         "coherent_stream_order",
         "commit_actions",
-        "control_flow_tracker",
         "cpu_axi_master",
         "cpu_memory_fabric_line",
         "cpu_top_writethrough_custom_map",
@@ -6939,7 +6885,6 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "decoded_bundle_queue_depth2",
         "decoded_bundle_queue_split_stall",
         "directed_traps",
-        "direction_predictor",
         "divider",
         "dma_errors",
         "dmmu",
@@ -6994,10 +6939,8 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "ooo_pipeline_control",
         "ooo_register_files",
         "packed_tag_uram_13_clear",
-        "pc_increment_calculator",
         "pd_stage",
         "perf_counter_aggregator",
-        "prediction_metadata_tracker",
         "ptw_walk_cache",
         "register_alias_table",
         "reorder_buffer",

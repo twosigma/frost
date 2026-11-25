@@ -59,7 +59,7 @@ extensions implemented on `main` or planned with the vector unit:
 | A | Implemented | `riscv-arch-test` (`A`), `riscv-tests` (`rv64ua`), `rv64_amo_test`, `ddr_atomic_test`, TestRIG (`--atomics`), `load_queue_amo_compute.sby`, `coherence_l1d.sby` |
 | F | Implemented | `riscv-arch-test` (`F`), `riscv-tests` (`rv64uf`), `fpu_test`, `fp_dyn_rm_test`, TestRIG, `fp_engine_twin.sby`, `fp_shim.sby` |
 | D | Implemented | `riscv-arch-test` (`D`), `riscv-tests` (`rv64ud`), `fpu_test`, `fpu_assembly_test`, TestRIG, `fp_engine_twin.sby`, `fp_shim.sby` |
-| C | Implemented | `riscv-arch-test` (`C`, `D_Zcd`), `riscv-tests` (`rv64uc`), `c_ext_test`, `cf_ext_test`, TestRIG, `rvc_predecode.sby`, `c_ext_state_cofactor.sby` |
+| C | Implemented | `riscv-arch-test` (`C`, `D_Zcd`), `riscv-tests` (`rv64uc`), `c_ext_test`, `cf_ext_test`, TestRIG, `rvc_predecode.sby`, `fetch_parcel_queue.sby` |
 | B | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzba`, `rv64uzbb`, `rv64uzbs`), `isa_test`, TestRIG, `alu_shift_hint.sby` |
 | Zicsr | Implemented | `riscv-tests` (`rv64mi`, `rv64si`), `csr_test`, `csr_rmw_test`, TestRIG, `csr_file.sby` |
 | Zicntr | Implemented | `csr_test`, `instret_test`, `zihpm_test`, TestRIG (`instret_nops.S`), `csr_file.sby` |
@@ -390,12 +390,9 @@ of the scripts accepts only Yosys command forms that, apart from edits the
 script names itself, keep the unknown starting value of registers and
 memories and never merge two free inputs, and for each task of a script it
 lists as open it pins every other command, in order. It also pins commands
-that read undefined bits as defined, in twenty-three more files and some of
-those above: seventeen unopened in-script comparisons zero undefined constants
-before `equiv_simple`, which reads an undefined bit as 0, and four opened ones
-run `equiv_simple` after opening both forms. The predecode target,
-decoded bundle queue, IMEM predecode and L0 store boundary comparisons open
-both forms and prove every point.
+that read undefined bits as defined, in the scripts above and in the
+17 in-script comparisons (which run `equiv_simple` after opening both
+forms with `free_undefined.ys` and prove every point).
 `rs_payload_twin.sby` starts both copies from a zero state; the
 store-home BMCs run `peepopt`, and its compact covers `abc` and
 `opt -fine`, which merges equal multiplexer output bits; the load-queue
@@ -413,8 +410,8 @@ or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
 `opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
 `prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). All 257 scripts in `formal/` open undefined values before optimization.
-236 scripts require the shared opening (`hierarchy -top` or
+each case). All 231 scripts in `formal/` open undefined values before optimization.
+214 scripts require the shared opening (`hierarchy -top` or
 `hierarchy -check -top` followed by `script free_undefined.ys`) across
 every task; `free_undefined.ys` lowers processes pass by pass, frees the
 undefined inputs of every multiplexer and the undefined bits of every
@@ -424,29 +421,28 @@ undefined bit before `proc_dff`, and then runs `proc`'s own closing
 port, a connection or a register when those passes run. Commands that a
 script's open entry pins are the exception: a plain `memory_map`, for one,
 writes x for words that nothing writes, and a plain `opt` after it can read
-them before SymbiYosys frees them. The other 21 scripts (the 35 in-script
+them before SymbiYosys frees them. The other 17 scripts (the 30 in-script
 equivalence tasks declared in `TWIN_COMPARISONS`) open both forms with
 `free_undefined.ys`, check matching compiled ports and initializers in
 `twin_ports.json`, cut every register, pin their free-cell counts and
 point floors, and prove every point with unrestricted `equiv_simple` and
 `equiv_status -assert`. The fast check enforces the opening across all
-257 scripts; both `UNDEFINED_OPENING_PENDING` and
+231 scripts; both `UNDEFINED_OPENING_PENDING` and
 `UNDEFINED_OPENING_TWINS` in `tests/test_run_formal.py` are empty.
 
 Before the opening, a dump of every registered task's model
 before the first two `opt_muxtree` steps of each `opt` without `-fast` and
 each `prep`, and before every other `opt_muxtree`, found no constant-x
-multiplexer select; it did not reach the comparison design that
-`branch_predictor_twin.sby` builds inside its script, and it cannot see the
-`opt_expr` case where it acts. In 17 of 26 sampled models of scripts that
-are not open, identical cells hold constant-x inputs before the first
-`opt_merge`, which makes each such group one cell.
+multiplexer select; it cannot see the `opt_expr` case where it acts. In 17 of
+26 sampled models of scripts that are not open, identical cells hold
+constant-x inputs before the first `opt_merge`, which makes each such group one
+cell.
 
 The FPGA build's hand-instantiated primitives are compared with their
 portable forms by [equivalence checks](formal/README.md#primitive-twins).
-Open: a few primitive blocks in the load queue, the Tomasulo wrapper, the
-branch prediction controller and the SoC top have no comparison yet;
-`NOT_COVERED` in `tests/test_prim_twins.py` gives the reason for each.
+Open: a few primitive blocks in the load queue, the Tomasulo wrapper, and the
+SoC top have no comparison yet; `NOT_COVERED` in `tests/test_prim_twins.py`
+gives the reason for each.
 
 ## ASIC-ready RTL
 
