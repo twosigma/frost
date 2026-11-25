@@ -6736,6 +6736,25 @@ for _vlen in (128, 256, 512):
         ),
     )
 
+for _vlen in (128, 256, 512):
+    TEST_REGISTRY[f"vec_perf_bench_v{_vlen}"] = CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_perf_bench",
+        nic_mac_clocks=False,
+        description=(
+            f"Vector engine performance microbenchmark at VLEN {_vlen} in cached DDR; CLI-only"
+        ),
+        include_in_pytest=False,
+        rerun_after_reset=False,
+        verilator_extra_args=("-GVECTOR=1", f"-GVLEN={_vlen}"),
+        extra_env=(
+            ("VLEN", str(_vlen)),
+            ("COCOTB_MAX_CYCLES", "2000000"),
+            ("FROST_COCOTB_MEM_CONFIG", "ddr"),
+        ),
+    )
+
 # The full power-of-two raw-DDR capacity matrix. Keep the historical 64 GiB
 # entry above for existing callers; all entries use the same byte-level
 # bridge test, including the last representable line and +4 GiB separation.
