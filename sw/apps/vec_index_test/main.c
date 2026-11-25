@@ -955,13 +955,14 @@ static void test_interrupts(void)
 
 /* A gather whose destination is its own index group (vluxei8.v v8, (a0), v8
  * at e8 m8) under timer interrupts. Element i reads its index from v8[i]
- * before it writes v8[i], so the instruction is correct only if it runs to the
- * end once it has started: a run that gave up after some elements and ran
- * again from the start would read indices it had already overwritten. The
- * handler records where each interrupt was taken. mtime counts cycles in
+ * before it writes v8[i]. An interrupt taken mid-run must stop at an element
+ * boundary with mepc at the gather and vstart naming the next element so
+ * resumption after mret starts at vstart and never re-reads indices already
+ * overwritten. The handler records mepc and vstart. mtime counts cycles in
  * simulation, so a deadline compares with the mcycle stamps around the
  * gather. */
 static volatile unsigned long g_irq_epc __attribute__((used));
+static volatile unsigned long g_irq_vstart __attribute__((used));
 static volatile unsigned long g_gather_start, g_gather_end;
 extern char gather_overlap_insn[];
 
@@ -976,6 +977,9 @@ __attribute__((naked, aligned(4))) static void timer_stamp_handler(void)
                      "sw   t1, 0(t0)\n"
                      "csrr t1, mepc\n"
                      "la   t0, g_irq_epc\n"
+                     "sd   t1, 0(t0)\n"
+                     "csrr t1, 0x008\n"
+                     "la   t0, g_irq_vstart\n"
                      "sd   t1, 0(t0)\n"
                      "li   t0, 0x4000001c\n"
                      "li   t1, -1\n"
@@ -1028,16 +1032,16 @@ static void test_overlapping_gather_interrupts(void)
         disable_interrupts();
         MTIMECMP_HI = 0xFFFFFFFFu;
         disable_timer_interrupt();
-        /* A deadline well inside the gather's window is taken after it. */
+        /* A deadline well inside the gather's window is taken at an element boundary. */
         long rs = (long) (g_gather_start - c_set), re = (long) (g_gather_end - c_set);
         if ((long) delays[it] > rs + 300 && (long) delays[it] + 300 < re) {
             inside++;
             unsigned long at = g_irq_epc - (unsigned long) (uintptr_t) gather_overlap_insn;
-            check(g_irq == 1u && at == 4u,
-                  "interrupt during a started gather taken after it",
-                  it,
+            check(g_irq == 1u && at == 0u && g_irq_vstart > 0u && g_irq_vstart < vl,
+                  "interrupt during a started gather taken at element boundary with vstart",
+                  (it << 16) | g_irq_vstart,
                   at,
-                  4u);
+                  0u);
         }
         store_v8_group(dump);
         for (unsigned long i = 0; i < vl; i++) {

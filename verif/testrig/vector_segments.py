@@ -1948,6 +1948,183 @@ def _build_fof_trace(patterns: _SeededPatterns) -> _TraceBuilder:
     )
     tb.blank()
 
+    # Non-FoF strided segment load/store fault on segment 1 -> vstart==1 -> resume.
+    tb.comment(
+        "Non-FoF vlsseg2e32/vssseg2e32 and vluxseg2e32/vsoxseg2e32 fault on seg 1 -> vstart==1 -> resume, plus FoF resume at vstart==1."
+    )
+    tb.emit(_enc_addi(S4, S2, -16), "addi s4, s2, -16")
+    tb.emit(_enc_addi(T0, ZERO, 16), "addi t0, zero, 16")
+    tb.vsetvli_vlmax(T2, 32, "m1")
+    tb.load_u32(T1, SENTINEL_BY_EEW[32])
+    tb.vmv_v_x(8, T1)
+    tb.vmv_v_x(9, T1)
+    tb.vsetivli(A2, 2, 32, "m1")
+    tb.assert_trap(
+        _enc_vmem(False, 2, 2, 1, T0, S4, 32, 8),
+        "vlsseg2e32.v v8, (s4), t0",
+        "non-FoF vlsseg2e32 elem1 access fault",
+        cause=5,
+        tval=DDR_LIMIT,
+    )
+    tb.assert_csr(0x008, "vstart", 1, "vlsseg2e32 fault vstart==1")
+    tb.emit(
+        _enc_vmem(False, 2, 2, 1, T0, S0, 32, 8),
+        "vlsseg2e32.v v8, (s0), t0",
+        [("trap == 0", "vlsseg2e32 resume from vstart==1 retires")],
+    )
+    tb.assert_csr(0x008, "vstart", 0, "vlsseg2e32 resume clears vstart==0")
+    tb.read_lane(
+        8, 0, 32, "m1", tb.pat.src_elem(112, 4), "vlsseg2e32 prestart f0 l0 preserved"
+    )
+    tb.read_lane(
+        9, 0, 32, "m1", tb.pat.src_elem(116, 4), "vlsseg2e32 prestart f1 l0 preserved"
+    )
+    tb.read_lane(
+        8, 1, 32, "m1", tb.pat.src_elem(16, 4), "vlsseg2e32 resumed f0 l1 from s0"
+    )
+    tb.read_lane(
+        9, 1, 32, "m1", tb.pat.src_elem(20, 4), "vlsseg2e32 resumed f1 l1 from s0"
+    )
+
+    # Indexed segment load fault on seg 1 -> vstart==1 -> resume (before stores overwrite s4).
+    tb.load_vec_lanes(16, [0, 16], 32, "m1")
+    tb.vsetvli_vlmax(T2, 32, "m1")
+    tb.load_u32(T1, SENTINEL_BY_EEW[32])
+    tb.vmv_v_x(8, T1)
+    tb.vmv_v_x(9, T1)
+    tb.vsetivli(A2, 2, 32, "m1")
+    tb.assert_trap(
+        _enc_vmem(False, 2, 1, 1, 16, S4, 32, 8),
+        "vluxseg2e32.v v8, (s4), v16",
+        "non-FoF vluxseg2e32 elem1 access fault",
+        cause=5,
+        tval=DDR_LIMIT,
+    )
+    tb.assert_csr(0x008, "vstart", 1, "vluxseg2e32 fault vstart==1")
+    tb.emit(
+        _enc_vmem(False, 2, 1, 1, 16, S0, 32, 8),
+        "vluxseg2e32.v v8, (s0), v16",
+        [("trap == 0", "vluxseg2e32 resume from vstart==1 retires")],
+    )
+    tb.assert_csr(0x008, "vstart", 0, "vluxseg2e32 resume clears vstart==0")
+    tb.read_lane(
+        8, 0, 32, "m1", tb.pat.src_elem(112, 4), "vluxseg2e32 prestart f0 l0 preserved"
+    )
+    tb.read_lane(
+        9, 0, 32, "m1", tb.pat.src_elem(116, 4), "vluxseg2e32 prestart f1 l0 preserved"
+    )
+    tb.read_lane(
+        8, 1, 32, "m1", tb.pat.src_elem(16, 4), "vluxseg2e32 resumed f0 l1 from s0"
+    )
+    tb.read_lane(
+        9, 1, 32, "m1", tb.pat.src_elem(20, 4), "vluxseg2e32 resumed f1 l1 from s0"
+    )
+
+    # Strided segment store resumed from vstart==1 (established by a faulting
+    # segment load) preserves seg 0 sentinel and writes seg 1.
+    _preload_store_fields(tb, 32)
+    for off in (0, 4, 16, 20):
+        tb.write_scalar_mem(S1, off, 4, SENTINEL_BY_EEW[32])
+    tb.vsetivli(A2, 2, 32, "m1")
+    tb.assert_trap(
+        _enc_vmem(False, 2, 2, 1, T0, S4, 32, 12),
+        "vlsseg2e32.v v12, (s4), t0",
+        "setup vstart==1 before vssseg2e32 resume",
+        cause=5,
+        tval=DDR_LIMIT,
+    )
+    tb.assert_csr(0x008, "vstart", 1, "vssseg2e32 setup vstart==1")
+    tb.emit(
+        _enc_vmem(True, 2, 2, 1, T0, S1, 32, 8),
+        "vssseg2e32.v v8, (s1), t0",
+        [("trap == 0", "vssseg2e32 resume from vstart==1 retires")],
+    )
+    tb.read_scalar_mem(
+        S1, 0, 4, SENTINEL_BY_EEW[32], "vssseg2e32 prestart seg0 f0 undisturbed"
+    )
+    tb.read_scalar_mem(
+        S1, 4, 4, SENTINEL_BY_EEW[32], "vssseg2e32 prestart seg0 f1 undisturbed"
+    )
+    tb.read_scalar_mem(
+        S1, 16, 4, tb.pat.store_elem(0, 1, 32), "vssseg2e32 resumed seg1 f0"
+    )
+    tb.read_scalar_mem(
+        S1, 20, 4, tb.pat.store_elem(1, 1, 32), "vssseg2e32 resumed seg1 f1"
+    )
+    tb.assert_csr(0x008, "vstart", 0, "vssseg2e32 resume clears vstart==0")
+
+    _preload_store_fields(tb, 32)
+    for off in (0, 4, 16, 20):
+        tb.write_scalar_mem(S1, off, 4, SENTINEL_BY_EEW[32])
+    tb.vsetivli(A2, 2, 32, "m1")
+    tb.assert_trap(
+        _enc_vmem(False, 2, 1, 1, 16, S4, 32, 12),
+        "vluxseg2e32.v v12, (s4), v16",
+        "setup vstart==1 before vsoxseg2e32 resume",
+        cause=5,
+        tval=DDR_LIMIT,
+    )
+    tb.assert_csr(0x008, "vstart", 1, "vsoxseg2e32 setup vstart==1")
+    tb.emit(
+        _enc_vmem(True, 2, 3, 1, 16, S1, 32, 8),
+        "vsoxseg2e32.v v8, (s1), v16",
+        [("trap == 0", "vsoxseg2e32 resume from vstart==1 retires")],
+    )
+    tb.read_scalar_mem(
+        S1, 0, 4, SENTINEL_BY_EEW[32], "vsoxseg2e32 prestart seg0 f0 undisturbed"
+    )
+    tb.read_scalar_mem(
+        S1, 4, 4, SENTINEL_BY_EEW[32], "vsoxseg2e32 prestart seg0 f1 undisturbed"
+    )
+    tb.read_scalar_mem(
+        S1, 16, 4, tb.pat.store_elem(0, 1, 32), "vsoxseg2e32 resumed seg1 f0"
+    )
+    tb.read_scalar_mem(
+        S1, 20, 4, tb.pat.store_elem(1, 1, 32), "vsoxseg2e32 resumed seg1 f1"
+    )
+    tb.assert_csr(0x008, "vstart", 0, "vsoxseg2e32 resume clears vstart==0")
+
+    # FoF segment load entered with vstart==1 faulting immediately on seg 1 trims vl==1 without trapping.
+    tb.emit(_enc_addi(S4, S2, -8), "addi s4, s2, -8")
+    tb.vsetvli_vlmax(T2, 32, "m1")
+    tb.load_u32(T1, SENTINEL_BY_EEW[32])
+    tb.vmv_v_x(8, T1)
+    tb.vmv_v_x(9, T1)
+    tb.vsetivli(A2, 2, 32, "m1")
+    tb.assert_trap(
+        _enc_vmem(False, 2, 0, 1, 0, S4, 32, 8),
+        "vlseg2e32.v v8, (s4)",
+        "setup vstart==1 for FoF resume",
+        cause=5,
+        tval=DDR_LIMIT,
+    )
+    tb.assert_csr(0x008, "vstart", 1, "setup vstart==1 before vlseg2e32ff")
+    tb.emit(
+        _enc_vmem(False, 2, 0, 1, 0x10, S4, 32, 8),
+        "vlseg2e32ff.v v8, (s4)",
+        [
+            (
+                "trap == 0",
+                "vlseg2e32ff at vstart==1 faults on seg 1 and trims without trap",
+            )
+        ],
+    )
+    tb.assert_csr(0xC20, "vl", 1, "vlseg2e32ff at vstart==1 trims vl==1")
+    tb.assert_csr(0x008, "vstart", 0, "vlseg2e32ff at vstart==1 clears vstart==0")
+    tb.read_lane(
+        8, 0, 32, "m1", tb.pat.src_elem(120, 4), "vlseg2e32ff prestart f0 l0 preserved"
+    )
+    tb.read_lane(
+        9, 0, 32, "m1", tb.pat.src_elem(124, 4), "vlseg2e32ff prestart f1 l0 preserved"
+    )
+    tb.read_lane(
+        8, 1, 32, "m1", SENTINEL_BY_EEW[32], "vlseg2e32ff faulting f0 l1 undisturbed"
+    )
+    tb.read_lane(
+        9, 1, 32, "m1", SENTINEL_BY_EEW[32], "vlseg2e32ff faulting f1 l1 undisturbed"
+    )
+    tb.blank()
+
     # FoF segment illegal traps: nf*EMUL>8 (10, 12), vd+nf*EMUL>32, masked vd==v0, align, vill
     tb.comment(
         "FoF segment illegal traps: nf*EMUL>8 (10, 12), vd+nf*EMUL>32, masked v0, align, vill."

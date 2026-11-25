@@ -107,6 +107,7 @@ VECTOR_DIRECTED_TRACES = tuple(
         "strided",
         "indexed",
         "fof",
+        "vstart_resume",
         "int_widen_narrow",
         "fixed_point",
         "fp_single",
