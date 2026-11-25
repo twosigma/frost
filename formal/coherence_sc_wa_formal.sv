@@ -1556,7 +1556,7 @@ module coherence_sc_wa_formal #(
 
     if (home.array.phase_q > ArrReply) inv_home_arr_ok = 1'b0;
     if (home.array.token_onehot_q != (4'b0001 << home.array.token_q)) inv_home_arr_ok = 1'b0;
-    if (home.array.read_open_q != 3'b000 || home.array.spec_want_q) inv_home_arr_ok = 1'b0;
+    if (home.array.read_open_q != 3'b000 || home.array.i_req_spec) inv_home_arr_ok = 1'b0;
     if (home.array.o_read_valid != home.array.read_valid_q[2]) inv_home_arr_ok = 1'b0;
     if (home.array.phase_q == ArrInit || home.array.phase_q == ArrInitDrain ||
         home.array.phase_q == ArrIdle) begin
