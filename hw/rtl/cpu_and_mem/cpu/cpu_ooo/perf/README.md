@@ -183,8 +183,8 @@ over branch. They only observe; nothing gates prediction on them.
 
 ### Top level 23–41: 2-wide width funnel
 
-Sources: `if_stage.sv` `o_width_events`, with kill causes from
-`instruction_aligner.sv` (23–31); `dispatch.sv` `o_status.slot2_*` (32–39);
+Sources: `if_stage.sv` `o_width_events`, with slot-2 kill causes classified in
+`if_stage.sv`'s parcel-queue drain (23–31); `dispatch.sv` `o_status.slot2_*` (32–39);
 and registered observers in `reservation_station.sv` (the MEM_RS instance,
 40) and `tomasulo_wrapper.sv` (41).
 
@@ -200,9 +200,9 @@ same-cycle alignment with other counters shifts.
 | 26 | `IF_S2KILL_S1_NATIVE_SERIALIZE` | event | 1-wide handoff: slot 1 is a native serializing instruction (SYSTEM except Zimop, MISC-MEM, or AMO), which never leads a pair |
 | 27 | `IF_S2KILL_S1_CTRL` | event | 1-wide handoff: slot 1 is compressed control flow, which ends the bundle |
 | 28 | `IF_S2KILL_S2_CLASS` | event | 1-wide handoff: the slot-2 candidate is a class excluded from slot 2 (native SYSTEM except Zimop, MISC-MEM, AMO, FP compute or vector) |
-| 29 | `IF_S2KILL_WINDOW_LIMIT` | event | 1-wide handoff: the slot-2 candidate is a 32-bit instruction starting in the upper half of the second word, which cannot fit the 64-bit window |
-| 30 | `IF_S2KILL_TRANSIENT` | event | 1-wide handoff: transient aligner-buffer or window state, such as a parity-unsafe window read, kept slot 2 out |
-| 31 | `IF_SLOT2_PRED_TAKEN` | event | A slot-2 BTB taken prediction was accepted in IF. Each costs one fetch bubble because fetch has already requested the next sequential window; PD may still veto a conditional branch's prediction afterward (no counter records PD redirects by slot or kind) |
+| 29 | `IF_S2KILL_WINDOW_LIMIT` | event | 1-wide handoff: fewer parcels are available in `fetch_parcel_queue` (including empty/partial bypass) than needed for slot 2 |
+| 30 | `IF_S2KILL_TRANSIENT` | event | 1-wide handoff: a fetch fault on slot 1 or slot 2 kept slot 2 out |
+| 31 | `IF_SLOT2_PRED_TAKEN` | event | A slot-2 fast-BTB taken prediction was accepted in IF. F0 steers immediately on the launching window without a slot-2 fetch bubble; PD may still veto a conditional branch's prediction afterward (no counter records PD redirects by slot or kind) |
 | 32 | `DISPATCH_FIRE_2` | event | Slot 2 dispatched (`rob_alloc_req_2.alloc_valid`): one per instruction dispatched through slot 2 |
 | 33 | `DISPATCH_SLOT2_PRESENT` | cycle | A real slot-2 instruction is at the dispatch input |
 | 34 | `DISPATCH_SLOT2_FP_SERIALIZED` | cycle | A slot-2 instruction targets the FP RS (an FP compute operation); these never dispatch in slot 2 |
