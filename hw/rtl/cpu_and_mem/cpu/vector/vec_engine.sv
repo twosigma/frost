@@ -41,9 +41,10 @@
   (registered, one cycle) and a byte-enabled write of one register.
 */
 module vec_engine #(
-    parameter  int unsigned VLEN  = 256,
-    localparam int unsigned Lanes = VLEN / 64,
-    localparam int unsigned Bytes = VLEN / 8
+    parameter  int unsigned VLEN     = 256,
+    localparam int unsigned Lanes    = VLEN / 64,
+    localparam int unsigned Bytes    = VLEN / 8,
+    localparam int unsigned ByteBits = $clog2(Bytes)
 ) (
     input  logic             i_clk,
     input  logic             i_rst,
@@ -213,7 +214,7 @@ module vec_engine #(
   logic [63:0] scalar_q;  // replicated per element at SEW
   vec_pkg::int_op_e op_q;
   logic mask_dest_q, use_scalar_q, masked_q, merge_q, unary_q;
-  logic [3:0] g_q;
+  logic [3:0] g_q, last_g_q;
   logic [2:0] ex_cnt_q;
 
   wire [5:0] funct6 = i_insn[31:26];
@@ -410,6 +411,19 @@ module vec_engine #(
     end
   end
 
+  // Active register-group range for [vstart_q, vl_q), computed from local
+  // registers in S_PRE so groups before vstart or past vl are skipped without
+  // adding logic to the S_IDLE accept path.
+  logic [2:0] epr_shift;
+  logic [15:0] first_g_raw, last_g_raw;
+  logic no_body_elems;
+  logic [3:0] eff_last_g;
+  assign epr_shift     = 3'(ByteBits) - {1'b0, sew_q};
+  assign first_g_raw   = vstart_q >> epr_shift;
+  assign last_g_raw    = (vl_q - 16'd1) >> epr_shift;
+  assign no_body_elems = (vstart_q >= vl_q) || (first_g_raw >= {12'd0, groups_q});
+  assign eff_last_g    = (last_g_raw >= {12'd0, groups_q}) ? (groups_q - 4'd1) : last_g_raw[3:0];
+
   always_ff @(posedge i_clk) begin
     lane_valid <= 1'b0;
     o_unsupported <= 1'b0;
@@ -439,7 +453,15 @@ module vec_engine #(
           if (!d_ok) o_unsupported <= 1'b1;
           else state <= S_PRE;
         end
-        S_PRE: state <= S_PRE2;
+        S_PRE: begin
+          if (no_body_elems) begin
+            state <= S_IDLE;
+          end else begin
+            g_q      <= first_g_raw[3:0];
+            last_g_q <= eff_last_g;
+            state    <= S_PRE2;
+          end
+        end
         S_PRE2: begin
           v0_q   <= rf_rdata[3];
           mres_q <= rf_rdata[2];
@@ -452,7 +474,7 @@ module vec_engine #(
         end
         S_WR: begin
           if (mask_dest_q) mres_q <= (mres_q & ~act_sh_q) | ((gcmp_q << gbase) & act_sh_q);
-          if (g_q + 4'd1 == groups_q) state <= mask_dest_q ? S_MWR : S_IDLE;
+          if (g_q == last_g_q) state <= mask_dest_q ? S_MWR : S_IDLE;
           else begin
             g_q   <= g_q + 4'd1;
             state <= S_RD;
