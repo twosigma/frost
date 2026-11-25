@@ -197,7 +197,7 @@ module coherence_home #(
   logic fatal_event, work_valid, work_error;
   logic [ADDR_WIDTH-1:0] work_addr_out;
   logic work_prefetch, work_cmo, work_no_spec;
-  logic array_init_done, direct_tag_valid;
+  logic array_init_done, direct_tag_valid, direct_ready, direct_not_ready;
   logic array_req_valid, array_req_spec;
   logic [ADDR_WIDTH-1:0] array_req_addr;
   logic [ TokenBits-1:0] array_req_token;
@@ -223,7 +223,7 @@ module coherence_home #(
   coh_w_t incoming_put, selected_put_q;
   logic put_selected_q, put_key_match, put_blocked;
   coh_r_t reply;
-  logic [RESULTS-1:0] engine_idle, engine_lookup;
+  logic [RESULTS-1:0] engine_idle, engine_lookup_pending, engine_lookup, engine_work_target;
   logic [RESULTS-1:0] engine_read;
   logic [RESULTS-1:0] engine_r_ready;
   logic [RESULTS-1:0] engine_update;
@@ -630,6 +630,7 @@ module coherence_home #(
         .i_tid(work_tid),
         .i_work_error(work_error),
         .o_idle(engine_idle[engine]),
+        .o_lookup_pending(engine_lookup_pending[engine]),
         .o_lookup_valid(engine_lookup[engine]),
         .i_lookup_ready(engine_lookup_ready),
         .o_lookup_addr(engine_lookup_addr[engine]),
@@ -700,9 +701,10 @@ module coherence_home #(
           engine_cmo_q[engine]      <= work_cmo;
         end
       end
-      assign tag_valid[engine] = engine_lookup[engine] && !engine_direct_lookup;
+      assign tag_valid[engine] = (run && engine_lookup_pending[engine]) ||
+          (engine_work_target[engine] && work_valid && direct_not_ready);
       assign tag_payload[engine] = {
-        TokenBits'(engine), engine_idle[engine] ? work_addr_out : engine_lookup_addr[engine]
+        TokenBits'(engine), engine_idle[engine] ? work_addr_out : engine_addr[engine]
       };
     end else begin : gen_engine_base
       assign engine_lookup_ready = tag_ready[engine];
@@ -855,39 +857,66 @@ module coherence_home #(
   assign o_wa = ack_out;
 
   if (FAST_TAG_LAUNCH) begin : gen_fast_tag_launch
+    localparam int unsigned OtherTagClients = RESULTS + Puts;
+    localparam int unsigned OtherTagNodes   = (OtherTagClients + 5) / 6;
     logic array_busy_q, array_is_idle;
-    logic other_tag_valid, direct_array_ready;
+    logic [OtherTagClients-1:0] other_tag_terms;
+    (* keep = "true" *) logic [OtherTagNodes-1:0] other_tag_nodes;
+    logic other_tag_pending;
+    (* keep = "true" *) logic direct_array_ready;
+    (* keep = "true" *) logic direct_ready_node, direct_not_ready_node;
+    (* keep = "true" *) logic [RESULTS-1:0] engine_work_target_node;
     always_ff @(posedge i_clk) begin
       if (i_rst) array_busy_q <= 1'b0;
       else if (array_req_valid && tag_request_ready) array_busy_q <= 1'b1;
       else if (array_response && run) array_busy_q <= 1'b0;
     end
     assign array_is_idle = array_init_done && !array_busy_q;
-    always_comb begin
-      other_tag_valid = 1'b0;
-      for (int engine = 0; engine < RESULTS; engine++)
-      other_tag_valid |= !engine_idle[engine] && engine_lookup[engine];
-      for (int put = 0; put < Puts; put++) other_tag_valid |= put_phase_q[put] == PutLookup;
+    for (genvar engine = 0; engine < RESULTS; engine++) begin : gen_other_tag_engine
+      assign other_tag_terms[engine] = engine_lookup_pending[engine];
+      assign engine_work_target_node[engine] = engine_idle[engine] &&
+          work_buffer == ResultBits'(engine);
     end
+    for (genvar put = 0; put < Puts; put++) begin : gen_other_tag_put
+      assign other_tag_terms[RESULTS+put] = put_phase_q[put] == PutLookup;
+    end
+    for (genvar node = 0; node < OtherTagNodes; node++) begin : gen_other_tag_node
+      localparam int unsigned Bits = OtherTagClients - 6 * node < 6 ?
+          OtherTagClients - 6 * node : 6;
+      assign other_tag_nodes[node] = |other_tag_terms[6*node+:Bits];
+    end
+    assign other_tag_pending = |other_tag_nodes;
     assign direct_array_ready = array_is_idle &&
         !(update_request_valid && update_request.tag_write);
-    assign direct_tag_valid = run && work_valid && !work_error && !tag_request_valid &&
-        !other_tag_valid && direct_array_ready;
+    // Keep the direct-launch readiness and its complement beside work_valid so
+    // direct_tag_valid and tag_valid combine with work_valid in one node
+    // without passing through an engine's dispatch lookup offer.
+    assign direct_ready_node = run && !work_error && !tag_request_valid &&
+        !other_tag_pending && direct_array_ready;
+    assign direct_not_ready_node = run && !work_error &&
+        (tag_request_valid || other_tag_pending || !direct_array_ready);
+    assign direct_ready = direct_ready_node;
+    assign direct_not_ready = direct_not_ready_node;
+    assign engine_work_target = engine_work_target_node;
+    assign direct_tag_valid = work_valid && direct_ready;
     assign array_req_valid = (tag_request_valid && run) || direct_tag_valid;
     assign array_req_addr = !tag_request_valid ? work_addr_out : tag_request.addr;
     assign array_req_token = !tag_request_valid ? TokenBits'(work_buffer) : tag_request.token;
     assign array_req_spec = !tag_request_valid ? (PARALLEL_READ && !work_no_spec) : lookup_spec;
 `ifndef SYNTHESIS
     assign f_array_busy_q = array_busy_q;
-    assign f_other_tag_valid = other_tag_valid;
+    assign f_other_tag_valid = other_tag_pending;
     assign f_direct_array_ready = direct_array_ready;
 `endif
   end else begin : gen_no_fast_tag_launch
+    assign direct_ready = 1'b0;
+    assign direct_not_ready = 1'b0;
+    assign engine_work_target = '0;
     assign direct_tag_valid = 1'b0;
-    assign array_req_valid  = tag_request_valid && run;
-    assign array_req_addr   = tag_request.addr;
-    assign array_req_token  = tag_request.token;
-    assign array_req_spec   = lookup_spec;
+    assign array_req_valid = tag_request_valid && run;
+    assign array_req_addr = tag_request.addr;
+    assign array_req_token = tag_request.token;
+    assign array_req_spec = lookup_spec;
 `ifndef SYNTHESIS
     assign f_array_busy_q = 1'b0;
     assign f_other_tag_valid = 1'b0;
@@ -1920,6 +1949,18 @@ module coherence_home #(
       absorbed_ack.absorbed = 1'b1;
       absorbed_ack.tid = reply.tid;
     end
+    // Keep the next state of fill_read_sent_q without a row-read acceptance in
+    // one node so read_ready enters in one LUT.
+    (* keep = "true" *) logic fill_read_sent_hold;
+    assign fill_read_sent_hold = (run && allocate) ?
+        (lookup_cmo_q ? !array_hit : array_state == coherence_pkg::Invalid) :
+        fill_read_sent_q[fill];
+    always_ff @(posedge i_clk) begin
+      if (i_rst) fill_read_sent_q[fill] <= 1'b0;
+      else
+        fill_read_sent_q[fill] <= fill_read_sent_hold ||
+            (run && read_valid[Client] && read_ready[Client]);
+    end
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         fill_live_q[fill] <= 1'b0;
@@ -1934,7 +1975,6 @@ module coherence_home #(
         fill_error_q[fill] <= 1'b0;
         fill_woken_q[fill] <= 1'b0;
         fill_victim_q[fill] <= 1'b0;
-        fill_read_sent_q[fill] <= 1'b0;
         fill_read_done_q[fill] <= 1'b0;
         fill_sector_q[fill] <= 1'b0;
         fill_dirty_q[fill] <= 1'b0;
@@ -1993,8 +2033,6 @@ module coherence_home #(
             fill_error_q[fill] <= 1'b0;
             fill_zero_q[fill] <= zero_fill;
             fill_woken_q[fill] <= 1'b0;
-            fill_read_sent_q[fill] <= lookup_cmo_q ? !array_hit :
-                array_state == coherence_pkg::Invalid;
             fill_read_done_q[fill] <= lookup_cmo_q ? !array_hit :
                 array_state == coherence_pkg::Invalid;
             fill_sector_q[fill] <= 1'b0;
@@ -2025,7 +2063,6 @@ module coherence_home #(
             fill_seat_count_q[fill] <= fill_seat_count_q[fill] - 1'b1 - 2'(forwarded);
           end
           if (fill_phase_q[fill] == FillReady && fill_seats_q[fill] == 0) fill_live_q[fill] <= 1'b0;
-          if (read_valid[Client] && read_ready[Client]) fill_read_sent_q[fill] <= 1'b1;
           if (array_data_valid && array_data_token == TokenBits'(Client))
             fill_read_done_q[fill] <= 1'b1;
           if (probe_valid[Client] && probe_ready[Client]) recall_phase_q[fill] <= RecallWait;
