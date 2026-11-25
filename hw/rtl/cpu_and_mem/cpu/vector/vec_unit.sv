@@ -143,6 +143,82 @@ module vec_unit #(
 
   localparam int unsigned Depth = 8;
   localparam int unsigned VlenBytes = VLEN / 8;
+  localparam int unsigned ByteBits = $clog2(VlenBytes);
+
+  function automatic logic [31:0] vec_grp_mask(input logic [4:0] base, input logic [3:0] cnt);
+    logic [31:0] m;
+    m = 32'd0;
+    for (int i = 0; i < 8; i++) if (4'(i) < cnt) m[5'(base+5'(i))] = 1'b1;
+    vec_grp_mask = m;
+  endfunction
+
+  // Conservative source/destination register bitmasks for committed vector
+  // arithmetic instructions (used for engine-vs-VMU hazard checking).
+  function automatic logic [63:0] vec_arith_masks(input logic [31:0] insn, input logic [8:0] vtype);
+    logic [6:0] opc;
+    logic [5:0] f6;
+    logic [2:0] f3, lmul;
+    logic [4:0] vd, vs1, vs2;
+    logic vm, is_opve, is_iv, is_mv, is_fp, is_whole, is_widen, is_awide, is_ei16;
+    logic is_int_red, is_fp_red, is_mask_dest, is_smove, no_vs2, has_vs1;
+    logic [3:0] n_base, n_wide, whole_cnt;
+    logic [31:0] rd_m, wr_m;
+    opc = insn[6:0];
+    f6 = insn[31:26];
+    vm = insn[25];
+    vs2 = insn[24:20];
+    vs1 = insn[19:15];
+    f3 = insn[14:12];
+    vd = insn[11:7];
+    lmul = vtype[2:0];
+    n_base = lmul[2] ? 4'd1 : (4'd1 << lmul[1:0]);
+    n_wide = (n_base >= 4'd8) ? 4'd8 : (n_base << 1);
+    whole_cnt = {1'b0, vs1[2:0]} + 4'd1;
+    is_opve = (opc == riscv_pkg::OPC_OP_VE);
+    is_iv = !is_opve && ((f3 == 3'd0) || (f3 == 3'd3) || (f3 == 3'd4));
+    is_mv = !is_opve && ((f3 == 3'd2) || (f3 == 3'd6));
+    is_fp = !is_opve && ((f3 == 3'd1) || (f3 == 3'd5));
+    is_whole = !is_opve && (f3 == 3'd3) && (f6 == 6'h27);
+    is_widen = (is_mv && (f6 >= 6'h30)) || (is_iv && (f6 == 6'h35)) ||
+        (is_fp && ((f6 >= 6'h30) || (f6 == 6'h12 && vs1[4:3] == 2'd1)));
+    is_awide = (is_iv && (f6 >= 6'h2c) && (f6 <= 6'h2f)) ||
+        (is_mv && (f6 >= 6'h34) && (f6 <= 6'h37)) ||
+        (is_fp && ((f6 == 6'h34) || (f6 == 6'h36) || (f6 == 6'h12 && vs1[4:3] == 2'd2)));
+    is_ei16 = !is_opve && (f3 == 3'd0) && (f6 == 6'h0e);
+    is_int_red = (!is_opve && (f3 == 3'd2) && (f6 < 6'd8)) ||
+        (!is_opve && (f3 == 3'd0) && ((f6 == 6'h30) || (f6 == 6'h31)));
+    is_fp_red = !is_opve && (f3 == 3'd1) &&
+        (f6 == 6'd1 || f6 == 6'd3 || f6 == 6'd5 || f6 == 6'd7 || f6 == 6'h31 || f6 == 6'h33);
+    is_mask_dest = (is_iv && ((f6[5:3] == 3'b011) || (f6 == 6'h11) || (f6 == 6'h13))) ||
+        (is_mv && (f3 == 3'd2) && ((f6[5:3] == 3'b011) || (f6 == 6'h14 && vs1 < 5'd16))) ||
+        (is_fp && (f6 >= 6'h18) && (f6 <= 6'h1f));
+    is_smove = (!is_opve && (f3 == 3'd6) && (f6 == 6'h10)) ||
+        (!is_opve && (f3 == 3'd5) && (f6 == 6'h10));
+    no_vs2 = is_smove || ((is_iv || is_fp) && (f6 == 6'h17) && vm) ||
+        (is_mv && (f3 == 3'd2) && (f6 == 6'h14) && (vs1 == 5'd17));
+    has_vs1 = is_opve || (f3 == 3'd0) ||
+        ((f3 == 3'd1) && (f6 != 6'h12) && (f6 != 6'h13)) ||
+        ((f3 == 3'd2) && (f6 != 6'h12) && (f6 != 6'h14));
+
+    if (is_whole) wr_m = vec_grp_mask(vd, whole_cnt);
+    else if (is_int_red || is_fp_red || is_mask_dest || is_smove) wr_m = 32'd1 << vd;
+    else if (is_widen) wr_m = vec_grp_mask(vd, n_wide);
+    else wr_m = vec_grp_mask(vd, n_base);
+
+    rd_m = 32'd0;
+    if (!is_opve && !vm) rd_m[0] = 1'b1;
+    if (!no_vs2) begin
+      if (is_whole) rd_m = rd_m | vec_grp_mask(vs2, whole_cnt);
+      else if (is_awide) rd_m = rd_m | vec_grp_mask(vs2, n_wide);
+      else rd_m = rd_m | vec_grp_mask(vs2, n_base);
+    end
+    if (has_vs1) begin
+      if (is_ei16) rd_m = rd_m | vec_grp_mask(vs1, n_wide);
+      else if (is_int_red || is_fp_red) rd_m[vs1] = 1'b1;
+      else rd_m = rd_m | vec_grp_mask(vs1, n_base);
+    end
+    vec_arith_masks = {rd_m, wr_m};
+  endfunction
 
   logic [31:0] insn_q[riscv_pkg::ReorderBufferDepth];
   logic [VmtIdxW-1:0] vmt_idx_by_tag_q[riscv_pkg::ReorderBufferDepth];
@@ -223,35 +299,26 @@ module vec_unit #(
   logic zero_vmt_done_valid;
   logic [VmtIdxW-1:0] zero_vmt_done_idx;
 
-  // VIQ: {insn, scalar, vl, vtype, vstart, vxrm, frm}
+  // VIQ: {insn, scalar, vl, vtype, vstart, vxrm, frm} plus precomputed class
+  // and register masks for pipelined issue and engine-vs-VMU overlap.
   localparam int unsigned EntryW = 32 + 64 + 16 + 9 + 16 + 2 + 3;
   logic [EntryW-1:0] viq_q[Depth];
+  logic viq_grp_alu_q[Depth];
+  logic [31:0] viq_rd_mask_q[Depth], viq_wr_mask_q[Depth];
   logic [$clog2(Depth)-1:0] head_q, tail_q;
   logic [$clog2(Depth):0] count_q;
-  logic push, pop, issued_q;
-  logic eng_idle;
-  assign push = varith_commit_only;
-  assign pop  = eng_idle && !issued_q && (count_q != '0) && vmu_idle && !vmem_desc_valid_q;
-  always_ff @(posedge i_clk) begin
-    if (push)
-      viq_q[tail_q] <= {
-        insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart, i_vxrm, i_frm
-      };
-    if (i_rst) begin
-      head_q        <= '0;
-      tail_q        <= '0;
-      count_q       <= '0;
-      issued_q      <= 1'b0;
-      o_commit_hold <= 1'b0;
-    end else begin
-      if (push) tail_q <= tail_q + 1'b1;
-      if (pop) head_q <= head_q + 1'b1;
-      count_q <= count_q + ($clog2(Depth) + 1)'(push) - ($clog2(Depth) + 1)'(pop);
-      issued_q <= pop;
-      // Two spare entries cover the commit bus's registered delay.
-      o_commit_hold <= (count_q + ($clog2(Depth) + 1)'(push)) >= ($clog2(Depth) + 1)'(Depth - 2);
-    end
-  end
+  logic push, pop, issued_non_grp_q;
+  logic eng_idle, eng_grp_ready;
+  logic [31:0] eng_wr_mask;
+
+  // Active VMU register mask for engine-alongside-VMU overlap.
+  logic vmu_busy_q, vmu_is_store_q;
+  logic [31:0] vmu_reg_mask_q;
+  logic vmu_active;
+  logic [31:0] vmu_wr_mask, vmu_rd_mask;
+  assign vmu_active  = !vmu_idle || vmu_busy_q;
+  assign vmu_wr_mask = (vmu_active && !vmu_is_store_q) ? vmu_reg_mask_q : 32'd0;
+  assign vmu_rd_mask = (vmu_active && vmu_is_store_q) ? vmu_reg_mask_q : 32'd0;
 
   logic [31:0] e_insn;
   logic [63:0] e_scalar;
@@ -259,7 +326,56 @@ module vec_unit #(
   logic [8:0] e_vtype;
   logic [1:0] e_vxrm;
   logic [2:0] e_frm;
+  logic e_is_grp_alu;
+  logic [31:0] e_rd_mask, e_wr_mask;
   assign {e_insn, e_scalar, e_vl, e_vtype, e_vstart, e_vxrm, e_frm} = viq_q[head_q];
+  assign e_is_grp_alu = viq_grp_alu_q[head_q];
+  assign e_rd_mask = viq_rd_mask_q[head_q];
+  assign e_wr_mask = viq_wr_mask_q[head_q];
+
+  logic vmu_hazard;
+  assign vmu_hazard = |((e_rd_mask | e_wr_mask) & vmu_wr_mask) || |(e_wr_mask & vmu_rd_mask);
+
+  logic [31:0] push_insn;
+  logic push_is_grp_alu;
+  logic [63:0] push_masks;
+  assign push_insn = insn_q[i_commit_tag];
+  assign push_is_grp_alu = !riscv_pkg::vector_int_extra_ok(
+      push_insn
+  ) && !riscv_pkg::vector_fp_ok(
+      push_insn
+  ) && !riscv_pkg::vector_crypto_ok(
+      push_insn
+  );
+  assign push_masks = vec_arith_masks(push_insn, i_vtype);
+
+  assign push = varith_commit_only;
+  assign pop = (count_q != '0) && !vmem_desc_valid_q && !vmu_hazard && !issued_non_grp_q &&
+      (e_is_grp_alu ? eng_grp_ready : eng_idle);
+  always_ff @(posedge i_clk) begin
+    if (push) begin
+      viq_q[tail_q] <= {
+        insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart, i_vxrm, i_frm
+      };
+      viq_grp_alu_q[tail_q] <= push_is_grp_alu;
+      viq_rd_mask_q[tail_q] <= push_masks[63:32];
+      viq_wr_mask_q[tail_q] <= push_masks[31:0];
+    end
+    if (i_rst) begin
+      head_q           <= '0;
+      tail_q           <= '0;
+      count_q          <= '0;
+      issued_non_grp_q <= 1'b0;
+      o_commit_hold    <= 1'b0;
+    end else begin
+      if (push) tail_q <= tail_q + 1'b1;
+      if (pop) head_q <= head_q + 1'b1;
+      count_q <= count_q + ($clog2(Depth) + 1)'(push) - ($clog2(Depth) + 1)'(pop);
+      issued_non_grp_q <= pop && !e_is_grp_alu;
+      // Two spare entries cover the commit bus's registered delay.
+      o_commit_hold <= (count_q + ($clog2(Depth) + 1)'(push)) >= ($clog2(Depth) + 1)'(Depth - 2);
+    end
+  end
 
   vec_engine #(
       .VLEN(VLEN)
@@ -268,6 +384,8 @@ module vec_unit #(
       .i_rst        (i_rst),
       .i_valid      (pop),
       .o_idle       (eng_idle),
+      .o_grp_ready  (eng_grp_ready),
+      .o_wr_mask    (eng_wr_mask),
       .i_insn       (e_insn),
       .i_vsew       (e_vtype[5:3]),
       .i_vlmul      (e_vtype[2:0]),
@@ -332,7 +450,7 @@ module vec_unit #(
 
   logic vec_backend_idle;
   logic vtox_backend_ready;
-  assign vec_backend_idle   = eng_idle && (count_q == '0) && !issued_q &&
+  assign vec_backend_idle   = eng_idle && (count_q == '0) && !issued_non_grp_q &&
                               vmu_idle && !vmem_desc_valid_q;
   assign vtox_backend_ready = vec_backend_idle && !o_vmem_head_shield && !i_csr_wb_pending;
   assign o_idle = vec_backend_idle && (xs == X_IDLE) && !o_vmem_head_shield;
@@ -568,31 +686,47 @@ module vec_unit #(
 
   // Handoff latch: never cleared by i_flush_all, because retired vector memory
   // instructions must run to completion across any younger mispredict/trap flush.
-  assign vmu_cmd_valid = vmem_desc_valid_q && vmu_idle && eng_idle && !issued_q &&
+  assign vmu_cmd_valid = vmem_desc_valid_q && vmu_idle && eng_idle && !issued_non_grp_q &&
                          !i_fatal_stop && !o_vmu_fatal;
+
+  logic [4:0] vmu_first_r, vmu_last_r;
+  assign vmu_first_r = vmem_desc_vd_vs3_q +
+      5'((vmem_desc_first_elem_q << vmem_desc_eew_log2_q) >> ByteBits);
+  assign vmu_last_r = vmem_desc_vd_vs3_q +
+      5'((vmem_desc_last_elem_q << vmem_desc_eew_log2_q) >> ByteBits);
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       vmem_desc_valid_q <= 1'b0;
+      vmu_busy_q        <= 1'b0;
+      vmu_is_store_q    <= 1'b0;
+      vmu_reg_mask_q    <= 32'd0;
     end else if (i_fatal_stop || o_vmu_fatal) begin
       vmem_desc_valid_q <= 1'b0;
-    end else if (desc_launch_valid) begin
-      vmem_desc_valid_q       <= 1'b1;
-      vmem_desc_ppn0_q        <= desc_launch_ppn0;
-      vmem_desc_ppn1_q        <= desc_launch_ppn1;
-      vmem_desc_page_offset_q <= desc_launch_page_offset;
-      vmem_desc_first_elem_q  <= desc_launch_first_elem;
-      vmem_desc_last_elem_q   <= desc_launch_last_elem;
-      vmem_desc_eew_log2_q    <= desc_launch_eew_log2;
-      vmem_desc_active_mask_q <= desc_launch_active_mask;
-      vmem_desc_is_store_q    <= desc_launch_is_store;
-      vmem_desc_vd_vs3_q      <= desc_launch_vd_vs3;
-      vmem_desc_vmt_idx_q     <= desc_launch_vmt_idx;
-      vmem_desc_free_vmt_q    <= desc_launch_free_vmt;
-      vmem_desc_seg0_q        <= desc_launch_seg0;
-      vmem_desc_seg1_q        <= desc_launch_seg1;
-    end else if (vmu_cmd_valid) begin
-      vmem_desc_valid_q <= 1'b0;
+      vmu_busy_q        <= 1'b0;
+    end else begin
+      if (vmu_done) vmu_busy_q <= 1'b0;
+      if (desc_launch_valid) begin
+        vmem_desc_valid_q       <= 1'b1;
+        vmem_desc_ppn0_q        <= desc_launch_ppn0;
+        vmem_desc_ppn1_q        <= desc_launch_ppn1;
+        vmem_desc_page_offset_q <= desc_launch_page_offset;
+        vmem_desc_first_elem_q  <= desc_launch_first_elem;
+        vmem_desc_last_elem_q   <= desc_launch_last_elem;
+        vmem_desc_eew_log2_q    <= desc_launch_eew_log2;
+        vmem_desc_active_mask_q <= desc_launch_active_mask;
+        vmem_desc_is_store_q    <= desc_launch_is_store;
+        vmem_desc_vd_vs3_q      <= desc_launch_vd_vs3;
+        vmem_desc_vmt_idx_q     <= desc_launch_vmt_idx;
+        vmem_desc_free_vmt_q    <= desc_launch_free_vmt;
+        vmem_desc_seg0_q        <= desc_launch_seg0;
+        vmem_desc_seg1_q        <= desc_launch_seg1;
+      end else if (vmu_cmd_valid) begin
+        vmem_desc_valid_q <= 1'b0;
+        vmu_busy_q        <= 1'b1;
+        vmu_is_store_q    <= vmem_desc_is_store_q;
+        vmu_reg_mask_q    <= vec_grp_mask(vmu_first_r, 4'(vmu_last_r - vmu_first_r) + 4'd1);
+      end
     end
   end
 
