@@ -81,8 +81,8 @@ arbiter: prep -top coherence_d_arbiter
 completions: prep -top coherence_home_completions
 select -assert-none t:$check r:FLAVOR=assume %i
 home: select -assert-count 3 t:$check r:FLAVOR=assert %i
-single: select -assert-count 5 t:$check r:FLAVOR=assert %i
-banked: select -assert-count 6 t:$check r:FLAVOR=assert %i
+single: select -assert-count 8 t:$check r:FLAVOR=assert %i
+banked: select -assert-count 9 t:$check r:FLAVOR=assert %i
 row_cover: select -assert-count 2 t:$check r:FLAVOR=cover %i
 banked_cover: select -assert-count 3 t:$check r:FLAVOR=cover %i
 endpoint: select -assert-count 3 t:$check r:FLAVOR=assert %i

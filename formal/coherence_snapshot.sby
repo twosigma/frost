@@ -1,0 +1,68 @@
+[tasks]
+coh_snapshot_versions_bmc bounded
+coh_snapshot_versions_cover covers
+
+[options]
+bounded: mode bmc
+covers: mode cover
+covers: vcd_sim on
+depth 290
+timeout 900
+bounded: aigsmt boolector
+
+[engines]
+bounded: abc bmc3
+covers: btor btormc
+
+[script]
+verilog_defines -D COHERENCE_SNAPSHOT_PROOF
+read -sv coherence_read_stream.sv
+read -sv cache_perf_pkg.sv coherence_pkg.sv coherence_request_endpoint.sv coherence_home_endpoint.sv coherence_put_endpoint.sv coherence_read_owners.sv coherence_miss_credit.sv coherence_read_flags.sv coherence_grant_select.sv coherence_read_select.sv coherence_read_payload.sv coherence_store_buffer.sv coherence_array.sv coherence_l1d.sv coherence_home_array.sv coherence_seat_select.sv coherence_work_select.sv coherence_home_completions.sv coherence_home_engine.sv coherence_home.sv coherence_d_arbiter.sv coherence_dma_ingress.sv coherence_cmo_agent.sv coherence_cluster_test_harness.sv sdp_block_ram.sv sdp_packed_tag_uram.sv sdp_ram_byte_en.sv
+read -formal -sv coherence_link.sv
+read -formal -sv coherence_snapshot_formal.sv
+hierarchy -check -top coherence_snapshot_formal
+script free_undefined.ys
+prep -flatten -top coherence_snapshot_formal
+check -assert
+memory_map -keepdc
+opt -keepdc
+bounded: techmap
+bounded: opt -fast -keepdc
+bounded: select -assert-none t:$check r:FLAVOR=assume %i
+setundef -anyseq
+opt_clean
+check -assert
+
+[files]
+coherence_snapshot_formal.sv
+../hw/rtl/lib/cache/cache_perf_pkg.sv
+../hw/rtl/lib/cache/coherence_pkg.sv
+../hw/rtl/lib/cache/coherence_request_endpoint.sv
+../hw/rtl/lib/cache/coherence_home_endpoint.sv
+../hw/rtl/lib/cache/coherence_put_endpoint.sv
+../hw/rtl/lib/cache/coherence_read_owners.sv
+../hw/rtl/lib/cache/coherence_miss_credit.sv
+../hw/rtl/lib/cache/coherence_read_flags.sv
+../hw/rtl/lib/cache/coherence_grant_select.sv
+../hw/rtl/lib/cache/coherence_read_select.sv
+../hw/rtl/lib/cache/coherence_read_stream.sv
+../hw/rtl/lib/cache/coherence_read_payload.sv
+../hw/rtl/lib/cache/coherence_store_buffer.sv
+../hw/rtl/lib/cache/coherence_dma_ingress.sv
+../hw/rtl/lib/cache/coherence_array.sv
+../hw/rtl/lib/cache/coherence_l1d.sv
+../hw/rtl/lib/cache/coherence_home_array.sv
+../hw/rtl/lib/cache/coherence_seat_select.sv
+../hw/rtl/lib/cache/coherence_work_select.sv
+../hw/rtl/lib/cache/coherence_home_completions.sv
+../hw/rtl/lib/cache/coherence_home_engine.sv
+../hw/rtl/lib/cache/coherence_home.sv
+../hw/rtl/lib/cache/coherence_d_arbiter.sv
+../hw/rtl/lib/cache/coherence_link.sv
+../hw/rtl/lib/cache/coherence_cmo_agent.sv
+../hw/rtl/lib/cache/coherence_cluster_test_harness.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+../hw/rtl/lib/ram/sdp_ram_byte_en.sv
+../hw/rtl/lib/cache/coherence_types.svh
+free_undefined.ys

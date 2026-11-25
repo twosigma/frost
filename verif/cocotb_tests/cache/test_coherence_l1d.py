@@ -284,7 +284,19 @@ async def probe_reply_waits_for_cut_and_preserves_dirty_bytes(dut: Any) -> None:
     await b.tick()
     await b.set(i_u_valid=0)
     expected = (pattern & ~((1 << 64) - 1)) | stored
-    for tid, opcode in enumerate((0, 0, 1, 0), start=1):
+    # The first snapshot copies the dirty bytes. The repeat keeps M and
+    # the ordinary downgrade supplies the bytes even after that repeat.
+    probes = (
+        (3, 3, 1),
+        (3, 3, 0),
+        (0, 2, 1),
+        (3, 2, 0),
+        (0, 2, 0),
+        (1, 0, 0),
+        (0, 0, 0),
+        (3, 0, 0),
+    )
+    for tid, (opcode, state, data_valid) in enumerate(probes, start=1):
         probe = pack(
             (2, opcode),
             (6, tid),
@@ -317,11 +329,11 @@ async def probe_reply_waits_for_cut_and_preserves_dirty_bytes(dut: Any) -> None:
         held = b.get("o_r")
         reply = unpack(held, (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
         assert reply[1] == tid and reply[4] == address and not reply[-1]
-        assert reply[7] == int(tid == 1)
-        if tid == 1:
-            assert reply[8] == expected and reply[5] == 2
-        if opcode == 1 or tid == 4:
-            assert reply[5] == 0
+        assert (reply[0], reply[5], reply[7]) == (data_valid, state, data_valid)
+        if data_valid:
+            assert reply[8] == expected
+        if opcode == 3:
+            assert not b.get("o_cut_hold") and not b.get("o_cut_admit_valid")
         for _ in range(8):
             assert b.get("o_r_valid") and b.get("o_r") == held
             assert not b.get("o_p_ready")
@@ -670,38 +682,185 @@ async def getm(b: Private, address: int, data: int, error: bool = False) -> None
     await b.set(i_u_valid=0)
 
 
-async def snapshot(b: Private, address: int, *, invalidate: bool = False) -> int:
-    """Read a dirty sector through the probe channel, including every byte."""
+async def probe_reply(
+    b: Private, address: int, opcode: int, *, latency: int | None = None
+) -> tuple[int, ...]:
+    """Return the held R packet after a recall, DMA write or DMA read."""
+    external = opcode != 0
     await b.set(
         i_p_valid=1,
         i_p=pack(
-            (2, int(invalidate)),
+            (2, opcode),
             (6, 1),
             (1, 0),
             (b.p, address),
-            (2, 2),
-            (2, 0),
-            (9, 0),
+            (2, 2 if external else 0),
+            (2, int(opcode == 1) if external else 2),
+            (9, 0x160 if external else 0),
             (5, 0),
-            (3, 0),
+            (3, 5 if external else 0),
         ),
         i_cut_admit_ready=1,
         i_cut_admit_clean=1,
     )
     await b.wait("o_p_ready")
+    capture = b.cycles
+    if opcode == 1:
+        assert b.get("o_cut_hold") and b.get("o_cut_admit_valid")
     await b.tick()
     await b.set(i_p_valid=0)
     await b.wait("o_r_valid")
-    reply = unpack(b.get("o_r"), (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
-    assert reply[0] == 1 and reply[7] == 1
+    if latency is not None:
+        assert b.cycles - capture == latency, (b.cycles - capture, latency)
     held = b.get("o_r")
+    reply = unpack(held, (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
+    assert reply[1:5] == (1, 0, 0, address) and not reply[-1]
     for _ in range(8):
+        assert not b.get("o_p_ready") and not b.get("store_pop")
         await b.tick()
         assert b.get("o_r_valid") and b.get("o_r") == held
     await b.set(i_r_ready=1)
     await b.tick()
     await b.set(i_r_ready=0)
+    return reply
+
+
+async def collect_modified(
+    b: Private, address: int, *, invalidate: bool = False
+) -> int:
+    """Collect dirty bytes through an ordinary downgrade or invalidation."""
+    reply = await probe_reply(b, address, int(invalidate))
+    assert reply[0] == 1 and reply[7] == 1
     return reply[8]
+
+
+@cocotb.test()
+async def snapshot_with_home_bytes_ready(dut: Any) -> None:
+    """Check probe service after the home's baseline is already available."""
+    b = Private(dut)
+    await b.reset()
+    address = 0x80000000
+    home = int.from_bytes(bytes(range(32)), "little")
+    for first_probe in (3, 0):
+        # Exercise retained M and ordinary M-to-S from the same starting
+        # permission. Each trial ends by invalidating the resident copy.
+        byte = 0xA0 + first_probe
+        await store(b, address, byte, mask=1)
+        await getm(b, address, home)
+        expected = (home & ~255) | byte
+        retained = first_probe == 3
+        state = 3 if retained else 2
+        for opcode, after, data_valid, clocks in (
+            (first_probe, state, 1, 6),
+            (3, state, 0, 3),
+            (1, 0, int(retained), 6 if retained else 4),
+            (3, 0, 0, 3),
+        ):
+            # Dispatch P after the resident home row and any preceding
+            # dirty update are available. No CPU load needs cut replay.
+            await b.tick(12)
+            r = await probe_reply(b, address, opcode, latency=clocks)
+            assert (r[0], r[5], r[7], r[9]) == (data_valid, after, data_valid, 0)
+            if data_valid:
+                assert r[8] == expected
+                home = r[8]
+            assert home == expected
+
+
+@cocotb.test()
+async def retained_snapshot_between_store_installations(dut: Any) -> None:
+    """Read the installed bytes while GetM blocks two pending stores."""
+    b = Private(dut)
+    await b.reset()
+    a = 0x80000000
+    pattern = int.from_bytes(bytes(range(32)), "little")
+    await store(b, a, pattern & ((1 << 64) - 1))
+    await getm(b, a, pattern)
+    await store(b, a + 32, 0x44)
+    await b.wait("o_d_valid")
+    await store(b, a + 8, 0x9988, mask=3)
+    before = b.installed
+    for has_data in (1, 0):
+        reply = await probe_reply(b, a, 3)
+        assert (reply[0], reply[5], reply[7], reply[9]) == (has_data, 3, has_data, 0)
+        if has_data:
+            assert reply[8] == pattern
+        assert b.get("o_block_valid").bit_count() == 2 and b.installed == before
+    await getm(b, a + 32, 0)
+    # No other demand has a receiver. The younger store must hit M.
+    await b.wait("o_pending_store", 0)
+    reply = await probe_reply(b, a, 3)
+    assert (reply[5], reply[7], reply[8]) == (
+        3,
+        1,
+        (pattern & ~(0xFFFF << 64)) | (0x9988 << 64),
+    )
+    assert b.installed == 3 and b.acknowledged == 3
+
+
+@cocotb.test()
+async def snapshot_credit_follows_the_replaced_way(dut: Any) -> None:
+    """Displace same-set sectors with opposite obligations to the home."""
+    base = 0x80000000
+    rows = [base + index * 128 for index in range(4)]
+    seed = int.from_bytes(bytes(range(32)), "little")
+    saw_discard = saw_put = False
+    for stale in rows:
+        b = Private(dut)
+        await b.reset()
+        images = {}
+        for index, address in enumerate(rows):
+            images[address] = (seed & ~255) | (31 + index)
+            await store(b, address, 31 + index, mask=1)
+            await getm(b, address, seed)
+            reply = await probe_reply(b, address, 3)
+            assert (reply[5], reply[7], reply[8]) == (3, 1, images[address])
+        await store(b, stale, 0xE7, mask=1)
+        await b.wait("o_pending_store", 0)
+        images[stale] = (images[stale] & ~255) | 0xE7
+        # Identical hit order in all four runs gives the same replacement.
+        for address in rows:
+            await b.set(i_address=address, i_read_valid=1, i_read_id=0)
+            await b.tick()
+            await b.set(i_read_valid=0)
+            await b.wait("o_read_valid")
+            assert b.get("o_read_data") == images[address] & ((1 << 64) - 1)
+            await b.set(i_read_ready=1)
+            await b.tick()
+            await b.set(i_read_ready=0)
+        new = base + 4 * 128
+        missing = await probe_reply(b, new, 3)
+        assert (missing[5], missing[7], missing[9]) == (0, 0, 0)
+        await store(b, new, 11)
+        await getm(b, new, 0)
+        has_put = bool(b.get("o_w_valid"))
+        frozen = b.get("o_w")
+        victim = None
+        for address in rows:
+            reply = await probe_reply(b, address, 3)
+            assert reply[7] == int(address == stale)
+            if reply[7]:
+                assert reply[8] == images[address]
+            if reply[5] == 0:
+                assert victim is None and bool(reply[9]) == has_put
+                victim = address
+                if has_put:
+                    assert victim == stale
+                    put = unpack(frozen, (1, 1, 1, b.p, 256, 1))
+                    assert (put[3], put[4]) == (victim, images[victim])
+                    await b.set(i_wa_valid=1, i_wa=put_ack(b, put, True))
+                    await b.wait("o_wa_ready")
+                    await b.tick()
+                    await b.set(i_wa_valid=0)
+                    saw_put = True
+                else:
+                    assert victim != stale
+                    saw_discard = True
+            else:
+                assert reply[5] == 3 and not reply[9]
+        assert victim is not None
+        assert not b.get("wb_live") and not b.get("o_fatal")
+    assert saw_put and saw_discard
 
 
 @cocotb.test()
@@ -762,7 +921,7 @@ async def buffered_masked_hits_preserve_order_and_cadence(dut: Any) -> None:
     assert two_sectors and b.acknowledged == 34 and b.installed == 34
     # Probe launch directly follows StoreOp and must read the full dirty image.
     for address, data in expected.items():
-        assert await snapshot(b, address) == data
+        assert await collect_modified(b, address) == data
     assert not b.get("o_fatal")
 
 
@@ -803,7 +962,7 @@ async def buffered_hit_burst_yields_to_waiting_reads(dut: Any) -> None:
     assert b.acknowledged == 4 and b.installed == 4
     expected = (pattern & ~((1 << 128) - 1)) | (0x99AABBCCDDEEFF00 << 64)
     expected |= 0x1122334455667788
-    assert await snapshot(b, base) == expected
+    assert await collect_modified(b, base) == expected
 
 
 @cocotb.test()
@@ -821,14 +980,14 @@ async def buffered_tail_reacquires_after_probe_and_delayed_getm(dut: Any) -> Non
         await store(b, base + 8, 0xAABBCCDD, 15)
         assert b.get("o_block_valid").bit_count() == 2
         before = b.installed
-        assert await snapshot(b, base, invalidate=invalidate) == pattern
+        assert await collect_modified(b, base, invalidate=invalidate) == pattern
         assert b.installed == before and b.get("o_block_valid").bit_count() == 2
         await getm(b, base + 32, pattern)
         assert b.get("o_pending_store")
         await getm(b, base, pattern)
         await b.wait("o_pending_store", 0)
         expected = (pattern & ~(0xFFFFFFFF << 64)) | (0xAABBCCDD << 64)
-        assert await snapshot(b, base) == expected
+        assert await collect_modified(b, base) == expected
         assert b.acknowledged == 3 and b.installed == 3
         assert not b.get("o_fatal")
 
@@ -858,7 +1017,7 @@ async def store_error_stops_younger_installation_and_reset_clears_credit(
     assert not b.get("o_block_valid") and not b.get("o_fatal")
     await store(b, base, 0x7788)
     await getm(b, base, 0)
-    assert await snapshot(b, base) == 0x7788
+    assert await collect_modified(b, base) == 0x7788
 
 
 @cocotb.test()
@@ -905,7 +1064,7 @@ async def frozen_writeback_blocks_buffered_tail_until_ack(dut: Any) -> None:
         assert b.get("o_block_valid").bit_count() == 2
         before = b.installed
         if absorbed:
-            assert await snapshot(b, victim) == images[victim]
+            assert await collect_modified(b, victim) == images[victim]
             reply = unpack(b.get("o_r"), (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
             assert reply[9] and reply[10] == put[1]
         else:
@@ -932,7 +1091,7 @@ async def frozen_writeback_blocks_buffered_tail_until_ack(dut: Any) -> None:
         await b.tick()
         await b.set(i_wa_valid=0)
         await getm(b, victim, images[victim])
-        assert await snapshot(b, victim) == images[victim] | (0xAABBCCDD << 64)
+        assert await collect_modified(b, victim) == images[victim] | (0xAABBCCDD << 64)
         assert not b.get("o_fatal")
 
 
@@ -1187,6 +1346,29 @@ async def local_modified_atomics_hold_service_through_installation(dut: Any) -> 
 
 
 @cocotb.test()
+async def local_atomic_clears_snapshot_credit(dut: Any) -> None:
+    """Return the new AMO or SC bytes once from an already credited line."""
+    address = 0x80000000
+    pattern = int.from_bytes(bytes(range(32)), "little")
+    low = (1 << 64) - 1
+    for sc in (False, True):
+        b = Private(dut)
+        await b.reset()
+        await store(b, address, pattern & low)
+        await getm(b, address, pattern)
+        first = await probe_reply(b, address, 3)
+        assert (first[5], first[7], first[8]) == (3, 1, pattern)
+        before = await probe_reply(b, address, 3)
+        assert (before[5], before[7]) == (3, 0)
+        data = 0xA3456789ABCDEF12
+        await local_atomic(b, address, pattern & low, data, sc=sc, probe_stage=None)
+        dirty = await probe_reply(b, address, 3)
+        assert (dirty[5], dirty[7], dirty[8]) == (3, 1, (pattern & ~low) | data)
+        after = await probe_reply(b, address, 3)
+        assert (after[5], after[7]) == (3, 0)
+
+
+@cocotb.test()
 async def local_sc_reservation_failure_has_no_write(dut: Any) -> None:
     """Check failed selected SC returns once without modifying bytes."""
     b = Private(dut)
@@ -1236,7 +1418,7 @@ async def local_owner_defers_read_and_check_sc_probes(dut: Any) -> None:
                 if opcode == 0:
                     assert actual == 99
                 else:
-                    assert await snapshot(b, address) == 99
+                    assert await collect_modified(b, address) == 99
 
 
 @cocotb.test()
@@ -1273,7 +1455,7 @@ async def local_write_survives_dirty_eviction(dut: Any) -> None:
                 assert put[4] == images[victim]
                 absorb_this = absorbed and victim == address
                 if absorb_this:
-                    assert await snapshot(b, victim) == 99
+                    assert await collect_modified(b, victim) == 99
                 else:
                     await b.set(i_w_ready=1)
                     await b.tick()
@@ -1331,7 +1513,7 @@ async def absorbed_ack_during_idle_selection_keeps_puts_moving(dut: Any) -> None
     assert first[1] == 0 and b.get("wb_select_q") == 0
     # A probe absorbs the unselected slot 1.
     second = (0, 1, 0, (b.get("wb_addr") >> b.p) & ((1 << b.p) - 1))
-    await snapshot(b, second[3])
+    await collect_modified(b, second[3])
     reply = unpack(b.get("o_r"), (2, 6, 1, 1, b.p, 2, 1, 1, 256, 1, 1, 1, 1, 1))
     assert reply[9] and reply[10] == 1 and reply[11] == 0
     # W0 is accepted on one edge. On the next, the idle selector picks slot 1

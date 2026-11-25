@@ -66,6 +66,14 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home_twin", "home_twin_small"): 600,
     ("coherence_home_twin", "home_twin_four"): 600,
     ("coherence_home_twin", "home_twin_addr40"): 600,
+    ("coherence_sc_wa", "sc_wa_s0_prove"): 600,
+    ("coherence_sc_wa", "sc_wa_s1_prove"): 600,
+    ("coherence_sc_wa", "sc_wa_s2_prove"): 600,
+    ("coherence_sc_wa", "sc_wa_s3_prove"): 600,
+    ("coherence_sc_wa", "sc_wa_s0_cover"): 1200,
+    ("coherence_sc_wa", "sc_wa_s1_cover"): 1200,
+    ("coherence_sc_wa", "sc_wa_s2_cover"): 1200,
+    ("coherence_sc_wa", "sc_wa_s3_cover"): 1200,
     ("coherence_home", "coh_home_control_prove"): 1800,
     ("coherence_home", "coh_home_control64_prove"): 1800,
     ("coherence_home", "coh_home_control_partition_prove"): 1800,
@@ -95,6 +103,8 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home", "coh_home_cmo_fast_cover"): 600,
     ("coherent_hart_cache", "coh_hart_maint_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_owned_prove"): 1200,
+    ("coherent_hart_cache", "coh_hart_maint_free_owned_prove"): 7200,
+    ("coherent_hart_cache", "coh_hart_maint_free_prove"): 7200,
     ("coherent_hart_cache", "coh_hart_maint_four_bmc"): 7200,
     ("coherence_l1d", "coh_l1d_stream_bmc"): 5100,
     ("coherence_l1d", "coh_l1d_stream_hold_bmc"): 3600,
@@ -217,6 +227,20 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_sc_wa.sby",
+        "Composed L1D, home engine, completions, arbiters and links prove SC GrantM writeback exclusion.",
+        tasks=(
+            "sc_wa_s0_prove",
+            "sc_wa_s1_prove",
+            "sc_wa_s2_prove",
+            "sc_wa_s3_prove",
+            "sc_wa_s0_cover",
+            "sc_wa_s1_cover",
+            "sc_wa_s2_cover",
+            "sc_wa_s3_cover",
+        ),
+    ),
+    FormalTarget(
         "coherence_prefetch_pause.sby",
         "DMA credits and seven idle cycles gate prefetch admission.",
         tasks=("pf_pause_prove", "pf_pause_cover"),
@@ -314,9 +338,13 @@ FORMAL_TARGETS = [
             "coh_hart_maint_prove",
             "coh_hart_maint_owned_prove",
             "coh_hart_maint_owned_reset_prove",
+            "coh_hart_maint_free_owned_prove",
+            "coh_hart_maint_free_prove",
             "coh_hart_maint_cover",
             "coh_hart_maint_four_bmc",
             "coh_hart_maint_four_cover",
+            "coh_hart_snapshot_bmc",
+            "coh_hart_snapshot_cover",
         ),
     ),
     FormalTarget(
@@ -495,9 +523,11 @@ FORMAL_TARGETS = [
             "coh_l1d_stream_free_nostore_bmc",
             "coh_l1d_stream_free_nostore_hold_bmc",
             "coh_l1d_stream_owned_prove",
+            "coh_l1d_stream_snapshot_prove",
             "coh_l1d_stream_prove",
             "coh_l1d_stream_outlier_prove",
             "coh_l1d_stream_cover",
+            "coh_l1d_snapshot_cover",
             "coh_l1d_turn_cover",
             "coh_l1d_local_prove",
             "coh_l1d_local_multi_prove",
@@ -681,6 +711,11 @@ FORMAL_TARGETS = [
         ),
     ),
     FormalTarget(
+        "coherence_snapshot.sby",
+        "A four-way L1D and the home retain and publish successive store versions.",
+        tasks=("coh_snapshot_versions_bmc", "coh_snapshot_versions_cover"),
+    ),
+    FormalTarget(
         "coherence_array.sby",
         "Serialized array byte values and exact conditional data selection.",
         tasks=(
@@ -697,6 +732,8 @@ FORMAL_TARGETS = [
             "coh_array_cover",
             "coh_array_uram_cover",
             "coh_array4_port_cover",
+            "coh_array4_snapshot_cover",
+            "coh_array4_uram_snapshot_cover",
         ),
     ),
     FormalTarget(
@@ -2366,6 +2403,38 @@ SBY_TASKS = [
         "link_mirror2_prove",
         "Mirrored link, two stages: each acceptance completes one sender handshake.",
     ),
+    (
+        "sc_wa_s0_prove",
+        "Production L1D, home and links (0 stages): SC GrantM has no same-sector wb_live slot.",
+    ),
+    (
+        "sc_wa_s1_prove",
+        "Production L1D, home and links (1 stage): SC GrantM has no same-sector wb_live slot.",
+    ),
+    (
+        "sc_wa_s2_prove",
+        "Production L1D, home and links (2 stages): SC GrantM has no same-sector wb_live slot.",
+    ),
+    (
+        "sc_wa_s3_prove",
+        "Production L1D, home and links (3 stages): SC GrantM has no same-sector wb_live slot.",
+    ),
+    (
+        "sc_wa_s0_cover",
+        "Production L1D, home and links (0 stages): cover SC GrantM, PutM token, put_blocks, ProbeSnapshot and FillRecall.",
+    ),
+    (
+        "sc_wa_s1_cover",
+        "Production L1D, home and links (1 stage): cover SC GrantM, PutM token, put_blocks, ProbeSnapshot and FillRecall.",
+    ),
+    (
+        "sc_wa_s2_cover",
+        "Production L1D, home and links (2 stages): cover SC GrantM, PutM token, put_blocks, ProbeSnapshot and FillRecall.",
+    ),
+    (
+        "sc_wa_s3_cover",
+        "Production L1D, home and links (3 stages): cover SC GrantM, PutM token, put_blocks, ProbeSnapshot and FillRecall.",
+    ),
     ("link_credit1_cover", "A credit link delivers four messages."),
     ("link_mirror1_cover", "A mirrored link completes four handshakes."),
     (
@@ -2425,12 +2494,16 @@ SBY_TASKS = [
         "Unbounded: read-slot ownership, the selected read's kind and shadow lookups with eight endpoints, by induction.",
     ),
     (
+        "coh_l1d_stream_snapshot_prove",
+        "Unbounded: absorbed-PutM ownership disjointness with eight endpoints, by induction.",
+    ),
+    (
         "coh_l1d_stream_prove",
         "Unbounded: most control assertions with eight endpoints, arbitrary inputs and stores.",
     ),
     (
         "coh_l1d_stream_outlier_prove",
-        "Independent unbounded grant multiplexer, image, load payload and reply hold checks for the stream BMCs.",
+        "Independent unbounded grant multiplexer, image, load payload, reply hold and snapshot data checks for the stream BMCs.",
     ),
     (
         "coh_l1d_stream_free_nostore_bmc",
@@ -2441,6 +2514,10 @@ SBY_TASKS = [
         "Payload identities and holds with arbitrary inputs and no stores through all 24 cycles.",
     ),
     ("coh_l1d_stream_cover", "Two speculative endpoints and demand attachment."),
+    (
+        "coh_l1d_snapshot_cover",
+        "StoreConditional grant ordering against live writebacks and snapshot probe lookups.",
+    ),
     ("coh_l1d_turn_cover", "A demand retry between buffered load grants."),
     (
         "pf_pause_prove",
@@ -2528,6 +2605,14 @@ SBY_TASKS = [
     (
         "coh_hart_maint_four_bmc",
         "Four occupied records drain before a fence and final PTE publication.",
+    ),
+    (
+        "coh_hart_snapshot_bmc",
+        "Two CPU versions reach instruction fetch and the walker.",
+    ),
+    (
+        "coh_hart_snapshot_cover",
+        "Post-fence fetch and walking after a retained M-hit store.",
     ),
     (
         "coh_hart_maint_four_cover",
@@ -2906,6 +2991,14 @@ SBY_TASKS = [
     (
         "coh_hart_maint_owned_reset_prove",
         "The same induction from the state after the reset cycle, every other register free.",
+    ),
+    (
+        "coh_hart_maint_free_owned_prove",
+        "Independent PDR proof of all maintenance ownership facts with free initial values.",
+    ),
+    (
+        "coh_hart_maint_free_prove",
+        "Maintenance visibility and completion using ownership facts on the same free-state model.",
     ),
     (
         "coh_hart_maint_cover",
@@ -3344,6 +3437,14 @@ SBY_TASKS = [
         "coh_home_array_uram_cover",
         "Four-way UltraRAM ports operate concurrently and reach a kept parallel read.",
     ),
+    (
+        "coh_snapshot_versions_bmc",
+        "Snapshot bytes across a later M-hit store and DMA write.",
+    ),
+    (
+        "coh_snapshot_versions_cover",
+        "A held first grant, a changed byte and both publications.",
+    ),
     ("coh_array_bmc", "Coherent array byte values and held responses."),
     ("coh_array_uram_bmc", "Coherent array byte values through registered RAM ports."),
     ("coh_array4_bmc", "Coherent array byte values and held responses with four ways."),
@@ -3351,6 +3452,8 @@ SBY_TASKS = [
     ("coh_array_port_bmc", "Hit-port tags and byte values beside lookups, one way."),
     ("coh_array4_port_bmc", "Hit-port tags and byte values beside lookups, four ways."),
     ("coh_array4_port_cover", "Hit-port hits beside lookups and after writes."),
+    ("coh_array4_snapshot_cover", "Same-set Modified tags with different home copies."),
+    ("coh_array4_uram_snapshot_cover", "Same-set snapshot selection in packed tags."),
     ("coh_array_equiv_bmc", "Cycle equivalence with the reference array, one way."),
     ("coh_array_equiv_data0_bmc", "One-way response data equivalence in byte lane 0."),
     (
@@ -4809,11 +4912,18 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherent_hart_cache": [
             "coh_hart_maint_owned_prove",
             "coh_hart_maint_prove",
+            "coh_hart_maint_free_owned_prove",
+            "coh_hart_maint_free_prove",
         ],
         "coherence_store_boundary": [
             f"{prefix}_amo_{sector}_{suffix}"
             for sector in ("same", "other")
             for prefix, suffix in (("bmc", "fatal"), ("prove", "fatal_sticky"))
+        ],
+        "coherence_sc_wa": [
+            f"sc_wa_s{stages}_{kind}"
+            for kind in ("prove", "cover")
+            for stages in (0, 1, 2, 3)
         ],
         "coherence_l1d": [
             f"coh_l1d_local{geometry}{part}_prove"
@@ -4822,8 +4932,10 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         ]
         + [
             "coh_l1d_stream_owned_prove",
+            "coh_l1d_stream_snapshot_prove",
             "coh_l1d_stream_prove",
             "coh_l1d_stream_outlier_prove",
+            "coh_l1d_snapshot_cover",
             "coh_l1d_stream_free_bmc",
             "coh_l1d_stream_bmc",
             "coh_l1d_stream_hold_bmc",
@@ -4852,6 +4964,8 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "rob_retire_successor_cover": "ROB retirement successor",
         "coherent_hart_cache_coh_hart_maint_prove": "Hart maintenance",
         "coherent_hart_cache_coh_hart_maint_owned_prove": "Hart maintenance",
+        "coherent_hart_cache_coh_hart_maint_free_owned_prove": "Hart snapshot ownership",
+        "coherent_hart_cache_coh_hart_maint_free_prove": "Hart snapshot ownership",
         "coherence_l1d_coh_l1d_stream_bmc": "Hart maintenance",
         "coherence_l1d_coh_l1d_stream_free_nostore_bmc": "Hart maintenance",
         "coherence_l1d_coh_l1d_stream_outlier_prove": "Hart maintenance",
@@ -5348,7 +5462,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_l1d": (
         "converted in its own commit; its conflict tasks cut every flop, then run opt -full and sat",
         {
-            "coh_l1d_perf_prove coh_l1d_bmc coh_l1d_multi_bmc coh_l1d_stream_bmc coh_l1d_stream_hold_bmc coh_l1d_stream_free_nostore_bmc coh_l1d_stream_free_nostore_hold_bmc coh_l1d_stream_free_bmc coh_l1d_stream_outlier_prove coh_l1d_stream_owned_prove coh_l1d_stream_prove coh_l1d_stream_cover coh_l1d_turn_cover coh_l1d_cover coh_l1d_path_cover coh_l1d_put_select_prove coh_l1d_data_bmc coh_l1d_data1_bmc coh_l1d_data2_bmc coh_l1d_data3_bmc coh_l1d_store_payload_bmc coh_l1d_store_grant_bmc coh_l1d_store_multi_payload_bmc coh_l1d_store_multi_grant_bmc coh_l1d_multi_data0_bmc coh_l1d_multi_data1_bmc coh_l1d_multi_data2_bmc coh_l1d_multi_data3_bmc coh_l1d_ways_data_bmc coh_l1d_answer_bmc coh_l1d_stream_answer_bmc coh_l1d_local_prove coh_l1d_local_multi_prove coh_l1d_local_owned_prove coh_l1d_local_multi_owned_prove coh_l1d_local_ways_owned_prove coh_l1d_local_sector_prove coh_l1d_local_multi_sector_prove coh_l1d_local_ways_sector_prove coh_l1d_local_cover coh_l1d_local_data_bmc coh_l1d_local_hold_bmc coh_l1d_local_control_bmc coh_l1d_local_ways_prove coh_l1d_zero_bmc coh_l1d_zero_multi_bmc coh_l1d_zero_payload_bmc coh_l1d_zero_cover coh_l1d_zero_lookahead_cover coh_l1d_zero_stream_hint_bmc coh_l1d_zero_stream_line_bmc coh_l1d_zero_stream_upper_ep0_bmc coh_l1d_zero_stream_upper_ep1_read_bmc coh_l1d_zero_stream_upper_ep1_store_bmc coh_l1d_zero_stream_upper_ep1_lookahead_bmc coh_l1d_zero_stream_upper_ep1_prefetch_bmc coh_l1d_zero_stream_upper_ep1_rest_bmc coh_l1d_zero_stream_upper_ep2_bmc coh_l1d_zero_progress_cover coh_l1d_zero_stream_bmc coh_l1d_zero_request_cover coh_l1d_full_bmc coh_l1d_full_multi_bmc coh_l1d_full_payload_bmc coh_l1d_full_cover coh_l1d_full_lookahead_cover coh_l1d_withdraw_full_bmc coh_l1d_withdraw_zero_bmc coh_l1d_withdraw_full_payload_bmc coh_l1d_withdraw_zero_payload_bmc coh_l1d_withdraw_full_cover coh_l1d_full_hold_cover coh_l1d_buffer_contract_bmc": [
+            "coh_l1d_perf_prove coh_l1d_bmc coh_l1d_multi_bmc coh_l1d_stream_bmc coh_l1d_stream_hold_bmc coh_l1d_stream_free_nostore_bmc coh_l1d_stream_free_nostore_hold_bmc coh_l1d_stream_free_bmc coh_l1d_stream_outlier_prove coh_l1d_stream_owned_prove coh_l1d_stream_snapshot_prove coh_l1d_stream_prove coh_l1d_stream_cover coh_l1d_snapshot_cover coh_l1d_turn_cover coh_l1d_cover coh_l1d_path_cover coh_l1d_put_select_prove coh_l1d_data_bmc coh_l1d_data1_bmc coh_l1d_data2_bmc coh_l1d_data3_bmc coh_l1d_store_payload_bmc coh_l1d_store_grant_bmc coh_l1d_store_multi_payload_bmc coh_l1d_store_multi_grant_bmc coh_l1d_multi_data0_bmc coh_l1d_multi_data1_bmc coh_l1d_multi_data2_bmc coh_l1d_multi_data3_bmc coh_l1d_ways_data_bmc coh_l1d_answer_bmc coh_l1d_stream_answer_bmc coh_l1d_local_prove coh_l1d_local_multi_prove coh_l1d_local_owned_prove coh_l1d_local_multi_owned_prove coh_l1d_local_ways_owned_prove coh_l1d_local_sector_prove coh_l1d_local_multi_sector_prove coh_l1d_local_ways_sector_prove coh_l1d_local_cover coh_l1d_local_data_bmc coh_l1d_local_hold_bmc coh_l1d_local_control_bmc coh_l1d_local_ways_prove coh_l1d_zero_bmc coh_l1d_zero_multi_bmc coh_l1d_zero_payload_bmc coh_l1d_zero_cover coh_l1d_zero_lookahead_cover coh_l1d_zero_stream_hint_bmc coh_l1d_zero_stream_line_bmc coh_l1d_zero_stream_upper_ep0_bmc coh_l1d_zero_stream_upper_ep1_read_bmc coh_l1d_zero_stream_upper_ep1_store_bmc coh_l1d_zero_stream_upper_ep1_lookahead_bmc coh_l1d_zero_stream_upper_ep1_prefetch_bmc coh_l1d_zero_stream_upper_ep1_rest_bmc coh_l1d_zero_stream_upper_ep2_bmc coh_l1d_zero_progress_cover coh_l1d_zero_stream_bmc coh_l1d_zero_request_cover coh_l1d_full_bmc coh_l1d_full_multi_bmc coh_l1d_full_payload_bmc coh_l1d_full_cover coh_l1d_full_lookahead_cover coh_l1d_withdraw_full_bmc coh_l1d_withdraw_zero_bmc coh_l1d_withdraw_full_payload_bmc coh_l1d_withdraw_zero_payload_bmc coh_l1d_withdraw_full_cover coh_l1d_full_hold_cover coh_l1d_buffer_contract_bmc": [
                 "memory_map",
                 "opt",
                 "opt -fast",
@@ -5387,6 +5501,15 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         {
             "coh_read_capture_prove coh_read_capture_stream_prove coh_idle_select_prove coh_idle_select_stream_prove coh_idle_phase_prove coh_idle_phase_stream_prove coh_read_kind_prove coh_array_reply_prove coh_array_reply4_prove coh_array_reply_uram_prove coh_array_reply4_uram_prove": [
                 "memory_map"
+            ],
+        },
+    ),
+    "coherence_sc_wa": (
+        "cover-only compaction: abc reads constant x bits as 0 and opt -fine merges equal multiplexer output bits with constant x; all four prove tasks stay in DONT_CARE_SAFE",
+        {
+            "sc_wa_s0_cover sc_wa_s1_cover sc_wa_s2_cover sc_wa_s3_cover": [
+                "abc",
+                "opt -keepdc -mux_bool -fine",
             ],
         },
     ),
@@ -9284,6 +9407,72 @@ def test_script_and_dialect_bypass_cases_refused(
     assert sby_undefined_opening_gaps(path), case_id
 
 
+def test_coherence_sc_wa_contract() -> None:
+    """Pin the composed SC GrantM writeback-exclusion proofs and covers."""
+    target = next(t for t in FORMAL_TARGETS if t.name == "coherence_sc_wa")
+    harness_text = (Path(FORMAL_DIR) / "coherence_sc_wa_formal.sv").read_text(
+        encoding="utf-8"
+    )
+    assert "coherence_home #(" in harness_text
+    assert target.tasks == (
+        "sc_wa_s0_prove",
+        "sc_wa_s1_prove",
+        "sc_wa_s2_prove",
+        "sc_wa_s3_prove",
+        "sc_wa_s0_cover",
+        "sc_wa_s1_cover",
+        "sc_wa_s2_cover",
+        "sc_wa_s3_cover",
+    )
+    for stages in (0, 1, 2, 3):
+        prove_task = f"sc_wa_s{stages}_prove"
+        prove_cfg = formal_task_config(target.name, prove_task)
+        prove_opts = dict(line.split(None, 1) for line in prove_cfg["[options]"])
+        assert prove_opts == {"mode": "prove", "depth": "2", "timeout": "600"}
+        assert formal_task_timeout_s(target.name, prove_task) == 600
+        assert prove_cfg["[engines]"] == ["smtbmc boolector"]
+        prove_script = prove_cfg["[script]"]
+        assert any(
+            f"-GLINK_STAGES={stages}" in line
+            and "-GCOVER_MODE=0" in line
+            and "coherence_home.sv" in line
+            and "coherence_home_array.sv" in line
+            and "coherence_seat_select.sv" in line
+            for line in prove_script
+        )
+        assert "../hw/rtl/lib/cache/coherence_home.sv" in prove_cfg["[files]"]
+        assert "../hw/rtl/lib/cache/coherence_home_array.sv" in prove_cfg["[files]"]
+        assert "select -assert-none t:$check r:FLAVOR=assume %i" in prove_script
+        expected_asserts = 141 if stages == 0 else 150
+        assert (
+            f"select -assert-count {expected_asserts} t:$check r:FLAVOR=assert %i"
+            in prove_script
+        )
+        assert "techmap" not in prove_script
+        assert "abc" not in prove_script
+
+        cover_task = f"sc_wa_s{stages}_cover"
+        cover_cfg = formal_task_config(target.name, cover_task)
+        cover_opts = dict(line.split(None, 1) for line in cover_cfg["[options]"])
+        assert cover_opts == {
+            "mode": "cover",
+            "depth": "200",
+            "vcd_sim": "on",
+            "timeout": "1200",
+        }
+        assert formal_task_timeout_s(target.name, cover_task) == 1200
+        assert cover_cfg["[engines]"] == ["btor btormc"]
+        cover_script = cover_cfg["[script]"]
+        assert any(
+            f"-GLINK_STAGES={stages}" in line
+            and "-GCOVER_MODE=1" in line
+            and "coherence_home.sv" in line
+            for line in cover_script
+        )
+        assert "select -assert-none t:$check r:FLAVOR=assume %i" in cover_script
+        assert "select -assert-count 12 t:$check r:FLAVOR=cover %i" in cover_script
+
+
 def test_store_home_cover_budgets() -> None:
     """Pin cover bounds, engines and the complete task selection."""
     target = next(t for t in FORMAL_TARGETS if t.name == "coherence_store_home")
@@ -10972,7 +11161,7 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
     hold = l1d_task_config(f"coh_l1d_{prefix}_hold_bmc")
     holds = (
         "c:p_grant_mux_exact c:p_local_image_stable "
-        "c:p_load_payload_held c:p_reply_hold"
+        "c:p_load_payload_held c:p_reply_hold c:p_snapshot_credit_data"
     )
     common = [
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
@@ -10981,16 +11170,16 @@ def test_stream_partition_models_match(prefix: str, depth: int, scripted: bool) 
     commands = {
         "hold": common
         + [
-            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
-            f"select -assert-count 4 {holds}",
-            f"chformal -assert -remove t:$check r:FLAVOR=assert %i {holds} %u %u %u %d",
-            "select -assert-count 4 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 332 t:$check r:FLAVOR=assert %i",
+            f"select -assert-count 5 {holds}",
+            f"chformal -assert -remove t:$check r:FLAVOR=assert %i {holds} %u %u %u %u %d",
+            "select -assert-count 5 t:$check r:FLAVOR=assert %i",
         ],
         "bmc": common
         + [
-            "select -assert-count 328 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 332 t:$check r:FLAVOR=assert %i",
             f"chformal -assert -remove {holds}",
-            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
+            "select -assert-count 327 t:$check r:FLAVOR=assert %i",
         ],
     }
 
@@ -11205,24 +11394,44 @@ def test_local_sector_lemma_models_match() -> None:
 
 
 def test_stream_owned_lemma_model_matches() -> None:
-    """Require the stream ownership lemmas' model to match their consumer's."""
+    """Require the stream ownership and snapshot lemmas' models to match their consumer's."""
     owned = l1d_task_config("coh_l1d_stream_owned_prove")
+    snapshot = l1d_task_config("coh_l1d_stream_snapshot_prove")
     proof = l1d_task_config("coh_l1d_stream_prove")
-    assert owned.keys() == proof.keys()
+    assert owned.keys() == snapshot.keys() == proof.keys()
     for section in owned.keys() - {"[options]", "[engines]", "[script]"}:
-        assert owned[section] == proof[section]
+        assert owned[section] == snapshot[section] == proof[section]
     model = [line for line in owned["[script]"] if not assertion_command(line)]
+    assert model == [
+        line for line in snapshot["[script]"] if not assertion_command(line)
+    ]
     assert model == [line for line in proof["[script]"] if not assertion_command(line)]
     assert "read -formal -sv coherence_request_endpoint.sv" in model
     assert (
         "read -formal -sv -D STREAM_UNBOUNDED_PROOF -D READ_OWNER_PROOF "
-        "coherence_read_payload.sv coherence_l1d.sv"
+        "-D SNAPSHOT_OWNER_PROOF coherence_read_payload.sv coherence_l1d.sv"
+    ) in model
+    assert "read -sv -D SNAPSHOT_OWNER_PROOF coherence_store_buffer.sv" in model
+    assert (
+        "read -sv -D SNAPSHOT_OWNER_PROOF sdp_block_ram.sv sdp_packed_tag_uram.sv "
+        "sdp_ram_byte_en.sv coherence_array.sv"
     ) in model
     lemmas = "c:p_owned_* c:p_selected_kind c:p_path_shadowed"
-    # The lemma task proves its lemmas from the design alone.
+    # The read ownership task proves its lemmas from the design alone.
     assert [line for line in owned["[script]"] if assertion_command(line)] == [
         f"chformal -assert -remove t:$check r:FLAVOR=assert %i {lemmas} %u %u %d",
         "select -assert-count 18 t:$check r:FLAVOR=assert %i",
+    ]
+    # The snapshot ownership task assumes only the read ownership lemmas.
+    assert [line for line in snapshot["[script]"] if assertion_command(line)] == [
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+        "a:src=*coherence_request_endpoint.sv:* %i",
+        f"select -assert-count 18 t:$check r:FLAVOR=assert %i {lemmas} %u %u %i",
+        f"chformal -assert2assume {lemmas}",
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+        "c:p_snapshot_absorbed_clean c:p_snapshot_put_owner c:p_snap_* %u %u %d",
+        "select -assert-count 53 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 1 c:p_snapshot_absorbed_clean t:$check %i r:FLAVOR=assert %i",
     ]
     proof_commands = [line for line in proof["[script]"] if assertion_command(line)]
     assert (
@@ -11230,9 +11439,15 @@ def test_stream_owned_lemma_model_matches() -> None:
         in proof_commands
     )
     assert f"chformal -assert2assume {lemmas}" in proof_commands
-    options = dict(line.split(maxsplit=1) for line in owned["[options]"])
-    options.setdefault("expect", "PASS")
-    assert options == {
+    assert (
+        "select -assert-count 1 c:p_snapshot_absorbed_clean t:$check %i r:FLAVOR=assert %i"
+        in proof_commands
+    )
+    assert "chformal -assert2assume c:p_snapshot_absorbed_clean" in proof_commands
+    assert "chformal -assert -remove c:p_snap_*" in proof_commands
+    owned_options = dict(line.split(maxsplit=1) for line in owned["[options]"])
+    owned_options.setdefault("expect", "PASS")
+    assert owned_options == {
         "mode": "prove",
         "depth": "8",
         "timeout": "1200",
@@ -11240,6 +11455,16 @@ def test_stream_owned_lemma_model_matches() -> None:
         "expect": "PASS",
     }
     assert owned["[engines]"] == ["smtbmc boolector"]
+    snap_options = dict(line.split(maxsplit=1) for line in snapshot["[options]"])
+    snap_options.setdefault("expect", "PASS")
+    assert snap_options == {
+        "mode": "prove",
+        "depth": "3",
+        "timeout": "600",
+        "aigsmt": "boolector",
+        "expect": "PASS",
+    }
+    assert snapshot["[engines]"] == ["smtbmc boolector"]
 
 
 @pytest.mark.parametrize(
@@ -11306,24 +11531,24 @@ def test_stream_control_and_payload_contracts(task: str, depth: str, read: str) 
         "select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i",
         "chformal -assert2assume c:p_prefetch_conflict_split",
     ]
-    script += ["select -assert-count 328 t:$check r:FLAVOR=assert %i"]
+    script += ["select -assert-count 332 t:$check r:FLAVOR=assert %i"]
     if outlier or hold:
         if hold:
             script += [
-                "select -assert-count 4 c:p_grant_mux_exact c:p_local_image_stable "
-                "c:p_load_payload_held c:p_reply_hold"
+                "select -assert-count 5 c:p_grant_mux_exact c:p_local_image_stable "
+                "c:p_load_payload_held c:p_reply_hold c:p_snapshot_credit_data"
             ]
         script += [
             "chformal -assert -remove t:$check r:FLAVOR=assert %i "
             "c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held "
-            "c:p_reply_hold %u %u %u %d",
-            "select -assert-count 4 t:$check r:FLAVOR=assert %i",
+            "c:p_reply_hold c:p_snapshot_credit_data %u %u %u %u %d",
+            "select -assert-count 5 t:$check r:FLAVOR=assert %i",
         ]
     else:
         script += [
             "chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable "
-            "c:p_load_payload_held c:p_reply_hold",
-            "select -assert-count 324 t:$check r:FLAVOR=assert %i",
+            "c:p_load_payload_held c:p_reply_hold c:p_snapshot_credit_data",
+            "select -assert-count 327 t:$check r:FLAVOR=assert %i",
         ]
     if task.startswith("coh_l1d_stream_free_nostore_"):
         script += ["connect -set i_write_mask 8'h00"]
@@ -11538,6 +11763,27 @@ def test_hart_maintenance_lemma_model_matches() -> None:
         ) in models[0]
 
     validate(owned, proof)
+    # Both free-state PDR tasks use the original pair's precise property
+    # selections. Compare the entire resolved model, including staged files.
+    free_passes = {
+        "memory_map": "memory_map -keepdc",
+        "opt": "opt -keepdc",
+        "opt -fast": "opt -fast -keepdc",
+    }
+    for task, original in (
+        ("coh_hart_maint_free_owned_prove", owned),
+        ("coh_hart_maint_free_prove", proof),
+    ):
+        expected = dict(original)
+        expected["[script]"] = [
+            free_passes.get(line, line) for line in original["[script]"]
+        ]
+        expected["[options]"] = [
+            "timeout 7200" if line == "timeout 1200" else line
+            for line in original["[options]"]
+        ]
+        expected["[engines]"] = ["abc pdr -r"]
+        assert formal_task_config("coherent_hart_cache", task) == expected
     for side, section, line in (
         (0, "[script]", "chformal -assert2assume c:p_maint_owned_engine"),
         (0, "[script]", "chformal -assume -remove"),
@@ -13158,6 +13404,8 @@ def test_fatal_frame_validation(
         ("reorder_buffer", "bmc", 5400),
         ("coherent_hart_cache", "coh_hart_maint_prove", 7200),
         ("coherent_hart_cache", "coh_hart_maint_owned_prove", 1200),
+        ("coherent_hart_cache", "coh_hart_maint_free_owned_prove", 7200),
+        ("coherent_hart_cache", "coh_hart_maint_free_prove", 7200),
         ("coherent_hart_cache", "coh_hart_maint_four_bmc", 7200),
         ("coherence_l1d", "coh_l1d_stream_bmc", 5100),
         ("coherence_l1d", "coh_l1d_stream_free_nostore_bmc", 3600),
