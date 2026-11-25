@@ -620,25 +620,29 @@ and targeted microbenchmarks give these items:
 2. Data translation. Under Sv39, a clean hit in any of the 16 DTLB entries
    sends a load or store directly to DMMU stage S2. Faults, concurrent
    refills and mixed-attribute superpages go through S1.
-   On a DTLB miss, the shared 512-entry second-level TLB waits for S1 to
-   report the miss; starting that lookup on the bypass miss whenever the
-   port is idle removes that wait while keeping instruction-TLB priority.
-3. TLB reach. The DTLB and ITLB have 16 entries each, backed by a 512-entry
+   On a DTLB miss, a 256-entry S1 4 KiB translation cache answers resident
+   4 KiB leaves in S1 without asking the second-level TLB. On a miss in both
+   the DTLB and that cache, the shared 2,048-entry second-level TLB waits for
+   S1 to report the miss; starting that lookup on the bypass miss whenever the
+   port is idle would remove that wait while keeping instruction-TLB priority.
+3. TLB reach. The DTLB and ITLB have 16 entries each, with a 256-entry S1
+   4 KiB translation cache inside the data MMU, backed by a 2,048-entry
    second-level TLB, ASIDs with global pages, selective `sfence.vma`, and a
    walker cache of upper-level page-table pointers. In simulation a
-   dependent load that misses the DTLB and hits the second-level TLB takes 7
-   cycles against 5 on a DTLB hit, and an instruction page visit that misses
-   the ITLB and hits it takes 23 against 20. During decompression the
-   instruction TLB misses about eight times per thousand retired
-   instructions, and the shared page walker is busy about 11% of cycles.
-   A miss in both walks, and the walker cache takes the walk to one
-   dependent read; the second-level lookup comes first, so a dependent
-   load that walks takes 30 cycles, one more than without the array.
-   Starting the walk in parallel with the second-level
+   dependent load takes 4 cycles on a DTLB hit, 5 on a DTLB miss that hits
+   the S1 4 KiB cache, and 7 when it misses both and hits the second-level
+   TLB; an instruction page visit that misses the ITLB and hits the
+   second-level TLB takes 14 cycles against 12 on an ITLB hit. During
+   decompression the instruction TLB misses about eight times per thousand
+   retired instructions, and the shared page walker is busy about 11% of
+   cycles. A miss in all of them walks, and the walker cache takes the walk to
+   one dependent read; for a data miss the second-level lookup comes first, so
+   a dependent load that walks takes 29 cycles, one more than without the
+   array. Starting the walk in parallel with the second-level
    lookup and cancelling it on a hit would remove that cycle. A 32-entry
    superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
    Svnapot 64 KiB ranges use ordinary 4 KiB TLB entries. Coalescing those
-   entries and extending 4 KiB-page reach beyond 2 MiB would be next steps.
+   entries and extending 4 KiB-page reach beyond 8 MiB would be next steps.
    A selective `sfence.vma` that reaches the second-level TLB while it is
    still running an earlier flush becomes a full flush: correct, but it
    discards entries the selective form would have kept. Handling a second

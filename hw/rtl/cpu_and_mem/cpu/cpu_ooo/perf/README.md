@@ -12,12 +12,14 @@ holds the back-end counters. This page is the reference for the build option,
 the CSR protocol, the counter numbering, and the C API.
 
 Architectural HPM counters 3–10 are available independently of `PERF_COUNTERS`.
-They count retired branches, mispredictions, instruction and data L1 TLB misses,
+They count retired branches, mispredictions, L1 ITLB misses, DMMU walk requests
+(data misses past both the 16-entry L1 DTLB and its 256-entry S1 4 KiB cache),
 L1D permission misses, store-queue capacity stalls, cycles, and retired
 instructions; Sscofpmf adds overflow and privilege filtering to each. Selectors
 16, 17 and 18 instead count page-walker busy cycles (counter 8), SFENCE.VMA and
 SINVAL.VMA TLB invalidates (counter 7) and CSR-requested translation-state flushes (counter 4);
-L1 TLB misses include requests answered by the second-level TLB. Selectors
+both translation-miss counters include requests answered by the second-level
+TLB, while counter 6 leaves out DTLB misses answered by the S1 cache. Selectors
 19, 20 and 21 count L1I refills (counter 3), L2 demand misses (counter 6) and L2
 prefetch misses (counter 5), where an L2 miss is a line the coherence home reads
 from memory. The refill events take the `fill` and `fill_prefetch` fields of
