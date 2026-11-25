@@ -381,8 +381,16 @@ module vec_engine #(
     if (mwr_pending_q) pipe_wr_mask[mwr_vd_q] = 1'b1;
   end
 
-  // Exported write mask includes registers that seq_*_q has not yet issued.
-  logic [31:0] seq_wr_mask;
+  // Exported write mask includes in-flight compares (whose stages are excluded
+  // from internal pipe_wr_mask) and registers that seq_*_q has not yet issued.
+  logic [31:0] cmp_wr_mask, seq_wr_mask;
+  always_comb begin
+    cmp_wr_mask = 32'd0;
+    if (e0_valid_q && e0_mask_dest_q) cmp_wr_mask[e0_vd_reg_q] = 1'b1;
+    if (e1_valid_q && e1_mask_dest_q) cmp_wr_mask[e1_vd_reg_q] = 1'b1;
+    if (e2_valid_q && e2_mask_dest_q) cmp_wr_mask[e2_vd_reg_q] = 1'b1;
+    if (w_valid_q && w_mask_dest_q) cmp_wr_mask[w_vd_reg_q] = 1'b1;
+  end
   always_comb begin
     seq_wr_mask = 32'd0;
     if (seq_valid_q) begin
@@ -395,7 +403,7 @@ module vec_engine #(
       end
     end
   end
-  assign o_wr_mask = pipe_wr_mask | seq_wr_mask;
+  assign o_wr_mask = pipe_wr_mask | cmp_wr_mask | seq_wr_mask;
 
   // Source read addresses for the current sequencer group (pure flops + 5-bit add).
   logic [4:0] r_vs2_addr, r_vs1_addr;

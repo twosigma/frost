@@ -6219,8 +6219,9 @@ module cpu_ooo #(
     end
     localparam int unsigned VecVmtIdxW = $clog2(riscv_pkg::VmtDepth);
     localparam int unsigned VecSegW = 1 + riscv_pkg::VmtPpnBits + 14;
-    logic vec_alloc, vec_eff_valid;
+    logic vec_alloc, vec_eff_valid, vec_alloc_fault;
     logic vec_alloc_is_varith, vec_alloc_is_vtox, vec_alloc_is_vmem;
+    logic vec_alloc_is_vload, vec_alloc_is_vcfg;
     logic [VecVmtIdxW-1:0] vec_vmt_alloc_idx;
     logic vec_vmt_range_valid, vec_vmt_done_valid;
     logic [VecVmtIdxW-1:0] vec_vmt_range_idx, vec_vmt_done_idx;
@@ -6228,9 +6229,12 @@ module cpu_ooo #(
 
     assign vec_alloc = rob_alloc_req.alloc_valid && rob_alloc_resp.alloc_ready;
     assign vec_eff_valid = !from_id_to_ex.is_fetch_fault && !from_id_to_ex.is_illegal_instruction;
+    assign vec_alloc_fault = rob_alloc_req.vec_illegal ||
+        (rob_alloc_req.is_fp_instruction && csr_mstatus_fs_off) ||
+        (rob_alloc_req.fp_dyn_rm && (frm_csr > riscv_pkg::FRM_RMM));
     // Vector arithmetic, including FP and cryptographic groups, runs in the engine after it retires;
-    // the vector-to-scalar moves (vmv.x.s, vcpop.m, vfirst.m, vfmv.f.s)
-    // execute at the ROB head
+    // vector-to-scalar moves (vmv.x.s, vcpop.m, vfirst.m, vfmv.f.s) execute
+    // off the ROB head once older vector writes and vl updates clear
     assign vec_alloc_is_varith = vec_eff_valid &&
         ((from_id_to_ex.instruction_operation == riscv_pkg::VARITH) ||
          (from_id_to_ex.instruction_operation == riscv_pkg::VARITH_X) ||
@@ -6239,9 +6243,11 @@ module cpu_ooo #(
     assign vec_alloc_is_vtox = vec_eff_valid &&
         ((from_id_to_ex.instruction_operation == riscv_pkg::VTOX) ||
          (from_id_to_ex.instruction_operation == riscv_pkg::VTOF));
-    assign vec_alloc_is_vmem = vec_eff_valid &&
-        ((from_id_to_ex.instruction_operation == riscv_pkg::VLOAD) ||
-         (from_id_to_ex.instruction_operation == riscv_pkg::VSTORE));
+    assign vec_alloc_is_vload = vec_eff_valid &&
+        (from_id_to_ex.instruction_operation == riscv_pkg::VLOAD);
+    assign vec_alloc_is_vmem = vec_alloc_is_vload ||
+        (vec_eff_valid && (from_id_to_ex.instruction_operation == riscv_pkg::VSTORE));
+    assign vec_alloc_is_vcfg = vec_eff_valid && rob_alloc_req.is_vcfg;
 
     logic vec_tracker_valid, vec_arith_ready;
     vec_vtype_tracker #(
@@ -6294,8 +6300,11 @@ module cpu_ooo #(
         .i_alloc(vec_alloc),
         .i_alloc_tag(rob_alloc_resp.alloc_tag),
         .i_alloc_is_varith(vec_alloc_is_varith),
-        .i_alloc_is_vtox(vec_alloc_is_vtox),
+        .i_alloc_is_vtox(vec_alloc_is_vtox && !vec_alloc_fault),
         .i_alloc_is_vmem(vec_alloc_is_vmem),
+        .i_alloc_is_vload(vec_alloc_is_vload),
+        .i_alloc_is_vcfg(vec_alloc_is_vcfg),
+        .i_alloc_vtype(vec_vtype_spec),
         .i_alloc_vmt_idx(vec_vmt_alloc_idx),
         .i_alloc_insn(32'(from_id_to_ex.instruction)),
         .i_alloc_2(rob_alloc_req_2.alloc_valid && rob_alloc_resp_2.alloc_ready),
@@ -6304,6 +6313,7 @@ module cpu_ooo #(
         .i_commit_tag(rob_commit.tag),
         .i_commit_exception(rob_commit.exception),
         .i_commit_value(rob_commit.value[63:0]),
+        .i_vcfg_commit_valid(vcfg_commit.valid),
         .i_vl(csr_vec_vl),
         .i_vtype(csr_vec_vtype),
         .i_vstart(csr_vec_vstart),
@@ -6321,6 +6331,9 @@ module cpu_ooo #(
         .i_head_safe              (!flush_all && !commit_recovery_flush_after_head &&
                                    !mispredict_recovery_pending),
         .i_flush_all(flush_all),
+        .i_flush_spec(flush_all || commit_recovery_flush_after_head),
+        .i_flush_en(flush_en && !commit_recovery_flush_after_head),
+        .i_flush_tag(flush_tag),
         .i_csr_wb_pending(csr_wb_pending),
         .i_sq_committed_empty(sq_committed_empty),
         .i_int_take_armed(int_take_armed),
