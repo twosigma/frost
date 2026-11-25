@@ -131,7 +131,7 @@ module vec_unit #(
     output logic                    [riscv_pkg::MemDataBits-1:0] o_unc_req_wdata,
     output logic                    [riscv_pkg::MemStrbBits-1:0] o_unc_req_wstrb,
     input  logic                                                 i_unc_resp_valid = 1'b0,
-    input  logic                    [riscv_pkg::MemDataBits-1:0] i_unc_resp_data  = '0,
+    input  logic                    [riscv_pkg::MemDataBits-1:0] i_unc_resp_data = '0,
     input  logic                                                 i_unc_resp_error = 1'b0,
     // CDB slot 6 & sideband outputs
     input  logic                                                 i_grant,
@@ -225,7 +225,7 @@ module vec_unit #(
   assign xw_en   = vmu_xw_en || vhead_vrf_write_en;
   assign xw_addr = vmu_xw_en ? vmu_xw_addr : vhead_vrf_write_addr;
   assign xw_data = vmu_xw_en ? vmu_xw_data : vhead_vrf_write_data;
-  assign xw_be   = vmu_xw_en ? vmu_xw_be   : vhead_vrf_write_be;
+  assign xw_be   = vmu_xw_en ? vmu_xw_be : vhead_vrf_write_be;
 
   // Registered handoff latch between vec_head_mmu and vec_vmu
   logic vmem_desc_valid_q;

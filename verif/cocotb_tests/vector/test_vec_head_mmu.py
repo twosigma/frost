@@ -1160,13 +1160,19 @@ async def test_uncached_all_forms_and_widths(dut: Any) -> None:
     # 3. Mask vlm.v and vsm.v on low BRAM.
     vlm = (1 << 25) | (0x0B << 20) | (10 << 15) | (0 << 12) | (8 << 7) | 0x07
     vsm = (1 << 25) | (0x0B << 20) | (10 << 15) | (0 << 12) | (8 << 7) | 0x27
-    res_m = await _uncached_case(dut, insn=vlm, base=0x18003, vl=17, eew_log2=0, store=0)
+    res_m = await _uncached_case(
+        dut, insn=vlm, base=0x18003, vl=17, eew_log2=0, store=0
+    )
     assert res_m["exc"] is None and len(res_m["unc_beats"]) == 3
-    res_ms = await _uncached_case(dut, insn=vsm, base=0x18003, vl=17, eew_log2=0, store=1)
+    res_ms = await _uncached_case(
+        dut, insn=vsm, base=0x18003, vl=17, eew_log2=0, store=1
+    )
     assert res_ms["exc"] is None and len(res_ms["unc_beats"]) == 3
 
     # 4. Strided stride-0 read of a side-effecting device register (FIFO0) in exact order.
-    vlse32 = (2 << 26) | (1 << 25) | (11 << 20) | (10 << 15) | (6 << 12) | (8 << 7) | 0x07
+    vlse32 = (
+        (2 << 26) | (1 << 25) | (11 << 20) | (10 << 15) | (6 << 12) | (8 << 7) | 0x07
+    )
     res_st = await _uncached_case(
         dut,
         insn=vlse32,
@@ -1177,9 +1183,10 @@ async def test_uncached_all_forms_and_widths(dut: Any) -> None:
         store=0,
         read_fn=lambda a, k: 0xA0000000 + k,
     )
-    assert res_st["exc"] is None and [b["addr"] for b in res_st["unc_beats"]] == [
-        0x40000008
-    ] * 4
+    assert (
+        res_st["exc"] is None
+        and [b["addr"] for b in res_st["unc_beats"]] == [0x40000008] * 4
+    )
     assert len(res_st["vrf_writes"]) == 4
 
     # 5. Indexed ordered & unordered mixing cached DDR, low BRAM, and MMIO in one op.

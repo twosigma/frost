@@ -4372,14 +4372,14 @@ module cpu_ooo #(
 
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
-        vec_unc_read_active_q    <= 1'b0;
-        vec_unc_write_active_q   <= 1'b0;
-        vec_unc_fast_read_q      <= 1'b0;
+        vec_unc_read_active_q     <= 1'b0;
+        vec_unc_write_active_q    <= 1'b0;
+        vec_unc_fast_read_q       <= 1'b0;
         vec_unc_fast_write_done_q <= 1'b0;
-        vec_mmio_fifo0_pulse_q   <= 1'b0;
-        vec_mmio_fifo1_pulse_q   <= 1'b0;
-        vec_mmio_uart_rx_pulse_q <= 1'b0;
-        vec_l0_inval_valid_q     <= 1'b0;
+        vec_mmio_fifo0_pulse_q    <= 1'b0;
+        vec_mmio_fifo1_pulse_q    <= 1'b0;
+        vec_mmio_uart_rx_pulse_q  <= 1'b0;
+        vec_l0_inval_valid_q      <= 1'b0;
       end else begin
         if (VARIABLE_UNCACHED) begin
           if (vec_unc_read_launch) vec_unc_read_active_q <= 1'b1;
@@ -4388,7 +4388,7 @@ module cpu_ooo #(
           if (vec_unc_write_launch) vec_unc_write_active_q <= 1'b1;
           else if (vec_unc_write_active_q && i_uncached_write_done) vec_unc_write_active_q <= 1'b0;
         end
-        vec_unc_fast_read_q       <= !VARIABLE_UNCACHED && vec_unc_read_launch;
+        vec_unc_fast_read_q <= !VARIABLE_UNCACHED && vec_unc_read_launch;
         vec_unc_fast_write_done_q <= !VARIABLE_UNCACHED && vec_unc_write_launch;
         vec_mmio_fifo0_pulse_q    <= !VARIABLE_UNCACHED && vec_unc_read_launch && vec_unc_is_dev &&
                                      (vec_unc_addr_xlen == VecFifo0MmioAddr);
@@ -4396,13 +4396,13 @@ module cpu_ooo #(
                                      (vec_unc_addr_xlen == VecFifo1MmioAddr);
         vec_mmio_uart_rx_pulse_q  <= !VARIABLE_UNCACHED && vec_unc_read_launch && vec_unc_is_dev &&
                                      (vec_unc_addr_xlen == VecUartRxDataMmioAddr);
-        vec_l0_inval_valid_q      <= vec_unc_write_launch && vec_unc_is_mem;
+        vec_l0_inval_valid_q <= vec_unc_write_launch && vec_unc_is_mem;
       end
       if (vec_unc_write_launch && vec_unc_is_mem) vec_l0_inval_addr_q <= vec_unc_addr_xlen;
     end
 
     assign vec_l0_inval_valid = vec_l0_inval_valid_q;
-    assign vec_l0_inval_addr  = vec_l0_inval_addr_q;
+    assign vec_l0_inval_addr = vec_l0_inval_addr_q;
 
     assign vec_unc_bus_busy = vec_unc_launch || vec_unc_read_active_q || vec_unc_write_active_q ||
         vec_unc_fast_read_q || vec_unc_fast_write_done_q;
@@ -4423,7 +4423,7 @@ module cpu_ooo #(
         ((vec_unc_read_active_q && i_uncached_read_valid) ||
          (vec_unc_write_active_q && i_uncached_write_done)) :
         (vec_unc_fast_read_q || vec_unc_fast_write_done_q);
-    assign vec_unc_resp_data  = VARIABLE_UNCACHED ? i_uncached_read_data : i_data_mem_rd_data;
+    assign vec_unc_resp_data = VARIABLE_UNCACHED ? i_uncached_read_data : i_data_mem_rd_data;
     assign vec_unc_resp_error = VARIABLE_UNCACHED &&
         ((vec_unc_read_active_q && i_uncached_read_valid && (i_uncached_read_status != 2'b00)) ||
          (vec_unc_write_active_q && i_uncached_write_done && (i_uncached_write_status != 2'b00)));
@@ -4443,7 +4443,8 @@ module cpu_ooo #(
     assign o_cached_read_ready = router_cached_read_ready && !vec_unc_fast_read_q;
     assign o_uncached_read_enable = router_uncached_read_enable ||
         (VARIABLE_UNCACHED && vec_unc_read_launch);
-    assign o_uncached_read_size = vec_unc_read_launch ? vec_unc_req_size : router_uncached_read_size;
+    assign o_uncached_read_size = vec_unc_read_launch ?
+        vec_unc_req_size : router_uncached_read_size;
     assign o_uncached_read_ready = router_uncached_read_ready ||
         (VARIABLE_UNCACHED && vec_unc_read_active_q);
     assign o_uncached_write_byte_en = (VARIABLE_UNCACHED && vec_unc_write_launch) ?
@@ -4477,10 +4478,10 @@ module cpu_ooo #(
     assign vec_unc_bus_busy = 1'b0;
     assign vec_unc_port_ready = 1'b0;
     assign vec_unc_resp_valid = 1'b0;
-    assign vec_unc_resp_data  = '0;
+    assign vec_unc_resp_data = '0;
     assign vec_unc_resp_error = 1'b0;
     assign vec_l0_inval_valid = 1'b0;
-    assign vec_l0_inval_addr  = '0;
+    assign vec_l0_inval_addr = '0;
     assign router_i_uncached_read_valid = i_uncached_read_valid;
     assign router_i_uncached_write_done = i_uncached_write_done;
     assign o_data_mem_addr = router_data_mem_addr;

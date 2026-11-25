@@ -381,8 +381,10 @@ static void check_vmem_bram_and_unmapped(void)
 
     /* Misaligned EEW=64 access in low BRAM raises load address misaligned. */
     set_vs(VS_CLEAN);
-    check_fault(
-        "vl2re64.v (BRAM misaligned)", RUN_VMEM_AT(VL2RE64_V2, (const char *) buf + 2), 4u, buf_va + 2);
+    check_fault("vl2re64.v (BRAM misaligned)",
+                RUN_VMEM_AT(VL2RE64_V2, (const char *) buf + 2),
+                4u,
+                buf_va + 2);
     check_eq("vl2re64.v misaligned dirties VS", vs_field(), VS_DIRTY);
 
     /* Unmapped physical address past low BRAM raises access faults. */
@@ -390,7 +392,8 @@ static void check_vmem_bram_and_unmapped(void)
     check_fault("vl1re8.v (unmapped access fault)", RUN_VMEM_AT(VL1RE8_V1, unmapped), 5u, unmapped);
     check_eq("vl1re8.v fault dirties VS", vs_field(), VS_DIRTY);
     set_vs(VS_CLEAN);
-    check_fault("vl2re64.v (unmapped access fault)", RUN_VMEM_AT(VL2RE64_V2, unmapped), 5u, unmapped);
+    check_fault(
+        "vl2re64.v (unmapped access fault)", RUN_VMEM_AT(VL2RE64_V2, unmapped), 5u, unmapped);
     check_eq("vl2re64.v fault dirties VS", vs_field(), VS_DIRTY);
     set_vs(VS_CLEAN);
     check_fault("vs1r.v (unmapped access fault)", RUN_VMEM_AT(VS1R_V1, unmapped), 7u, unmapped);

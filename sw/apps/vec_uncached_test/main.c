@@ -283,69 +283,68 @@ static void __attribute__((used, noreturn)) unexpected_trap_c(void)
  *   mscratch, and mret. */
 __attribute__((naked, aligned(4))) static void unified_trap_handler(void)
 {
-    __asm__ volatile(
-        "csrw  sscratch, t0\n"
-        "csrr  t0, mcause\n"
-        "bltz  t0, 1f\n"
-        /* Synchronous exception: clear MPRV so globals are accessed bare. */
-        "li    t1, 0x20000\n"
-        "csrc  mstatus, t1\n"
-        "la    t1, g_cause\n"
-        "sd    t0, 0(t1)\n"
-        "csrr  t0, mepc\n"
-        "la    t1, g_epc\n"
-        "sd    t0, 0(t1)\n"
-        "csrr  t0, mtval\n"
-        "la    t1, g_tval\n"
-        "sd    t0, 0(t1)\n"
-        "csrr  t0, 0x008\n"
-        "la    t1, g_vstart_trap\n"
-        "sd    t0, 0(t1)\n"
-        "csrrw t0, mscratch, zero\n"
-        "beqz  t0, 2f\n"
-        "csrw  mepc, t0\n"
-        "mret\n"
-        "2:\n"
-        "j     unexpected_trap_c\n"
-        /* Interrupt path: preserve all caller-saved registers across C call. */
-        "1:\n"
-        "addi  sp, sp, -128\n"
-        "sd    ra,   0(sp)\n"
-        "csrr  t0, sscratch\n"
-        "sd    t0,   8(sp)\n"
-        "sd    t1,  16(sp)\n"
-        "sd    t2,  24(sp)\n"
-        "sd    t3,  32(sp)\n"
-        "sd    t4,  40(sp)\n"
-        "sd    t5,  48(sp)\n"
-        "sd    t6,  56(sp)\n"
-        "sd    a0,  64(sp)\n"
-        "sd    a1,  72(sp)\n"
-        "sd    a2,  80(sp)\n"
-        "sd    a3,  88(sp)\n"
-        "sd    a4,  96(sp)\n"
-        "sd    a5, 104(sp)\n"
-        "sd    a6, 112(sp)\n"
-        "sd    a7, 120(sp)\n"
-        "call  irq_handler_c\n"
-        "ld    ra,   0(sp)\n"
-        "ld    t0,   8(sp)\n"
-        "ld    t1,  16(sp)\n"
-        "ld    t2,  24(sp)\n"
-        "ld    t3,  32(sp)\n"
-        "ld    t4,  40(sp)\n"
-        "ld    t5,  48(sp)\n"
-        "ld    t6,  56(sp)\n"
-        "ld    a0,  64(sp)\n"
-        "ld    a1,  72(sp)\n"
-        "ld    a2,  80(sp)\n"
-        "ld    a3,  88(sp)\n"
-        "ld    a4,  96(sp)\n"
-        "ld    a5, 104(sp)\n"
-        "ld    a6, 112(sp)\n"
-        "ld    a7, 120(sp)\n"
-        "addi  sp, sp, 128\n"
-        "mret\n");
+    __asm__ volatile("csrw  sscratch, t0\n"
+                     "csrr  t0, mcause\n"
+                     "bltz  t0, 1f\n"
+                     /* Synchronous exception: clear MPRV so globals are accessed bare. */
+                     "li    t1, 0x20000\n"
+                     "csrc  mstatus, t1\n"
+                     "la    t1, g_cause\n"
+                     "sd    t0, 0(t1)\n"
+                     "csrr  t0, mepc\n"
+                     "la    t1, g_epc\n"
+                     "sd    t0, 0(t1)\n"
+                     "csrr  t0, mtval\n"
+                     "la    t1, g_tval\n"
+                     "sd    t0, 0(t1)\n"
+                     "csrr  t0, 0x008\n"
+                     "la    t1, g_vstart_trap\n"
+                     "sd    t0, 0(t1)\n"
+                     "csrrw t0, mscratch, zero\n"
+                     "beqz  t0, 2f\n"
+                     "csrw  mepc, t0\n"
+                     "mret\n"
+                     "2:\n"
+                     "j     unexpected_trap_c\n"
+                     /* Interrupt path: preserve all caller-saved registers across C call. */
+                     "1:\n"
+                     "addi  sp, sp, -128\n"
+                     "sd    ra,   0(sp)\n"
+                     "csrr  t0, sscratch\n"
+                     "sd    t0,   8(sp)\n"
+                     "sd    t1,  16(sp)\n"
+                     "sd    t2,  24(sp)\n"
+                     "sd    t3,  32(sp)\n"
+                     "sd    t4,  40(sp)\n"
+                     "sd    t5,  48(sp)\n"
+                     "sd    t6,  56(sp)\n"
+                     "sd    a0,  64(sp)\n"
+                     "sd    a1,  72(sp)\n"
+                     "sd    a2,  80(sp)\n"
+                     "sd    a3,  88(sp)\n"
+                     "sd    a4,  96(sp)\n"
+                     "sd    a5, 104(sp)\n"
+                     "sd    a6, 112(sp)\n"
+                     "sd    a7, 120(sp)\n"
+                     "call  irq_handler_c\n"
+                     "ld    ra,   0(sp)\n"
+                     "ld    t0,   8(sp)\n"
+                     "ld    t1,  16(sp)\n"
+                     "ld    t2,  24(sp)\n"
+                     "ld    t3,  32(sp)\n"
+                     "ld    t4,  40(sp)\n"
+                     "ld    t5,  48(sp)\n"
+                     "ld    t6,  56(sp)\n"
+                     "ld    a0,  64(sp)\n"
+                     "ld    a1,  72(sp)\n"
+                     "ld    a2,  80(sp)\n"
+                     "ld    a3,  88(sp)\n"
+                     "ld    a4,  96(sp)\n"
+                     "ld    a5, 104(sp)\n"
+                     "ld    a6, 112(sp)\n"
+                     "ld    a7, 120(sp)\n"
+                     "addi  sp, sp, 128\n"
+                     "mret\n");
 }
 
 #define RUN_TRAP_1(insn, base)                                                                     \
@@ -495,12 +494,10 @@ static void test_low_bram_all_forms(void)
         }
 
         /* Masked + vstart > 0 unit-stride on stack buffer in low BRAM */
-        volatile uint32_t stk_src[4] __attribute__((aligned(16))) = {
-            0x10101010u, 0x20202020u, 0x30303030u, 0x40404040u
-        };
-        volatile uint32_t stk_dst[4] __attribute__((aligned(16))) = {
-            0xAAAAAAAAu, 0xBBBBBBBBu, 0xCCCCCCCCu, 0xDDDDDDDDu
-        };
+        volatile uint32_t stk_src[4]
+            __attribute__((aligned(16))) = {0x10101010u, 0x20202020u, 0x30303030u, 0x40404040u};
+        volatile uint32_t stk_dst[4]
+            __attribute__((aligned(16))) = {0xAAAAAAAAu, 0xBBBBBBBBu, 0xCCCCCCCCu, 0xDDDDDDDDu};
         check((unsigned long) stk_src > BRAM_IDX_PA + 256u &&
                   (unsigned long) stk_src + sizeof(stk_src) <= LOW_BRAM_LIMIT,
               "stack buffer in low BRAM above scratch",
@@ -519,8 +516,8 @@ static void test_low_bram_all_forms(void)
         wr_vstart(1);
         RUN_TRAP_1(".insn r 0x27, 6, 0x00, x8, %0, x0", stk_dst);
         check(g_cause == ~0ul, "BRAM stack masked vse32", 0, g_cause, ~0ul);
-        check(stk_dst[0] == 0xAAAAAAAAu && stk_dst[1] == 0x20202020u &&
-                  stk_dst[2] == 0xCCCCCCCCu && stk_dst[3] == 0x40404040u,
+        check(stk_dst[0] == 0xAAAAAAAAu && stk_dst[1] == 0x20202020u && stk_dst[2] == 0xCCCCCCCCu &&
+                  stk_dst[3] == 0x40404040u,
               "BRAM stack masked data",
               stk_dst[1],
               stk_dst[3],
@@ -1145,10 +1142,10 @@ static void test_faults_and_sv39_svpbmt(void)
         l0[2] = PTE_PPN(bram_page_pa) | PTE_PBMT_NC | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
         l0[3] = PTE_PPN(0x40000000ul) | PTE_PBMT_IO | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
         l0[4] = PTE_PPN(0x40000000ul) | PTE_PBMT_IO | PTE_V | PTE_R | PTE_A;
-        l0[5] = PTE_PPN(DDR_FRAMES + 1u * 4096u) | PTE_PBMT_NC | PTE_V | PTE_R | PTE_W | PTE_A |
-                PTE_D;
-        l0[6] = PTE_PPN(DDR_FRAMES + 2u * 4096u) | PTE_PBMT_IO | PTE_V | PTE_R | PTE_W | PTE_A |
-                PTE_D;
+        l0[5] =
+            PTE_PPN(DDR_FRAMES + 1u * 4096u) | PTE_PBMT_NC | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+        l0[6] =
+            PTE_PPN(DDR_FRAMES + 2u * 4096u) | PTE_PBMT_IO | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
         l0[8] = PTE_PPN(bram_page_pa) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
         l0[9] = 0ul;
 
@@ -1242,7 +1239,8 @@ static void test_faults_and_sv39_svpbmt(void)
               rem,
               0x4444EEEEu);
 
-        /* Svpbmt NC (Page 5) & IO (Page 6) over DDR alias: aligned succeeds, misaligned -> cause 5/7 */
+        /* Svpbmt NC (Page 5) & IO (Page 6) over DDR alias: aligned succeeds, misaligned -> cause
+         * 5/7 */
         volatile uint32_t *f1 = (volatile uint32_t *) (DDR_FRAMES + 1u * 4096u);
         volatile uint32_t *f2 = (volatile uint32_t *) (DDR_FRAMES + 2u * 4096u);
         f1[0] = 0x55550001u;
@@ -1350,8 +1348,8 @@ static void run_trampoline_irq(uint32_t insn,
     g_irq_mode = 0;
 
     check(g_cause == ~0ul, label, 0, g_cause, ~0ul);
-    check(g_irq_count >= 1ul && g_irq_mepc == (unsigned long) &g_tramp[1] &&
-              g_irq_vstart > 0ul && g_irq_vstart < expected_vl && g_irq_vs == VS_DIRTY,
+    check(g_irq_count >= 1ul && g_irq_mepc == (unsigned long) &g_tramp[1] && g_irq_vstart > 0ul &&
+              g_irq_vstart < expected_vl && g_irq_vs == VS_DIRTY,
           label,
           g_irq_vstart,
           g_irq_mepc,
@@ -1375,8 +1373,8 @@ static void test_mid_run_uncached_interrupts(void)
         setvl(16, VT_VTYPE(VT_E32, m16));
         seed_v8(0x11u);
         /* vlse32.v v8, (a0), a1: mop=2, vm=1, rs2=x11(a1), rs1=x10(a0), width=6, vd=8 */
-        uint32_t vlse32_a0_a1 = (2u << 26) | (1u << 25) | (11u << 20) | (10u << 15) | (6u << 12) |
-                                (8u << 7) | 0x07u;
+        uint32_t vlse32_a0_a1 =
+            (2u << 26) | (1u << 25) | (11u << 20) | (10u << 15) | (6u << 12) | (8u << 7) | 0x07u;
         run_trampoline_irq(vlse32_a0_a1, FIFO0_PA, 0l, 140u, 16u, "IRQ mid-run FIFO0 vlse32");
         irq_vs0 = g_irq_vstart;
         store_v8_group(dump32);
