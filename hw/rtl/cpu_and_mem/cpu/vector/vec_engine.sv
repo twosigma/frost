@@ -216,6 +216,7 @@ module vec_engine #(
   logic [3:0] seq_g_q, seq_last_g_q;
   logic [15:0] seq_vl_q, seq_vstart_q;
   logic [63:0] seq_scalar_q;
+  logic [31:0] seq_wr_mask_q;
 
   // Pipeline stages aligned with vec_int_lane:
   //   R  -> VRF read address presented (seq_*_q)
@@ -388,8 +389,9 @@ module vec_engine #(
   end
 
   // Exported write mask includes in-flight compares (whose stages are excluded
-  // from internal pipe_wr_mask) and registers that seq_*_q has not yet issued.
-  logic [31:0] cmp_wr_mask, seq_wr_mask;
+  // from internal pipe_wr_mask) and registers written by seq_*_q (precomputed
+  // and registered on seq_accept).
+  logic [31:0] cmp_wr_mask, d_wr_mask;
   always_comb begin
     cmp_wr_mask = 32'd0;
     if (e0_valid_q && e0_mask_dest_q) cmp_wr_mask[e0_vd_reg_q] = 1'b1;
@@ -398,18 +400,19 @@ module vec_engine #(
     if (w_valid_q && w_mask_dest_q) cmp_wr_mask[w_vd_reg_q] = 1'b1;
   end
   always_comb begin
-    seq_wr_mask = 32'd0;
-    if (seq_valid_q && seq_ok_q && !seq_no_body_q) begin
-      if (seq_mask_dest_q) begin
-        seq_wr_mask[seq_vd_q] = 1'b1;
+    d_wr_mask = 32'd0;
+    if (d_ok && !d_no_body) begin
+      if (d_mask_dest) begin
+        d_wr_mask[d_vd] = 1'b1;
       end else begin
         for (int i = 0; i < 8; i++) begin
-          if (4'(i) >= seq_g_q && 4'(i) <= seq_last_g_q) seq_wr_mask[5'(seq_vd_q+5'(i))] = 1'b1;
+          if (4'(i) >= d_first_g_raw[3:0] && 4'(i) <= d_eff_last_g)
+            d_wr_mask[5'(d_vd+5'(i))] = 1'b1;
         end
       end
     end
   end
-  assign o_wr_mask = pipe_wr_mask | cmp_wr_mask | seq_wr_mask;
+  assign o_wr_mask = pipe_wr_mask | cmp_wr_mask | (seq_valid_q ? seq_wr_mask_q : 32'd0);
 
   // Source read addresses for the current sequencer group (pure flops + 5-bit add).
   logic [4:0] r_vs2_addr, r_vs1_addr;
@@ -551,6 +554,7 @@ module vec_engine #(
         seq_vl_q         <= i_vl;
         seq_vstart_q     <= i_vstart;
         seq_scalar_q     <= d_scalar_rep;
+        seq_wr_mask_q    <= d_wr_mask;
       end else if (seq_valid_q) begin
         if (!seq_ok_q || seq_no_body_q) begin
           seq_valid_q   <= 1'b0;

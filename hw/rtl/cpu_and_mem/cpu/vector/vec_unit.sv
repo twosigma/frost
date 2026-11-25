@@ -257,8 +257,8 @@ module vec_unit #(
   logic [RobDepth-1:0] is_varith_q, head_xs_q, is_vmem_q;
   logic [RobDepth-1:0] vtox_retire_q, ov_pend_q;
   logic [RobDepth-1:0] rob_vwrite_q, rob_vload_q, rob_wr_v0_q, rob_vl_chg_q;
-  logic vtox_done, ov_done;
-  logic [TagW-1:0] vtox_tag_q, ov_tag_q;
+  logic vtox_done, ov_done, ov_accept;
+  logic [TagW-1:0] vtox_tag_q, ov_tag_q, ov_pick_tag;
   logic vhead_cdb_done;
   logic [TagW-1:0] vhead_cdb_done_tag;
 
@@ -399,7 +399,7 @@ module vec_unit #(
           end
         end
       end
-      if (ov_done) ov_pend_q[ov_tag_q] <= 1'b0;
+      if (ov_accept) ov_pend_q[ov_pick_tag] <= 1'b0;
       if (i_commit_valid) begin
         rob_vwrite_q[i_commit_tag] <= 1'b0;
         rob_vload_q[i_commit_tag]  <= 1'b0;
@@ -477,14 +477,10 @@ module vec_unit #(
   logic eng_idle, eng_grp_ready;
   logic [31:0] eng_wr_mask;
 
-  // Active VMU register mask for engine-alongside-VMU overlap.
-  logic vmu_busy_q, vmu_is_store_q;
-  logic [31:0] vmu_reg_mask_q;
-  logic vmu_active;
-  logic [31:0] vmu_wr_mask, vmu_rd_mask;
-  assign vmu_active  = !vmu_idle || vmu_busy_q;
-  assign vmu_wr_mask = (vmu_active && !vmu_is_store_q) ? vmu_reg_mask_q : 32'd0;
-  assign vmu_rd_mask = (vmu_active && vmu_is_store_q) ? vmu_reg_mask_q : 32'd0;
+  // Active VMU register write/read masks (registered on launch, cleared on
+  // vmu_done) for engine-alongside-VMU overlap without combinational paths
+  // from u_vmu into u_engine issue logic.
+  logic [31:0] vmu_wr_mask_q, vmu_rd_mask_q;
 
   logic [31:0] e_insn;
   logic [63:0] e_scalar;
@@ -500,7 +496,7 @@ module vec_unit #(
   assign e_wr_mask = viq_wr_mask_q[head_q];
 
   logic vmu_hazard;
-  assign vmu_hazard = |((e_rd_mask | e_wr_mask) & vmu_wr_mask) || |(e_wr_mask & vmu_rd_mask);
+  assign vmu_hazard = |((e_rd_mask | e_wr_mask) & vmu_wr_mask_q) || |(e_wr_mask & vmu_rd_mask_q);
 
   logic [4:0] push_vs2, push_vs1;
   logic push_is_grp_alu, push_rd_v0, push_has_vs2, push_has_vs1;
@@ -726,7 +722,7 @@ module vec_unit #(
   // Pick the oldest pending VTOX/VTOF tag in circular ROB order.
   logic [2*RobDepth-1:0] ov_pend_dbl;
   logic [  RobDepth-1:0] ov_pend_rot;
-  logic [TagW-1:0] ov_pick_dist, ov_pick_tag;
+  logic [      TagW-1:0] ov_pick_dist;
   assign ov_pend_dbl = {ov_pend_q, ov_pend_q};
   assign ov_pend_rot = ov_pend_dbl[{1'b0, head_tag_q}+:RobDepth];
   always_comb begin
@@ -736,6 +732,8 @@ module vec_unit #(
     end
   end
   assign ov_pick_tag = head_tag_q + ov_pick_dist;
+  assign ov_accept = (ov_state_q == OV_IDLE) && !i_rob_empty && !i_flush_spec &&
+      !flush_spec_d1_q && !i_flush_en && (|ov_pend_q);
 
   // Older-ROB hazard check for the selected tag (pure flop inputs).
   logic [TagW-1:0] ov_age;
@@ -760,16 +758,30 @@ module vec_unit #(
     ov_older_rob_hazard = |ov_rob_blk;
   end
 
-  // Committed-backend write mask (VIQ + engine + VMU; a same-cycle commit push
-  // stalls directly via the 1-bit push flag).
-  logic [31:0] backend_wr_mask;
-  assign backend_wr_mask = viq_all_wr_mask | eng_wr_mask |
-      (non_grp_busy_q ? non_grp_wr_mask_q : 32'd0) | vmu_wr_mask |
-      (((desc_launch_valid && !desc_launch_is_store) ||
-        (vmem_desc_valid_q && !vmem_desc_is_store_q)) ? 32'hffff_ffff : 32'd0);
+  // Registered committed-backend write mask (VIQ + engine + VMU); any new
+  // write entering on the previous or current cycle stalls via the 1-bit
+  // push/vload flags so backend_wr_mask_q never misses a live write.
+  logic [31:0] backend_wr_mask_live, backend_wr_mask_q;
+  logic backend_vload_live, backend_push_d1_q, backend_vload_d1_q;
+  assign backend_wr_mask_live = viq_all_wr_mask | eng_wr_mask |
+      (non_grp_busy_q ? non_grp_wr_mask_q : 32'd0) | vmu_wr_mask_q;
+  assign backend_vload_live = (desc_launch_valid && !desc_launch_is_store) ||
+      (vmem_desc_valid_q && !vmem_desc_is_store_q);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      backend_wr_mask_q  <= 32'd0;
+      backend_push_d1_q  <= 1'b0;
+      backend_vload_d1_q <= 1'b0;
+    end else begin
+      backend_wr_mask_q  <= backend_wr_mask_live;
+      backend_push_d1_q  <= push;
+      backend_vload_d1_q <= backend_vload_live;
+    end
+  end
 
   logic ov_backend_hazard, ov_vl_hazard, ov_hazard;
-  assign ov_backend_hazard = push || backend_wr_mask[ov_vs2] || (ov_masked && backend_wr_mask[0]);
+  assign ov_backend_hazard = push || backend_push_d1_q || backend_vload_live ||
+      backend_vload_d1_q || backend_wr_mask_q[ov_vs2] || (ov_masked && backend_wr_mask_q[0]);
   assign ov_vl_hazard = ov_is_mask_red &&
       (i_vcfg_commit_valid || o_vl_trim_valid || i_csr_wb_pending);
   assign ov_hazard = ov_older_rob_hazard || ov_backend_hazard || ov_vl_hazard;
@@ -853,8 +865,7 @@ module vec_unit #(
     end else begin
       unique case (ov_state_q)
         OV_IDLE: begin
-          if (!i_rob_empty && !i_flush_spec && !flush_spec_d1_q && !i_flush_en && (|ov_pend_q))
-            ov_state_q <= OV_CHK;
+          if (ov_accept) ov_state_q <= OV_CHK;
         end
         OV_CHK: begin
           if (!ov_hazard && !ov_port4_busy) begin
@@ -1008,22 +1019,27 @@ module vec_unit #(
                          !i_fatal_stop && !o_vmu_fatal;
 
   logic [4:0] vmu_first_r, vmu_last_r;
+  logic [31:0] vmu_launch_mask;
   assign vmu_first_r = vmem_desc_vd_vs3_q +
       5'((vmem_desc_first_elem_q << vmem_desc_eew_log2_q) >> ByteBits);
   assign vmu_last_r = vmem_desc_vd_vs3_q +
       5'((vmem_desc_last_elem_q << vmem_desc_eew_log2_q) >> ByteBits);
+  assign vmu_launch_mask = vec_grp_mask(vmu_first_r, 4'(vmu_last_r - vmu_first_r) + 4'd1);
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       vmem_desc_valid_q <= 1'b0;
-      vmu_busy_q        <= 1'b0;
-      vmu_is_store_q    <= 1'b0;
-      vmu_reg_mask_q    <= 32'd0;
+      vmu_wr_mask_q     <= 32'd0;
+      vmu_rd_mask_q     <= 32'd0;
     end else if (i_fatal_stop || o_vmu_fatal) begin
       vmem_desc_valid_q <= 1'b0;
-      vmu_busy_q        <= 1'b0;
+      vmu_wr_mask_q     <= 32'd0;
+      vmu_rd_mask_q     <= 32'd0;
     end else begin
-      if (vmu_done) vmu_busy_q <= 1'b0;
+      if (vmu_done) begin
+        vmu_wr_mask_q <= 32'd0;
+        vmu_rd_mask_q <= 32'd0;
+      end
       if (desc_launch_valid) begin
         vmem_desc_valid_q       <= 1'b1;
         vmem_desc_ppn0_q        <= desc_launch_ppn0;
@@ -1041,9 +1057,8 @@ module vec_unit #(
         vmem_desc_seg1_q        <= desc_launch_seg1;
       end else if (vmu_cmd_valid) begin
         vmem_desc_valid_q <= 1'b0;
-        vmu_busy_q        <= 1'b1;
-        vmu_is_store_q    <= vmem_desc_is_store_q;
-        vmu_reg_mask_q    <= vec_grp_mask(vmu_first_r, 4'(vmu_last_r - vmu_first_r) + 4'd1);
+        vmu_wr_mask_q     <= vmem_desc_is_store_q ? 32'd0 : vmu_launch_mask;
+        vmu_rd_mask_q     <= vmem_desc_is_store_q ? vmu_launch_mask : 32'd0;
       end
     end
   end
@@ -1153,6 +1168,16 @@ module vec_unit #(
       else $error("vec_unit: registered backend idle disagreed with live backend idle");
       assert (!(alloc_q_valid && i_commit_valid && (i_commit_tag == alloc_q_tag)))
       else $error("vec_unit: commit arrived for tag still in alloc_q (%0d)", alloc_q_tag);
+      assert (vmu_idle || (|vmu_wr_mask_q) || (|vmu_rd_mask_q) || o_vmu_fatal)
+      else $error("vec_unit: VMU active with empty registered VMU register masks");
+      assert (backend_push_d1_q || backend_vload_d1_q ||
+              ((backend_wr_mask_live & ~backend_wr_mask_q) == 32'd0))
+      else
+        $error(
+            "vec_unit: live backend write mask %h not covered by registered mask %h",
+            backend_wr_mask_live,
+            backend_wr_mask_q
+        );
       if (xs == X_OUT && xi[6:0] == riscv_pkg::OPC_OP_VE) assert (xres_q == 64'(xi));
       assert (!(vhead_complete.valid && vtox_only_complete.valid));
       assert (!(zero_vmt_done_valid && vmu_vmt_done_valid));

@@ -109,6 +109,10 @@ module vec_int_exec #(
   logic [5:0] red_last_sr_q;
   logic [Bytes-1:0] red_wbe_q;
 
+  // Latched decode flags for writeback/extraction paths (captured in PRE).
+  logic wide_mul_q, wide_mac_q, mask_dest_q, compress_q;
+  logic [1:0] dw_q;
+
   logic [1:0] aw, bw, dw;
   logic [15:0] abyte, bbyte, dbyte;
   logic [15:0] abyte_addr, bbyte_addr, dbyte_addr;
@@ -205,10 +209,10 @@ module vec_int_exec #(
     if (reduce_op) bw = dw;
     abyte = source_idx_q << aw;
     bbyte = idx_q << bw;
-    dbyte = (compress ? out_idx_q : idx_q) << dw;
+    dbyte = (compress_q ? out_idx_q : idx_q) << dw_q;
     abyte_addr = idx_q << aw;
     bbyte_addr = idx_q << bw;
-    dbyte_addr = (compress ? out_idx_q : idx_q) << dw;
+    dbyte_addr = (compress_q ? out_idx_q : idx_q) << dw_q;
   end
   assign o_raddr = raddr_q;
 
@@ -557,6 +561,11 @@ module vec_int_exec #(
           state <= PRE;
         end
         PRE: begin
+          wide_mul_q  <= wide_mul;
+          wide_mac_q  <= wide_mac;
+          mask_dest_q <= mask_dest;
+          compress_q  <= compress;
+          dw_q        <= dw;
           if (grp_mul_op) begin
             if (no_body) begin
               state <= IDLE;
@@ -627,12 +636,12 @@ module vec_int_exec #(
             we_q <= 1'b1;
             waddr_q <= gm_waddr_lo_q;
             wbe_q <= wbe_lo_q;
-            wdata_q <= wide_mac ? wide_acc_vec : (wide_mul ? wide_lo_vec : mul_res_vec);
+            wdata_q <= wide_mac_q ? wide_acc_vec : (wide_mul_q ? wide_lo_vec : mul_res_vec);
             wide_hi_q <= wide_hi_vec;
             if (!gm_has_hi_q && (g_q < last_g_q)) begin
               raddr_q[0] <= vs2 + 5'(g_q + 4'd1);
               raddr_q[1] <= vs1 + 5'(g_q + 4'd1);
-              raddr_q[2] <= vd + (wide_mul ? {g_q[3:0] + 4'd1, 1'b0} : 5'(g_q + 4'd1));
+              raddr_q[2] <= vd + (wide_mul_q ? {g_q[3:0] + 4'd1, 1'b0} : 5'(g_q + 4'd1));
             end
             state <= GM_WR_LO;
           end
@@ -642,7 +651,7 @@ module vec_int_exec #(
             we_q    <= 1'b1;
             waddr_q <= vd + {g_q[3:0], 1'b1};
             wbe_q   <= wbe_hi_q;
-            wdata_q <= wide_mac ? wide_acc_vec : wide_hi_q;
+            wdata_q <= wide_mac_q ? wide_acc_vec : wide_hi_q;
             if (g_q < last_g_q) begin
               raddr_q[0] <= vs2 + 5'(g_q + 4'd1);
               raddr_q[1] <= vs1 + 5'(g_q + 4'd1);
@@ -711,7 +720,7 @@ module vec_int_exec #(
           source_idx_q <= idx_q;
           raddr_q[0]   <= vs2 + 5'(abyte_addr >> ByteBits);
           raddr_q[1]   <= vs1 + 5'(bbyte_addr >> ByteBits);
-          raddr_q[2]   <= mask_dest ? vd : (vd + 5'(dbyte_addr >> ByteBits));
+          raddr_q[2]   <= mask_dest_q ? vd : (vd + 5'(dbyte_addr >> ByteBits));
           raddr_q[3]   <= 5'd0;
           if (idx_q >= limit_q) state <= IDLE;
           else state <= READ;
@@ -724,7 +733,7 @@ module vec_int_exec #(
         EXTRACT: begin
           a_q <= cut(64'(regs_q[0] >> (8 * int'(abyte[ByteBits-1:0]))), aw);
           b_q <= cut(use_scalar ? scalar_q : 64'(regs_q[1] >> (8 * int'(bbyte[ByteBits-1:0]))), bw);
-          c_q <= cut(64'(regs_q[2] >> (8 * int'(dbyte[ByteBits-1:0]))), dw);
+          c_q <= cut(64'(regs_q[2] >> (8 * int'(dbyte[ByteBits-1:0]))), dw_q);
           active_q <= whole || scalar_move || carry_op || insn_q[25] || mask0_q[MaskBits'(idx_q)];
           sat_q <= 1'b0;
           state <= INDEX;
@@ -793,8 +802,8 @@ module vec_int_exec #(
           we_q    <= write_element_q;
           waddr_q <= vd + 5'(dbyte >> ByteBits);
           wdata_q <= VLEN'(result_q) << (8 * int'(dbyte[ByteBits-1:0]));
-          wbe_q   <= ((Bytes'(1) << (4'd1 << dw)) - Bytes'(1)) << int'(dbyte[ByteBits-1:0]);
-          if (mask_dest) begin
+          wbe_q   <= ((Bytes'(1) << (4'd1 << dw_q)) - Bytes'(1)) << int'(dbyte[ByteBits-1:0]);
+          if (mask_dest_q) begin
             waddr_q <= vd;
             wdata_q <= (regs_q[2] & ~(VLEN'(1) << idx_q)) | (VLEN'(result_q[0]) << idx_q);
             wbe_q   <= Bytes'(1) << (idx_q >> 3);
