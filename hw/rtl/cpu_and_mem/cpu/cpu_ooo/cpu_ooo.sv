@@ -414,11 +414,14 @@ module cpu_ooo #(
   logic trap_drain_wait;
   logic [XLEN-1:0] trap_target_reg;
 
-  logic fetch_pa_hold;  // if_stage: no visible result for the selected fetch VA yet
-  // fetch_pa_hold from separate IMMU copies, for the decoded queue's shadow
-  // select only.
+  // Tied low by the decoupled if_stage: an ITLB miss pauses only F0 launch
+  // while the parcel queue continues draining, so the back end never stalls
+  // directly on fetch translation. Kept wired for the decoded-queue shadow
+  // select interface.
+  logic fetch_pa_hold;
   logic [riscv_pkg::FetchPaHoldCopies-1:0] fetch_pa_hold_copy;
-  // The front-end stall without fetch_pa_hold, for the same select.
+  // Front-end stall without fetch_pa_hold (identical to frontend stall while
+  // fetch_pa_hold is tied low).
   logic frontend_stall_without_pa_hold;
 
   // Trap control

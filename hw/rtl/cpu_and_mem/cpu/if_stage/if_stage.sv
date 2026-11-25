@@ -359,7 +359,6 @@ module if_stage #(
   logic [RasPtrBits-1:0] pd_ras_ckpt_tos_q;
   logic [RasPtrBits:0] pd_ras_ckpt_cnt_q;
   logic [XLEN-1:0] pd_ras_ckpt_top_q;
-  logic pd_ras_restore_done_q;
   logic pd_ras_restore;
 
   // ===========================================================================
@@ -672,13 +671,6 @@ module if_stage #(
   assign pd_ras_restore = i_pd_redirect && !i_pipeline_ctrl.stall && !frontend_flush &&
       !i_trap_ctrl.trap_taken && !i_trap_ctrl.mret_taken && !i_fence_i_flush &&
       !i_from_ex_comb.branch_taken && !i_from_ex_comb.ras_misprediction;
-
-  // Keep pd_ras_restore_done_q cleared now that pd_ras_restore fires only on the
-  // unstalled cycle that releases the redirecting bundle from PD.
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) pd_ras_restore_done_q <= 1'b0;
-    else pd_ras_restore_done_q <= 1'b0;
-  end
 
   // Resolve F1's effective RAS checkpoint (using live u_ras outputs when the
   // window launched during a pure-pop RAS restore cycle).

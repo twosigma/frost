@@ -283,7 +283,7 @@ mispredictions per 1,000 instructions in the trace model, so there is none).
 The path history: every taken control-flow instruction shifts bits [3:2] of
 its target into a 64-bit history, which the indirect target predictor
 hashes. Its lookup history follows fetch: `tage_history`
-pushes the target the cycle after `pc_controller` loads a predicted one, and
+pushes the target the cycle after `fetch_pc_decoupled` loads a predicted one, and
 each redirect restores the history to its point in the program. The
 controller captures push and restore events with the PC load and captures
 zero for a held PC. A trap, xRET, FENCE-class flush, or commit-time recovery
@@ -1439,7 +1439,7 @@ The fast-lookup training contract is pinned per mechanism:
 | Mechanism | Proofs and tests |
 |-----------|------------------|
 | Decode admission and branch resolution | `early_redirect_completion` and `branch_prediction_resolution` formal proofs, plus `fast_btb_contract_test` (entries surviving same-side M-to-M traps/returns and `mstatus` writes, with the retired-PC check `next_pc_expected_q` armed and per-case reach assertions) |
-| Parcel-queue FIFO, bypass, and false-BTB resteer | `fetch_parcel_queue` formal proof (FIFO order, metadata ownership, zero-cycle empty and partial bypass, `o_stop_fetch` headroom, flush clearing, and free-bank write enables), `if_prediction_walk_past` formal proof (interior-halfword / size / opcode / fault false-BTB resteer, slot-2 ordering, drain-availability exactness, and emitted PC continuity), `if_stage` unit bench, `odd_halfword_pred_test`, and `fast_btb_contract_test` |
+| Parcel-queue FIFO, bypass, and false-BTB resteer | `fetch_parcel_queue` formal proof (FIFO order, metadata ownership, zero-cycle empty and partial bypass, `o_stop_fetch` threshold assertion, flush clearing, and free-bank write enables under caller headroom assumptions), `if_prediction_walk_past` formal proof (interior-halfword / size / opcode / fault false-BTB resteer, slot-2 ordering, drain-availability exactness, and emitted PC continuity), `if_stage` simulation headroom assertions and unit bench, `odd_halfword_pred_test`, and `fast_btb_contract_test` |
 | Fault suppression and fault-packet veto | `if_fault_ras_veto` formal proof (`bmc`, `cover`, `prove`, and `prove_slot2_veto_redundant` proving intact `if_stage` never pairs a faulting slot 2, clears `btb_predicted_taken` on fetch faults, vetoes F0 spanning RAS ops on word-0 faults, and restores RAS on spanning second-word faults), `if_stage` unit bench, and `odd_halfword_pred_test` |
 | Invalidation events and four-cycle hold | `btb_invalidate_hold` formal proof, `if_stage` unit bench (`test_btb_invalidate_four_cycle_hold`), `btb_mode_alias_test` (bare/Sv39 switch), `smc_predict_test` (`FENCE.I`), `debug_progbuf_btb_test` (Debug Mode), and `fast_btb_contract_test` (`SFENCE.VMA` and `satp` writes, with the retired-PC check `next_pc_expected_q` and reach assertions) |
 | Backing BTB no-clear-all vetoes | `pd_backing_redirect` formal proof (`prove_indirect`), `pd_stage` bench (non-jump, illegal, fault, bubble, and size-mismatch vetoes in both slots), live `p_pd_redirect_registered_veto_exact` and `p_pd_redirect_target_boundary_exact` in `pd_stage`, and `fast_btb_contract_test` |
