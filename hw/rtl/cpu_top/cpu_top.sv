@@ -50,7 +50,7 @@ module cpu_top #(
     parameter int unsigned L2_PREFETCH_INFLIGHT = 3,
     parameter int unsigned L2_LINE_BYTES = 64,
     // Direct tag launch in the coherent home (coherence_home FAST_TAG_LAUNCH).
-    parameter bit HOME_FAST_TAG_LAUNCH = 1'b0,
+    parameter bit HOME_FAST_TAG_LAUNCH = 1'b1,
     parameter int unsigned SIM_FAST_MAINT = 0,
     parameter int unsigned PERF_COUNTERS = 0,
     // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector

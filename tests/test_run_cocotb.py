@@ -4556,6 +4556,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         "memory before done, inval discards them, absent and clean blocks write nothing, "
         "no eviction rewrites a cleaned block, DMA races and program order",
     ),
+    "coherence_cbo_mgmt_fast_tag": CocotbRunConfig(
+        verilator_extra_args=("--assert", "-GHOME_FAST_TAG_LAUNCH=1"),
+        python_test_module="cocotb_tests.cache.test_coherence_cbo_mgmt",
+        hdl_toplevel_module="coherence_cluster_test_harness",
+        description="Zicbom write-back with direct tag launch in the home",
+    ),
     "coherence_cbo_mgmt_misses": CocotbRunConfig(
         verilator_extra_args=("--assert", "-GL1D_MISSES=3"),
         python_test_module="cocotb_tests.cache.test_coherence_cbo_mgmt",
