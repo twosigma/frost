@@ -292,8 +292,8 @@ LINUX_FAILURE_MARKERS = ("<<TRAP>>", "Kernel panic", "Oops", "BUG:", "Kernel BUG
 LINUX_SHELL_PROMPT = "# "
 
 # Quiet modprobe leaves the driver's probe message (frost_net10g.c, netdev_info)
-# as the load check before login. It does not identify the kernel release;
-# CONFIG_MODVERSIONS permits ABI-compatible modules, so also check the banner.
+# as the load check before login. It does not identify the kernel release on its
+# own, so also check the boot banner.
 LINUX_DRIVER_LINE = "FROST net10g, IRQ "
 # Authoritative runtime driver check: read /sys/module/frost_net10g/version from
 # the booted system after the prompt and before the network test. printf keeps
@@ -945,13 +945,24 @@ def probe_nfs3_tcp(
 # Build current sources statically for Debian: the Buildroot copies need musl,
 # and frost_nettest must run while its NFS root's link is down.
 ROOT_PROGRAM_SRC = Path("linux/buildroot-external/package/frost-stress/src")
-ROOT_PROGRAMS = ("frost_stress", "frost_nettest", "frost_isa_probe")
+ROOT_PROGRAMS = (
+    "frost_stress",
+    "frost_nettest",
+    "frost_isa_probe",
+    "frost_supm_probe",
+)
 ROOT_PROGRAM_EXTRA_SOURCES: dict[str, tuple[str, ...]] = {
     "frost_isa_probe": ("frost_isa_probe_asm.S",),
 }
 ROOT_PROGRAM_EXTRA_CFLAGS: dict[str, tuple[str, ...]] = {
     "frost_isa_probe": (
         "-no-pie",
+        "-march=rv64gc",
+        "-mabi=lp64d",
+        "-fno-tree-vectorize",
+        "-fno-builtin",
+    ),
+    "frost_supm_probe": (
         "-march=rv64gc",
         "-mabi=lp64d",
         "-fno-tree-vectorize",
@@ -2429,6 +2440,207 @@ def isa_probe_verdict(
     )
 
 
+LINUX_SUPM_PROBE_PROGRAM = "frost_supm_probe"
+LINUX_SUPM_PROBE_TOKEN = "FROST_SUPM_PROBE"
+LINUX_SUPM_PROBE_SUMMARY_TOKEN = "FROST_SUPM_PROBE_SUMMARY"
+LINUX_SUPM_PROBE_EXIT_TOKEN = "FROST_SUPM_PROBE_EXIT"
+LINUX_SUPM_PROBE_TIMEOUT_S = 30
+LINUX_SUPM_PROBE_CASES: tuple[str, ...] = (
+    "discover",
+    "pmlen7",
+    "pmlen16",
+    "disable-fault",
+)
+LINUX_SUPM_CASE_RE = re.compile(
+    r"^\r*"
+    + LINUX_SUPM_PROBE_TOKEN
+    + r" id=([0-9a-fA-F]+) case=([a-z0-9-]+) verdict=(PASS|FAIL)((?: [a-z0-9_]+=\S+)*)[ \t\r]*\n",
+    re.MULTILINE,
+)
+LINUX_SUPM_SUMMARY_RE = re.compile(
+    r"^\r*"
+    + LINUX_SUPM_PROBE_SUMMARY_TOKEN
+    + r" id=([0-9a-fA-F]+) passed=(\d+) failed=(\d+) verdict=(PASS|FAIL)[ \t\r]*\n",
+    re.MULTILINE,
+)
+LINUX_SUPM_EXIT_RE = re.compile(
+    r"^\r*" + LINUX_SUPM_PROBE_EXIT_TOKEN + r" id=([0-9a-fA-F]+) rc=(\d+)[ \t\r]*\n",
+    re.MULTILINE,
+)
+
+
+def supm_probe_command(run_id: str) -> str:
+    """Return one shell command that runs frost_supm_probe and prints its exit line."""
+    return (
+        f"timeout -k 5 {LINUX_SUPM_PROBE_TIMEOUT_S} "
+        f"{LINUX_ROOT_BIN}/{LINUX_SUPM_PROBE_PROGRAM} --run-id {run_id}; "
+        f"printf '{LINUX_SUPM_PROBE_EXIT_TOKEN} id=%s rc=%s\\n' {run_id} \"$?\""
+    )
+
+
+def _supm_case_problems(case: str, fields: Mapping[str, str]) -> list[str]:
+    """Validate required positive coverage fields for one passing Supm case."""
+
+    def want_int(key: str) -> int | None:
+        raw = fields.get(key)
+        return int(raw) if raw is not None and raw.isdigit() else None
+
+    problems: list[str] = []
+    if case == "discover":
+        if (
+            want_int("hwprobe") != 1
+            or want_int("cpuinfo") != 1
+            or want_int("init_ctrl") != 0
+        ):
+            problems.append(
+                f"discover hwprobe={fields.get('hwprobe')} "
+                f"cpuinfo={fields.get('cpuinfo')} init_ctrl={fields.get('init_ctrl')}"
+            )
+    elif case == "pmlen7":
+        if (
+            (want_int("pmlen") or 0) < 7
+            or (want_int("loads") or 0) < 1
+            or (want_int("stores") or 0) < 1
+        ):
+            problems.append(
+                f"pmlen7 pmlen={fields.get('pmlen')} "
+                f"loads={fields.get('loads')} stores={fields.get('stores')}"
+            )
+    elif case == "pmlen16":
+        if (
+            want_int("pmlen") != 16
+            or want_int("req8_pmlen") != 16
+            or (want_int("loads") or 0) < 1
+            or (want_int("stores") or 0) < 1
+            or want_int("syscall") != 1
+            or want_int("reject_pmlen32") != 1
+        ):
+            problems.append(
+                f"pmlen16 pmlen={fields.get('pmlen')} "
+                f"req8_pmlen={fields.get('req8_pmlen')} "
+                f"loads={fields.get('loads')} stores={fields.get('stores')} "
+                f"syscall={fields.get('syscall')} "
+                f"reject_pmlen32={fields.get('reject_pmlen32')}"
+            )
+    elif case == "disable-fault":
+        for key in (
+            "ctrl_off",
+            "untagged_ok",
+            "load_sigsegv",
+            "store_sigsegv",
+            "store_unmodified",
+        ):
+            if want_int(key) != 1:
+                problems.append(f"disable-fault {key}={fields.get(key)!r}")
+    return problems
+
+
+def supm_probe_verdict(serial_buf: str, run_id: str) -> tuple[bool, bool, str]:
+    """Return ``(terminal_failure, passed, note)`` for ``frost_supm_probe`` output.
+
+    Match only complete anchored lines after login carrying ``run_id``.
+    """
+    prompt_at = serial_buf.find(LINUX_LOGIN_PROMPT)
+    if prompt_at < 0:
+        return False, False, f"{LINUX_SUPM_PROBE_PROGRAM}: no login prompt"
+    region = serial_buf[prompt_at:]
+
+    cases: dict[str, tuple[str, dict[str, str]]] = {}
+    duplicates: list[str] = []
+    failed_cases: list[str] = []
+    for match in LINUX_SUPM_CASE_RE.finditer(region):
+        rid, case, verdict, raw_fields = match.groups()
+        if rid != run_id:
+            continue
+        fields = dict(field.split("=", 1) for field in raw_fields.split())
+        if verdict == "FAIL":
+            reason = fields.get("reason", "unknown")
+            failed_cases.append(f"{case}: FAIL ({reason})")
+            continue
+        if case in cases:
+            duplicates.append(case)
+        cases[case] = (verdict, fields)
+    if failed_cases:
+        return True, False, f"{LINUX_SUPM_PROBE_PROGRAM} " + "; ".join(failed_cases)
+
+    summaries = [
+        match.groups()
+        for match in LINUX_SUPM_SUMMARY_RE.finditer(region)
+        if match.group(1) == run_id
+    ]
+    exits = [
+        int(match.group(2))
+        for match in LINUX_SUPM_EXIT_RE.finditer(region)
+        if match.group(1) == run_id
+    ]
+
+    if summaries:
+        _, passed_s, failed_s, sum_verdict = summaries[-1]
+        if sum_verdict != "PASS" or int(failed_s) != 0:
+            return (
+                True,
+                False,
+                f"{LINUX_SUPM_PROBE_PROGRAM}: summary verdict={sum_verdict} "
+                f"passed={passed_s} failed={failed_s}",
+            )
+
+    if exits:
+        rc = exits[-1]
+        if rc != 0:
+            return (
+                True,
+                False,
+                f"{LINUX_SUPM_PROBE_PROGRAM}: exited {rc} (id={run_id})",
+            )
+
+    if not exits:
+        return (
+            False,
+            False,
+            f"{LINUX_SUPM_PROBE_PROGRAM}: no {LINUX_SUPM_PROBE_EXIT_TOKEN} line",
+        )
+    if not summaries:
+        return (
+            True,
+            False,
+            f"{LINUX_SUPM_PROBE_PROGRAM}: exited 0 without {LINUX_SUPM_PROBE_SUMMARY_TOKEN}",
+        )
+    if duplicates:
+        return (
+            True,
+            False,
+            f"{LINUX_SUPM_PROBE_PROGRAM}: duplicate case record(s): {', '.join(duplicates)}",
+        )
+
+    _, passed_s, _, _ = summaries[-1]
+    if int(passed_s) != len(LINUX_SUPM_PROBE_CASES):
+        return (
+            True,
+            False,
+            f"{LINUX_SUPM_PROBE_PROGRAM}: summary passed={passed_s}, "
+            f"expected {len(LINUX_SUPM_PROBE_CASES)}",
+        )
+    missing = [c for c in LINUX_SUPM_PROBE_CASES if c not in cases]
+    extra = [c for c in cases if c not in LINUX_SUPM_PROBE_CASES]
+    if missing or extra:
+        parts = []
+        if missing:
+            parts.append(f"missing {', '.join(missing)}")
+        if extra:
+            parts.append(f"unexpected {', '.join(extra)}")
+        return True, False, f"{LINUX_SUPM_PROBE_PROGRAM}: " + "; ".join(parts)
+
+    bad: list[str] = []
+    for case in LINUX_SUPM_PROBE_CASES:
+        _, fields = cases[case]
+        bad.extend(_supm_case_problems(case, fields))
+    if bad:
+        return True, False, f"{LINUX_SUPM_PROBE_PROGRAM}: " + "; ".join(bad)
+
+    count = len(LINUX_SUPM_PROBE_CASES)
+    return False, True, f"supm probe ({count}/{count} cases)"
+
+
 def linux_stage(
     root: LinuxRoot,
     net_repeat: int = 1,
@@ -2507,10 +2719,13 @@ def linux_stage(
         )
         if isa_fail:
             hit.append(isa_note)
+        supm_fail, _, supm_note = supm_probe_verdict(serial_buf, run_id)
+        if supm_fail:
+            hit.append(supm_note)
         return hit
 
     def lx_success(raw_buf: str) -> bool:
-        """Login, driver version, systemd, counters, ISA probe, loopback, and root access."""
+        """Login, driver version, systemd, counters, ISA and Supm probes, loopback, and root access."""
         serial_buf = console_text(raw_buf)
         if not lx_login(serial_buf):
             return False
@@ -2521,6 +2736,8 @@ def linux_stage(
         if not set(counter_values(serial_buf)) >= set(LINUX_COUNTER_EVENTS):
             return False
         if not isa_probe_verdict(serial_buf, run_id, isa_expect, isa_vlenb)[1]:
+            return False
+        if not supm_probe_verdict(serial_buf, run_id)[1]:
             return False
         if LINUX_NET_TOKEN not in serial_buf:
             return False
@@ -2607,6 +2824,9 @@ def linux_stage(
         )
         if not isa_ok:
             return False, isa_note
+        _, supm_ok, supm_note = supm_probe_verdict(serial_buf, run_id)
+        if not supm_ok:
+            return False, supm_note
         if LINUX_NET_TOKEN not in serial_buf:
             return False, f"{LINUX_NET_COMMAND}: no {LINUX_NET_TOKEN!r}"
         if root_alive_status(serial_buf) is None:
@@ -2646,7 +2866,7 @@ def linux_stage(
             f"{systemd_note}, login, stress token, counters "
             f"{summary}, {memory_note}, scrub self-test, "
             f"RAM patrol ({patrol} lines, a full pass), {isa_note}, "
-            f"{net_note}, root alive"
+            f"{supm_note}, {net_note}, root alive"
         )
 
     return UartStage(
@@ -2665,6 +2885,10 @@ def linux_stage(
             (
                 LINUX_SHELL_PROMPT,
                 isa_probe_command(run_id, isa_expect, isa_vlenb) + "\r",
+            ),
+            (
+                LINUX_SHELL_PROMPT,
+                supm_probe_command(run_id) + "\r",
             ),
             (
                 LINUX_SHELL_PROMPT,

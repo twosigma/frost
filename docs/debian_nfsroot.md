@@ -51,21 +51,31 @@ mmdebstrap --arch=riscv64 \
   --include=openssh-server,ca-certificates,dbus,libpam-systemd,systemd-timesyncd \
   trixie ${R:?} http://deb.debian.org/debian
 
-# Debian's kernel, its headers and DKMS.
+# Enable trixie-backports and install the pinned 7.3 kernel, its headers,
+# kbuild, and DKMS.
+echo 'deb http://deb.debian.org/debian trixie-backports main' \
+  > ${R:?}/etc/apt/sources.list.d/trixie-backports.list
 chroot ${R:?} apt-get update
-chroot ${R:?} apt-get install -y --no-install-recommends \
-  linux-image-riscv64 linux-headers-riscv64 dkms
+chroot ${R:?} apt-get install -y --no-install-recommends -t trixie-backports \
+  linux-image-7.3.4+deb13-riscv64=7.3.4-1~bpo13+1 \
+  linux-headers-7.3.4+deb13-riscv64=7.3.4-1~bpo13+1 \
+  linux-headers-7.3.4+deb13-common=7.3.4-1~bpo13+1 \
+  linux-kbuild-7.3.4+deb13=7.3.4-1~bpo13+1 \
+  dkms
 ```
 
-The tree needs about 1.1 GB, including kernel headers and build tools. The
-explicit mirror selects only `trixie main`; add the updates and security
-sources you need. The chroot starts with a copy of the server's resolver
-settings.
+The tree needs about 1.2 GB, including kernel headers and build tools. The
+explicit sources select `trixie main` and `trixie-backports main`; add the
+updates and security sources you need. The chroot starts with a copy of the
+server's resolver settings.
 
-apt installs Debian's current kernel, which may differ from the release the
-repository pins. A manual boot works with any installed kernel and its
-matching initramfs; the hardware regression requires the pinned release
-(`python3 linux/debian_kernel.py release` prints it).
+The `trixie-backports` 7.3 kernel (`CONFIG_RISCV_ISA_SUPM=y`) exposes the
+`Supm` tagged-address ABI for FROST's `Ssnpm` pointer masking; `linux-base`
+from `trixie-backports` populates `/boot/vmlinux-7.3.4+deb13-riscv64` and
+`update-initramfs` writes `/boot/initrd.img-7.3.4+deb13-riscv64`. A manual
+boot works with any installed kernel and its matching initramfs; the hardware
+regression requires the pinned release (`python3 linux/debian_kernel.py release`
+prints it).
 
 ## 2. Configure the tree
 
@@ -123,29 +133,40 @@ EOF
 - root has no usable password. Log in over SSH, or on the console through the
   autologin above.
 
-## 3. Build the NIC driver into the initramfs
+## 3. Build the DKMS drivers and initramfs
 
-Build the [DKMS module](../linux/frost-net10g/README.md) and add it to the
-initramfs. Run this from the repository root on the server. Pass `-k`
-explicitly, because `uname -r` in the chroot reports the server's kernel.
+Build the [`frost_net10g`](../linux/frost-net10g/README.md) and
+[`frost_memerr`](../linux/frost-memerr/README.md) DKMS modules for the pinned
+kernel and add `frost_net10g` to the initramfs. Run this from the repository
+root on the server. Pass `-k` explicitly, because `uname -r` in the chroot
+reports the server's kernel.
 
 ```bash
 R=/srv/nfs/debian
-K=$(ls ${R:?}/lib/modules)   # the tree's kernel version: 6.12.113+deb13-riscv64 here
-ver=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p' linux/frost-net10g/dkms.conf)
+K=7.3.4+deb13-riscv64
+net_ver=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p' linux/frost-net10g/dkms.conf)
 cp -r linux/frost-net10g ${R:?}/tmp/
-chroot ${R:?} dkms add /tmp/frost-net10g   # copies it to /usr/src/frost-net10g-$ver
-chroot ${R:?} dkms build "frost-net10g/$ver" -k "$K"
-chroot ${R:?} dkms install "frost-net10g/$ver" -k "$K"
+chroot ${R:?} dkms add /tmp/frost-net10g   # copies it to /usr/src/frost-net10g-$net_ver
+chroot ${R:?} dkms build "frost-net10g/$net_ver" -k "$K"
+chroot ${R:?} dkms install "frost-net10g/$net_ver" -k "$K"
 rm -r ${R:?}/tmp/frost-net10g
 
+memerr_ver=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p' linux/frost-memerr/dkms.conf)
+cp -r linux/frost-memerr ${R:?}/tmp/
+chroot ${R:?} dkms add /tmp/frost-memerr   # copies it to /usr/src/frost-memerr-$memerr_ver
+chroot ${R:?} dkms build "frost-memerr/$memerr_ver" -k "$K"
+chroot ${R:?} dkms install "frost-memerr/$memerr_ver" -k "$K"
+rm -r ${R:?}/tmp/frost-memerr
+
 # initramfs-tools' default MODULES=most leaves DKMS modules out: list it.
-echo frost_net10g >> ${R:?}/etc/initramfs-tools/modules
+grep -qxF frost_net10g ${R:?}/etc/initramfs-tools/modules || \
+  echo frost_net10g >> ${R:?}/etc/initramfs-tools/modules
 chroot ${R:?} update-initramfs -u -k "$K"
 chroot ${R:?} lsinitramfs "/boot/initrd.img-$K" | grep frost_net10g
 ```
 
-With several kernels installed, set `K` by hand. `lsinitramfs` must show
+`ls /lib/modules` inside the chroot lists installed kernels when several are
+present; set `K` to the target release. `lsinitramfs` must show
 `frost_net10g.ko` (possibly compressed) under that version's module
 directory. Keep `MODULES=most` so the initramfs includes the NFS client.
 
@@ -190,7 +211,7 @@ kernel and initramfs:
 ```bash
 ./fpga/build/build.py x3
 ./fpga/program_bitstream/program_bitstream.py x3
-K=6.12.113+deb13-riscv64   # step 3's K, the version in the tree's /boot
+K=7.3.4+deb13-riscv64      # step 3's K, the version in the tree's /boot
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
 FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
 FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-$K \
@@ -223,7 +244,7 @@ k=$(cut -d' ' -f1,2 /srv/nfs/debian/etc/ssh/ssh_host_ed25519_key.pub) &&
   echo "192.0.2.2 $k" >> ~/.ssh/known_hosts
 
 ssh root@192.0.2.2
-uname -r                       # the packed kernel: 6.12.113+deb13-riscv64 here
+uname -r                       # the packed kernel: 7.3.4+deb13-riscv64 here
 lsmod | grep frost_net10g      # the NIC driver, loaded by the initramfs
 findmnt /                      # 192.0.2.1:/srv/nfs/debian, nfs, vers=3 ... hard,nolock,proto=tcp
 systemctl is-system-running    # running; systemctl --failed lists any failed unit
@@ -310,7 +331,7 @@ Beyond a root that boots by hand, the stage needs:
 |---|---|
 | The export directory on the loading host | The stage reads the tree's console configuration and installs programs into it. If the server is another machine, mount the export on the loading host at the same path, or run the regression on the server. |
 | The console autologin from step 2 | The stage logs in on the UART, and root has no usable password. |
-| `usr/local/bin` writable by the user running the regression | Before each run, the stage cross-compiles `frost_stress`, `frost_nettest`, and `frost_isa_probe` from `linux/buildroot-external/package/frost-stress` and installs them there, so the programs it runs come from this checkout. The tree belongs to root, so give that one directory away: `install -d -m 755 -o <user> /srv/nfs/debian/usr/local/bin`. |
+| `usr/local/bin` writable by the user running the regression | Before each run, the stage cross-compiles `frost_stress`, `frost_nettest`, `frost_isa_probe`, and `frost_supm_probe` from `linux/buildroot-external/package/frost-stress` and installs them there, so the programs it runs come from this checkout. The tree belongs to root, so give that one directory away: `install -d -m 755 -o <user> /srv/nfs/debian/usr/local/bin`. |
 | A riscv64 Linux cross compiler on the loading host | It builds those programs as static binaries: Debian's `gcc-riscv64-linux-gnu`, a `FROST_LINUX_CROSS_COMPILE` prefix, or the toolchain a Buildroot build leaves in `linux/build-mmu/host/bin`. Preflight verifies via `readelf` and `objdump` that the static binaries carry plain RV64GC attributes and opcodes (allowing only `frost_isa_probe`'s `isa_probe_*` leaf routines to hold non-RV64GC probe encodings). |
 | The pinned kernel release on the root | The stage requires that release's boot banner, and the preflight reads the release out of the packed `Image` first. Install that version on the root, with `frost_net10g` in its initramfs (step 3). |
 | The pinned kernel in the checkout's cache | Unless `FROST_LINUX_KERNEL` names a kernel, the stage packs the one in `linux/debian-kernel` (or `FROST_DEBIAN_KERNEL_CACHE`), and the preflight fails if it is not there yet. Run `python3 linux/debian_kernel.py fetch` once to fill the cache. |
@@ -361,7 +382,9 @@ VCU118 reports the controller's ECC state separately through JTAG in the
 `ddr_ecc` stage. The patrol check allows 150 one-second waits. It then runs
 `frost_isa_probe` to check ISA discovery and register-state handling against
 the configured expectation (`--linux-isa-expect`, defaulting to `absent`;
-`--linux-dtb` or `FROST_LINUX_DTB` overrides the packed device tree). The
+`--linux-dtb` or `FROST_LINUX_DTB` overrides the packed device tree), and
+`frost_supm_probe` to check the Supm tagged-address ABI through
+`prctl(PR_SET_TAGGED_ADDR_CTRL)`. The
 stage runs the NIC loopback test from `/dev/shm` on the interface named in the
 kernel `ip=` parameter and checks the interface reported by each run. It drops
 dentry and inode caches before the test. Sysfs counters and carrier are
@@ -374,8 +397,8 @@ The shell opens MTU, flags and IPv6 restoration files before the test and
 writes through those descriptors, since absolute sysfs or proc lookups can
 revalidate the NFS root. It writes, syncs and removes a file on the root to
 prove that the root came back after the test took its link down. It leaves
-`frost_stress`, `frost_nettest`, `frost_isa_probe`, and `frost_memerr.ko` in
-`/usr/local/bin`.
+`frost_stress`, `frost_nettest`, `frost_isa_probe`, `frost_supm_probe`, and
+`frost_memerr.ko` in `/usr/local/bin`.
 Reload the X3 images for a fresh boot: SYSRESET does not restore the mutable
 firmware and kernel images in DDR.
 
@@ -399,9 +422,14 @@ firmware and kernel images in DDR.
 
 ### Kernel updates
 
-apt installs a new kernel beside the running one. When its headers arrive in
-the same apt run, as `linux-headers-riscv64` arranges, DKMS builds
-`frost_net10g` for it before `update-initramfs` builds its initramfs. The
+apt installs a kernel beside the running one. For the pinned backports
+kernel, enable `trixie-backports` as in step 1 and install the exact kernel
+image, headers, and kbuild packages with `-t trixie-backports`. When a
+kernel's headers arrive in the same apt run, DKMS builds `frost_net10g` and
+`frost_memerr` for it before `update-initramfs` builds its initramfs; if
+upgrading `frost_net10g` or `frost_memerr` at the same time, remove the older
+DKMS version, add, build, and install the source for the target kernel, and
+run `update-initramfs -u -k <version>`. The
 [driver guide](../linux/frost-net10g/README.md#an-nfs-root-needs-the-module-in-the-initramfs)
 covers headers that arrive later. Then:
 

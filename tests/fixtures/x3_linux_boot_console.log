@@ -520,7 +520,7 @@ permitted by applicable law.
 [?2004hroot@frost:~# findmnt -rno FSTYPE,SOURCE,OPTIONS /
 [?2004lnfs 192.168.77.1:/srv/frost/debian rw,relatime,vers=3,rsize=1048576,wsize=1048576,namlen=255,hard,nolock,proto=tcp,port=2049,timeo=600,retrans=3,sec=sys,local_lock=all,addr=192.168.77.1
 [?2004hroot@frost:~# v=$(cat /sys/module/frost_net10g/version 2>/dev/null) && printf "%s=%s\n" FROST_DRIVER_VERSION "$v" || printf "%s=MISSING\n" FROST_DRIVER_VERSION
-[?2004lFROST_DRIVER_VERSION=1.3
+[?2004lFROST_DRIVER_VERSION=1.4
 [?2004hroot@frost:~# timeout 300 systemctl is-system-running --wait >/dev/null; systemc tl --failed --no-legend --plain --no-pager; echo state=$(systemctl is-system-run ning)
 [?2004lstate=running
 [?2004hroot@frost:~# /usr/local/bin/frost_stress --boot
@@ -541,6 +541,14 @@ FROST_ISA_PROBE id=d536f34d case=signal verdict=PASS rounds=4 end_magic=0 end_si
 FROST_ISA_PROBE id=d536f34d case=ptrace verdict=PASS gpr_ok=1 einval=1
 FROST_ISA_PROBE_SUMMARY id=d536f34d mode=absent passed=4 failed=0 verdict=PASS
 FROST_ISA_PROBE_EXIT id=d536f34d rc=0
+[?2004hroot@frost:~# timeout -k 5 30 /usr/local/bin/frost_supm_probe --run-id d536f34d; printf 'FROST_SUPM_PROBE_EXIT id=%s rc=%s\n' d536f34d "$?"
+FROST_SUPM_PROBE id=d536f34d case=discover verdict=PASS hwprobe=1 cpuinfo=1 init_ctrl=0
+FROST_SUPM_PROBE id=d536f34d case=pmlen7 verdict=PASS pmlen=7 loads=8 stores=8
+FROST_SUPM_PROBE id=d536f34d case=pmlen16 verdict=PASS pmlen=16 req8_pmlen=16 loads=8 stores=8 syscall=1 reject_pmlen32=1
+FROST_SUPM_PROBE id=d536f34d case=disable-fault verdict=PASS ctrl_off=1 untagged_ok=1 load_sigsegv=1 store_sigsegv=1 store_unmodified=1
+FROST_SUPM_PROBE_SUMMARY id=d536f34d passed=4 failed=0 verdict=PASS
+FROST_SUPM_PROBE_PASS
+FROST_SUPM_PROBE_EXIT id=d536f34d rc=0
 [?2004hroot@frost:~# m=$(cat /sys/class/net/eth0/mtu); f=$(cat /sys/class/net/eth0/flagss); echo 1 > /proc/sys/net/ipv6/conf/eth0/disable_ipv6; cp /usr/local/bin/frost_nnettest /dev/shm/; /dev/shm/frost_nettest; echo $m > /sys/class/net/eth0/mtu; echho $f > /sys/class/net/eth0/flags; echo 0 > /proc/sys/net/ipv6/conf/eth0/disable _ipv6; timeout -k 5 120 sh -c "echo frost > /root/.frost_alive && sync && rm -f  /root/.frost_alive"; echo FROST_ROOT_ALIVE=$?
 [?2004lFROST_NET_LOOPBACK: eth0: driver frost_net10g, address 02:11:22:33:44:55, loopback feature bit 42, run 2d150dfd; down
 FROST_NET_LOOPBACK: mtu 9000, loopback on, up: carrier after 3 ms

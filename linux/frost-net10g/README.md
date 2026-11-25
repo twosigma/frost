@@ -138,8 +138,10 @@ For a riscv64 root tree on another machine, steps 1 and 3 of the
 board names the running one; without `-k`, DKMS builds for the running
 kernel. `dkms add` copies the directory to `/usr/src/frost-net10g-<version>`.
 DKMS installs `/lib/modules/<version>/updates/dkms/frost_net10g.ko.xz` and
-runs `depmod`. To have later kernels arrive with their headers, install the
-metapackages together: `apt install linux-image-riscv64 linux-headers-riscv64`.
+runs `depmod`. To install the pinned Debian 13 `trixie-backports` kernel and
+headers together, enable `trixie-backports` and pass `-t trixie-backports`
+with the matching `linux-image-*`, `linux-headers-*`, and `linux-kbuild-*`
+packages as in step 1 of the [NFS-root guide](../../docs/debian_nfsroot.md).
 
 The module's `of:N*T*Cfrost,net10g` aliases let udev load it when the kernel
 finds the NIC's device-tree node. Loading it taints the kernel as out-of-tree

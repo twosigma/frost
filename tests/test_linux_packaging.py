@@ -42,6 +42,7 @@ SBI_PACKER = (
 )
 OPENSBI_HELPER = REPO_ROOT / "linux" / "opensbi_build.py"
 DEBIAN_KERNEL = REPO_ROOT / "linux" / "debian_kernel.py"
+CRYPTO_SELFTEST = REPO_ROOT / "linux" / "crypto_selftest.py"
 DRIVER_DIR = REPO_ROOT / "linux" / "frost-net10g"
 MEMERR_DIR = REPO_ROOT / "linux" / "frost-memerr"
 LOADER = REPO_ROOT / "fpga" / "load_software" / "load_software.py"
@@ -154,9 +155,9 @@ def test_sbi_layout_slots_are_ordered_and_aligned() -> None:
     assert packer.DTB_MIN_OFFSET + packer.DTB_SLOT_BYTES < packer.MEM_SIZE
 
 
-# The header image_size of the pinned Debian 13 riscv64 kernel Image,
-# /boot/vmlinux-6.12.113+deb13-riscv64.
-DEBIAN_KERNEL_FOOTPRINT = 0x1E6B000
+# The header image_size of the pinned Debian 13 trixie-backports riscv64 kernel
+# Image (7.3.4+deb13-riscv64).
+DEBIAN_KERNEL_FOOTPRINT = 0x23A1000
 
 
 # Payload footprints around the 14 MiB limit below the +16 MiB DTB slot.
@@ -974,13 +975,20 @@ def test_advertised_isa_lists_agree() -> None:
                 continue
             else:
                 readme_exts.add(token)
-    # Supm needs a tagged-address ABI that the supplied Linux image lacks.
+    # Supm is an execution-environment / user-ABI extension supplied by ssnpm
+    # rather than a separate device-tree riscv,isa-extensions token.
     # README.md describes the X3 configuration, which advertises V (VLEN 256)
     # and the implemented Zv extensions.
-    readme_unadvertised = {"supm"}
-    assert readme_unadvertised <= readme_exts
-    assert not (readme_unadvertised & x3_advertised)
-    assert readme_exts - readme_unadvertised == x3_advertised
+    readme_non_dt_exts = {"supm"}
+    assert readme_non_dt_exts <= readme_exts
+    assert not (readme_non_dt_exts & x3_advertised)
+    assert readme_exts - readme_non_dt_exts == x3_advertised
+    assert "ssnpm" in advertised
+    assert "ssnpm" in x3_advertised
+    assert "ssnpm" in packer.VCU118_ISA_EXTENSIONS
+    assert "ssnpm" in packer.VCU118_VECTOR_ISA_EXTENSIONS
+    debian_kernel = _load_module(DEBIAN_KERNEL)
+    assert "CONFIG_RISCV_ISA_SUPM" in debian_kernel.REQUIRED_KERNEL_CONFIG
 
     linux_readme = (REPO_ROOT / "linux" / "README.md").read_text()
     linux_isa_section = linux_readme.split("## Advertised ISA\n", 1)[1].split(
@@ -1045,7 +1053,7 @@ def test_advertised_isa_lists_agree() -> None:
                 roadmap_implemented.add("i")
             elif ext_name == "b":
                 roadmap_implemented.update({"zba", "zbb", "zbs"})
-            elif ext_name in {"ss1p13", "sv39", "svbare"}:
+            elif ext_name in {"ss1p13", "sv39", "svbare", "supm"}:
                 continue
             else:
                 roadmap_implemented.add(ext_name)
@@ -1059,7 +1067,7 @@ def test_advertised_isa_lists_agree() -> None:
     assert not (non_rva23_advertised & roadmap_unadvertised)
     assert (roadmap_implemented | non_rva23_advertised) == x3_advertised
     assert not (roadmap_unadvertised & x3_advertised)
-    assert roadmap_unadvertised == {"supm"}
+    assert roadmap_unadvertised == set()
 
     sail_raw = (REPO_ROOT / "verif" / "testrig" / "sail_frost.json").read_text()
     sail_clean = re.sub(r"^\s*//.*$", "", sail_raw, flags=re.M)
@@ -1520,18 +1528,18 @@ def test_sbi_layout_checks_use_the_memory_size(
 
 
 def test_sbi_layout_fits_debian_kernel_and_initramfs_in_1_gib() -> None:
-    """Debian's kernel places the DTB at +34 MiB.
+    """Debian's 7.3 kernel places the DTB at +38 MiB.
 
     Adding a 40 MB initramfs exceeds the 64 MiB default but fits the X3's 1 GiB.
     The failure must name the memory size and --mem-size.
     """
     packer = _load_module(SBI_PACKER)
     layout = packer.plan_layout(DEBIAN_KERNEL_FOOTPRINT)
-    assert (layout.dtb_offset, layout.initrd_offset) == (0x220_0000, 0x221_0000)
+    assert (layout.dtb_offset, layout.initrd_offset) == (0x260_0000, 0x261_0000)
     firmware, dtb, initrd = bytes(0x2_1000), bytes(0x900), bytes(40_000_000)
     packer.check_layout(layout, firmware, dtb, initrd, packer.CACHED_REGION_BYTES)
     overrun = (
-        r"initramfs 0x2625a00 bytes at \+0x2210000 overruns the 0x4000000 memory "
+        r"initramfs 0x2625a00 bytes at \+0x2610000 overruns the 0x4000000 memory "
         r"node \(its size is --mem-size\)"
     )
     with pytest.raises(AssertionError, match=overrun):
@@ -2184,7 +2192,8 @@ def test_debian_kernel_pin_is_self_consistent() -> None:
         assert package.url.startswith(helper.SNAPSHOT_BASE + "/")
         assert helper.SNAPSHOT in package.url
         names.add(package.name)
-    assert helper.KERNEL_PACKAGE.name == f"linux-image-{helper.KERNEL_RELEASE}"
+    assert helper.KERNEL_PACKAGE.name == f"linux-binary-{helper.KERNEL_RELEASE}"
+    assert helper.KERNEL_BASE_PACKAGE.name == f"linux-base-{helper.KERNEL_RELEASE}"
     assert f"linux-headers-{helper.KERNEL_RELEASE}" in names
     assert f"linux-headers-{helper.KERNEL_ABI}-common" in names
     # linux-kbuild is Multi-Arch: foreign, so the host build of it drives the
@@ -2207,7 +2216,12 @@ def test_debian_kernel_paths_need_no_network() -> None:
     assert re.fullmatch(r"[0-9a-f]{16}", key)
     assert helper.sysroot(cache) == cache / f"sysroot-{key}"
     assert helper.kernel_image(cache) == (
-        helper.sysroot(cache) / "boot" / f"vmlinux-{helper.KERNEL_RELEASE}"
+        helper.sysroot(cache)
+        / "usr"
+        / "lib"
+        / "modules"
+        / helper.KERNEL_RELEASE
+        / "vmlinuz"
     )
     assert helper.kernel_build_dir(cache) == (
         helper.sysroot(cache) / "usr" / "src" / f"linux-headers-{helper.KERNEL_RELEASE}"
@@ -2288,23 +2302,30 @@ def _synthetic_packages(helper: ModuleType) -> dict[str, bytes]:
     common = f"usr/src/linux-headers-{abi}-common"
     kbuild = f"usr/lib/linux-kbuild-{abi}"
     contents: dict[str, list[tuple[str, str, bytes]]] = {
-        f"linux-image-{release}": [
-            ("dir", "boot", b""),
-            ("file", f"boot/vmlinux-{release}", b"Image" * 100),
+        f"linux-binary-{release}": [
+            ("dir", f"usr/lib/modules/{release}", b""),
+            ("file", f"usr/lib/modules/{release}/vmlinuz", b"Image" * 100),
+            # Skipped by the member filter: anything outside vmlinuz.
+            ("file", f"usr/lib/modules/{release}/kernel/drivers/x.ko", b"x" * 1000),
+        ],
+        f"linux-base-{release}": [
+            ("dir", f"usr/lib/modules/{release}", b""),
             (
                 "file",
-                f"boot/config-{release}",
+                f"usr/lib/modules/{release}/config",
                 (
-                    b"CONFIG_MODVERSIONS=y\nCONFIG_RISCV_APLIC=y\n"
-                    b"CONFIG_RISCV_APLIC_MSI=y\nCONFIG_RISCV_IMSIC=y\n"
+                    b"# CONFIG_MODVERSIONS is not set\n"
+                    b"CONFIG_RISCV_APLIC=y\n"
+                    b"CONFIG_RISCV_APLIC_MSI=y\n"
+                    b"CONFIG_RISCV_IMSIC=y\n"
+                    b"CONFIG_RISCV_ISA_SUPM=y\n"
                 ),
             ),
-            # Skipped by the member filter: the modules FROST never loads.
-            ("file", f"usr/lib/modules/{release}/kernel/drivers/x.ko", b"x" * 1000),
+            ("file", f"usr/lib/modules/{release}/System.map", b"0 T _start\n"),
         ],
         f"linux-headers-{abi}-common": [
             ("dir", common, b""),
-            ("file", f"{common}/Makefile", b"VERSION = 6\n"),
+            ("file", f"{common}/Makefile", b"VERSION = 7\n"),
             ("dir", f"{common}/include", b""),
             ("file", f"{common}/include/linux/kernel.h", b"/* h */\n"),
         ],
@@ -2313,7 +2334,10 @@ def _synthetic_packages(helper: ModuleType) -> dict[str, bytes]:
             (
                 "file",
                 f"{headers}/Makefile",
-                f"include /usr/src/linux-headers-{abi}-common/Makefile\n".encode(),
+                (
+                    f"KBUILD_OUTPUT=/usr/src/linux-headers-{release}\n"
+                    f"include /usr/src/linux-headers-{abi}-common/Makefile\n"
+                ).encode(),
             ),
             (
                 "file",
@@ -2321,7 +2345,7 @@ def _synthetic_packages(helper: ModuleType) -> dict[str, bytes]:
                 f"override ARCH = riscv\noverride CROSS_COMPILE = "
                 f"{helper.DEBIAN_CROSS_COMPILE}\n".encode(),
             ),
-            ("file", f"{headers}/.config", b"CONFIG_MODVERSIONS=y\n"),
+            ("file", f"{headers}/.config", b"# CONFIG_MODVERSIONS is not set\n"),
             ("file", f"{headers}/Module.symvers", b"0x12345678\tfoo\tvmlinux\n"),
             ("dir", f"{headers}/arch", b""),
             ("file", f"{headers}/arch/riscv/Makefile", b"# arch\n"),
@@ -2423,9 +2447,15 @@ def test_debian_kernel_cold_extraction_selects_and_fixes_the_tree(
         assert path.is_file(), path
     build = helper.kernel_build_dir(cache)
     assert not (build / "vmlinux").exists()
-    assert not (root / "usr" / "lib" / "modules").exists()
+    assert not (
+        root / "usr" / "lib" / "modules" / helper.KERNEL_RELEASE / "kernel"
+    ).exists()
+    assert not (
+        root / "usr" / "lib" / "modules" / helper.KERNEL_RELEASE / "System.map"
+    ).exists()
     makefile = (build / "Makefile").read_text()
     assert "/usr/src/" not in makefile
+    assert "KBUILD_OUTPUT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))" in makefile
     assert "$(dir $(lastword $(MAKEFILE_LIST)))" in makefile
     # The relative include resolves, and the kbuild symlinks resolve inside.
     assert (build / makefile.split("include ", 1)[1].strip().split(")))")[1]).exists()
@@ -2435,7 +2465,7 @@ def test_debian_kernel_cold_extraction_selects_and_fixes_the_tree(
 def test_debian_kernel_rejects_packaging_that_moved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A changed include line or cross prefix fails loudly, not silently."""
+    """A changed include line, KBUILD_OUTPUT, or cross prefix fails loudly."""
     helper = _load_module(DEBIAN_KERNEL)
     _offline_download(helper, monkeypatch)
     root = tmp_path / "root"
@@ -2448,6 +2478,12 @@ def test_debian_kernel_rejects_packaging_that_moved(
     with pytest.raises(RuntimeError, match="expected an include"):
         helper.fix_headers_tree(root)
     (headers / "Makefile").write_text(
+        f"include /usr/src/linux-headers-{helper.KERNEL_ABI}-common/Makefile\n"
+    )
+    with pytest.raises(RuntimeError, match="KBUILD_OUTPUT"):
+        helper.fix_headers_tree(root)
+    (headers / "Makefile").write_text(
+        f"KBUILD_OUTPUT=/usr/src/linux-headers-{helper.KERNEL_RELEASE}\n"
         f"include /usr/src/linux-headers-{helper.KERNEL_ABI}-common/Makefile\n"
     )
     with pytest.raises(RuntimeError, match="DEBIAN_CROSS_COMPILE"):
@@ -2568,14 +2604,17 @@ def test_debian_kernel_download_rejects_a_wrong_payload(
 def test_debian_kernel_verifies_the_module_it_builds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Publish modules only when metadata and symbol CRCs match the pin.
+    """Publish modules only when metadata matches the pin's release and ABI mode.
 
-    CONFIG_MODVERSIONS makes the kernel ignore vermagic's release field, so
-    check it explicitly as well as CRCs of the pinned tree's exported symbols.
+    When CONFIG_MODVERSIONS is enabled, require both the release and matching
+    symbol CRCs against Module.symvers. When CONFIG_MODVERSIONS is disabled
+    (the 7.3 pin), require exact vermagic release matching and reject
+    modversions modules.
     """
     helper = _load_module(DEBIAN_KERNEL)
     release = helper.KERNEL_RELEASE
-    good_magic = f"{release} SMP mod_unload modversions riscv"
+    plain_magic = f"{release} SMP preempt mod_unload riscv"
+    modver_magic = f"{release} SMP mod_unload modversions riscv"
     symvers = tmp_path / "Module.symvers"
     symvers.write_text("0x0800473f\t__cond_resched\tvmlinux\tEXPORT_SYMBOL\t\n")
     monkeypatch.setattr(helper, "symvers", lambda cache=None: symvers)
@@ -2591,26 +2630,44 @@ def test_debian_kernel_verifies_the_module_it_builds(
 
     module = tmp_path / "frost_net10g.ko"
     module.write_bytes(b"ko")
-    stub(good_magic, {"__cond_resched": 0x0800473F})
-    helper.verify_module(module, None, "objcopy")  # the pinned kernel's module
 
-    # A release this one is a prefix of must not pass.
+    # Mode 1: CONFIG_MODVERSIONS disabled (Debian 7.3 pin).
+    monkeypatch.setattr(helper, "kernel_uses_modversions", lambda cache=None: False)
+    stub(plain_magic, {})
+    helper.verify_module(module, None, "objcopy")
+    stub(f"{release}-debug SMP preempt mod_unload riscv", {})
+    with pytest.raises(RuntimeError, match="is not .*'s"):
+        helper.verify_module(module, None, "objcopy")
+    stub("6.12.113+deb13-riscv64 SMP mod_unload riscv", {})
+    with pytest.raises(RuntimeError, match="is not"):
+        helper.verify_module(module, None, "objcopy")
+    stub(modver_magic, {})
+    with pytest.raises(RuntimeError, match="disables CONFIG_MODVERSIONS"):
+        helper.verify_module(module, None, "objcopy")
+    stub(plain_magic, {}, name="something_else")
+    with pytest.raises(RuntimeError, match="modinfo name"):
+        helper.verify_module(module, None, "objcopy")
+
+    # Mode 2: CONFIG_MODVERSIONS enabled.
+    monkeypatch.setattr(helper, "kernel_uses_modversions", lambda cache=None: True)
+    stub(modver_magic, {"__cond_resched": 0x0800473F})
+    helper.verify_module(module, None, "objcopy")
     stub(f"{release}-debug SMP mod_unload modversions riscv", {})
     with pytest.raises(RuntimeError, match="is not .*'s"):
         helper.verify_module(module, None, "objcopy")
     stub("6.18.7 SMP mod_unload modversions riscv", {})
     with pytest.raises(RuntimeError, match="is not"):
         helper.verify_module(module, None, "objcopy")
-    stub(f"{release} SMP mod_unload riscv", {})  # no modversions
+    stub(plain_magic, {})
     with pytest.raises(RuntimeError, match="modversions"):
         helper.verify_module(module, None, "objcopy")
-    stub(good_magic, {"__cond_resched": 0xDEADBEEF})  # another kernel's CRC
+    stub(modver_magic, {"__cond_resched": 0xDEADBEEF})
     with pytest.raises(RuntimeError, match="symbol CRCs do not match"):
         helper.verify_module(module, None, "objcopy")
-    stub(good_magic, {"not_exported": 0x1})  # a symbol the pin does not export
+    stub(modver_magic, {"not_exported": 0x1})
     with pytest.raises(RuntimeError, match="symbol CRCs do not match"):
         helper.verify_module(module, None, "objcopy")
-    stub(good_magic, {"__cond_resched": 0x0800473F}, name="something_else")
+    stub(modver_magic, {"__cond_resched": 0x0800473F}, name="something_else")
     with pytest.raises(RuntimeError, match="modinfo name"):
         helper.verify_module(module, None, "objcopy")
 
@@ -2851,9 +2908,22 @@ def test_qemu_ci_job_boots_the_packed_debian_pair() -> None:
     assert f'-append "{packer.DEFAULT_BOOTARGS}"' in text
     assert f'grep -q "{helper.MODULE_PASS_TOKEN}"' in text
     assert f'grep -q "{helper.MEMERR.pass_token}"' in text
+    assert 'grep -q "FROST_SUPM_PROBE_PASS"' in text
+    assert "ssnpm=true" in text
     assert "images/Image-debian" in text and "images/rootfs-frost.cpio" in text
     # The Debian packages are cached like Buildroot's downloads.
     assert "linux/debian-kernel/dl" in text
+    # frost_supm_probe is built and installed in frost-stress and run by inittab.
+    mk = (
+        REPO_ROOT / "linux/buildroot-external/package/frost-stress/frost-stress.mk"
+    ).read_text()
+    assert "frost_supm_probe.c" in mk
+    assert "$(TARGET_DIR)/usr/bin/frost_supm_probe" in mk
+    inittab = (
+        REPO_ROOT
+        / "linux/buildroot-external/board/frost/rootfs-overlay-mmu/etc/inittab"
+    ).read_text()
+    assert "::sysinit:/usr/bin/frost_supm_probe" in inittab
 
 
 def test_debian_kernel_refuses_a_base_that_cannot_drive_the_gates(
@@ -2946,13 +3016,19 @@ def test_linux_boot_make_passes_br2_external_to_every_buildroot_call() -> None:
 
 
 @pytest.mark.parametrize(
-    "missing", ["CONFIG_RISCV_APLIC", "CONFIG_RISCV_APLIC_MSI", "CONFIG_RISCV_IMSIC"]
+    "missing",
+    [
+        "CONFIG_RISCV_APLIC",
+        "CONFIG_RISCV_APLIC_MSI",
+        "CONFIG_RISCV_IMSIC",
+        "CONFIG_RISCV_ISA_SUPM",
+    ],
 )
 @pytest.mark.parametrize("value", ["m", "n"])
 def test_debian_kernel_rejects_missing_builtin_irqchips(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str, value: str
 ) -> None:
-    """A valid cached extraction must still support the advertised MSI topology."""
+    """A valid cached extraction must support the advertised MSI topology and Supm."""
     helper = _load_module(DEBIAN_KERNEL)
     fetched = _offline_download(helper, monkeypatch)
     root = helper.fetch(tmp_path)
@@ -3093,3 +3169,84 @@ def test_sbi_packer_accepts_supplied_dtb_and_checks_initrd_range(
     short_dtb.write_bytes(supplied.read_bytes()[:-4])
     with pytest.raises(ValueError, match="totalsize"):
         packer.load_dtb(short_dtb, tmp_path, None)
+
+
+def test_crypto_selftest_keys_driver_sets_to_kernel_release() -> None:
+    """Crypto self-test checks require arch/riscv/crypto on 6.12 and lib/crypto on 7.3."""
+    mod = _load_module(CRYPTO_SELFTEST)
+
+    spec_612 = mod.crypto_spec_for_release("6.12.113+deb13-riscv64")
+    spec_734 = mod.crypto_spec_for_release("7.3.4+deb13-riscv64")
+    assert spec_612.layout == "arch/riscv/crypto"
+    assert spec_734.layout == "lib/crypto"
+    assert spec_734.tcrypt_modes == (35,)
+
+    def _make_proc_crypto(
+        drivers: tuple[str, ...],
+        overrides: dict[str, str] | None = None,
+        extra: str = "",
+    ) -> str:
+        ov = overrides or {}
+        stanzas = [
+            f"name         : alg\ndriver       : {drv}\nselftest     : {ov.get(drv, 'passed')}"
+            for drv in drivers
+        ]
+        if extra:
+            stanzas.append(extra.strip())
+        return "\n\n".join(stanzas) + "\n"
+
+    pc_612 = _make_proc_crypto(mod.CRYPTO_DRIVERS_ARCH_RISCV)
+    # Real 7.3.4 /proc/crypto has a duplicate dh-generic stanza with selftest: unknown.
+    pc_734 = _make_proc_crypto(
+        mod.CRYPTO_DRIVERS_LIB_CRYPTO,
+        extra="name : dh\ndriver : dh-generic\nselftest : unknown",
+    )
+
+    res_612 = mod.verify_crypto_selftests("6.12.113+deb13-riscv64", pc_612)
+    assert res_612["layout"] == "arch/riscv/crypto"
+    assert res_612["passed"] == len(mod.CRYPTO_DRIVERS_ARCH_RISCV)
+
+    res_734 = mod.verify_crypto_selftests("7.3.4+deb13-riscv64", pc_734)
+    assert res_734["layout"] == "lib/crypto"
+    assert res_734["passed"] == len(mod.CRYPTO_DRIVERS_LIB_CRYPTO)
+
+    # Cross-kernel mismatches must fail rather than accepting either set.
+    with pytest.raises(ValueError, match="missing arch/riscv/crypto"):
+        mod.verify_crypto_selftests("6.12.113+deb13-riscv64", pc_734)
+    with pytest.raises(ValueError, match="missing lib/crypto"):
+        mod.verify_crypto_selftests("7.3.4+deb13-riscv64", pc_612)
+
+    # Any required driver that fails or has not finished testing must fail.
+    bad_req = _make_proc_crypto(
+        mod.CRYPTO_DRIVERS_LIB_CRYPTO,
+        overrides={"gcm_base(ctr-aes-lib,ghash-lib)": "failed"},
+    )
+    with pytest.raises(ValueError, match="failed selftest"):
+        mod.verify_crypto_selftests("7.3.4+deb13-riscv64", bad_req)
+
+    # Any global failed or testing stanza must fail.
+    bad_global = _make_proc_crypto(
+        mod.CRYPTO_DRIVERS_LIB_CRYPTO,
+        extra="name : sha3-256\ndriver : sha3-256-lib\nselftest : testing",
+    )
+    with pytest.raises(ValueError, match="non-passed self-tests"):
+        mod.verify_crypto_selftests("7.3.4+deb13-riscv64", bad_global)
+
+    # Kernel dmesg self-test failure must fail.
+    with pytest.raises(ValueError, match="dmesg reported"):
+        mod.verify_crypto_selftests(
+            "7.3.4+deb13-riscv64",
+            pc_734,
+            dmesg="[  1.23] alg: aead: gcm_base(ctr-aes-lib,ghash-lib) self-test failed",
+        )
+
+    # Malformed and intermediate kernel releases must fail closed.
+    for bad_rel in ("", "riscv64", "7", "6.19.0", "7.0.0"):
+        with pytest.raises(ValueError):
+            mod.crypto_spec_for_release(bad_rel)
+
+    # Guest load script covers both kernel layouts.
+    script = mod.guest_load_script()
+    assert "aes-riscv64" in script
+    assert "crc32-cryptoapi" in script
+    assert "tcrypt mode=35" in script
