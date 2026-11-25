@@ -28,9 +28,9 @@
  *   - writes to vl, vtype and vlenb raise illegal-instruction;
  *   - vector loads and stores raise illegal-instruction with VS Off; with VS
  *     on and vill set, unit-stride and mask forms and misaligned whole-register
- *     groups raise illegal-instruction, while legal whole-register accesses to
- *     low BRAM (a buffer on the stack) raise load or store access fault
- *     without writing memory.
+ *     groups raise illegal-instruction, while aligned whole-register accesses
+ *     to low BRAM succeed, misaligned low-BRAM accesses raise address-
+ *     misaligned faults, and unmapped addresses raise access faults.
  * Without the unit, VS reads zero and ignores writes, and every vector CSR
  * access and vector load or store raises illegal-instruction. In both
  * builds, a vector load on a mispredicted path, or a run of them ending in a
@@ -346,27 +346,56 @@ static unsigned long read_csr_008(void)
 /* Low BRAM is [0, 256 KiB) of the physical address map. */
 #define LOW_BRAM_LIMIT 0x40000ul
 
-/* Legal whole-register accesses to low BRAM raise load or store access fault
- * with mtval the buffer's address, write vstart (dirtying VS), and write
- * nothing to memory. The buffer is on the stack, which both memory
- * configurations place in low BRAM; the DDR configuration links g_vbuf into
- * cached DDR, where vector loads and stores complete. */
-static void check_vmem_bram_fault(void)
+/* Whole-register accesses to aligned low BRAM succeed, misaligned whole-
+ * register accesses to low BRAM raise load address misaligned (cause 4), and
+ * accesses to unmapped addresses past low BRAM raise load or store access
+ * fault (cause 5 or 7) with mtval equal to the faulting address and dirty VS. */
+static void check_vmem_bram_and_unmapped(void)
 {
-    volatile unsigned long buf[VBUF_WORDS] __attribute__((aligned(64)));
+    volatile unsigned long buf[2 * VBUF_WORDS] __attribute__((aligned(64)));
+    volatile unsigned long copy[VBUF_WORDS] __attribute__((aligned(64)));
     unsigned long buf_va = (unsigned long) buf;
-    check_eq("fault buffer in low BRAM", buf_va + sizeof(buf) <= LOW_BRAM_LIMIT, 1);
+    unsigned long unmapped = LOW_BRAM_LIMIT;
+    unsigned long pc;
+    check_eq("buffer in low BRAM", buf_va + sizeof(buf) <= LOW_BRAM_LIMIT, 1);
     fill_words(buf);
+    for (int i = VBUF_WORDS; i < 2 * VBUF_WORDS; i++)
+        buf[i] = 0x1010101010101010ul * (unsigned long) (i + 1);
+    for (int i = 0; i < VBUF_WORDS; i++)
+        copy[i] = 0ul;
+
+    /* Aligned low-BRAM whole-register loads and stores succeed (followed by ecall cause 11). */
     set_vs(VS_CLEAN);
-    check_fault("vl1re8.v (BRAM access fault)", RUN_VMEM_AT(VL1RE8_V1, buf), 5u, buf_va);
+    pc = RUN_VMEM_AT(VL1RE8_V1, buf);
+    check_eq("vl1re8.v (low BRAM) no trap", g_cause == 11u && g_epc == pc + 4, 1);
+    check_eq("vl1re8.v load dirties VS", vs_field(), VS_DIRTY);
+    set_vs(VS_CLEAN);
+    pc = RUN_VMEM_AT(VS1R_V1, copy);
+    check_eq("vs1r.v (low BRAM) no trap", g_cause == 11u && g_epc == pc + 4, 1);
+    check_eq("vs1r.v keeps VS Clean", vs_field(), VS_CLEAN);
+    check_eq("vs1r.v low BRAM data", copy[0], buf[0]);
+    set_vs(VS_CLEAN);
+    pc = RUN_VMEM_AT(VL2RE64_V2, buf);
+    check_eq("vl2re64.v (low BRAM) no trap", g_cause == 11u && g_epc == pc + 4, 1);
+    check_eq("vl2re64.v load dirties VS", vs_field(), VS_DIRTY);
+
+    /* Misaligned EEW=64 access in low BRAM raises load address misaligned. */
+    set_vs(VS_CLEAN);
+    check_fault(
+        "vl2re64.v (BRAM misaligned)", RUN_VMEM_AT(VL2RE64_V2, (const char *) buf + 2), 4u, buf_va + 2);
+    check_eq("vl2re64.v misaligned dirties VS", vs_field(), VS_DIRTY);
+
+    /* Unmapped physical address past low BRAM raises access faults. */
+    set_vs(VS_CLEAN);
+    check_fault("vl1re8.v (unmapped access fault)", RUN_VMEM_AT(VL1RE8_V1, unmapped), 5u, unmapped);
     check_eq("vl1re8.v fault dirties VS", vs_field(), VS_DIRTY);
     set_vs(VS_CLEAN);
-    check_fault("vl2re64.v (BRAM access fault)", RUN_VMEM_AT(VL2RE64_V2, buf), 5u, buf_va);
+    check_fault("vl2re64.v (unmapped access fault)", RUN_VMEM_AT(VL2RE64_V2, unmapped), 5u, unmapped);
     check_eq("vl2re64.v fault dirties VS", vs_field(), VS_DIRTY);
     set_vs(VS_CLEAN);
-    check_fault("vs1r.v (BRAM access fault)", RUN_VMEM_AT(VS1R_V1, buf), 7u, buf_va);
+    check_fault("vs1r.v (unmapped access fault)", RUN_VMEM_AT(VS1R_V1, unmapped), 7u, unmapped);
     check_eq("vs1r.v fault dirties VS", vs_field(), VS_DIRTY);
-    check_eq("faulting BRAM store writes nothing", words_intact(buf), 1);
+    check_eq("low BRAM buffer intact", words_intact(buf), 1);
 }
 #endif
 
@@ -453,7 +482,7 @@ int main(void)
     check_eq("jump-target vector load", vmem_jump_wrong_path(), 6 * 0x0202020202020202ul);
     check_eq("illegal and wrong-path vector ops leave VS", vs_field(), VS_CLEAN);
 
-    check_vmem_bram_fault();
+    check_vmem_bram_and_unmapped();
 
     set_vs(VS_OFF);
     check_all_illegal("with VS Off again");

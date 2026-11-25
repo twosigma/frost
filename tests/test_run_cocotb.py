@@ -1728,6 +1728,42 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
         include_in_pytest=False,
     ),
+    "vec_uncached_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_uncached_test",
+        nic_mac_clocks=False,
+        description=(
+            "Uncached vector loads and stores across low BRAM, FIFO0/FIFO1/MTIME, "
+            "Svpbmt NC/IO, low-BRAM L0 coherence and LR/SC, faults, and mid-run "
+            "timer interrupts; VLEN 256"
+        ),
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+    ),
+    "vec_uncached_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_uncached_test",
+        nic_mac_clocks=False,
+        description="Uncached vector loads and stores at VLEN 128; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=128"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_uncached_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_uncached_test",
+        nic_mac_clocks=False,
+        description="Uncached vector loads and stores at VLEN 512; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+        include_in_pytest=False,
+    ),
     "vec_vtype_handoff_test_v128": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

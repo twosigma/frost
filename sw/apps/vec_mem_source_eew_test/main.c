@@ -25,8 +25,9 @@
  *     when SEW differs from the index EEW.
  * Each case checks the trap, its mtval, that memory, the destination, vstart and
  * mstatus.VS are unchanged, beside a legal neighbor of the same form. Last, an
- * element of a strided or indexed run that lands on a device address takes the
- * access fault there, with vstart naming it and the elements before it done.
+ * element of a strided or indexed run on a valid device register succeeds while
+ * one on an unmapped device-quadrant address takes the access fault there, with
+ * vstart naming it and the elements before it done.
  */
 
 #include "../vec_common/vec_test.h"
@@ -259,58 +260,81 @@ static void existing_rule(void)
     RESERVED(E8M1, VMEM(0u, 1u, 0u, 8u, 0u, 0u, LD), "vluxei8 v0,(a0),v8,v0.t", 1);
 }
 
-/* An element on a device address takes the access fault there. */
+/* An element on a valid device register succeeds, while an element on an
+ * unmapped device-quadrant address takes the access fault there. */
 static void device_elements(void)
 {
-    const unsigned long dev = 0x40000010ul; /* the timer's mtime */
+    const unsigned long mtime = 0x40000010ul;
+    const unsigned long unmapped = 0x40040000ul;
     volatile uint32_t *idx = (volatile uint32_t *) (OUT + 0x400ul);
 
+    /* Strided load crossing DDR -> MTIME succeeds. */
     setup();
     vt_trap_clear();
-    RUN_AT(VMEM(0u, 2u, 1u, 5u, 0u, 16u, LD), BUF, dev - BUF); /* vlse8 v16,(a0),t0 */
-    VT_EQ(vt_trap_count, 1, "vlse8 into a device: traps");
-    VT_EQ(vt_trap_cause, 5, "vlse8 into a device: load access fault");
-    VT_EQ(vt_trap_tval, dev, "vlse8 into a device: mtval");
-    VT_EQ(VT_CSR_READ(vstart), 1, "vlse8 into a device: vstart");
+    RUN_AT(VMEM(0u, 2u, 1u, 5u, 0u, 16u, LD), BUF, mtime - BUF); /* vlse8 v16,(a0),t0 */
+    VT_EQ(vt_trap_count, 1, "vlse8 past MTIME traps at unmapped elem 2");
+    VT_EQ(vt_trap_cause, 5, "vlse8 past MTIME: load access fault");
+    VT_EQ(VT_CSR_READ(vstart), 2, "vlse8 past MTIME: vstart=2 after DDR+MTIME");
     VT_CSR_WRITE(vstart, 0ul);
-    check_v16_bytes(1u, 0xA5u, 7u, "vlse8 into a device: element 0 loaded, the rest kept");
+
+    /* Unmapped device-quadrant element at element 1 faults with vstart = 1. */
+    setup();
+    vt_trap_clear();
+    RUN_AT(VMEM(0u, 2u, 1u, 5u, 0u, 16u, LD), BUF, unmapped - BUF); /* vlse8 v16,(a0),t0 */
+    VT_EQ(vt_trap_count, 1, "vlse8 into unmapped gap: traps");
+    VT_EQ(vt_trap_cause, 5, "vlse8 into unmapped gap: load access fault");
+    VT_EQ(vt_trap_tval, unmapped, "vlse8 into unmapped gap: mtval");
+    VT_EQ(VT_CSR_READ(vstart), 1, "vlse8 into unmapped gap: vstart");
+    VT_CSR_WRITE(vstart, 0ul);
+    check_v16_bytes(1u, 0xA5u, 7u, "vlse8 into unmapped gap: element 0 loaded, the rest kept");
 
     setup();
     vt_trap_clear();
-    RUN_AT(VMEM(0u, 2u, 1u, 5u, 0u, 8u, ST), BUF, dev - BUF); /* vsse8 v8,(a0),t0 */
-    VT_EQ(vt_trap_count, 1, "vsse8 into a device: traps");
-    VT_EQ(vt_trap_cause, 7, "vsse8 into a device: store access fault");
-    VT_EQ(vt_trap_tval, dev, "vsse8 into a device: mtval");
-    VT_EQ(VT_CSR_READ(vstart), 1, "vsse8 into a device: vstart");
+    RUN_AT(VMEM(0u, 2u, 1u, 5u, 0u, 8u, ST), BUF, unmapped - BUF); /* vsse8 v8,(a0),t0 */
+    VT_EQ(vt_trap_count, 1, "vsse8 into unmapped gap: traps");
+    VT_EQ(vt_trap_cause, 7, "vsse8 into unmapped gap: store access fault");
+    VT_EQ(vt_trap_tval, unmapped, "vsse8 into unmapped gap: mtval");
+    VT_EQ(VT_CSR_READ(vstart), 1, "vsse8 into unmapped gap: vstart");
     VT_CSR_WRITE(vstart, 0ul);
-    VT_EQ(buf[0], 0, "vsse8 into a device: element 0 stored");
+    VT_EQ(buf[0], 0, "vsse8 into unmapped gap: element 0 stored");
 
-    /* Indexed, from base 0: element 0 at BUF, element 1 on the device. */
+    /* Indexed, from base 0: element 0 at BUF, element 1 at MTIME succeeds. */
     setup();
     for (unsigned i = 0; i < 16; i++)
         idx[i] = (uint32_t) BUF;
-    idx[1] = (uint32_t) dev;
+    idx[1] = (uint32_t) mtime;
     EMIT(VSETMAX(E32M1));
     RUN_AT(VMEM(0u, 0u, 1u, 0u, 6u, 8u, LD), OUT + 0x400ul, 0ul); /* vle32 v8,(a0) */
     vt_trap_clear();
     RUN_AT(VMEM(0u, 1u, 1u, 8u, 6u, 16u, LD), 0ul, 0ul); /* vluxei32 v16,(a0),v8 */
-    VT_EQ(vt_trap_count, 1, "vluxei32 into a device: traps");
-    VT_EQ(vt_trap_cause, 5, "vluxei32 into a device: load access fault");
-    VT_EQ(vt_trap_tval, dev, "vluxei32 into a device: mtval");
-    VT_EQ(VT_CSR_READ(vstart), 1, "vluxei32 into a device: vstart");
+    VT_EQ(vt_trap_count, 0, "vluxei32 with MTIME element succeeds");
+
+    /* Indexed, from base 0: element 0 at BUF, element 1 on unmapped gap. */
+    setup();
+    for (unsigned i = 0; i < 16; i++)
+        idx[i] = (uint32_t) BUF;
+    idx[1] = (uint32_t) unmapped;
+    EMIT(VSETMAX(E32M1));
+    RUN_AT(VMEM(0u, 0u, 1u, 0u, 6u, 8u, LD), OUT + 0x400ul, 0ul); /* vle32 v8,(a0) */
+    vt_trap_clear();
+    RUN_AT(VMEM(0u, 1u, 1u, 8u, 6u, 16u, LD), 0ul, 0ul); /* vluxei32 v16,(a0),v8 */
+    VT_EQ(vt_trap_count, 1, "vluxei32 into unmapped gap: traps");
+    VT_EQ(vt_trap_cause, 5, "vluxei32 into unmapped gap: load access fault");
+    VT_EQ(vt_trap_tval, unmapped, "vluxei32 into unmapped gap: mtval");
+    VT_EQ(VT_CSR_READ(vstart), 1, "vluxei32 into unmapped gap: vstart");
     VT_CSR_WRITE(vstart, 0ul);
-    check_v16_bytes(4u, 0xA5u, 7u, "vluxei32 into a device: element 0 loaded, the rest kept");
+    check_v16_bytes(4u, 0xA5u, 7u, "vluxei32 into unmapped gap: element 0 loaded, the rest kept");
 
     EMIT(VMV_VI(16u, 7u));
     EMIT(VSETMAX(E32M1));
     vt_trap_clear();
     RUN_AT(VMEM(0u, 1u, 1u, 8u, 6u, 16u, ST), 0ul, 0ul); /* vsuxei32 v16,(a0),v8 */
-    VT_EQ(vt_trap_count, 1, "vsuxei32 into a device: traps");
-    VT_EQ(vt_trap_cause, 7, "vsuxei32 into a device: store access fault");
-    VT_EQ(vt_trap_tval, dev, "vsuxei32 into a device: mtval");
-    VT_EQ(VT_CSR_READ(vstart), 1, "vsuxei32 into a device: vstart");
+    VT_EQ(vt_trap_count, 1, "vsuxei32 into unmapped gap: traps");
+    VT_EQ(vt_trap_cause, 7, "vsuxei32 into unmapped gap: store access fault");
+    VT_EQ(vt_trap_tval, unmapped, "vsuxei32 into unmapped gap: mtval");
+    VT_EQ(VT_CSR_READ(vstart), 1, "vsuxei32 into unmapped gap: vstart");
     VT_CSR_WRITE(vstart, 0ul);
-    VT_EQ(buf[0], 7u, "vsuxei32 into a device: element 0 stored");
+    VT_EQ(buf[0], 7u, "vsuxei32 into unmapped gap: element 0 stored");
 }
 
 int main(void)

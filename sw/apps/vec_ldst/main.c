@@ -693,10 +693,9 @@ static void precise_faults(void)
     CHECK_MEM("vle32 with vstart = 2");
 }
 
-/* A program built with the vector extension has its stack in cached DDR in
- * the DDR tier (sw/common/link_ddr.ld), so its vector code may use stack
- * objects, as the masked cases above do with their masks. vec_mem_test checks
- * the access fault on a stack in low BRAM. */
+/* Stack objects work in both DDR (where link_ddr.ld places the vector stack in
+ * cached DDR for cached throughput and misaligned stack accesses) and low BRAM
+ * (when naturally aligned). */
 static void stack_operands(void)
 {
     unsigned long vl;
