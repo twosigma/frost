@@ -690,37 +690,25 @@ and targeted microbenchmarks give these items:
    ahead of the stream, up to eight lines ahead and within the 4 KiB page,
    through its two highest-numbered load endpoints. More cached loads in
    flight or one read slot per line for loads to the same line would let one
-   stream keep more lines in flight. In simulation, a dependent L2 hit now
-   averages 22.2 cycles per hop over a 512 KiB pointer chase against the
-   previous hierarchy's 23 cycles (in the cluster bench the L1D-miss to
-   L2-hit round trip is 20 cycles on a nonzero load endpoint and 25 on
-   endpoint 0), and a DRAM miss is four cycles shorter than before, closing
-   the previous 4-cycle gap. In a serial pointer
+   stream keep more lines in flight. In simulation, a dependent load that
+   misses the L1D and hits the L2 takes 24 cycles. In a serial pointer
    chase, a working set that overflows the L1D into the L2 adds about 23
    cycles per step, and one that overflows the L2 adds about 35 more. The
    L1D answers a load from its grant, and registered stages and arbitration
    add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
-   line installs. On the L1D-miss to L2-hit path, the platform hierarchy
-   (`HOME_FAST_TAG_LAUNCH=1`) starts an unblocked non-prefetch lookup on
-   request acceptance with live line-conflict checks, UltraRAM builds launch
-   the speculative all-way L2 data read on the same edge as the tag request
-   when no write targets that set, the L1D answers straight into its read
-   output register from an arriving fill grant when the output register is
-   free and no buffered ready read waits, and the hart's demand arbiter
-   passes a lone offer straight through when idle while the cluster demand
-   arbiter stays registered. Remaining work on the request path from L1D to
-   home can trim the waits after endpoint acquisition and for the
-   controller's own lookup by presenting the request at acquisition and
-   optionally acquiring from the hit path's miss result.
-9. L1D read hits. In simulation a dependent load that hits in the L1D takes
-   seven cycles from one load launch to the next (7.0 cycles per hop over a
-   64 KiB pointer chase). A hit path beside the coherent L1D's controller
-   answers loads that hit; when the read output register is free and no
-   buffered ready read waits, it answers straight from its stage-3 hit into
-   the read output register, bypassing both its stage-4 register and the
-   read slot's response register.
+   line installs. Four waits on that path are gone. The home starts the L2
+   tag lookup as it accepts a request and, on the FPGA builds, starts the
+   speculative L2 data read in the same cycle. The L1D answers the core
+   straight from the arriving fill when nothing else is waiting, and the
+   hart's idle request arbiter passes a lone request straight through. Two
+   waits remain between the L1D and the home: after the L1D acquires an
+   endpoint, and for the controller's own lookup.
+9. L1D read hits. In simulation, a dependent load that hits in the L1D takes
+   about seven cycles from one load launch to the next. A hit path beside the
+   coherent L1D's controller answers loads that hit, straight into the read
+   output register when nothing else is waiting.
    Offering the hit port directly from the L1D input instead of its input
    registers would remove a cycle on hits, at the risk of crossing the
    core-to-cache boundary into the cache arrays in one cycle at the target
