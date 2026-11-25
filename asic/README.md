@@ -373,7 +373,6 @@ to 3, one for each way.
 | `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.gen_tag_block.gen_way[w].tags` | `sdp_block_ram` | 1,024 x 20 | 1 `sram_1w1r_1024x20` each |
 | `cpu.hart.gen_coherent_tier.hart_cache.l1d.array.gen_hit_port.gen_copy[w].tags` | `sdp_block_ram` | 1,024 x 20 | 1 `sram_1w1r_1024x20` each |
 | `cpu.hart.gen_coherent_tier.hart_cache.l1i.gen_data_banks.gen_bank[w].data_bank` | `sdp_ram_byte_en` | 128 x 256, byte lanes | 1 row of 4 `sram_1w1r_128x64_m8` each |
-| `cpu.hart.cpu_inst.if_stage_inst.branch_prediction_controller_inst.branch_predictor_inst.btb_payload_ram_lookup_2`, `_alt`, and `_rot` | `sdp_block_ram` | 256 x 36 | 1 `sram_1w1r_256x36` each |
 | `soc.data_memory` | `tdp_bram_dc_byte_en` | 16,384 x 64, byte lanes, two ports | 4 rows of 1 `sram_2rw_4096x64_m8` |
 | `soc.instruction_memory.u_even_cold` and `u_odd_cold` | `sdp_block_ram_dc_init` | 16,384 x 28 | 2 rows of 1 `sram_1w1r_8192x28` each |
 | `soc.instruction_memory.u_even_frontend_hot`, `u_odd_frontend_hot`, `u_even_compressed`, and `u_odd_compressed` | `sdp_block_ram_dc_init` | 16,384 x 4 | 2 rows of 1 `sram_1w1r_8192x4` each |
@@ -686,7 +685,7 @@ the 1.6 ns column what the repairs reach.
 | ALU bit count | INT RS operand to ALU adapter result | 26 | 2.42 | 2.13 |
 | Multiplier, first stage | Multiplier operands to the 27 x 35 tile products | 32 | 2.26 | 1.86 |
 | ROB to reservation stations | ROB head pointer to the INT RS dispatch-full flag | 28 | 2.35 | 1.67 |
-| PC and fetch prediction loop | `pc_controller` PC to PC | 32 | 2.04 | 1.63 |
+| PC and fetch prediction loop | `fetch_pc_decoupled` PC to PC | 32 | 2.04 | 1.63 |
 | Store queue early address repair | Repair immediate to `sq_address` | 31 | 2.00 | 1.59 |
 | Wakeup to MEM RS payload | CDB valid to the MEM RS issue registers | - | 2.65 | 1.60 or less |
 | Decoded queue to INT RS | RAT source address to INT RS source values | 24 | 2.16 | 1.54 |

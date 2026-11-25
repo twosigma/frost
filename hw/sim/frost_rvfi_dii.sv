@@ -27,7 +27,7 @@
   layout of the stream: word r at address R, word r+1 at R plus the length of
   word r (2 bytes for a compressed parcel, otherwise 4), and so on. Bytes
   outside the layout read as C.NOP. The layout (R, r) changes only when the
-  fetch PC loads a redirect from pc_controller's arms 0 to 4, on that edge:
+  fetch PC loads a redirect from fetch_pc_decoupled's arms 0 to 4, on that edge:
     - reset: (0, 0);
     - trap or xRET, FENCE-class flush, commit-time misprediction recovery:
       the target and the number of stream words consumed so far;
@@ -90,7 +90,7 @@ module frost_rvfi_dii #(
     output logic [                                  1:0] o_fetch_slot2_start_valid_lo_by_parity,
     output logic                                         o_fetch_bank_sel_r,
 
-    // Fetch-PC redirects: pc_controller's one-hot arm select, its load
+    // Fetch-PC redirects: fetch_pc_decoupled's one-hot arm select, its load
     // enable, and the values of arms 1 to 4.
     input logic [riscv_pkg::PcNextArms-1:0] i_npc_sel,
     input logic                             i_pc_update_en,

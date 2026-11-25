@@ -2078,7 +2078,7 @@ package riscv_pkg;
   localparam logic [XLEN-1:0] PcIncrementCompressed = 2;  // 16-bit compressed instruction
   localparam logic [XLEN-1:0] PcIncrement32bit = 4;  // 32-bit standard instruction
   localparam int unsigned PcAdvanceSelWidth = 2;
-  // Arms of pc_controller's next-PC priority selector. if_stage uses the
+  // Arms of fetch_pc_decoupled's next-PC priority selector. if_stage uses the
   // one-hot winner and sequential-arm mask to classify provider retargets;
   // translation itself starts from the selected, registered PC.
   localparam int unsigned PcNextArms = 14;
@@ -2087,9 +2087,9 @@ package riscv_pkg;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus6 = 2'd2;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus8 = 2'd3;
 
-  // How a PC candidate v relates to a pending branch PC P, as pc_controller
-  // registers it: v == P, v[XLEN-1:1] below or above P[XLEN-1:1], and the
-  // compressed and 32-bit predecessor tags v == P - 2 and v == P - 4.
+  // How a PC candidate v relates to a branch PC P: v == P, v[XLEN-1:1] below
+  // or above P[XLEN-1:1], and the compressed and 32-bit predecessor tags
+  // v == P - 2 and v == P - 4.
   typedef struct packed {
     logic at;
     logic below;
@@ -2137,7 +2137,7 @@ package riscv_pkg;
   localparam int unsigned BackingBtbEntries = 1024;
   localparam int unsigned BackingBtbWays = 2;
 
-  // Bimodal index width; must match direction_predictor.BIM_BITS.
+  // Bimodal index width; must match fetch_dir_4b.BIM_BITS.
   // Branches carry the prediction-time index through commit for training.
   localparam int unsigned BpDirIdxBits = 10;
 
@@ -2259,16 +2259,15 @@ package riscv_pkg;
     logic fetch_fault;
     logic fetch_fault_page;
     logic fetch_fault_hi;
-    // Slot-2 only: illegal-RVC flag for the expanded effective_instr (the
-    // aligner takes each candidate's flag from its sideband; see
-    // instruction_aligner). 0 for slot 1, whose illegal flag PD takes from
-    // rvc_extra_predecoded.
+    // Slot-2 only: illegal-RVC flag for the expanded effective_instr (if_stage
+    // takes each parcel's flag from its sideband; see if_stage.sv). 0 for slot
+    // 1, whose illegal flag PD takes from rvc_extra_predecoded.
     logic decomp_illegal;
     // Slot-2 only: conditional-branch opcode flag (effective_instr[6:0] ==
-    // OPC_BRANCH), predecoded per slot-2 start position in instruction_aligner
-    // before the position select. Zero for slot 1.
+    // OPC_BRANCH), predecoded for slot 2 in if_stage's parcel-queue drain.
+    // Zero for slot 1.
     logic is_cond_branch;
-    // Redirect candidates from pd_target_candidate: low PC+offset bits for
+    // Split-target redirect candidates from if_stage: low PC+offset bits for
     // native and compressed branches in this slot, with {offset sign, carry}
     // selecting PC-high. PD registers these and decodes the high select
     // afterward.

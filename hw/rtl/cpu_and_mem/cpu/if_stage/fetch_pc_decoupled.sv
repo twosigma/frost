@@ -21,7 +21,7 @@
  * (o_pc_tage_lookup, o_pc_even_btb_idx, o_pc_even_dir_idx), tagged path-history
  * events, and registered provider retarget pulses.
  *
- * Next-PC priority keeps the same arm positions as pc_controller so testbench
+ * Next-PC priority uses fixed arm positions so testbench
  * and RVFI observers see uniform redirect encodings:
  *   arm 1: trap or xRET
  *   arm 2: FENCE-class flush
@@ -44,7 +44,7 @@ module fetch_pc_decoupled #(
     input logic [XLEN-1:0] i_boot_addr = '0,
     input logic i_reset,
 
-    // Redirects (highest priority first, matching pc_controller arms 1..5)
+    // Redirects (highest priority first, arms 1..5)
     input logic            i_trap_taken,
     input logic            i_mret_taken,
     input logic [XLEN-1:0] i_trap_target,
@@ -99,7 +99,7 @@ module fetch_pc_decoupled #(
     output logic o_fetch_redirect,
     output logic o_fetch_cached_retarget,
 
-    // Observation arms matching pc_controller's encoding
+    // Observation arms for testbench and RVFI redirect classification
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_sel,
     output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_val
 );

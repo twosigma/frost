@@ -34,7 +34,7 @@
  * predicted target.
  *
  * Training updates one bank per cycle using parallel early and late counter
- * read-modify-write paths, matching branch_predictor's saturating-counter
+ * read-modify-write paths, using two-bit saturating-counter update
  * rules and 4-GiB target region restriction. Reset or i_invalidate_all clears
  * all valid bits synchronously.
  */

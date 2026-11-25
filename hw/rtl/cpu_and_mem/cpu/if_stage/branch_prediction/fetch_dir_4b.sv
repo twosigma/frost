@@ -22,8 +22,8 @@
  *
  * Even-word banks (PC[2]=0) read the caller's precomputed row index
  * i_pc_even_dir_idx; odd-word banks (PC[2]=1) read i_pc[BIM_BITS:3]. Commit
- * training writes one bank per cycle at i_update_idx. As in
- * direction_predictor, reset does not clear the counter RAMs.
+ * training writes one bank per cycle at i_update_idx. Reset does not clear
+ * the counter RAMs.
  */
 module fetch_dir_4b #(
     parameter int unsigned XLEN     = riscv_pkg::XLEN,

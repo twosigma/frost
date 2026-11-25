@@ -199,7 +199,7 @@ instruction memory, and every fetch goes through the low-BRAM presenter. It
 answers each fetch window from a layout of the sequence: word r at address R,
 the next word right after it, and so on, with C.NOP outside the layout. The
 layout changes on the clock edge where the fetch PC loads a redirect from
-`pc_controller`:
+`fetch_pc_decoupled`:
 
 | Redirect | New layout starts at | With word |
 |----------|----------------------|-----------|

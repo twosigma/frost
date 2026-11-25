@@ -8,7 +8,7 @@
 # the branch to it. A lost redirect lets the jal retire and write ra while
 # fetch falls through without executing the callee.
 #
-# The hazard (pc_controller and prediction_metadata_tracker): the
+# Historical hazard (legacy non-decoupled front end): the
 # branch's own BTB hit lands in a redirect-bubble holdoff, so it emits
 # unpredicted. The jal's BTB prediction then consumes with the pending
 # pc_reg handoff armed. The PD redirect for the unpredicted branch kills
