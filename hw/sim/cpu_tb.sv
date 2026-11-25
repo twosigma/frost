@@ -411,6 +411,7 @@ module cpu_tb
       .i_walk_line_resp_error(1'b0),
       .i_cached_read_error(1'b0),
       .i_uncached_read_request_ready(1'b1),
+      .o_uncached_addr(),
       .o_uncached_read_enable(),
       .o_uncached_read_size(),
       .i_uncached_read_valid(1'b0),

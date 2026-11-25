@@ -431,6 +431,8 @@ module tomasulo_coherent_cut_test_harness #(
       .o_vcfg_in_flight(),
       .i_vmt(i_vmt),
       .i_vmem_quiet(1'b1),
+      .i_vec_inval_valid(1'b0),
+      .i_vec_inval_addr('0),
       .i_coherent_cut_hold(cut_hold),
       .i_coh_admit_valid(cut_admit && !i_probe_delay_admit),
       .i_coh_admit_slot('0),
