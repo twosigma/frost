@@ -6054,6 +6054,7 @@ def test_frost_isa_probe_host_selftest_and_sources(tmp_path: Path) -> None:
         "cpuinfo-zero",
         "first-use-budget",
         "progress-format",
+        "inactive-vreg-errno",
     ):
         assert f"FROST_ISA_SELFTEST {case}: pass\n" in done.stdout
 

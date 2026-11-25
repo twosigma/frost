@@ -60,6 +60,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <ucontext.h>
@@ -115,6 +116,9 @@ struct __riscv_v_ext_state {
 #endif
 #ifndef NT_RISCV_VECTOR
 #define NT_RISCV_VECTOR 0x901
+#endif
+#ifndef ENODATA
+#define ENODATA 61
 #endif
 #ifndef AT_MINSIGSTKSZ
 #define AT_MINSIGSTKSZ 51
@@ -950,6 +954,52 @@ static bool parse_elf_core_buf(const uint8_t *buf, size_t len, struct core_parse
     return true;
 }
 
+/*
+ * Linux 7.0 (upstream commit 8cdb04bd06c1, "riscv: ptrace: return ENODATA for
+ * inactive vector extension") changed PTRACE_GETREGSET(NT_RISCV_VECTOR) for a
+ * thread that has never used V from -EINVAL to -ENODATA. When V is absent from
+ * the CPU/kernel, arch/riscv/kernel/ptrace.c returns -EINVAL on all kernels.
+ */
+static bool parse_kernel_release(const char *release, unsigned *major_out, unsigned *minor_out)
+{
+    if (release == NULL || !isdigit((unsigned char) release[0]))
+        return false;
+    const char *p = release;
+    unsigned long major = 0;
+    while (isdigit((unsigned char) *p)) {
+        if (major > (UINT_MAX - 9U) / 10U)
+            return false;
+        major = major * 10UL + (unsigned long) (*p - '0');
+        p++;
+    }
+    if (*p != '.')
+        return false;
+    p++;
+    if (!isdigit((unsigned char) *p))
+        return false;
+    unsigned long minor = 0;
+    while (isdigit((unsigned char) *p)) {
+        if (minor > (UINT_MAX - 9U) / 10U)
+            return false;
+        minor = minor * 10UL + (unsigned long) (*p - '0');
+        p++;
+    }
+    if (*p != '\0' && *p != '.' && *p != '-' && *p != '+' && *p != '~')
+        return false;
+    *major_out = (unsigned) major;
+    *minor_out = (unsigned) minor;
+    return true;
+}
+
+static int expected_inactive_vreg_errno_for_release(const char *release)
+{
+    unsigned major = 0, minor = 0;
+    if (!parse_kernel_release(release, &major, &minor))
+        return -1;
+    /* Upstream commit 8cdb04bd06c1 (first released in Linux 7.0). */
+    return (major >= 7U) ? ENODATA : EINVAL;
+}
+
 /* --- Built-in host/target parser self-test --- */
 
 static size_t build_synthetic_core(uint8_t *out,
@@ -1197,6 +1247,38 @@ static int run_selftest(void)
     }
     printf("FROST_ISA_SELFTEST progress-format: pass\n");
 
+    /* 7. Kernel-version-keyed inactive NT_RISCV_VECTOR ptrace errno (Linux 7.0: 8cdb04bd06c1). */
+    static const struct {
+        const char *release;
+        int want_errno;
+    } krel_cases[] = {
+        {"6.12.113+deb13-riscv64", EINVAL},
+        {"6.19.9", EINVAL},
+        {"7.0", ENODATA},
+        {"7.0.0", ENODATA},
+        {"7.0-rc1", ENODATA},
+        {"7.3.4+deb13-riscv64", ENODATA},
+        {"8.1.0", ENODATA},
+        {"", -1},
+        {"abc", -1},
+        {"7", -1},
+        {"7.", -1},
+        {".3", -1},
+        {"7.a", -1},
+        {"7.3x", -1},
+    };
+    for (size_t i = 0; i < sizeof(krel_cases) / sizeof(krel_cases[0]); i++) {
+        int got = expected_inactive_vreg_errno_for_release(krel_cases[i].release);
+        if (got != krel_cases[i].want_errno) {
+            printf("FROST_ISA_SELFTEST inactive-vreg-errno: FAIL rel=%s want=%d got=%d\n",
+                   krel_cases[i].release,
+                   krel_cases[i].want_errno,
+                   got);
+            return 1;
+        }
+    }
+    printf("FROST_ISA_SELFTEST inactive-vreg-errno: pass\n");
+
     printf("FROST_ISA_SELFTEST_PASS\n");
     return 0;
 }
@@ -1204,6 +1286,20 @@ static int run_selftest(void)
 #if defined(__riscv) && !defined(FROST_ISA_PROBE_HOST_SELFTEST)
 
 /* --- Runtime RISC-V Linux helpers --- */
+
+static int expected_inactive_vreg_errno(char *rel_buf, size_t rel_sz)
+{
+    struct utsname uts;
+    memset(&uts, 0, sizeof(uts));
+    if (uname(&uts) != 0) {
+        if (rel_buf != NULL && rel_sz > 0)
+            rel_buf[0] = '\0';
+        return -1;
+    }
+    if (rel_buf != NULL && rel_sz > 0)
+        snprintf(rel_buf, rel_sz, "%s", uts.release);
+    return expected_inactive_vreg_errno_for_release(uts.release);
+}
 
 static bool pin_to_cpu(int cpu)
 {
@@ -2905,6 +3001,11 @@ static int run_ptrace(const char *run_id, bool present_mode, uint64_t vlenb)
         struct iovec vi = {.iov_base = vec_buf, .iov_len = want_bytes};
         errno = 0;
         long vr = ptrace(PTRACE_GETREGSET, child, (void *) (uintptr_t) NT_RISCV_VECTOR, &vi);
+        /*
+         * Absent-mode check: arch/riscv/kernel/ptrace.c rejects NT_RISCV_VECTOR
+         * with EINVAL when the CPU/kernel has no V extension, on all kernels
+         * (upstream commit 8cdb04bd06c1 only changed the inactive present-mode path).
+         */
         if (vr == 0 || errno != EINVAL) {
             snprintf(reason, sizeof(reason), "expected_einval_got_rc_%ld_errno_%d", vr, errno);
             goto fail_stock;
@@ -2930,7 +3031,13 @@ static int run_ptrace(const char *run_id, bool present_mode, uint64_t vlenb)
         return 1;
     }
 
-    /* Positive mode: Stop 1 (never-used) -> EINVAL. */
+    /* Positive mode: Stop 1 (never-used) -> EINVAL (< 7.0) or ENODATA (>= 7.0; 8cdb04bd06c1). */
+    char krel[65] = "";
+    int want_inactive_errno = expected_inactive_vreg_errno(krel, sizeof(krel));
+    if (want_inactive_errno < 0) {
+        snprintf(reason, sizeof(reason), "stop1_uname_parse_failed_%s", krel);
+        goto fail_pos;
+    }
     if (wait_ptrace_stop_deadline(child, &status, deadline) != 0 || !WIFSTOPPED(status) ||
         WSTOPSIG(status) != SIGSTOP) {
         snprintf(reason, sizeof(reason), "stop1_failed_0x%x", status);
@@ -2946,8 +3053,13 @@ static int run_ptrace(const char *run_id, bool present_mode, uint64_t vlenb)
     struct iovec vi1 = {.iov_base = vec_buf, .iov_len = want_bytes};
     errno = 0;
     long vr1 = ptrace(PTRACE_GETREGSET, child, (void *) (uintptr_t) NT_RISCV_VECTOR, &vi1);
-    if (vr1 == 0 || errno != EINVAL) {
-        snprintf(reason, sizeof(reason), "stop1_expected_einval_rc_%ld_e_%d", vr1, errno);
+    if (vr1 == 0 || errno != want_inactive_errno) {
+        snprintf(reason,
+                 sizeof(reason),
+                 "stop1_expected_errno_%d_rc_%ld_e_%d",
+                 want_inactive_errno,
+                 vr1,
+                 errno);
         goto fail_pos;
     }
     if (ptrace(PTRACE_CONT, child, NULL, NULL) != 0) {
@@ -3059,6 +3171,11 @@ static int run_ptrace(const char *run_id, bool present_mode, uint64_t vlenb)
 
     munmap(shm, align_page_size(sizeof(*shm)));
     probe_progress(run_id, "ptrace", "done");
+    printf("%s id=%s case=ptrace kernel=%s inactive_errno=%d\n",
+           TOKEN_INFO,
+           run_id,
+           krel,
+           want_inactive_errno);
     printf("%s id=%s case=ptrace verdict=PASS inactive_einval=1 active_bytes=%zu setregset_ok=1 "
            "resumed_ok=1\n",
            TOKEN_PREFIX,
@@ -3388,6 +3505,15 @@ static bool pid_is_zombie(pid_t pid)
 static int run_fork_case(const char *run_id, int cpu, uint64_t vlenb)
 {
     probe_progress(run_id, "fork", "start");
+    char krel[65] = "";
+    int want_inactive_errno = expected_inactive_vreg_errno(krel, sizeof(krel));
+    if (want_inactive_errno < 0) {
+        printf("%s id=%s case=fork verdict=FAIL reason=uname_parse_failed_%s\n",
+               TOKEN_PREFIX,
+               run_id,
+               krel);
+        return 1;
+    }
     struct fork_shm *shm = alloc_shared_mem(sizeof(*shm), NULL);
     if (shm == MAP_FAILED) {
         printf("%s id=%s case=fork verdict=FAIL reason=shm_alloc_failed\n", TOKEN_PREFIX, run_id);
@@ -3493,8 +3619,11 @@ static int run_fork_case(const char *run_id, int cpu, uint64_t vlenb)
         struct iovec vi = {.iov_base = vec_buf,
                            .iov_len = REGSET_HDR_BYTES + (size_t) (32U * vlenb)};
         errno = 0;
+        /* Inactive V regset returns EINVAL (< 7.0) or ENODATA (>= 7.0; commit 8cdb04bd06c1). */
         if (ptrace(PTRACE_GETREGSET, child, (void *) (uintptr_t) NT_RISCV_VECTOR, &vi) == 0 ||
-            errno != EINVAL) {
+            errno != want_inactive_errno) {
+            snprintf(
+                shm->diff, sizeof(shm->diff), "vreg_want_%d_got_%d", want_inactive_errno, errno);
             kill(child, SIGKILL);
             waitpid(child, &st, 0);
             _exit(81);
@@ -3579,12 +3708,15 @@ static int run_fork_case(const char *run_id, int cpu, uint64_t vlenb)
     bool ok = (wr == 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
                shm->child_init_zero == 1 && shm->child_pat_ok == 1 && shm->parent_intact == 1);
     if (ok) {
-        printf("%s id=%s case=fork parent_pid=%ld child_pid=%ld child_ctrl=0x%x\n",
+        printf("%s id=%s case=fork parent_pid=%ld child_pid=%ld child_ctrl=0x%x kernel=%s "
+               "inactive_errno=%d\n",
                TOKEN_INFO,
                run_id,
                (long) shm->parent_pid,
                (long) shm->child_pid,
-               shm->child_ctrl);
+               shm->child_ctrl,
+               krel,
+               want_inactive_errno);
         printf("%s id=%s case=fork verdict=PASS ctrl_ok=1 inactive_einval=1 init_zero=1 "
                "isolated=1\n",
                TOKEN_PREFIX,
@@ -3859,7 +3991,14 @@ static bool run_exec_trial(bool next_on, uint64_t cookie, uint64_t vlenb, char *
     bool ok = false;
 
     if (next_on) {
-        /* Stop 1: SIGTRAP on execve completion -> inactive V regset. */
+        char krel[65] = "";
+        int want_inactive_errno = expected_inactive_vreg_errno(krel, sizeof(krel));
+        if (want_inactive_errno < 0) {
+            snprintf(reason, rsz, "exec_on_uname_parse_failed_%s", krel);
+            goto fail;
+        }
+        /* Stop 1: SIGTRAP on execve completion -> inactive V regset (8cdb04bd06c1: ENODATA on
+         * >= 7.0). */
         if (wait_ptrace_stop_deadline(child, &status, deadline) != 0 || !WIFSTOPPED(status) ||
             WSTOPSIG(status) != SIGTRAP) {
             snprintf(reason, rsz, "exec_on_trap_failed_0x%x", status);
@@ -3870,15 +4009,15 @@ static bool run_exec_trial(bool next_on, uint64_t cookie, uint64_t vlenb, char *
                            .iov_len = REGSET_HDR_BYTES + (size_t) (32U * vlenb)};
         errno = 0;
         if (ptrace(PTRACE_GETREGSET, child, (void *) (uintptr_t) NT_RISCV_VECTOR, &vi) == 0 ||
-            errno != EINVAL) {
-            snprintf(reason, rsz, "exec_on_trap_vreg_not_einval_%d", errno);
+            errno != want_inactive_errno) {
+            snprintf(reason, rsz, "exec_on_trap_vreg_want_%d_got_%d", want_inactive_errno, errno);
             goto fail;
         }
         if (ptrace(PTRACE_CONT, child, NULL, NULL) != 0) {
             snprintf(reason, rsz, "exec_on_cont1_failed");
             goto fail;
         }
-        /* Stop 2: SIGSTOP right before first extended use -> still EINVAL. */
+        /* Stop 2: SIGSTOP right before first extended use -> inactive V regset errno. */
         if (wait_ptrace_stop_deadline(child, &status, deadline) != 0 || !WIFSTOPPED(status) ||
             WSTOPSIG(status) != SIGSTOP) {
             snprintf(reason, rsz, "exec_on_stop2_failed_0x%x_%s", status, shm->reason);
@@ -3887,8 +4026,8 @@ static bool run_exec_trial(bool next_on, uint64_t cookie, uint64_t vlenb, char *
         vi.iov_len = REGSET_HDR_BYTES + (size_t) (32U * vlenb);
         errno = 0;
         if (ptrace(PTRACE_GETREGSET, child, (void *) (uintptr_t) NT_RISCV_VECTOR, &vi) == 0 ||
-            errno != EINVAL) {
-            snprintf(reason, rsz, "exec_on_stop2_vreg_not_einval_%d", errno);
+            errno != want_inactive_errno) {
+            snprintf(reason, rsz, "exec_on_stop2_vreg_want_%d_got_%d", want_inactive_errno, errno);
             goto fail;
         }
         if (ptrace(PTRACE_CONT, child, NULL, NULL) != 0) {
