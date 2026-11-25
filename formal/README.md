@@ -130,6 +130,7 @@ the listed L1D store-data BMCs keep depth 40.
 | `coherence_l1d` | `coh_l1d_store_multi_payload_bmc` | 1,800 / 30 |
 | `coherence_l1d` | `coh_l1d_store_multi_grant_bmc` | 3,600 / 60 |
 | `coherence_l1d` | `coh_l1d_ways_data_bmc` | 5,100 / 85 |
+| `coherence_l1d` | `coh_l1d_local_control_bmc` | 3,600 / 60 |
 | `coherence_store_boundary` | `bmc_four_control`, `bmc_four_value_3` | 3,600 / 60 each |
 | `coherence_store_boundary` | `bmc_four_value_0` | 15,840 / 264 |
 | `coherence_store_boundary` | `bmc_four_value_1` | 10,800 / 180 |
@@ -231,13 +232,15 @@ payload, grant and four-way data tasks (270 minutes). Their task allowances
 sum to 260, 280 and 210 minutes, respectively, at most 85% of each job.
 The L1D and bridges job runs the remaining L1D tasks and AXI bridge targets
 with a 330-minute limit. The scheduled local real-array checks run in
-three parallel 30-minute jobs: `coh_l1d_local_data_bmc` checks arbitrary-byte
-preservation and deferred probe data; `coh_l1d_local_hold_bmc` checks the
-grant multiplexer, local image, load payload and reply holds; and
-`coh_l1d_local_control_bmc` checks every remaining assertion. Each uses
-ABC BMC3, keeps depth 80 and its 1,200-second SBY limit, and assumes
-nothing from the other partitions. Data and hold use CaDiCaL; control uses
-BMC3's default solver. Fast tests require the same
+three parallel jobs: `coh_l1d_local_data_bmc` checks arbitrary-byte
+preservation and deferred probe data in a 30-minute job;
+`coh_l1d_local_hold_bmc` checks the grant multiplexer, local image, load
+payload and reply holds in a 30-minute job; and `coh_l1d_local_control_bmc`
+checks every remaining assertion in an 80-minute job (60-minute allowance
+plus 20 minutes for image setup). Each uses ABC BMC3, checks depth 80, and
+assumes nothing from the other partitions; data and hold have 1,200-second
+SBY limits and use CaDiCaL, while control has a 3,600-second SBY and runner
+limit and uses BMC3's default solver. Fast tests require the same
 model as the scheduled local cover, complementary assertion selections,
 and exactly one CI job per task.
 

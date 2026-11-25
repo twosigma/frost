@@ -1919,12 +1919,13 @@ multi-endpoint control BMC has 300 minutes in its own 330-minute job. The
 L1D data tasks run in three jobs (330, 330 and 270 minutes), with each word
 variant taking its representative's measured allowance. The remaining L1D
 tasks and AXI bridges retain their 330-minute job. The scheduled local
-real-array checks keep all 80 cycles and run in three parallel 30-minute
-jobs: `coh_l1d_local_data_bmc` checks byte preservation and deferred probe
-data, `coh_l1d_local_hold_bmc` checks wide payload identities and holds, and
-`coh_l1d_local_control_bmc` checks every other assertion. All three retain
-the 1,200-second SBY limit and assume nothing from each other. A fast test
-checks that the models match the scheduled local cover, the assertion
+real-array checks cover 80 cycles in three parallel jobs:
+`coh_l1d_local_data_bmc` checks byte preservation and deferred probe data
+(30-minute job, 1,200-second SBY limit), `coh_l1d_local_hold_bmc` checks wide
+payload identities and holds (30-minute job, 1,200-second SBY limit), and
+`coh_l1d_local_control_bmc` checks every other assertion (80-minute job,
+3,600-second SBY and runner limit). None assumes facts from the others. A fast
+test checks that the models match the scheduled local cover, the assertion
 selections cover every property, and each task runs in exactly one CI job.
 
 The scripted stream checks also use complementary property groups:

@@ -141,6 +141,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_array", "coh_array4_port_bmc"): 6000,
     ("coherence_l1d", "coh_l1d_bmc"): 14400,
     ("coherence_l1d", "coh_l1d_multi_bmc"): 20400,
+    ("coherence_l1d", "coh_l1d_local_control_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_data_bmc"): 3900,
     ("coherence_l1d", "coh_l1d_data1_bmc"): 3900,
     ("coherence_l1d", "coh_l1d_data2_bmc"): 3900,
@@ -12287,7 +12288,7 @@ def test_local_data_partition_models_match() -> None:
         assert options == {
             "mode": "bmc",
             "depth": "80",
-            "timeout": "1200",
+            "timeout": "3600" if part == "control" else "1200",
             "aigsmt": "boolector",
             "expect": "PASS",
         }
@@ -14677,6 +14678,7 @@ def test_fatal_frame_validation(
         ("coherence_home_twin", "home_twin_addr40", 600),
         ("coherence_l1d", "coh_l1d_stream_free_bmc", 10800),
         ("coherence_l1d", "coh_l1d_multi_bmc", 20400),
+        ("coherence_l1d", "coh_l1d_local_control_bmc", 3600),
         ("coherence_l1d", "coh_l1d_data_bmc", 3900),
         ("coherence_l1d", "coh_l1d_data1_bmc", 3900),
         ("coherence_l1d", "coh_l1d_data2_bmc", 3900),
