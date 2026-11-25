@@ -110,7 +110,7 @@ module fetch_parcel_queue #(
   assign meta_bank_raddr[1] = meta_head_q[MetaPtrBits-1:1];
 
   for (genvar mb = 0; mb < 2; mb++) begin : gen_meta_bank
-    logic mb_we;
+    (* keep = "true", max_fanout = 64 *) logic mb_we;
     // Flush clears meta_count_q and meta_tail_q on the same edge, so writes
     // during a flush target unused slots and need not gate on !i_flush.
     assign mb_we = i_push_valid && (meta_tail_q[0] == 1'(mb));
@@ -209,75 +209,53 @@ module fetch_parcel_queue #(
   assign tail_next  = tail_q + PtrBits'(push_cnt_eff);
   assign count_next = avail_sum - CountBits'(pop_cnt_eff);
 
-  // Precompute metadata head, next-even index, and count for each possible pop
-  // count 0..4 in parallel with i_pop_count so only one mux level sits behind
-  // drain's pop count.
+  // Count metadata entries freed from the ring independently of push inputs,
+  // and detect whether the pushed window's own last parcel is bypassed and
+  // popped in the same cycle (possible only when count_q <= 3 and every
+  // available parcel is consumed: low_avail_sum == pop_cnt_eff).
   logic meta_push_eff;
-  logic [MetaCountBits-1:0] meta_count_pre_pop;
-  logic [2:0] meta_freed_cand[5];
-  (* keep = "true" *) logic [4:0][MetaPtrBits-1:0] meta_head_cand;
-  (* keep = "true" *) logic [4:0][MetaBankBits-1:0] meta_even_cand;
-  (* keep = "true" *) logic [4:0][MetaCountBits-1:0] meta_count_cand;
-
-  assign meta_push_eff      = i_push_valid;
-  assign meta_count_pre_pop = meta_count_q + MetaCountBits'(meta_push_eff);
-  assign meta_freed_cand[0] = 3'd0;
-  assign meta_freed_cand[1] = 3'(o_view_last[0]);
-  assign meta_freed_cand[2] = 3'(o_view_last[0]) + 3'(o_view_last[1]);
-  assign meta_freed_cand[3] = 3'(o_view_last[0]) + 3'(o_view_last[1]) + 3'(o_view_last[2]);
-  assign meta_freed_cand[4] = 3'(o_view_last[0]) + 3'(o_view_last[1]) +
-                              3'(o_view_last[2]) + 3'(o_view_last[3]);
-  for (genvar p = 0; p < 5; p++) begin : gen_meta_cand
-    logic [MetaPtrBits-1:0] h_next_p;
-    logic [MetaPtrBits-1:0] h_plus1_p;
-    assign h_next_p           = meta_head_q + MetaPtrBits'(meta_freed_cand[p]);
-    assign h_plus1_p          = h_next_p + MetaPtrBits'(1);
-    assign meta_head_cand[p]  = h_next_p;
-    assign meta_even_cand[p]  = h_plus1_p[MetaPtrBits-1:1];
-    assign meta_count_cand[p] = meta_count_pre_pop - MetaCountBits'(meta_freed_cand[p]);
-  end
-
+  logic [3:0] ring_last_valid;
+  logic [2:0] ring_meta_freed_cand[5];
+  logic [2:0] ring_meta_freed;
+  logic push_meta_freed;
   logic [2:0] meta_freed;
   logic [MetaPtrBits-1:0] meta_head_next;
+  logic [MetaPtrBits-1:0] meta_head_plus1;
   logic [MetaBankBits-1:0] meta_head_even_idx_next;
   logic [MetaPtrBits-1:0] meta_tail_next;
   logic [MetaCountBits-1:0] meta_count_next;
-  assign meta_tail_next = meta_tail_q + MetaPtrBits'(meta_push_eff);
+
+  assign meta_push_eff = i_push_valid;
+  for (genvar k = 0; k < 4; k++) begin : gen_ring_last_valid
+    assign ring_last_valid[k] = count_ge_q[k] && ring_view[k][PARCEL_WIDTH];
+  end
+
+  assign ring_meta_freed_cand[0] = 3'd0;
+  assign ring_meta_freed_cand[1] = 3'(ring_last_valid[0]);
+  assign ring_meta_freed_cand[2] = 3'(ring_last_valid[0]) + 3'(ring_last_valid[1]);
+  assign ring_meta_freed_cand[3] = 3'(ring_last_valid[0]) + 3'(ring_last_valid[1]) +
+                                   3'(ring_last_valid[2]);
+  assign ring_meta_freed_cand[4] = 3'(ring_last_valid[0]) + 3'(ring_last_valid[1]) +
+                                   3'(ring_last_valid[2]) + 3'(ring_last_valid[3]);
 
   always_comb begin
     unique case (pop_cnt_eff)
-      3'd0: begin
-        meta_freed              = meta_freed_cand[0];
-        meta_head_next          = meta_head_cand[0];
-        meta_head_even_idx_next = meta_even_cand[0];
-        meta_count_next         = meta_count_cand[0];
-      end
-      3'd1: begin
-        meta_freed              = meta_freed_cand[1];
-        meta_head_next          = meta_head_cand[1];
-        meta_head_even_idx_next = meta_even_cand[1];
-        meta_count_next         = meta_count_cand[1];
-      end
-      3'd2: begin
-        meta_freed              = meta_freed_cand[2];
-        meta_head_next          = meta_head_cand[2];
-        meta_head_even_idx_next = meta_even_cand[2];
-        meta_count_next         = meta_count_cand[2];
-      end
-      3'd3: begin
-        meta_freed              = meta_freed_cand[3];
-        meta_head_next          = meta_head_cand[3];
-        meta_head_even_idx_next = meta_even_cand[3];
-        meta_count_next         = meta_count_cand[3];
-      end
-      default: begin
-        meta_freed              = meta_freed_cand[4];
-        meta_head_next          = meta_head_cand[4];
-        meta_head_even_idx_next = meta_even_cand[4];
-        meta_count_next         = meta_count_cand[4];
-      end
+      3'd0:    ring_meta_freed = ring_meta_freed_cand[0];
+      3'd1:    ring_meta_freed = ring_meta_freed_cand[1];
+      3'd2:    ring_meta_freed = ring_meta_freed_cand[2];
+      3'd3:    ring_meta_freed = ring_meta_freed_cand[3];
+      default: ring_meta_freed = ring_meta_freed_cand[4];
     endcase
   end
+
+  assign push_meta_freed = i_push_valid && !count_ge_q[3] && (low_avail_sum == pop_cnt_eff);
+  assign meta_freed      = ring_meta_freed + 3'(push_meta_freed);
+  assign meta_head_next  = meta_head_q + MetaPtrBits'(meta_freed);
+  assign meta_head_plus1 = meta_head_next + MetaPtrBits'(1);
+  assign meta_head_even_idx_next = meta_head_plus1[MetaPtrBits-1:1];
+  assign meta_tail_next  = meta_tail_q + MetaPtrBits'(meta_push_eff);
+  assign meta_count_next = meta_count_q + MetaCountBits'(i_push_valid && !push_meta_freed) -
+                           MetaCountBits'(ring_meta_freed);
 
   // Keep meta_freed off stop_fetch_q by using pre-pop metadata occupancy while
   // keeping exact post-pop parcel occupancy (count_next >= STOP_PARCEL_THRESH)
@@ -288,7 +266,7 @@ module fetch_parcel_queue #(
                             MetaCountBits'(STOP_META_THRESH));
 
   // Per-bank write controls (at most one write per bank per cycle since push_count <= 4).
-  logic [3:0] bank_we;
+  (* keep = "true", max_fanout = 64 *) logic [3:0] bank_we;
   logic [EntryBits-1:0] bank_wdata[4];
   for (genvar b = 0; b < 4; b++) begin : gen_bank_wr
     logic [1:0] wr_off;

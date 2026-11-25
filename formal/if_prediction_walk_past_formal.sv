@@ -448,6 +448,11 @@ module fetch_btb_2w #(
     output logic                      o_target_is_cached,
     output logic                      o_w0_hit,
     output logic                      o_w1_hit,
+    output logic                      o_w0_taken,
+    output logic                      o_w0_link_inc,
+    output logic                      o_w1_link_inc,
+    output logic                      o_w0_link_hw,
+    output logic                      o_w1_link_hw,
     input  logic                      i_update,
     input  logic [          XLEN-1:0] i_update_pc,
     input  logic [          XLEN-1:0] i_update_target,
@@ -485,6 +490,11 @@ module fetch_btb_2w #(
   assign o_target_is_cached    = eff_cached;
   assign o_w0_hit              = f_w0;
   assign o_w1_hit              = f_w1;
+  assign o_w0_taken            = o_taken && !f_pos[1];
+  assign o_w0_link_inc         = f_pos[0] || !f_comp;
+  assign o_w1_link_inc         = f_pos[0] || !f_comp;
+  assign o_w0_link_hw          = f_pos[0] ^ f_comp;
+  assign o_w1_link_hw          = f_pos[0] ^ f_comp;
 endmodule : fetch_btb_2w
 
 // verilog_lint: waive module-filename

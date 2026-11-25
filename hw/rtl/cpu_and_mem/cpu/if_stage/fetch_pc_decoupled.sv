@@ -180,14 +180,32 @@ module fetch_pc_decoupled #(
   assign arm1_dir  = calc_even_dir(i_trap_target);
   assign arm2_dir  = calc_even_dir(i_fence_i_target);
   assign arm3_dir  = calc_even_dir(i_branch_target);
-  assign arm4_dir  = calc_even_dir(i_pd_redirect_target);
   assign arm5_dir  = calc_even_dir(i_f1_resteer_target);
   // seq_next_pc adds 8 bytes (bit 3 += 1, bit 2 unchanged).
   assign arm13_dir = pc_even_dir_idx_q + EvenDirBits'(1);
 
-  // Resolve every non-BTB arm (redirects, F1 resteer, spanning target,
-  // collapsed-lead target, and sequential next window) in parallel with the
-  // live F0 BTB lookup so only one 2:1 mux sits after i_btb_target.
+  // Two-level carry-lookahead increment for PD's late redirect target so the
+  // even-bank index never ripples through four serial LUT2 stages.
+  generate
+    if (EvenDirBits > 5) begin : gen_arm4_cla
+      (* keep = "true" *) logic arm4_c5;
+      assign arm4_c5 = &i_pd_redirect_target[7:2];
+      assign arm4_dir[0] = i_pd_redirect_target[3] ^ i_pd_redirect_target[2];
+      assign arm4_dir[1] = i_pd_redirect_target[4] ^ (&i_pd_redirect_target[3:2]);
+      assign arm4_dir[2] = i_pd_redirect_target[5] ^ (&i_pd_redirect_target[4:2]);
+      assign arm4_dir[3] = i_pd_redirect_target[6] ^ (&i_pd_redirect_target[5:2]);
+      assign arm4_dir[4] = i_pd_redirect_target[7] ^ (&i_pd_redirect_target[6:2]);
+      assign arm4_dir[EvenDirBits-1:5] =
+          i_pd_redirect_target[BIM_BITS:8] + (EvenDirBits - 5)'(arm4_c5);
+    end else begin : gen_arm4_plain
+      assign arm4_dir = calc_even_dir(i_pd_redirect_target);
+    end
+  endgenerate
+
+  // Resolve early arms (traps, fence, EX branch, F1 resteer, spanning target,
+  // collapsed-lead target, and sequential next window) in parallel with both
+  // late targets (PD redirect and live F0 BTB) so only one 3:1 LUT5 sits
+  // behind i_pd_redirect_target and i_btb_target.
   logic [XLEN-1:0] early_next_pc_comb;
   logic [EvenDirBits-1:0] early_even_dir_comb;
   always_comb begin
@@ -200,9 +218,6 @@ module fetch_pc_decoupled #(
     end else if (i_branch_taken) begin
       early_next_pc_comb  = i_branch_target;
       early_even_dir_comb = arm3_dir;
-    end else if (i_pd_redirect) begin
-      early_next_pc_comb  = i_pd_redirect_target;
-      early_even_dir_comb = arm4_dir;
     end else if (i_f1_resteer) begin
       early_next_pc_comb  = i_f1_resteer_target;
       early_even_dir_comb = arm5_dir;
@@ -223,14 +238,18 @@ module fetch_pc_decoupled #(
   assign early_next_pc  = early_next_pc_comb;
   assign early_even_dir = early_even_dir_comb;
 
+  logic use_pd_redir;
   logic use_f0_btb;
-  assign use_f0_btb = !i_any_redirect && !i_f1_resteer && !i_f1_collapsed_accept &&
-                      !i_span_btb_fire && i_btb_taken;
+  assign use_pd_redir = !trap_or_mret && !i_fence_i_flush && !i_branch_taken && i_pd_redirect;
+  assign use_f0_btb   = !i_any_redirect && !i_f1_resteer && !i_f1_collapsed_accept &&
+                        !i_span_btb_fire && i_btb_taken;
 
   logic [XLEN-1:0] next_pc_load;
   logic [EvenDirBits-1:0] next_even_dir_idx;
-  assign next_pc_load      = use_f0_btb ? i_btb_target : early_next_pc;
-  assign next_even_dir_idx = use_f0_btb ? i_btb_even_dir_idx : early_even_dir;
+  assign next_pc_load = use_pd_redir ? i_pd_redirect_target :
+                        use_f0_btb   ? i_btb_target : early_next_pc;
+  assign next_even_dir_idx = use_pd_redir ? arm4_dir :
+                             use_f0_btb   ? i_btb_even_dir_idx : early_even_dir;
 
   assign next_pc = pc_update_en ? next_pc_load : pc_q;
 

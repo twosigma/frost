@@ -71,6 +71,11 @@ module fetch_btb_2w #(
     output logic                o_target_is_cached,
     output logic                o_w0_hit,
     output logic                o_w1_hit,
+    output logic                o_w0_taken,
+    output logic                o_w0_link_inc,
+    output logic                o_w1_link_inc,
+    output logic                o_w0_link_hw,
+    output logic                o_w1_link_hw,
 
     // Selected training update (at most one per cycle)
     input logic            i_update,
@@ -326,15 +331,32 @@ module fetch_btb_2w #(
         i_ras_even_dir_idx : bank_payload_lookup[b][4+:EvenDirBits];
   end
 
-  // Fold valid, upper-tag match, direction counter bit, and same-tier check
-  // into one 6-input LUT per bank so W0/W1 resolution stays shallow.
-  logic [1:0] bank_raw_taken;
-  (* keep = "true" *) logic [1:0] bank_taken_ok;
+  // Pre-combine valid, counter direction, tier check, W0 halfword eligibility,
+  // and span qualification in parallel with the upper-tag reduction tree so
+  // each bank's final taken/steer decision folds with the 3-bit upper-tag
+  // result into one 4-input LUT.
+  (* keep = "true" *) logic [1:0] bank_meta_ok;
+  (* keep = "true" *) logic [1:0] bank_meta_w0_raw_ok;
+  (* keep = "true" *) logic [1:0] bank_meta_w0_ok;
+  (* keep = "true" *) logic [1:0] bank_meta_w1_steer_ok;
+  logic [1:0] bank_w0_raw_taken;
+  (* keep = "true" *) logic [1:0] bank_w0_taken;
+  logic [1:0] bank_w1_taken;
+  logic [1:0] bank_w1_steer;
   for (genvar b = 0; b < 2; b++) begin : gen_bank_taken
-    assign bank_raw_taken[b] = bank_valid_lookup[b] && (&bank_upper_eq_l2[b]) &&
-        bank_counter_lookup[b][1];
-    assign bank_taken_ok[b] = bank_valid_lookup[b] && (&bank_upper_eq_l2[b]) &&
-        bank_counter_lookup[b][1] && bank_same_tier[b];
+    assign bank_meta_ok[b] =
+        bank_valid_lookup[b] && bank_counter_lookup[b][1] && bank_same_tier[b];
+    assign bank_meta_w0_raw_ok[b] =
+        bank_valid_lookup[b] && bank_counter_lookup[b][1] && bank_w0_elig[b];
+    assign bank_meta_w0_ok[b] =
+        bank_valid_lookup[b] && bank_counter_lookup[b][1] && bank_same_tier[b] && bank_w0_elig[b];
+    assign bank_meta_w1_steer_ok[b] =
+        bank_valid_lookup[b] && bank_counter_lookup[b][1] && bank_same_tier[b] && !bank_is_span[b];
+
+    assign bank_w0_raw_taken[b] = (&bank_upper_eq_l2[b]) && bank_meta_w0_raw_ok[b];
+    assign bank_w0_taken[b]     = (&bank_upper_eq_l2[b]) && bank_meta_w0_ok[b];
+    assign bank_w1_taken[b]     = (&bank_upper_eq_l2[b]) && bank_meta_ok[b];
+    assign bank_w1_steer[b]     = (&bank_upper_eq_l2[b]) && bank_meta_w1_steer_ok[b];
   end
 
   logic w0_is_odd;
@@ -347,14 +369,18 @@ module fetch_btb_2w #(
   logic w0_hit;
   logic w1_hit;
   logic w0_raw_taken;
-  logic w0_taken;
+  (* keep = "true", max_fanout = 24 *) logic w0_taken;
   logic w1_taken_cand;
   logic w1_steer_cand;
   logic w1_taken;
   logic w0_hw;
   logic w1_hw;
-  assign w0_hw = w0_is_odd ? bank_hw_lookup[1] : bank_hw_lookup[0];
-  assign w1_hw = w0_is_odd ? bank_hw_lookup[0] : bank_hw_lookup[1];
+  logic w0_comp;
+  logic w1_comp;
+  assign w0_hw   = w0_is_odd ? bank_hw_lookup[1] : bank_hw_lookup[0];
+  assign w1_hw   = w0_is_odd ? bank_hw_lookup[0] : bank_hw_lookup[1];
+  assign w0_comp = w0_is_odd ? bank_is_comp[1] : bank_is_comp[0];
+  assign w1_comp = w0_is_odd ? bank_is_comp[0] : bank_is_comp[1];
 
   assign w0_hit = (w0_is_odd ? (bank_valid_lookup[1] && (&bank_upper_eq_l2[1])) :
                                (bank_valid_lookup[0] && (&bank_upper_eq_l2[0]))) &&
@@ -363,24 +389,26 @@ module fetch_btb_2w #(
                                (bank_valid_lookup[1] && (&bank_upper_eq_l2[1]))) &&
                   !w1_wraps_block;
 
-  assign w0_raw_taken = w0_is_odd ?
-      (bank_raw_taken[1] && bank_w0_elig[1]) : (bank_raw_taken[0] && bank_w0_elig[0]);
-  assign w0_taken = w0_is_odd ?
-      (bank_taken_ok[1] && bank_w0_elig[1]) : (bank_taken_ok[0] && bank_w0_elig[0]);
-  assign w1_taken_cand = (w0_is_odd ? bank_taken_ok[0] : bank_taken_ok[1]) && !w1_wraps_block;
-  assign w1_steer_cand = (w0_is_odd ? (bank_taken_ok[0] && !bank_is_span[0]) :
-                                      (bank_taken_ok[1] && !bank_is_span[1])) && !w1_wraps_block;
+  assign w0_raw_taken  = w0_is_odd ? bank_w0_raw_taken[1] : bank_w0_raw_taken[0];
+  assign w0_taken      = w0_is_odd ? bank_w0_taken[1] : bank_w0_taken[0];
+  assign w1_taken_cand = (w0_is_odd ? bank_w1_taken[0] : bank_w1_taken[1]) && !w1_wraps_block;
+  assign w1_steer_cand = (w0_is_odd ? bank_w1_steer[0] : bank_w1_steer[1]) && !w1_wraps_block;
   // W0 keeps strict priority even if W0 crosses tiers (w0_raw_taken blocks W1).
   assign w1_taken = !w0_raw_taken && w1_taken_cand;
 
   // When o_taken is high, W0 wins iff w0_taken is high and W1 wins otherwise,
-  // so bank selection reduces to (w0_is_odd == w0_taken) without waiting for
-  // w0_raw_taken or w1_taken.
+  // so bank selection reduces to (w0_is_odd ? bank_w0_taken[1] : !bank_w0_taken[0])
+  // directly from bank_w0_taken without waiting for w0_raw_taken or w1_taken.
   (* keep = "true", max_fanout = 24 *) logic sel_bank1;
-  assign sel_bank1 = (w0_is_odd == w0_taken);
+  assign sel_bank1 = w0_is_odd ? bank_w0_taken[1] : !bank_w0_taken[0];
 
   assign o_w0_hit              = w0_hit;
   assign o_w1_hit              = w1_hit;
+  assign o_w0_taken            = w0_taken;
+  assign o_w0_link_inc         = w0_hw || !w0_comp;
+  assign o_w1_link_inc         = w1_hw || !w1_comp;
+  assign o_w0_link_hw          = w0_hw ^ w0_comp;
+  assign o_w1_link_hw          = w1_hw ^ w1_comp;
   assign o_taken               = w0_taken || w1_taken;
   assign o_taken_steer         = w0_taken || (!w0_raw_taken && w1_steer_cand);
   assign o_taken_pos           = {!w0_taken, sel_bank1 ? bank_hw_lookup[1] : bank_hw_lookup[0]};
