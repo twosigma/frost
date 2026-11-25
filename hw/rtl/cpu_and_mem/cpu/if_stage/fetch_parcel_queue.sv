@@ -202,14 +202,6 @@ module fetch_parcel_queue #(
   logic [2:0] pop_cnt_eff;
   assign pop_cnt_eff = i_pop_count;
 
-  logic [3:0] pop_last_mask;
-  logic [2:0] meta_freed;
-  for (genvar k = 0; k < 4; k++) begin : gen_pop_last
-    assign pop_last_mask[k] = (3'(k) < pop_cnt_eff) && o_view_last[k];
-  end
-  assign meta_freed = 3'(pop_last_mask[0]) + 3'(pop_last_mask[1]) +
-                      3'(pop_last_mask[2]) + 3'(pop_last_mask[3]);
-
   logic [PtrBits-1:0] head_next;
   logic [PtrBits-1:0] tail_next;
   logic [CountBits-1:0] count_next;
@@ -217,16 +209,75 @@ module fetch_parcel_queue #(
   assign tail_next  = tail_q + PtrBits'(push_cnt_eff);
   assign count_next = avail_sum - CountBits'(pop_cnt_eff);
 
+  // Precompute metadata head, next-even index, and count for each possible pop
+  // count 0..4 in parallel with i_pop_count so only one mux level sits behind
+  // drain's pop count.
   logic meta_push_eff;
+  logic [MetaCountBits-1:0] meta_count_pre_pop;
+  logic [2:0] meta_freed_cand[5];
+  (* keep = "true" *) logic [4:0][MetaPtrBits-1:0] meta_head_cand;
+  (* keep = "true" *) logic [4:0][MetaBankBits-1:0] meta_even_cand;
+  (* keep = "true" *) logic [4:0][MetaCountBits-1:0] meta_count_cand;
+
+  assign meta_push_eff      = i_push_valid;
+  assign meta_count_pre_pop = meta_count_q + MetaCountBits'(meta_push_eff);
+  assign meta_freed_cand[0] = 3'd0;
+  assign meta_freed_cand[1] = 3'(o_view_last[0]);
+  assign meta_freed_cand[2] = 3'(o_view_last[0]) + 3'(o_view_last[1]);
+  assign meta_freed_cand[3] = 3'(o_view_last[0]) + 3'(o_view_last[1]) + 3'(o_view_last[2]);
+  assign meta_freed_cand[4] = 3'(o_view_last[0]) + 3'(o_view_last[1]) +
+                              3'(o_view_last[2]) + 3'(o_view_last[3]);
+  for (genvar p = 0; p < 5; p++) begin : gen_meta_cand
+    logic [MetaPtrBits-1:0] h_next_p;
+    logic [MetaPtrBits-1:0] h_plus1_p;
+    assign h_next_p           = meta_head_q + MetaPtrBits'(meta_freed_cand[p]);
+    assign h_plus1_p          = h_next_p + MetaPtrBits'(1);
+    assign meta_head_cand[p]  = h_next_p;
+    assign meta_even_cand[p]  = h_plus1_p[MetaPtrBits-1:1];
+    assign meta_count_cand[p] = meta_count_pre_pop - MetaCountBits'(meta_freed_cand[p]);
+  end
+
+  logic [2:0] meta_freed;
   logic [MetaPtrBits-1:0] meta_head_next;
-  logic [MetaPtrBits-1:0] meta_head_plus1_next;
+  logic [MetaBankBits-1:0] meta_head_even_idx_next;
   logic [MetaPtrBits-1:0] meta_tail_next;
   logic [MetaCountBits-1:0] meta_count_next;
-  assign meta_push_eff        = i_push_valid;
-  assign meta_head_next       = meta_head_q + MetaPtrBits'(meta_freed);
-  assign meta_head_plus1_next = meta_head_q + MetaPtrBits'(meta_freed) + MetaPtrBits'(1);
-  assign meta_tail_next       = meta_tail_q + MetaPtrBits'(meta_push_eff);
-  assign meta_count_next      = meta_count_q + MetaCountBits'(meta_push_eff) - MetaCountBits'(meta_freed);
+  assign meta_tail_next = meta_tail_q + MetaPtrBits'(meta_push_eff);
+
+  always_comb begin
+    unique case (pop_cnt_eff)
+      3'd0: begin
+        meta_freed              = meta_freed_cand[0];
+        meta_head_next          = meta_head_cand[0];
+        meta_head_even_idx_next = meta_even_cand[0];
+        meta_count_next         = meta_count_cand[0];
+      end
+      3'd1: begin
+        meta_freed              = meta_freed_cand[1];
+        meta_head_next          = meta_head_cand[1];
+        meta_head_even_idx_next = meta_even_cand[1];
+        meta_count_next         = meta_count_cand[1];
+      end
+      3'd2: begin
+        meta_freed              = meta_freed_cand[2];
+        meta_head_next          = meta_head_cand[2];
+        meta_head_even_idx_next = meta_even_cand[2];
+        meta_count_next         = meta_count_cand[2];
+      end
+      3'd3: begin
+        meta_freed              = meta_freed_cand[3];
+        meta_head_next          = meta_head_cand[3];
+        meta_head_even_idx_next = meta_even_cand[3];
+        meta_count_next         = meta_count_cand[3];
+      end
+      default: begin
+        meta_freed              = meta_freed_cand[4];
+        meta_head_next          = meta_head_cand[4];
+        meta_head_even_idx_next = meta_even_cand[4];
+        meta_count_next         = meta_count_cand[4];
+      end
+    endcase
+  end
 
   // Keep meta_freed off stop_fetch_q by using pre-pop metadata occupancy while
   // keeping exact post-pop parcel occupancy (count_next >= STOP_PARCEL_THRESH)
@@ -281,7 +332,7 @@ module fetch_parcel_queue #(
       meta_head_q          <= meta_head_next;
       meta_tail_q          <= meta_tail_next;
       meta_count_q         <= meta_count_next;
-      meta_head_even_idx_q <= meta_head_plus1_next[MetaPtrBits-1:1];
+      meta_head_even_idx_q <= meta_head_even_idx_next;
       stop_fetch_q         <= stop_fetch_next;
       for (int b = 0; b < 4; b++) begin
         rd_row_q[b] <= head_next[PtrBits-1:2] + ((2'(b) < head_next[1:0]) ? RowBits'(1) : '0);

@@ -225,6 +225,7 @@ module if_stage #(
     logic btb_is_call;
     logic btb_is_return;
     logic [XLEN-1:0] btb_link;
+    logic btb_link_cached;
     logic [3:0] dir_taken;
     logic [RasPtrBits-1:0] ras_ckpt_tos;
     logic [RasPtrBits:0] ras_ckpt_cnt;
@@ -238,6 +239,7 @@ module if_stage #(
     logic is_call;
     logic is_return;
     logic [XLEN-1:0] link;
+    logic link_cached;
   } span_btb_t;
 
   typedef struct packed {
@@ -325,9 +327,19 @@ module if_stage #(
   logic f0_ras_push;
   logic f0_ras_pop;
   logic [XLEN-1:0] f0_ras_link;
+  logic f0_ras_link_cached;
   logic f0_ras_push_q;
   logic f0_ras_pop_q;
   logic [XLEN-1:0] f0_ras_link_q;
+  logic f0_ras_link_cached_q;
+  logic [riscv_pkg::RasDepth-1:0] ras_cached_q;
+  logic [RasPtrBits-1:0] ras_cached_tos_q;
+  logic [RasPtrBits:0] ras_cached_cnt_q;
+  logic f1_ras_restore_comb;
+  logic f1_ras_restore_q;
+  logic [RasPtrBits-1:0] f1_ras_restore_tos_q;
+  logic [RasPtrBits:0] f1_ras_restore_cnt_q;
+  logic [XLEN-1:0] f1_ras_restore_top_q;
 
   logic [RasPtrBits-1:0] pd_ras_ckpt_tos_q;
   logic [RasPtrBits:0] pd_ras_ckpt_cnt_q;
@@ -380,12 +392,26 @@ module if_stage #(
   end
   assign btb_invalidate_active = i_btb_invalidate || (btb_invalidate_hold_q != '0);
 
-  // Evaluate tier membership and RAS even-bank index in parallel with the BTB
-  // tag lookup so no wide PMA compare or target adder sits behind BTB select.
+  // Mirror the RAS entries' cached-region membership in an 8-bit FF bank so
+  // F0 BTB tier checking reads a single LUT instead of traversing u_ras RAM
+  // and a 64-bit PMA range comparator.
+  logic ras_sh_not_empty;
+  logic ras_sh_pending_swap;
+  logic ras_sh_pending_push;
+  logic ras_sh_pending_pop;
+  logic [RasPtrBits-1:0] ras_sh_below_tos;
+  assign ras_sh_not_empty    = (ras_cached_cnt_q != '0);
+  assign ras_sh_pending_swap = f0_ras_push_q && f0_ras_pop_q && ras_sh_not_empty;
+  assign ras_sh_pending_push = f0_ras_push_q && !f0_ras_pop_q;
+  assign ras_sh_pending_pop  = f0_ras_pop_q && !f0_ras_push_q && ras_sh_not_empty;
+  assign ras_sh_below_tos    = ras_cached_tos_q - RasPtrBits'(1);
+
   logic ras_top_is_cached;
   logic pc_is_cached;
   logic [riscv_pkg::BpDirIdxBits-3:0] ras_even_dir_idx;
-  assign ras_top_is_cached = riscv_pkg::pma_cached_ok(ras_top);
+  assign ras_top_is_cached = (ras_sh_pending_push || ras_sh_pending_swap) ?
+      f0_ras_link_cached_q :
+      ras_sh_pending_pop ? ras_cached_q[ras_sh_below_tos] : ras_cached_q[ras_cached_tos_q];
   assign pc_is_cached      = riscv_pkg::pma_cached_ok(pc);
   assign ras_even_dir_idx  =
       ras_top[riscv_pkg::BpDirIdxBits:3] + (riscv_pkg::BpDirIdxBits - 2)'(ras_top[2]);
@@ -467,33 +493,52 @@ module if_stage #(
   logic f0_btb_steer_now;
   logic [2:0] f0_btb_link_hw_sum;
   logic [XLEN-1:0] f0_btb_link;
+  logic f0_btb_link_cached;
 
   assign f0_span_fault_veto = span_btb_pending_q.valid && !f1_cancel_span_raw && fetch_fault0_live;
   assign f0_span_btb_fire   = span_btb_pending_q.valid && !f1_cancel_span_raw && !fetch_fault0_live;
   assign f0_pred_en = !i_disable_branch_prediction && !fetch_fault0_live &&
-      !f1_resteer_nopred_q && !f0_span_btb_fire &&
+      !f1_resteer_nopred_q && !f1_ras_restore_q && !f0_span_btb_fire &&
       (i_fetch_translation_active || riscv_pkg::pma_fetch_ok(pc));
   assign f0_btb_valid     = f0_pred_en && btb_taken_raw;
   assign f0_btb_steer_now = f0_pred_en && btb_steer_raw;
 
-  // Precompute word+1..word+3 directly from pc in parallel with BTB lookup
-  // so f0_btb_link selects with a 4:1 LUT mux instead of a 62-bit carry chain
-  // behind btb_taken_pos and btb_compressed.
-  logic [XLEN-3:0] pc_word_p1;
-  logic [XLEN-3:0] pc_word_p2;
-  logic [XLEN-3:0] pc_word_p3;
+  // Precompute word+1..word+3 and their cached-region flags directly from pc
+  // in parallel with BTB lookup, keeping them anchored so synthesis selects
+  // with a 4:1 LUT mux rather than folding an adder behind btb_compressed.
+  (* keep = "true" *) logic [XLEN-3:0] pc_word_p1;
+  (* keep = "true" *) logic [XLEN-3:0] pc_word_p2;
+  (* keep = "true" *) logic [XLEN-3:0] pc_word_p3;
+  logic pc_p1_cached;
+  logic pc_p2_cached;
+  logic pc_p3_cached;
   logic [XLEN-3:0] f0_btb_link_word;
-  assign pc_word_p1 = pc[XLEN-1:2] + (XLEN - 2)'(1);
-  assign pc_word_p2 = pc[XLEN-1:2] + (XLEN - 2)'(2);
-  assign pc_word_p3 = pc[XLEN-1:2] + (XLEN - 2)'(3);
+  assign pc_word_p1   = pc[XLEN-1:2] + (XLEN - 2)'(1);
+  assign pc_word_p2   = pc[XLEN-1:2] + (XLEN - 2)'(2);
+  assign pc_word_p3   = pc[XLEN-1:2] + (XLEN - 2)'(3);
+  assign pc_p1_cached = riscv_pkg::pma_cached_ok({pc_word_p1, 2'b00});
+  assign pc_p2_cached = riscv_pkg::pma_cached_ok({pc_word_p2, 2'b00});
+  assign pc_p3_cached = riscv_pkg::pma_cached_ok({pc_word_p3, 2'b00});
 
   assign f0_btb_link_hw_sum = {1'b0, btb_taken_pos} + (btb_compressed ? 3'd1 : 3'd2);
   always_comb begin
     unique case (f0_btb_link_hw_sum[2:1])
-      2'd0:    f0_btb_link_word = pc[XLEN-1:2];
-      2'd1:    f0_btb_link_word = pc_word_p1;
-      2'd2:    f0_btb_link_word = pc_word_p2;
-      default: f0_btb_link_word = pc_word_p3;
+      2'd0: begin
+        f0_btb_link_word   = pc[XLEN-1:2];
+        f0_btb_link_cached = pc_is_cached;
+      end
+      2'd1: begin
+        f0_btb_link_word   = pc_word_p1;
+        f0_btb_link_cached = pc_p1_cached;
+      end
+      2'd2: begin
+        f0_btb_link_word   = pc_word_p2;
+        f0_btb_link_cached = pc_p2_cached;
+      end
+      default: begin
+        f0_btb_link_word   = pc_word_p3;
+        f0_btb_link_cached = pc_p3_cached;
+      end
     endcase
   end
   assign f0_btb_link = {f0_btb_link_word, f0_btb_link_hw_sum[0], 1'b0};
@@ -526,9 +571,12 @@ module if_stage #(
       .i_span_btb_fire(f1_collapsed_accept_raw ? f1_collapsed_span_fire_raw : f0_span_btb_fire),
       .i_span_btb_target(span_btb_pending_q.target),
       .i_span_btb_even_dir_idx(span_btb_pending_q.even_dir_idx),
-      .i_btb_taken(f1_collapsed_accept_raw ? f1_collapsed_btb_steer_raw : f0_btb_steer_now),
-      .i_btb_target(f1_collapsed_accept_raw ? f1_req_q.btb_target : f0_btb_eff_target),
-      .i_btb_even_dir_idx(f1_collapsed_accept_raw ? f1_req_q.btb_even_dir_idx : f0_btb_even_dir_idx),
+      .i_collapsed_btb_taken(f1_collapsed_btb_steer_raw),
+      .i_collapsed_btb_target(f1_req_q.btb_target),
+      .i_collapsed_btb_even_dir_idx(f1_req_q.btb_even_dir_idx),
+      .i_btb_taken(f0_btb_steer_now),
+      .i_btb_target(f0_btb_eff_target),
+      .i_btb_even_dir_idx(f0_btb_even_dir_idx),
       .o_pc(pc),
       .o_pc_tage_lookup(pc_tage_lookup),
       .o_pc_even_btb_idx(pc_even_btb_idx),
@@ -602,9 +650,33 @@ module if_stage #(
     else pd_ras_restore_done_q <= 1'b0;
   end
 
-  logic f1_ras_restore;
-  assign f1_ras_restore = !any_redirect && !i_from_ex_comb.ras_misprediction &&
+  // Register F1 RAS restores by one cycle so provider_q and F1 boundary/tag
+  // validation never drive return_address_stack's write-address/data RAM pins.
+  // Pending F0 RAS ops clear immediately on f1_ras_restore_comb, and F0 BTB
+  // prediction is held off while f1_ras_restore_q restores the stack.
+  assign f1_ras_restore_comb = !any_redirect && !i_from_ex_comb.ras_misprediction &&
       (f1_resteer || f1_span_tail_fault);
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      f1_ras_restore_q     <= 1'b0;
+      f1_ras_restore_tos_q <= '0;
+      f1_ras_restore_cnt_q <= '0;
+      f1_ras_restore_top_q <= '0;
+    end else begin
+      if (any_redirect || i_from_ex_comb.ras_misprediction) begin
+        f1_ras_restore_q <= 1'b0;
+      end else begin
+        f1_ras_restore_q <= f1_ras_restore_comb;
+      end
+      f1_ras_restore_tos_q <= f1_req_q.ras_ckpt_tos;
+      f1_ras_restore_cnt_q <= f1_req_q.ras_ckpt_cnt;
+      f1_ras_restore_top_q <= f1_req_q.ras_ckpt_top;
+    end
+  end
+
+  logic f1_ras_restore;
+  assign f1_ras_restore = !any_redirect && !i_from_ex_comb.ras_misprediction && f1_ras_restore_q;
 
   logic ras_restore;
   logic [RasPtrBits-1:0] ras_restore_tos;
@@ -633,9 +705,9 @@ module if_stage #(
       ras_restore_link = i_pd_redirect_ras_link;
     end else if (f1_ras_restore) begin
       ras_restore      = 1'b1;
-      ras_restore_tos  = f1_req_q.ras_ckpt_tos;
-      ras_restore_cnt  = f1_req_q.ras_ckpt_cnt;
-      ras_restore_top  = f1_req_q.ras_ckpt_top;
+      ras_restore_tos  = f1_ras_restore_tos_q;
+      ras_restore_cnt  = f1_ras_restore_cnt_q;
+      ras_restore_top  = f1_ras_restore_top_q;
       ras_restore_push = 1'b0;
       ras_restore_pop  = 1'b0;
       ras_restore_link = '0;
@@ -650,13 +722,13 @@ module if_stage #(
     end
   end
 
-  assign f0_ras_push = !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore &&
+  assign f0_ras_push = !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore_comb &&
       !fetch_fault0_live &&
       ((f0_launch && ((f0_btb_steer_now && btb_is_call) ||
                       (f0_span_btb_fire && span_btb_pending_q.is_call))) ||
        (f1_collapsed_btb_steer && f1_req_q.btb_is_call) ||
        (f1_collapsed_span_fire && span_btb_pending_q.is_call));
-  assign f0_ras_pop = !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore &&
+  assign f0_ras_pop = !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore_comb &&
       !fetch_fault0_live &&
       ((f0_launch && ((f0_btb_steer_now && btb_is_return) ||
                       (f0_span_btb_fire && span_btb_pending_q.is_return))) ||
@@ -664,21 +736,104 @@ module if_stage #(
        (f1_collapsed_span_fire && span_btb_pending_q.is_return));
   assign f0_ras_link = ((f0_launch && f0_span_btb_fire) || f1_collapsed_span_fire) ?
       span_btb_pending_q.link : (f1_collapsed_btb_steer ? f1_req_q.btb_link : f0_btb_link);
+  assign f0_ras_link_cached = ((f0_launch && f0_span_btb_fire) || f1_collapsed_span_fire) ?
+      span_btb_pending_q.link_cached :
+      (f1_collapsed_btb_steer ? f1_req_q.btb_link_cached : f0_btb_link_cached);
 
   // Register F0's speculative push/pop by one cycle to match return_address_stack's
   // pending-op contract: o_top/o_tos/o_valid_count reflect the prior cycle's push/pop
   // with zero-cycle bypass, stay free of this cycle's own op (giving exact pre-op
   // checkpoints and exact return targets), and avoid a combinational loop through o_top.
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || any_redirect || i_from_ex_comb.ras_misprediction ||
-        f1_ras_restore) begin
-      f0_ras_push_q <= 1'b0;
-      f0_ras_pop_q  <= 1'b0;
+    if (i_pipeline_ctrl.reset) begin
+      f0_ras_push_q        <= 1'b0;
+      f0_ras_pop_q         <= 1'b0;
+      f0_ras_link_q        <= '0;
+      f0_ras_link_cached_q <= 1'b0;
     end else begin
-      f0_ras_push_q <= f0_ras_push;
-      f0_ras_pop_q  <= f0_ras_pop;
+      if (any_redirect || i_from_ex_comb.ras_misprediction || f1_ras_restore_comb) begin
+        f0_ras_push_q <= 1'b0;
+        f0_ras_pop_q  <= 1'b0;
+      end else begin
+        f0_ras_push_q <= f0_ras_push;
+        f0_ras_pop_q  <= f0_ras_pop;
+      end
+      f0_ras_link_q        <= f0_ras_link;
+      f0_ras_link_cached_q <= f0_ras_link_cached;
     end
-    f0_ras_link_q <= f0_ras_link;
+  end
+
+  // Maintain the 8-bit cached-region shadow in lockstep with u_ras.
+  logic [RasPtrBits:0] ras_sh_cnt_after_push;
+  logic ras_sh_restore_swap_req;
+  logic ras_sh_do_restore_swap;
+  logic ras_sh_do_restore_push;
+  logic ras_sh_do_swap;
+  logic ras_sh_do_push;
+  logic [RasPtrBits-1:0] ras_sh_write_base;
+  logic [RasPtrBits-1:0] ras_sh_above_addr;
+  logic ras_sh_link_cached;
+  logic ras_sh_top_write;
+  logic ras_sh_above_write;
+  logic ras_sh_top_data;
+  logic [RasPtrBits-1:0] ras_sh_tos_next;
+  logic [RasPtrBits:0] ras_sh_cnt_next;
+
+  assign ras_sh_cnt_after_push = (ras_cached_cnt_q != (RasPtrBits + 1)'(riscv_pkg::RasDepth)) ?
+      (ras_cached_cnt_q + (RasPtrBits + 1)'(1)) : ras_cached_cnt_q;
+  assign ras_sh_restore_swap_req = ras_restore_pop && ras_restore_push;
+  assign ras_sh_do_restore_swap  = ras_restore && ras_sh_restore_swap_req && (ras_restore_cnt != '0);
+  assign ras_sh_do_restore_push  = ras_restore && ras_restore_push && !ras_sh_restore_swap_req;
+  assign ras_sh_do_swap          = !ras_restore && ras_sh_pending_swap;
+  assign ras_sh_do_push          = !ras_restore && ras_sh_pending_push;
+  assign ras_sh_write_base       = ras_restore ? ras_restore_tos : ras_cached_tos_q;
+  assign ras_sh_above_addr       = ras_sh_write_base + RasPtrBits'(1);
+  assign ras_sh_link_cached      = ras_restore ?
+      riscv_pkg::pma_cached_ok(ras_restore_link) : f0_ras_link_cached_q;
+  assign ras_sh_top_write        = ras_restore || ras_sh_do_swap;
+  assign ras_sh_above_write      = ras_sh_do_restore_push || ras_sh_do_push;
+  assign ras_sh_top_data         = (ras_sh_do_restore_swap || ras_sh_do_swap) ?
+      ras_sh_link_cached : riscv_pkg::pma_cached_ok(ras_restore_top);
+
+  always_comb begin
+    ras_sh_tos_next = ras_cached_tos_q;
+    ras_sh_cnt_next = ras_cached_cnt_q;
+    if (ras_sh_pending_push) begin
+      ras_sh_tos_next = ras_cached_tos_q + RasPtrBits'(1);
+      ras_sh_cnt_next = ras_sh_cnt_after_push;
+    end else if (ras_sh_pending_pop) begin
+      ras_sh_tos_next = ras_cached_tos_q - RasPtrBits'(1);
+      ras_sh_cnt_next = ras_cached_cnt_q - (RasPtrBits + 1)'(1);
+    end
+    if (ras_restore) begin
+      if (ras_sh_restore_swap_req) begin
+        ras_sh_tos_next = ras_restore_tos;
+        ras_sh_cnt_next = ras_restore_cnt;
+      end else if (ras_restore_pop && (ras_restore_cnt != '0)) begin
+        ras_sh_tos_next = ras_restore_tos - RasPtrBits'(1);
+        ras_sh_cnt_next = ras_restore_cnt - (RasPtrBits + 1)'(1);
+      end else if (ras_restore_push) begin
+        ras_sh_tos_next = ras_restore_tos + RasPtrBits'(1);
+        ras_sh_cnt_next = (ras_restore_cnt != (RasPtrBits + 1)'(riscv_pkg::RasDepth)) ?
+            (ras_restore_cnt + (RasPtrBits + 1)'(1)) : ras_restore_cnt;
+      end else begin
+        ras_sh_tos_next = ras_restore_tos;
+        ras_sh_cnt_next = ras_restore_cnt;
+      end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      ras_cached_q     <= '0;
+      ras_cached_tos_q <= '0;
+      ras_cached_cnt_q <= '0;
+    end else begin
+      ras_cached_tos_q <= ras_sh_tos_next;
+      ras_cached_cnt_q <= ras_sh_cnt_next;
+      if (ras_sh_top_write) ras_cached_q[ras_sh_write_base] <= ras_sh_top_data;
+      if (ras_sh_above_write) ras_cached_q[ras_sh_above_addr] <= ras_sh_link_cached;
+    end
   end
 
   // Drive i_push/i_pop directly from flops so PD redirects and flushes never
@@ -1224,10 +1379,11 @@ module if_stage #(
       f1_req_q.btb_is_call      <= btb_is_call;
       f1_req_q.btb_is_return    <= btb_is_return;
       f1_req_q.btb_link         <= f0_btb_link;
+      f1_req_q.btb_link_cached  <= f0_btb_link_cached;
       f1_req_q.dir_taken        <= dir_taken_f0;
-      f1_req_q.ras_ckpt_tos     <= ras_tos;
-      f1_req_q.ras_ckpt_cnt     <= ras_valid_count;
-      f1_req_q.ras_ckpt_top     <= ras_top;
+      f1_req_q.ras_ckpt_tos     <= f1_ras_restore_q ? f1_ras_restore_tos_q : ras_tos;
+      f1_req_q.ras_ckpt_cnt     <= f1_ras_restore_q ? f1_ras_restore_cnt_q : ras_valid_count;
+      f1_req_q.ras_ckpt_top     <= f1_ras_restore_q ? f1_ras_restore_top_q : ras_top;
 
       f1_pred_fresh_q           <= 1'b1;
       collapsed_armed_q         <= 1'b0;
@@ -1240,6 +1396,7 @@ module if_stage #(
         span_btb_pending_q.is_call      <= btb_is_call;
         span_btb_pending_q.is_return    <= btb_is_return;
         span_btb_pending_q.link         <= f0_btb_link;
+        span_btb_pending_q.link_cached  <= f0_btb_link_cached;
       end else begin
         span_btb_pending_q.valid <= 1'b0;
       end
@@ -1260,6 +1417,7 @@ module if_stage #(
         span_btb_pending_q.is_call      <= f1_req_q.btb_is_call;
         span_btb_pending_q.is_return    <= f1_req_q.btb_is_return;
         span_btb_pending_q.link         <= f1_req_q.btb_link;
+        span_btb_pending_q.link_cached  <= f1_req_q.btb_link_cached;
       end else begin
         span_btb_pending_q.valid <= 1'b0;
       end
@@ -1289,10 +1447,11 @@ module if_stage #(
         f1_req_q.btb_is_call      <= btb_is_call;
         f1_req_q.btb_is_return    <= btb_is_return;
         f1_req_q.btb_link         <= f0_btb_link;
+        f1_req_q.btb_link_cached  <= f0_btb_link_cached;
         f1_req_q.dir_taken        <= dir_taken_f0;
-        f1_req_q.ras_ckpt_tos     <= ras_tos;
-        f1_req_q.ras_ckpt_cnt     <= ras_valid_count;
-        f1_req_q.ras_ckpt_top     <= ras_top;
+        f1_req_q.ras_ckpt_tos     <= f1_ras_restore_q ? f1_ras_restore_tos_q : ras_tos;
+        f1_req_q.ras_ckpt_cnt     <= f1_ras_restore_q ? f1_ras_restore_cnt_q : ras_valid_count;
+        f1_req_q.ras_ckpt_top     <= f1_ras_restore_q ? f1_ras_restore_top_q : ras_top;
       end else if (!f1_req_q.valid && i_instr_valid && f1_pred_fresh_q) begin
         f1_pred_hold_q  <= f1_pred_live;
         f1_pred_fresh_q <= 1'b0;
@@ -1649,10 +1808,11 @@ module if_stage #(
   end
 
   // Backing BTB outputs (keep slot-2 by-size contract for PD target muxing;
-  // gate slot-2 hit on staying within slot 1's physical-address region).
+  // gate slot-2 hit on staying within slot 1's physical-address region by
+  // checking whether s1_pc + (2 or 4) carries out of bit PhysAddrBits-1,
+  // avoiding a 64-bit carry chain and upper-bit compare behind s2_pc).
   logic s2_same_region;
-  assign s2_same_region = (s2_pc[XLEN-1:riscv_pkg::PhysAddrBits] ==
-                           s1_pc[XLEN-1:riscv_pkg::PhysAddrBits]);
+  assign s2_same_region = !((&s1_pc[riscv_pkg::PhysAddrBits-1:2]) && (s1_pc[1] || !s1_comp));
 
   assign o_backing_hit[0]                  = s1_valid && !s1_fault && s1_p.backing_hit;
   assign o_backing_compressed[0]           = s1_p.backing_compressed;
@@ -1872,6 +2032,10 @@ module if_stage #(
                 (o_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits] ==
                  o_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]));
       end
+      if (ras_nonempty && !$isunknown({ras_top, ras_top_is_cached})) begin
+        p_if_ras_cached_shadow_exact :
+        assert (ras_top_is_cached == riscv_pkg::pma_cached_ok(ras_top));
+      end
     end
   end
 `endif
@@ -1990,25 +2154,26 @@ module if_stage #(
     p_fault_f0_vetoes_span_btb : assert (!fetch_fault0_live || !f0_span_btb_fire);
     p_fault_f0_clears_ras_op :
     assert (!fetch_fault0_live || (!f0_ras_push && !f0_ras_pop));
-    p_span_tail_fault_restores_ras :
-    assert (!f1_span_tail_fault || any_redirect || i_from_ex_comb.ras_misprediction ||
-            f1_ras_restore);
   end
 
   always_ff @(posedge i_clk) begin
     f_fault_past_valid <= 1'b1;
     f_prev_fault0_q <= !i_pipeline_ctrl.reset && fetch_fault0_live;
-    f_prev_span_tail_fault_q <= !i_pipeline_ctrl.reset && f1_span_tail_fault;
+    f_prev_span_tail_fault_q <= !i_pipeline_ctrl.reset && !any_redirect &&
+        !i_from_ex_comb.ras_misprediction && f1_span_tail_fault;
     if (f_fault_past_valid) begin
       p_prev_fault0_clears_ras_q :
       assert (!f_prev_fault0_q || (!f0_ras_push_q && !f0_ras_pop_q));
       p_prev_span_tail_fault_clears_ras_q :
       assert (!f_prev_span_tail_fault_q || (!f0_ras_push_q && !f0_ras_pop_q));
+      p_span_tail_fault_restores_ras :
+      assert (!f_prev_span_tail_fault_q || i_pipeline_ctrl.reset || any_redirect ||
+              i_from_ex_comb.ras_misprediction || f1_ras_restore);
       cover_span_fault_veto :
       cover (!i_pipeline_ctrl.reset && f0_span_fault_veto && !f0_span_btb_fire &&
              !f0_ras_push && !f0_ras_pop);
       cover_span_tail_fault_restore :
-      cover (!i_pipeline_ctrl.reset && f1_span_tail_fault && f1_ras_restore);
+      cover (!i_pipeline_ctrl.reset && f_prev_span_tail_fault_q && f1_ras_restore);
       cover_slot1_hi_fault_clears_taken :
       cover (!i_pipeline_ctrl.reset && s1_valid && o_from_if_to_pd.fetch_fault &&
              o_from_if_to_pd.fetch_fault_hi && !o_from_if_to_pd.btb_predicted_taken);

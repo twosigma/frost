@@ -328,7 +328,7 @@ module fetch_btb_2w #(
 
   // Fold valid, upper-tag match, direction counter bit, and same-tier check
   // into one 6-input LUT per bank so W0/W1 resolution stays shallow.
-  (* keep = "true" *) logic [1:0] bank_raw_taken;
+  logic [1:0] bank_raw_taken;
   (* keep = "true" *) logic [1:0] bank_taken_ok;
   for (genvar b = 0; b < 2; b++) begin : gen_bank_taken
     assign bank_raw_taken[b] = bank_valid_lookup[b] && (&bank_upper_eq_l2[b]) &&
@@ -373,16 +373,17 @@ module fetch_btb_2w #(
   // W0 keeps strict priority even if W0 crosses tiers (w0_raw_taken blocks W1).
   assign w1_taken = !w0_raw_taken && w1_taken_cand;
 
-  logic sel_bank1;
-  // When o_taken is high, w0_taken and w1_taken are mutually exclusive, so
-  // sel_bank1 simplifies to w0_is_odd ^ w1_taken.
-  assign sel_bank1 = w0_is_odd ^ w1_taken;
+  // When o_taken is high, W0 wins iff w0_taken is high and W1 wins otherwise,
+  // so bank selection reduces to (w0_is_odd == w0_taken) without waiting for
+  // w0_raw_taken or w1_taken.
+  (* keep = "true", max_fanout = 24 *) logic sel_bank1;
+  assign sel_bank1 = (w0_is_odd == w0_taken);
 
   assign o_w0_hit              = w0_hit;
   assign o_w1_hit              = w1_hit;
   assign o_taken               = w0_taken || w1_taken;
   assign o_taken_steer         = w0_taken || (!w0_raw_taken && w1_steer_cand);
-  assign o_taken_pos           = w1_taken ? {1'b1, w1_hw} : {1'b0, w0_hw};
+  assign o_taken_pos           = {!w0_taken, sel_bank1 ? bank_hw_lookup[1] : bank_hw_lookup[0]};
   assign o_target              = sel_bank1 ? bank_eff_target[1] : bank_eff_target[0];
   assign o_target_even_dir_idx = sel_bank1 ? bank_eff_even_dir[1] : bank_eff_even_dir[0];
   assign o_target_is_cached    = sel_bank1 ? bank_eff_cached[1] : bank_eff_cached[0];

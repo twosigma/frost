@@ -68,10 +68,13 @@ module fetch_pc_decoupled #(
     input logic i_f0_launch,
     input logic i_f1_collapsed_accept,
 
-    // F0 predicted-taken arms (with precomputed even direction-bank indices)
+    // F0 and collapsed-lead predicted-taken arms (with precomputed even dir indices)
     input logic                i_span_btb_fire,
     input logic [    XLEN-1:0] i_span_btb_target,
     input logic [BIM_BITS-3:0] i_span_btb_even_dir_idx,
+    input logic                i_collapsed_btb_taken,
+    input logic [    XLEN-1:0] i_collapsed_btb_target,
+    input logic [BIM_BITS-3:0] i_collapsed_btb_even_dir_idx,
     input logic                i_btb_taken,
     input logic [    XLEN-1:0] i_btb_target,
     input logic [BIM_BITS-3:0] i_btb_even_dir_idx,
@@ -139,7 +142,7 @@ module fetch_pc_decoupled #(
     npc_cond[5]  = f1_resteer_qual;
     npc_cond[6]  = !f0_step_qual;
     npc_cond[7]  = f0_step_qual && i_span_btb_fire;
-    npc_cond[8]  = f0_step_qual && i_btb_taken;
+    npc_cond[8]  = f0_step_qual && (i_f1_collapsed_accept ? i_collapsed_btb_taken : i_btb_taken);
     npc_cond[13] = 1'b1;
 
     for (int unsigned k = 0; k < NPcArms; k++) npc_val[k] = pc_q;
@@ -151,7 +154,7 @@ module fetch_pc_decoupled #(
     npc_val[5]  = i_f1_resteer_target;
     npc_val[6]  = pc_q;
     npc_val[7]  = i_span_btb_target;
-    npc_val[8]  = i_btb_target;
+    npc_val[8]  = i_f1_collapsed_accept ? i_collapsed_btb_target : i_btb_target;
     npc_val[13] = seq_next_pc;
 
     npc_sel = '0;
@@ -182,47 +185,52 @@ module fetch_pc_decoupled #(
   // seq_next_pc adds 8 bytes (bit 3 += 1, bit 2 unchanged).
   assign arm13_dir = pc_even_dir_idx_q + EvenDirBits'(1);
 
-  // Stage A: redirect-free F0/F1 load candidate (used only when pc_update_en
-  // is high and arms 1..4 are inactive, so pc_q hold stays on the flop CE).
-  logic [XLEN-1:0] f0_load_pc;
-  logic [EvenDirBits-1:0] f0_load_dir;
+  // Resolve every non-BTB arm (redirects, F1 resteer, spanning target,
+  // collapsed-lead target, and sequential next window) in parallel with the
+  // live F0 BTB lookup so only one 2:1 mux sits after i_btb_target.
+  logic [XLEN-1:0] early_next_pc_comb;
+  logic [EvenDirBits-1:0] early_even_dir_comb;
   always_comb begin
-    if (i_f1_resteer) begin
-      f0_load_pc  = i_f1_resteer_target;
-      f0_load_dir = arm5_dir;
+    if (trap_or_mret) begin
+      early_next_pc_comb  = i_trap_target;
+      early_even_dir_comb = arm1_dir;
+    end else if (i_fence_i_flush) begin
+      early_next_pc_comb  = i_fence_i_target;
+      early_even_dir_comb = arm2_dir;
+    end else if (i_branch_taken) begin
+      early_next_pc_comb  = i_branch_target;
+      early_even_dir_comb = arm3_dir;
+    end else if (i_pd_redirect) begin
+      early_next_pc_comb  = i_pd_redirect_target;
+      early_even_dir_comb = arm4_dir;
+    end else if (i_f1_resteer) begin
+      early_next_pc_comb  = i_f1_resteer_target;
+      early_even_dir_comb = arm5_dir;
     end else if (i_span_btb_fire) begin
-      f0_load_pc  = i_span_btb_target;
-      f0_load_dir = i_span_btb_even_dir_idx;
-    end else if (i_btb_taken) begin
-      f0_load_pc  = i_btb_target;
-      f0_load_dir = i_btb_even_dir_idx;
+      early_next_pc_comb  = i_span_btb_target;
+      early_even_dir_comb = i_span_btb_even_dir_idx;
+    end else if (i_f1_collapsed_accept && i_collapsed_btb_taken) begin
+      early_next_pc_comb  = i_collapsed_btb_target;
+      early_even_dir_comb = i_collapsed_btb_even_dir_idx;
     end else begin
-      f0_load_pc  = seq_next_pc;
-      f0_load_dir = arm13_dir;
+      early_next_pc_comb  = seq_next_pc;
+      early_even_dir_comb = arm13_dir;
     end
   end
 
-  // Stage B: late redirect override (arms 1..4 win over Stage A in two LUTs).
+  (* keep = "true" *) logic [XLEN-1:0] early_next_pc;
+  (* keep = "true" *) logic [EvenDirBits-1:0] early_even_dir;
+  assign early_next_pc  = early_next_pc_comb;
+  assign early_even_dir = early_even_dir_comb;
+
+  logic use_f0_btb;
+  assign use_f0_btb = !i_any_redirect && !i_f1_resteer && !i_f1_collapsed_accept &&
+                      !i_span_btb_fire && i_btb_taken;
+
   logic [XLEN-1:0] next_pc_load;
   logic [EvenDirBits-1:0] next_even_dir_idx;
-  always_comb begin
-    if (trap_or_mret) begin
-      next_pc_load      = i_trap_target;
-      next_even_dir_idx = arm1_dir;
-    end else if (i_fence_i_flush) begin
-      next_pc_load      = i_fence_i_target;
-      next_even_dir_idx = arm2_dir;
-    end else if (i_branch_taken) begin
-      next_pc_load      = i_branch_target;
-      next_even_dir_idx = arm3_dir;
-    end else if (i_pd_redirect) begin
-      next_pc_load      = i_pd_redirect_target;
-      next_even_dir_idx = arm4_dir;
-    end else begin
-      next_pc_load      = f0_load_pc;
-      next_even_dir_idx = f0_load_dir;
-    end
-  end
+  assign next_pc_load      = use_f0_btb ? i_btb_target : early_next_pc;
+  assign next_even_dir_idx = use_f0_btb ? i_btb_even_dir_idx : early_even_dir;
 
   assign next_pc = pc_update_en ? next_pc_load : pc_q;
 
