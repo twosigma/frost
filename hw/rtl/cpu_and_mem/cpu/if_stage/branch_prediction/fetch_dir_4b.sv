@@ -62,7 +62,7 @@ module fetch_dir_4b #(
   assign odd_row = i_pc[BIM_BITS:3];
 
   logic [1:0] bank_rd_pred[4];
-  logic [1:0] bank_rd_upd[4];
+  logic [1:0] bank_rd_upd [4];
 
   for (genvar b = 0; b < 4; b++) begin : gen_bank
     logic [BankAddrBits-1:0] pred_row;

@@ -135,28 +135,28 @@ module fetch_pc_decoupled #(
   logic [XLEN-1:0] next_pc;
 
   always_comb begin
-    npc_cond     = '0;
-    npc_cond[1]  = trap_or_mret;
-    npc_cond[2]  = i_fence_i_flush;
-    npc_cond[3]  = i_branch_taken;
-    npc_cond[4]  = i_pd_redirect;
-    npc_cond[5]  = f1_resteer_qual;
-    npc_cond[6]  = !f0_step_qual;
-    npc_cond[7]  = f0_step_qual && i_span_btb_fire;
+    npc_cond = '0;
+    npc_cond[1] = trap_or_mret;
+    npc_cond[2] = i_fence_i_flush;
+    npc_cond[3] = i_branch_taken;
+    npc_cond[4] = i_pd_redirect;
+    npc_cond[5] = f1_resteer_qual;
+    npc_cond[6] = !f0_step_qual;
+    npc_cond[7] = f0_step_qual && i_span_btb_fire;
     npc_cond[8]  = f0_step_qual &&
         (i_f1_collapsed_accept ? i_collapsed_btb_taken : (i_btb_en && i_btb_taken));
     npc_cond[13] = 1'b1;
 
     for (int unsigned k = 0; k < NPcArms; k++) npc_val[k] = pc_q;
-    npc_val[0]  = i_boot_addr;
-    npc_val[1]  = i_trap_target;
-    npc_val[2]  = i_fence_i_target;
-    npc_val[3]  = i_branch_target;
-    npc_val[4]  = i_pd_redirect_target;
-    npc_val[5]  = i_f1_resteer_target;
-    npc_val[6]  = pc_q;
-    npc_val[7]  = i_span_btb_target;
-    npc_val[8]  = i_f1_collapsed_accept ? i_collapsed_btb_target : i_btb_target;
+    npc_val[0] = i_boot_addr;
+    npc_val[1] = i_trap_target;
+    npc_val[2] = i_fence_i_target;
+    npc_val[3] = i_branch_target;
+    npc_val[4] = i_pd_redirect_target;
+    npc_val[5] = i_f1_resteer_target;
+    npc_val[6] = pc_q;
+    npc_val[7] = i_span_btb_target;
+    npc_val[8] = i_f1_collapsed_accept ? i_collapsed_btb_target : i_btb_target;
     npc_val[13] = seq_next_pc;
 
     npc_sel = '0;
@@ -240,13 +240,13 @@ module fetch_pc_decoupled #(
   assign early_next_pc  = early_next_pc_comb;
   assign early_even_dir = early_even_dir_comb;
 
-  (* keep = "true" *) logic f0_btb_qual;
-  (* max_fanout = 24 *) logic use_pd_redir;
-  (* max_fanout = 24 *) logic use_f0_btb;
+  (* keep = "true" *)logic f0_btb_qual;
+  (* max_fanout = 24 *)logic use_pd_redir;
+  (* max_fanout = 24 *)logic use_f0_btb;
   assign f0_btb_qual  = !i_any_redirect && !i_f1_resteer && !i_f1_collapsed_accept &&
                         !i_span_btb_fire && i_btb_en;
   assign use_pd_redir = !trap_or_mret && !i_fence_i_flush && !i_branch_taken && i_pd_redirect;
-  assign use_f0_btb   = f0_btb_qual && i_btb_taken;
+  assign use_f0_btb = f0_btb_qual && i_btb_taken;
 
   logic [XLEN-1:0] next_pc_load;
   logic [EvenDirBits-1:0] next_even_dir_idx;
@@ -262,8 +262,7 @@ module fetch_pc_decoupled #(
     if (EvenBtbBits <= EvenDirBits) begin : gen_btb_slice
       assign next_even_btb_idx = next_even_dir_idx[EvenBtbBits-1:0];
     end else begin : gen_btb_calc
-      assign next_even_btb_idx =
-          next_pc_load[BTB_INDEX_BITS+1:3] + EvenBtbBits'(next_pc_load[2]);
+      assign next_even_btb_idx = next_pc_load[BTB_INDEX_BITS+1:3] + EvenBtbBits'(next_pc_load[2]);
     end
   endgenerate
 
@@ -302,8 +301,7 @@ module fetch_pc_decoupled #(
   assign o_pc_even_dir_idx = pc_even_dir_idx_q;
   assign o_next_pc         = next_pc;
   assign o_pc_update_en    = pc_update_en;
-  assign o_f0_self_loop    = f0_step_qual &&
-                             (npc_sel[7] || npc_sel[8]) && (next_pc_load == pc_q);
+  assign o_f0_self_loop    = f0_step_qual && (npc_sel[7] || npc_sel[8]) && (next_pc_load == pc_q);
   assign o_npc_sel         = npc_sel;
   always_comb begin
     for (int unsigned k = 0; k < NPcArms; k++) o_npc_val[k] = npc_val[k];

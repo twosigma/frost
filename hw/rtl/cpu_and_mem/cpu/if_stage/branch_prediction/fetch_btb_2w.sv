@@ -145,8 +145,7 @@ module fetch_btb_2w #(
 
   logic update_region_ok;
   logic [PayloadBits-1:0] update_payload;
-  assign update_region_ok =
-      i_update_target[XLEN-1:TargetBits] == i_update_pc[XLEN-1:TargetBits];
+  assign update_region_ok = i_update_target[XLEN-1:TargetBits] == i_update_pc[XLEN-1:TargetBits];
 
   // Counter next-state wires (declared before RAM instances)
   logic [1:0] next_counter;
@@ -279,8 +278,8 @@ module fetch_btb_2w #(
   localparam int unsigned UpperReduceGroupBits = 6;
   localparam int unsigned UpperReduceGroups =
       (UpperCompareChunks + UpperReduceGroupBits - 1) / UpperReduceGroupBits;
-  (* keep = "true" *) logic [1:0][UpperCompareChunks-1:0] bank_upper_eq_l1;
-  (* keep = "true" *) logic [1:0][UpperReduceGroups-1:0] bank_upper_eq_l2;
+  (* keep = "true" *)logic [1:0][UpperCompareChunks-1:0] bank_upper_eq_l1;
+  (* keep = "true" *)logic [1:0][ UpperReduceGroups-1:0] bank_upper_eq_l2;
   for (genvar b = 0; b < 2; b++) begin : gen_bank_cmp
     for (genvar chunk = 0; chunk < UpperCompareChunks; chunk++) begin : gen_chunk
       localparam int unsigned FirstBit = chunk * TagCompareChunkBits;
@@ -315,20 +314,20 @@ module fetch_btb_2w #(
 
   for (genvar b = 0; b < 2; b++) begin : gen_bank_meta
     assign bank_valid_lookup[b] = btb_valid[b][bank_lookup_idx[b]];
-    assign bank_hw_lookup[b]    = bank_tag_lookup[b][0];
-    assign bank_is_ret[b]       = bank_payload_lookup[b][0];
-    assign bank_is_call[b]      = bank_payload_lookup[b][1];
-    assign bank_is_comp[b]      = bank_payload_lookup[b][2];
-    assign bank_tgt_cached[b]   = bank_payload_lookup[b][3];
-    assign bank_use_ras[b]      = bank_is_ret[b] && i_ras_nonempty;
-    assign bank_eff_cached[b]   = bank_use_ras[b] ? i_ras_top_is_cached : bank_tgt_cached[b];
+    assign bank_hw_lookup[b] = bank_tag_lookup[b][0];
+    assign bank_is_ret[b] = bank_payload_lookup[b][0];
+    assign bank_is_call[b] = bank_payload_lookup[b][1];
+    assign bank_is_comp[b] = bank_payload_lookup[b][2];
+    assign bank_tgt_cached[b] = bank_payload_lookup[b][3];
+    assign bank_use_ras[b] = bank_is_ret[b] && i_ras_nonempty;
+    assign bank_eff_cached[b] = bank_use_ras[b] ? i_ras_top_is_cached : bank_tgt_cached[b];
     // Evaluate tier match directly from its 6 scalar inputs in one LUT6 rather
     // than routing through high-fanout bank_use_ras[b].
     assign bank_same_tier[b]    = i_fetch_translation_active ||
         (((bank_is_ret[b] && i_ras_nonempty) ? i_ras_top_is_cached : bank_tgt_cached[b]) ==
          i_pc_is_cached);
-    assign bank_w0_elig[b]      = !i_pc[1] || bank_hw_lookup[b];
-    assign bank_is_span[b]      = bank_hw_lookup[b] && !bank_is_comp[b];
+    assign bank_w0_elig[b] = !i_pc[1] || bank_hw_lookup[b];
+    assign bank_is_span[b] = bank_hw_lookup[b] && !bank_is_comp[b];
     assign bank_eff_target[b]   = bank_use_ras[b] ?
         i_ras_top :
         {i_pc[XLEN-1:TargetBits], bank_payload_lookup[b][PayloadBits-1:4+EvenDirBits], 1'b0};
@@ -348,8 +347,7 @@ module fetch_btb_2w #(
   logic [1:0] bank_w1_taken;
   logic [1:0] bank_w1_steer;
   for (genvar b = 0; b < 2; b++) begin : gen_bank_taken
-    assign bank_meta_ok[b] =
-        bank_valid_lookup[b] && bank_counter_lookup[b][1] && bank_same_tier[b];
+    assign bank_meta_ok[b] = bank_valid_lookup[b] && bank_counter_lookup[b][1] && bank_same_tier[b];
     assign bank_meta_w0_raw_ok[b] =
         bank_valid_lookup[b] && bank_counter_lookup[b][1] && bank_w0_elig[b];
     assign bank_meta_w0_ok[b] =
@@ -358,9 +356,9 @@ module fetch_btb_2w #(
         bank_valid_lookup[b] && bank_counter_lookup[b][1] && bank_same_tier[b] && !bank_is_span[b];
 
     assign bank_w0_raw_taken[b] = (&bank_upper_eq_l2[b]) && bank_meta_w0_raw_ok[b];
-    assign bank_w0_taken[b]     = (&bank_upper_eq_l2[b]) && bank_meta_w0_ok[b];
-    assign bank_w1_taken[b]     = (&bank_upper_eq_l2[b]) && bank_meta_ok[b];
-    assign bank_w1_steer[b]     = (&bank_upper_eq_l2[b]) && bank_meta_w1_steer_ok[b];
+    assign bank_w0_taken[b] = (&bank_upper_eq_l2[b]) && bank_meta_w0_ok[b];
+    assign bank_w1_taken[b] = (&bank_upper_eq_l2[b]) && bank_meta_ok[b];
+    assign bank_w1_steer[b] = (&bank_upper_eq_l2[b]) && bank_meta_w1_steer_ok[b];
   end
 
   logic w0_is_odd;
@@ -373,7 +371,7 @@ module fetch_btb_2w #(
   logic w0_hit;
   logic w1_hit;
   logic w0_raw_taken;
-  (* keep = "true", max_fanout = 24 *) logic w0_taken;
+  (* keep = "true", max_fanout = 24 *)logic w0_taken;
   logic w1_taken_cand;
   logic w1_steer_cand;
   logic w1_taken;
@@ -381,8 +379,8 @@ module fetch_btb_2w #(
   logic w1_hw;
   logic w0_comp;
   logic w1_comp;
-  assign w0_hw   = w0_is_odd ? bank_hw_lookup[1] : bank_hw_lookup[0];
-  assign w1_hw   = w0_is_odd ? bank_hw_lookup[0] : bank_hw_lookup[1];
+  assign w0_hw = w0_is_odd ? bank_hw_lookup[1] : bank_hw_lookup[0];
+  assign w1_hw = w0_is_odd ? bank_hw_lookup[0] : bank_hw_lookup[1];
   assign w0_comp = w0_is_odd ? bank_is_comp[1] : bank_is_comp[0];
   assign w1_comp = w0_is_odd ? bank_is_comp[0] : bank_is_comp[1];
 
@@ -393,8 +391,8 @@ module fetch_btb_2w #(
                                (bank_valid_lookup[1] && (&bank_upper_eq_l2[1]))) &&
                   !w1_wraps_block;
 
-  assign w0_raw_taken  = w0_is_odd ? bank_w0_raw_taken[1] : bank_w0_raw_taken[0];
-  assign w0_taken      = w0_is_odd ? bank_w0_taken[1] : bank_w0_taken[0];
+  assign w0_raw_taken = w0_is_odd ? bank_w0_raw_taken[1] : bank_w0_raw_taken[0];
+  assign w0_taken = w0_is_odd ? bank_w0_taken[1] : bank_w0_taken[0];
   assign w1_taken_cand = (w0_is_odd ? bank_w1_taken[0] : bank_w1_taken[1]) && !w1_wraps_block;
   assign w1_steer_cand = (w0_is_odd ? bank_w1_steer[0] : bank_w1_steer[1]) && !w1_wraps_block;
   // W0 keeps strict priority even if W0 crosses tiers (w0_raw_taken blocks W1).
@@ -406,24 +404,24 @@ module fetch_btb_2w #(
   (* keep = "true", max_fanout = 24 *) logic sel_bank1;
   assign sel_bank1 = w0_is_odd ? bank_w0_taken[1] : !bank_w0_taken[0];
 
-  assign o_w0_hit              = w0_hit;
-  assign o_w1_hit              = w1_hit;
-  assign o_w0_taken            = w0_taken;
-  assign o_w0_link_inc         = w0_hw || !w0_comp;
-  assign o_w1_link_inc         = w1_hw || !w1_comp;
-  assign o_w0_link_hw          = w0_hw ^ w0_comp;
-  assign o_w1_link_hw          = w1_hw ^ w1_comp;
-  assign o_taken               = (w0_is_odd ? bank_w0_taken[1] : bank_w0_taken[0]) || w1_taken;
+  assign o_w0_hit = w0_hit;
+  assign o_w1_hit = w1_hit;
+  assign o_w0_taken = w0_taken;
+  assign o_w0_link_inc = w0_hw || !w0_comp;
+  assign o_w1_link_inc = w1_hw || !w1_comp;
+  assign o_w0_link_hw = w0_hw ^ w0_comp;
+  assign o_w1_link_hw = w1_hw ^ w1_comp;
+  assign o_taken = (w0_is_odd ? bank_w0_taken[1] : bank_w0_taken[0]) || w1_taken;
   assign o_taken_steer         = (w0_is_odd ? bank_w0_taken[1] : bank_w0_taken[0]) ||
                                  (!w0_raw_taken && w1_steer_cand);
-  assign o_taken_pos           = {!w0_taken, sel_bank1 ? bank_hw_lookup[1] : bank_hw_lookup[0]};
-  assign o_target              = sel_bank1 ? bank_eff_target[1] : bank_eff_target[0];
+  assign o_taken_pos = {!w0_taken, sel_bank1 ? bank_hw_lookup[1] : bank_hw_lookup[0]};
+  assign o_target = sel_bank1 ? bank_eff_target[1] : bank_eff_target[0];
   assign o_target_even_dir_idx = sel_bank1 ? bank_eff_even_dir[1] : bank_eff_even_dir[0];
-  assign o_target_is_cached    = sel_bank1 ? bank_eff_cached[1] : bank_eff_cached[0];
-  assign o_compressed          = sel_bank1 ? bank_is_comp[1] : bank_is_comp[0];
-  assign o_is_call             = o_taken && (sel_bank1 ? bank_is_call[1] : bank_is_call[0]);
-  assign o_is_return           = o_taken && (sel_bank1 ? bank_is_ret[1] : bank_is_ret[0]);
-  assign o_is_span             = w1_taken && (w0_is_odd ? bank_is_span[0] : bank_is_span[1]);
+  assign o_target_is_cached = sel_bank1 ? bank_eff_cached[1] : bank_eff_cached[0];
+  assign o_compressed = sel_bank1 ? bank_is_comp[1] : bank_is_comp[0];
+  assign o_is_call = o_taken && (sel_bank1 ? bank_is_call[1] : bank_is_call[0]);
+  assign o_is_return = o_taken && (sel_bank1 ? bank_is_ret[1] : bank_is_ret[0]);
+  assign o_is_span = w1_taken && (w0_is_odd ? bank_is_span[0] : bank_is_span[1]);
 
   // ===========================================================================
   // Parallel Early/Late Counter RMW
@@ -545,8 +543,7 @@ module fetch_btb_2w #(
     if (reset_seen_q && !i_rst) begin
       if (!$isunknown({i_pc, i_pc_even_idx})) begin
         p_even_idx_matches_pc :
-        assert (i_pc_even_idx ==
-                (i_pc[BTB_INDEX_BITS+1:3] + BankIndexBits'(i_pc[2])));
+        assert (i_pc_even_idx == (i_pc[BTB_INDEX_BITS+1:3] + BankIndexBits'(i_pc[2])));
       end
       if (i_update && !$isunknown(i_update_target[0])) begin
         p_update_target_halfword_aligned : assert (!i_update_target[0]);

@@ -59,26 +59,26 @@ module btb_invalidate_hold_formal #(
     localparam int unsigned BtbIndexBits = 2,
     localparam int unsigned BankEntries = 1 << (BtbIndexBits - 1)
 ) (
-    input logic                           i_clk,
-    input logic                           i_reset,
-    input logic                           i_btb_invalidate,
-    input logic [               XLEN-1:0] i_pc,
-    input logic                           i_fetch_translation_active,
-    input logic                           i_btb_update,
-    input logic [               XLEN-1:0] i_btb_update_pc,
-    input logic [               XLEN-1:0] i_btb_update_target,
-    input logic                           i_btb_update_taken,
-    input logic                           i_btb_update_compressed,
-    input logic                           i_btb_update_call,
-    input logic                           i_btb_update_return,
-    input logic                           i_btb_early_update_active,
-    input logic [               XLEN-1:0] i_btb_early_update_pc,
-    input logic                           i_btb_early_update_taken,
-    input logic [               XLEN-1:0] i_btb_late_update_pc,
-    input logic                           i_btb_late_update_taken
+    input logic            i_clk,
+    input logic            i_reset,
+    input logic            i_btb_invalidate,
+    input logic [XLEN-1:0] i_pc,
+    input logic            i_fetch_translation_active,
+    input logic            i_btb_update,
+    input logic [XLEN-1:0] i_btb_update_pc,
+    input logic [XLEN-1:0] i_btb_update_target,
+    input logic            i_btb_update_taken,
+    input logic            i_btb_update_compressed,
+    input logic            i_btb_update_call,
+    input logic            i_btb_update_return,
+    input logic            i_btb_early_update_active,
+    input logic [XLEN-1:0] i_btb_early_update_pc,
+    input logic            i_btb_early_update_taken,
+    input logic [XLEN-1:0] i_btb_late_update_pc,
+    input logic            i_btb_late_update_taken
 );
   riscv_pkg::pipeline_ctrl_t pipeline_ctrl;
-  riscv_pkg::from_ex_comb_t from_ex_comb;
+  riscv_pkg::from_ex_comb_t  from_ex_comb;
   always_comb begin
     pipeline_ctrl = '0;
     pipeline_ctrl.reset = i_reset;

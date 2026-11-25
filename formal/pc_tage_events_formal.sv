@@ -23,33 +23,33 @@ module pc_tage_events_formal #(
     localparam int unsigned BimBits = riscv_pkg::BpDirIdxBits,
     localparam int unsigned NPcArms = riscv_pkg::PcNextArms
 ) (
-    input logic                i_clk,
-    input logic [    XLEN-1:0] i_boot_addr,
-    input logic                i_reset,
-    input logic                i_trap_taken,
-    input logic                i_mret_taken,
-    input logic [    XLEN-1:0] i_trap_target,
-    input logic                i_fence_i_flush,
-    input logic [    XLEN-1:0] i_fence_i_target,
-    input logic                i_branch_taken,
-    input logic [    XLEN-1:0] i_branch_target,
-    input logic                i_pd_redirect,
-    input logic [    XLEN-1:0] i_pd_redirect_target,
-    input logic                i_extra_flush,
-    input logic                i_f1_resteer,
-    input logic [    XLEN-1:0] i_f1_resteer_target,
-    input logic                i_f0_launch,
-    input logic                i_f1_collapsed_accept,
-    input logic                i_span_btb_fire,
-    input logic [    XLEN-1:0] i_span_btb_target,
-    input logic [ BimBits-3:0] i_span_btb_even_dir_idx,
-    input logic                i_collapsed_btb_taken,
-    input logic [    XLEN-1:0] i_collapsed_btb_target,
-    input logic [ BimBits-3:0] i_collapsed_btb_even_dir_idx,
-    input logic                i_btb_en,
-    input logic                i_btb_taken,
-    input logic [    XLEN-1:0] i_btb_target,
-    input logic [ BimBits-3:0] i_btb_even_dir_idx
+    input logic               i_clk,
+    input logic [   XLEN-1:0] i_boot_addr,
+    input logic               i_reset,
+    input logic               i_trap_taken,
+    input logic               i_mret_taken,
+    input logic [   XLEN-1:0] i_trap_target,
+    input logic               i_fence_i_flush,
+    input logic [   XLEN-1:0] i_fence_i_target,
+    input logic               i_branch_taken,
+    input logic [   XLEN-1:0] i_branch_target,
+    input logic               i_pd_redirect,
+    input logic [   XLEN-1:0] i_pd_redirect_target,
+    input logic               i_extra_flush,
+    input logic               i_f1_resteer,
+    input logic [   XLEN-1:0] i_f1_resteer_target,
+    input logic               i_f0_launch,
+    input logic               i_f1_collapsed_accept,
+    input logic               i_span_btb_fire,
+    input logic [   XLEN-1:0] i_span_btb_target,
+    input logic [BimBits-3:0] i_span_btb_even_dir_idx,
+    input logic               i_collapsed_btb_taken,
+    input logic [   XLEN-1:0] i_collapsed_btb_target,
+    input logic [BimBits-3:0] i_collapsed_btb_even_dir_idx,
+    input logic               i_btb_en,
+    input logic               i_btb_taken,
+    input logic [   XLEN-1:0] i_btb_target,
+    input logic [BimBits-3:0] i_btb_even_dir_idx
 );
   logic [XLEN-1:0] o_pc;
   logic [XLEN-1:0] o_next_pc;
@@ -180,8 +180,7 @@ module pc_tage_events_formal #(
     p_next_pc_matches_ref : assert (o_next_pc == ref_next_pc);
 
     if (prev_valid_q) begin
-      p_pc_register_matches_ref :
-      assert (o_pc == (prev_reset_q ? prev_boot_q : prev_next_pc_q));
+      p_pc_register_matches_ref : assert (o_pc == (prev_reset_q ? prev_boot_q : prev_next_pc_q));
       p_tage_events_match_ref :
       assert ((o_tage_hist_restore_arm == (prev_reset_q ? 4'b0 : prev_sel_q[4:1])) &&
               (o_tage_hist_push ==

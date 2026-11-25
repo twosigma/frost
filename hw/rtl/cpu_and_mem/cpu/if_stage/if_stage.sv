@@ -541,11 +541,13 @@ module if_stage #(
   logic f0_btb_link_cached;
 
   assign f0_span_fault_veto = span_btb_valid_q && !f1_cancel_span_raw && fetch_fault0_live;
-  assign f0_span_btb_fire   = span_btb_valid_q && !f1_cancel_span_raw && !fetch_fault0_live;
+  assign f0_span_btb_fire = span_btb_valid_q && !f1_cancel_span_raw && !fetch_fault0_live;
   assign f0_pred_en = !i_disable_branch_prediction && !fetch_fault0_live &&
       !f1_resteer_nopred_q && !ras_restore_pure_pop_q && !f0_span_btb_fire &&
-      (i_fetch_translation_active || riscv_pkg::pma_fetch_ok(pc));
-  assign f0_btb_valid     = f0_pred_en && btb_taken_raw;
+      (i_fetch_translation_active || riscv_pkg::pma_fetch_ok(
+      pc
+  ));
+  assign f0_btb_valid = f0_pred_en && btb_taken_raw;
   assign f0_btb_steer_now = f0_pred_en && btb_steer_raw;
 
   // Precompute word+1, word+2, and per-word candidate link addresses and
@@ -559,12 +561,12 @@ module if_stage #(
   logic [XLEN-3:0] w1_link_word;
   logic w0_link_cached;
   logic w1_link_cached;
-  assign pc_word_p1     = pc[XLEN-1:2] + (XLEN - 2)'(1);
-  assign pc_word_p2     = pc[XLEN-1:2] + (XLEN - 2)'(2);
-  assign pc_p1_cached   = riscv_pkg::pma_cached_ok({pc_word_p1, 2'b00});
-  assign pc_p2_cached   = riscv_pkg::pma_cached_ok({pc_word_p2, 2'b00});
-  assign w0_link_word   = btb_w0_link_inc ? pc_word_p1 : pc[XLEN-1:2];
-  assign w1_link_word   = btb_w1_link_inc ? pc_word_p2 : pc_word_p1;
+  assign pc_word_p1 = pc[XLEN-1:2] + (XLEN - 2)'(1);
+  assign pc_word_p2 = pc[XLEN-1:2] + (XLEN - 2)'(2);
+  assign pc_p1_cached = riscv_pkg::pma_cached_ok({pc_word_p1, 2'b00});
+  assign pc_p2_cached = riscv_pkg::pma_cached_ok({pc_word_p2, 2'b00});
+  assign w0_link_word = btb_w0_link_inc ? pc_word_p1 : pc[XLEN-1:2];
+  assign w1_link_word = btb_w1_link_inc ? pc_word_p2 : pc_word_p1;
   assign w0_link_cached = btb_w0_link_inc ? pc_p1_cached : pc_is_cached;
   assign w1_link_cached = btb_w1_link_inc ? pc_p2_cached : pc_p1_cached;
   assign f0_btb_link = btb_w0_taken ?
@@ -658,11 +660,11 @@ module if_stage #(
       .i_walk_resp(i_walk_resp)
   );
 
-  assign o_fetch_pa0          = fetch_pa0_live;
-  assign o_fetch_pa1          = fetch_pa1_live;
-  assign o_fetch_pa_valid     = fetch_pa_valid;
-  assign o_fetch_fault0       = fetch_fault0_live;
-  assign o_fetch_pa_hold      = 1'b0;
+  assign o_fetch_pa0 = fetch_pa0_live;
+  assign o_fetch_pa1 = fetch_pa1_live;
+  assign o_fetch_pa_valid = fetch_pa_valid;
+  assign o_fetch_fault0 = fetch_fault0_live;
+  assign o_fetch_pa_hold = 1'b0;
   assign o_fetch_pa_hold_copy = '0;
 
   // ===========================================================================
@@ -693,13 +695,16 @@ module if_stage #(
   logic pd_ras_top_cached;
   logic pd_ras_link_cached;
   logic f1_ras_top_cached;
-  assign ex_ras_top_cached  = riscv_pkg::pma_cached_ok(i_from_ex_comb.ras_restore_top);
-  assign ex_ras_link_cached =
-      riscv_pkg::pma_cached_ok(i_from_ex_comb.ras_push_address_after_restore);
-  assign pd_ras_top_cached  = riscv_pkg::pma_cached_ok(pd_ras_ckpt_top_q);
+  assign ex_ras_top_cached = riscv_pkg::pma_cached_ok(i_from_ex_comb.ras_restore_top);
+  assign ex_ras_link_cached = riscv_pkg::pma_cached_ok(
+      i_from_ex_comb.ras_push_address_after_restore
+  );
+  assign pd_ras_top_cached = riscv_pkg::pma_cached_ok(pd_ras_ckpt_top_q);
   assign pd_ras_link_cached = riscv_pkg::pma_cached_ok(i_pd_redirect_ras_link);
   assign f1_ras_top_cached  = f1_req_q.ras_ckpt_from_live ?
-      ras_top_is_cached : riscv_pkg::pma_cached_ok(f1_req_q.ras_ckpt_top);
+      ras_top_is_cached : riscv_pkg::pma_cached_ok(
+      f1_req_q.ras_ckpt_top
+  );
 
   logic ras_restore_comb;
   logic [RasPtrBits-1:0] ras_restore_tos_comb;
@@ -769,19 +774,18 @@ module if_stage #(
       ras_restore_top_cached_q  <= 1'b0;
       ras_restore_link_cached_q <= 1'b0;
     end else begin
-      ras_restore_q             <= ras_restore_comb;
-      ras_restore_pure_pop_q    <=
-          ras_restore_comb && ras_restore_pop_comb && !ras_restore_push_comb;
-      ras_restore_nonempty_q    <= ras_restore_comb && ras_restore_nonempty_comb;
+      ras_restore_q <= ras_restore_comb;
+      ras_restore_pure_pop_q <= ras_restore_comb && ras_restore_pop_comb && !ras_restore_push_comb;
+      ras_restore_nonempty_q <= ras_restore_comb && ras_restore_nonempty_comb;
       ras_restore_uses_link_q   <= ras_restore_comb && ras_restore_push_comb &&
           (!ras_restore_pop_comb || (ras_restore_cnt_comb != '0));
-      ras_restore_tos_q         <= ras_restore_tos_comb;
-      ras_restore_cnt_q         <= ras_restore_cnt_comb;
-      ras_restore_top_q         <= ras_restore_top_comb;
-      ras_restore_push_q        <= ras_restore_push_comb;
-      ras_restore_pop_q         <= ras_restore_pop_comb;
-      ras_restore_link_q        <= ras_restore_link_comb;
-      ras_restore_top_cached_q  <= ras_restore_top_cached_comb;
+      ras_restore_tos_q <= ras_restore_tos_comb;
+      ras_restore_cnt_q <= ras_restore_cnt_comb;
+      ras_restore_top_q <= ras_restore_top_comb;
+      ras_restore_push_q <= ras_restore_push_comb;
+      ras_restore_pop_q <= ras_restore_pop_comb;
+      ras_restore_link_q <= ras_restore_link_comb;
+      ras_restore_top_cached_q <= ras_restore_top_cached_comb;
       ras_restore_link_cached_q <= ras_restore_link_cached_comb;
     end
   end
@@ -847,14 +851,14 @@ module if_stage #(
   assign ras_sh_restore_swap_req = ras_restore_pop_q && ras_restore_push_q;
   assign ras_sh_do_restore_swap  =
       ras_restore_q && ras_sh_restore_swap_req && (ras_restore_cnt_q != '0);
-  assign ras_sh_do_restore_push  = ras_restore_q && ras_restore_push_q && !ras_sh_restore_swap_req;
-  assign ras_sh_do_swap          = !ras_restore_q && ras_sh_pending_swap;
-  assign ras_sh_do_push          = !ras_restore_q && ras_sh_pending_push;
-  assign ras_sh_write_base       = ras_restore_q ? ras_restore_tos_q : ras_cached_tos_q;
-  assign ras_sh_above_addr       = ras_sh_write_base + RasPtrBits'(1);
-  assign ras_sh_link_cached      = ras_restore_q ? ras_restore_link_cached_q : f0_ras_link_cached_q;
-  assign ras_sh_top_write        = ras_restore_q || ras_sh_do_swap;
-  assign ras_sh_above_write      = ras_sh_do_restore_push || ras_sh_do_push;
+  assign ras_sh_do_restore_push = ras_restore_q && ras_restore_push_q && !ras_sh_restore_swap_req;
+  assign ras_sh_do_swap = !ras_restore_q && ras_sh_pending_swap;
+  assign ras_sh_do_push = !ras_restore_q && ras_sh_pending_push;
+  assign ras_sh_write_base = ras_restore_q ? ras_restore_tos_q : ras_cached_tos_q;
+  assign ras_sh_above_addr = ras_sh_write_base + RasPtrBits'(1);
+  assign ras_sh_link_cached = ras_restore_q ? ras_restore_link_cached_q : f0_ras_link_cached_q;
+  assign ras_sh_top_write = ras_restore_q || ras_sh_do_swap;
+  assign ras_sh_above_write = ras_sh_do_restore_push || ras_sh_do_push;
   assign ras_sh_top_data         = (ras_sh_do_restore_swap || ras_sh_do_swap) ?
       ras_sh_link_cached : ras_restore_top_cached_q;
 
@@ -1048,7 +1052,7 @@ module if_stage #(
   assign f1_pred_live.backing_ret    = backing_win_ret_live;
   assign f1_pred_live.backing_target = backing_win_target_live;
 
-  assign f1_pred = f1_pred_fresh_q ? f1_pred_live : f1_pred_hold_q;
+  assign f1_pred                     = f1_pred_fresh_q ? f1_pred_live : f1_pred_hold_q;
 
   // ===========================================================================
   // F1: Tag Check, Boundary Walk, False-BTB Validation, and Window Packing
@@ -1057,12 +1061,12 @@ module if_stage #(
   // parallel 3-bit-chunk LUT trees to keep carry chains and provider_q muxing
   // off the F1 accept/resteer cone.
   localparam int unsigned ServedWordBits = XLEN - 2;
-  localparam int unsigned TagChunkCount = (ServedWordBits + 2) / 3;
-  localparam int unsigned TagGroupCount = (TagChunkCount + 5) / 6;
-  (* keep = "true" *) logic [TagChunkCount-1:0] f1_tag_low_chunk;
-  (* keep = "true" *) logic [TagChunkCount-1:0] f1_tag_high_chunk;
-  (* keep = "true" *) logic [TagGroupCount-1:0] f1_tag_low_group;
-  (* keep = "true" *) logic [TagGroupCount-1:0] f1_tag_high_group;
+  localparam int unsigned TagChunkCount  = (ServedWordBits + 2) / 3;
+  localparam int unsigned TagGroupCount  = (TagChunkCount + 5) / 6;
+  (* keep = "true" *)logic [TagChunkCount-1:0] f1_tag_low_chunk;
+  (* keep = "true" *)logic [TagChunkCount-1:0] f1_tag_high_chunk;
+  (* keep = "true" *)logic [TagGroupCount-1:0] f1_tag_low_group;
+  (* keep = "true" *)logic [TagGroupCount-1:0] f1_tag_high_group;
   for (genvar k = 0; k < TagChunkCount; k++) begin : gen_f1_tag_chunks
     localparam int unsigned W = (ServedWordBits - 3 * k < 3) ? (ServedWordBits - 3 * k) : 3;
     assign f1_tag_low_chunk[k]  = ~|(i_served_word_low[3*k+:W] ^ f1_req_q.pc[2+3*k+:W]);
@@ -1076,8 +1080,8 @@ module if_stage #(
   // Fold i_instr_valid and provider selection into the 4-bit group reductions
   // so each provider's qualified tag match takes a single 6-input LUT6 and
   // f1_push_valid resolves in one LUT5 immediately behind it.
-  (* keep = "true" *) logic f1_tag_match_low_valid;
-  (* keep = "true" *) logic f1_tag_match_high_valid;
+  (* keep = "true" *)logic f1_tag_match_low_valid;
+  (* keep = "true" *)logic f1_tag_match_high_valid;
   assign f1_tag_match_low_valid =
       (&f1_tag_low_group) && i_instr_valid && !i_instr_pc_metadata_served_high;
   assign f1_tag_match_high_valid =
@@ -1165,7 +1169,7 @@ module if_stage #(
   // queue, or PD.
   logic f1_fault0_eff;
   assign f1_fault0_eff = i_instr_fault0 || f1_req_q.span_veto;
-  assign hw_fault      = {i_instr_fault1, i_instr_fault1, f1_fault0_eff, f1_fault0_eff};
+  assign hw_fault = {i_instr_fault1, i_instr_fault1, f1_fault0_eff, f1_fault0_eff};
   assign hw_fault_page = {
     i_instr_fault1_page, i_instr_fault1_page, i_instr_fault0_page, i_instr_fault0_page
   };
@@ -1207,9 +1211,9 @@ module if_stage #(
   assign f1_src_btb_taken   = f1_req_valid_q ?
       f1_req_q.btb_taken : (f1_req_q.btb_taken && f1_collapsed_btb_en);
   assign f1_src_btb_is_span = f1_req_q.btb_is_span;
-  assign f1_src_btb_pos     = f1_req_q.btb_pos;
-  assign f1_src_btb_comp    = f1_req_q.btb_comp;
-  assign f1_src_btb_target  = f1_req_q.btb_target;
+  assign f1_src_btb_pos = f1_req_q.btb_pos;
+  assign f1_src_btb_comp = f1_req_q.btb_comp;
+  assign f1_src_btb_target = f1_req_q.btb_target;
 
   logic [1:0] f1_btb_pos;
   logic f1_btb_fault;
@@ -1244,12 +1248,12 @@ module if_stage #(
   // Pre-select the predicted halfword by registered f1_btb_pos so control-flow
   // validation runs in three shallow LUT levels without chaining through all
   // four hw_is_control cones.
-  assign btb_hw_raw      = hw_raw[f1_btb_pos];
-  assign btb_hw_comp     = hw_comp[f1_btb_pos];
+  assign btb_hw_raw = hw_raw[f1_btb_pos];
+  assign btb_hw_comp = hw_comp[f1_btb_pos];
   assign btb_hw_indirect = hw_is_indirect[f1_btb_pos];
   assign btb_ctrl_comp   = btb_hw_indirect ||
       ((btb_hw_raw[1:0] == 2'b01) && btb_hw_raw[15] && (btb_hw_raw[14] || btb_hw_raw[13]));
-  assign btb_ctrl_nat    = (btb_hw_raw[6:4] == 3'b110) && (btb_hw_raw[3:2] != 2'b10);
+  assign btb_ctrl_nat = (btb_hw_raw[6:4] == 3'b110) && (btb_hw_raw[3:2] != 2'b10);
   assign f1_btb_ok       = f1_btb_valid_start && (btb_hw_comp == f1_src_btb_comp) &&
       (f1_src_btb_comp ? btb_ctrl_comp : btb_ctrl_nat) && !f1_btb_fault;
 
@@ -1257,17 +1261,17 @@ module if_stage #(
   // and push count. If a spanning branch's second word faults at F0, that next
   // window carries fault=1 on hw[0], so drain clears btb_predicted_taken via
   // s1_fault_hi / s2_fault when the 32-bit instruction assembles.
-  assign f1_btb_taken_raw   = !f1_is_span_tail && f1_src_btb_taken && f1_btb_ok;
+  assign f1_btb_taken_raw = !f1_is_span_tail && f1_src_btb_taken && f1_btb_ok;
   assign f1_valid_btb_taken = (f1_accept || f1_collapsed_accept) && f1_btb_taken_raw;
 
   assign f1_false_btb_raw         =
       f1_accept_raw && !f1_req_q.span_tail && f1_req_q.btb_taken && !f1_btb_ok;
-  assign f1_cancel_span_raw       = f1_false_btb_raw && f1_req_q.btb_is_span;
+  assign f1_cancel_span_raw = f1_false_btb_raw && f1_req_q.btb_is_span;
   assign f1_false_btb_resteer_raw = f1_false_btb_raw && !f1_req_q.btb_is_span;
-  assign f1_false_btb             = !any_redirect && f1_false_btb_raw;
-  assign f1_cancel_span           = !any_redirect && f1_cancel_span_raw;
-  assign f1_false_btb_resteer     = !any_redirect && f1_false_btb_resteer_raw;
-  assign f1_span_tail_fault       = f1_accept && f1_req_q.span_tail && f1_fault0_eff;
+  assign f1_false_btb = !any_redirect && f1_false_btb_raw;
+  assign f1_cancel_span = !any_redirect && f1_cancel_span_raw;
+  assign f1_false_btb_resteer = !any_redirect && f1_false_btb_resteer_raw;
+  assign f1_span_tail_fault = f1_accept && f1_req_q.span_tail && f1_fault0_eff;
 
   assign f1_collapsed_btb_steer_raw = !span_btb_valid_q &&
       f1_req_q.btb_taken && !f1_req_q.btb_is_span && f1_collapsed_btb_en && f1_btb_ok;
@@ -1275,8 +1279,7 @@ module if_stage #(
   assign f1_collapsed_btb_span_raw = f1_collapsed_accept_raw && !span_btb_valid_q &&
       f1_req_q.btb_taken && f1_req_q.btb_is_span && f1_collapsed_btb_en && f1_btb_ok;
   assign f1_collapsed_btb_span = !any_redirect && f1_collapsed_btb_span_raw;
-  assign f1_collapsed_span_fire_raw = span_btb_valid_q &&
-      !i_instr_fault0 && !f1_req_q.span_veto;
+  assign f1_collapsed_span_fire_raw = span_btb_valid_q && !i_instr_fault0 && !f1_req_q.span_veto;
   assign f1_collapsed_span_fire = f1_collapsed_accept && f1_collapsed_span_fire_raw;
 
   assign f1_resteer_raw = f1_tag_resteer_raw || f1_false_btb_resteer_raw;
@@ -1297,8 +1300,8 @@ module if_stage #(
   logic valid_start_hw3;
   always_comb begin
     logic c0_f, c1_f, vs1_f, vs2_f;
-    c0_f  = hw_comp[0] || f1_fault0_eff;
-    c1_f  = hw_comp[1] || f1_fault0_eff;
+    c0_f = hw_comp[0] || f1_fault0_eff;
+    c1_f = hw_comp[1] || f1_fault0_eff;
     vs1_f = f1_start_at_1 || c0_f;
     vs2_f = vs1_f ? c1_f : 1'b1;
     valid_start_hw3 = (vs1_f && !c1_f) || (vs2_f && hw_comp[2]);
@@ -1315,12 +1318,11 @@ module if_stage #(
   assign f1_dir_taken = f1_req_q.dir_taken;
 
   function automatic parcel_t make_parcel(
-      input logic [15:0] p_raw, input logic p_allows_s2,
-      input logic p_s2_start, input logic p_indirect, input logic p_ctrl,
-      input logic [1:0] p_src_hot, input logic [4:0] p_b24_20, input logic [2:0] p_rs1_rest,
-      input logic [22:0] p_extra, input logic [1:0] p_hw_idx, input logic p_fault,
-      input logic p_fault_page, input logic p_dir, input logic p_btb_taken,
-      input logic p_bk_hit, input logic p_bk_comp, input logic p_bk_ret,
+      input logic [15:0] p_raw, input logic p_allows_s2, input logic p_s2_start,
+      input logic p_indirect, input logic p_ctrl, input logic [1:0] p_src_hot,
+      input logic [4:0] p_b24_20, input logic [2:0] p_rs1_rest, input logic [22:0] p_extra,
+      input logic [1:0] p_hw_idx, input logic p_fault, input logic p_fault_page, input logic p_dir,
+      input logic p_btb_taken, input logic p_bk_hit, input logic p_bk_comp, input logic p_bk_ret,
       input logic [BackingTargetBits-1:0] p_bk_tgt);
     parcel_t res;
     res.parcel             = p_raw;
@@ -1341,40 +1343,88 @@ module if_stage #(
     res.backing_compressed = p_bk_comp;
     res.backing_return     = p_bk_ret;
     res.backing_target     = p_bk_tgt;
-    make_parcel = res;
+    make_parcel            = res;
   endfunction
 
   parcel_t f1_raw_p0, f1_raw_p1, f1_raw_p2, f1_raw_p3;
   assign f1_raw_p0 = make_parcel(
-      hw_raw[0], hw_allows_s2[0], hw_s2_start_valid[0], hw_is_indirect[0],
-      hw_is_control[0], hw_rvc_src_hot[0], hw_rvc_b24_20[0], hw_rvc_rs1_rest[0], hw_rvc_extra[0],
-      2'd0, hw_fault[0], hw_fault_page[0], f1_dir_taken[0],
+      hw_raw[0],
+      hw_allows_s2[0],
+      hw_s2_start_valid[0],
+      hw_is_indirect[0],
+      hw_is_control[0],
+      hw_rvc_src_hot[0],
+      hw_rvc_b24_20[0],
+      hw_rvc_rs1_rest[0],
+      hw_rvc_extra[0],
+      2'd0,
+      hw_fault[0],
+      hw_fault_page[0],
+      f1_dir_taken[0],
       f1_btb_taken_raw && (f1_btb_pos == 2'd0),
-      f1_pred.backing_hit[0], f1_pred.backing_comp[0], f1_pred.backing_ret[0],
+      f1_pred.backing_hit[0],
+      f1_pred.backing_comp[0],
+      f1_pred.backing_ret[0],
       f1_pred.backing_target[0]
   );
   assign f1_raw_p1 = make_parcel(
-      hw_raw[1], hw_allows_s2[1], hw_s2_start_valid[1], hw_is_indirect[1],
-      hw_is_control[1], hw_rvc_src_hot[1], hw_rvc_b24_20[1], hw_rvc_rs1_rest[1], hw_rvc_extra[1],
-      2'd1, hw_fault[1], hw_fault_page[1], f1_dir_taken[1],
+      hw_raw[1],
+      hw_allows_s2[1],
+      hw_s2_start_valid[1],
+      hw_is_indirect[1],
+      hw_is_control[1],
+      hw_rvc_src_hot[1],
+      hw_rvc_b24_20[1],
+      hw_rvc_rs1_rest[1],
+      hw_rvc_extra[1],
+      2'd1,
+      hw_fault[1],
+      hw_fault_page[1],
+      f1_dir_taken[1],
       f1_btb_taken_raw && (f1_btb_pos == 2'd1),
-      f1_pred.backing_hit[1], f1_pred.backing_comp[1], f1_pred.backing_ret[1],
+      f1_pred.backing_hit[1],
+      f1_pred.backing_comp[1],
+      f1_pred.backing_ret[1],
       f1_pred.backing_target[1]
   );
   assign f1_raw_p2 = make_parcel(
-      hw_raw[2], hw_allows_s2[2], hw_s2_start_valid[2], hw_is_indirect[2],
-      hw_is_control[2], hw_rvc_src_hot[2], hw_rvc_b24_20[2], hw_rvc_rs1_rest[2], hw_rvc_extra[2],
-      2'd2, hw_fault[2], hw_fault_page[2], f1_dir_taken[2],
+      hw_raw[2],
+      hw_allows_s2[2],
+      hw_s2_start_valid[2],
+      hw_is_indirect[2],
+      hw_is_control[2],
+      hw_rvc_src_hot[2],
+      hw_rvc_b24_20[2],
+      hw_rvc_rs1_rest[2],
+      hw_rvc_extra[2],
+      2'd2,
+      hw_fault[2],
+      hw_fault_page[2],
+      f1_dir_taken[2],
       f1_btb_taken_raw && (f1_btb_pos == 2'd2),
-      f1_pred.backing_hit[2], f1_pred.backing_comp[2], f1_pred.backing_ret[2],
+      f1_pred.backing_hit[2],
+      f1_pred.backing_comp[2],
+      f1_pred.backing_ret[2],
       f1_pred.backing_target[2]
   );
   assign f1_raw_p3 = make_parcel(
-      hw_raw[3], hw_allows_s2[3], hw_s2_start_valid[3], hw_is_indirect[3],
-      hw_is_control[3], hw_rvc_src_hot[3], hw_rvc_b24_20[3], hw_rvc_rs1_rest[3], hw_rvc_extra[3],
-      2'd3, hw_fault[3], hw_fault_page[3], f1_dir_taken[3],
+      hw_raw[3],
+      hw_allows_s2[3],
+      hw_s2_start_valid[3],
+      hw_is_indirect[3],
+      hw_is_control[3],
+      hw_rvc_src_hot[3],
+      hw_rvc_b24_20[3],
+      hw_rvc_rs1_rest[3],
+      hw_rvc_extra[3],
+      2'd3,
+      hw_fault[3],
+      hw_fault_page[3],
+      f1_dir_taken[3],
       f1_btb_taken_raw && (f1_btb_pos == 2'd3),
-      f1_pred.backing_hit[3], f1_pred.backing_comp[3], f1_pred.backing_ret[3],
+      f1_pred.backing_hit[3],
+      f1_pred.backing_comp[3],
+      f1_pred.backing_ret[3],
       f1_pred.backing_target[3]
   );
 
@@ -1416,24 +1466,24 @@ module if_stage #(
   assign f1_tage_cov[1] = (f1_pred.tage_word_next == f1_tage_w1_tag);
 
   always_comb begin
-    f1_push_meta.word0_pc      = f1_win_pc[XLEN-1:2];
-    f1_push_meta.word1_pc      = f1_win_pc[XLEN-1:2] + (XLEN - 2)'(1);
+    f1_push_meta.word0_pc = f1_win_pc[XLEN-1:2];
+    f1_push_meta.word1_pc = f1_win_pc[XLEN-1:2] + (XLEN - 2)'(1);
     f1_push_meta.btb_target_hi = f1_src_btb_target[XLEN-1:1];
-    f1_push_meta.ras_ckpt_tos  = f1_eff_ras_ckpt_tos;
-    f1_push_meta.ras_ckpt_cnt  = f1_eff_ras_ckpt_cnt;
-    f1_push_meta.ras_ckpt_top  = f1_eff_ras_ckpt_top;
-    f1_push_meta.tage_cov      = f1_tage_cov;
-    f1_push_meta.tage_w0       = f1_w0_odd ? f1_pred.tage_bank1 : f1_pred.tage_bank0;
-    f1_push_meta.tage_w1       = f1_w0_odd ? f1_pred.tage_bank0 : f1_pred.tage_bank1;
-    f1_push_meta.itt_w0        = f1_w0_odd ? f1_pred.itt_bank1 : f1_pred.itt_bank0;
-    f1_push_meta.itt_w1        = f1_w0_odd ? f1_pred.itt_bank0 : f1_pred.itt_bank1;
+    f1_push_meta.ras_ckpt_tos = f1_eff_ras_ckpt_tos;
+    f1_push_meta.ras_ckpt_cnt = f1_eff_ras_ckpt_cnt;
+    f1_push_meta.ras_ckpt_top = f1_eff_ras_ckpt_top;
+    f1_push_meta.tage_cov = f1_tage_cov;
+    f1_push_meta.tage_w0 = f1_w0_odd ? f1_pred.tage_bank1 : f1_pred.tage_bank0;
+    f1_push_meta.tage_w1 = f1_w0_odd ? f1_pred.tage_bank0 : f1_pred.tage_bank1;
+    f1_push_meta.itt_w0 = f1_w0_odd ? f1_pred.itt_bank1 : f1_pred.itt_bank0;
+    f1_push_meta.itt_w1 = f1_w0_odd ? f1_pred.itt_bank0 : f1_pred.itt_bank1;
     f1_push_meta.itt_hit[0]    =
         f1_tage_cov[0] && (f1_w0_odd ? f1_pred.itt_hit[1] : f1_pred.itt_hit[0]);
     f1_push_meta.itt_hit[1]    =
         f1_tage_cov[1] && (f1_w0_odd ? f1_pred.itt_hit[0] : f1_pred.itt_hit[1]);
     f1_push_meta.itt_target[0] = f1_w0_odd ? f1_pred.itt_target[1] : f1_pred.itt_target[0];
     f1_push_meta.itt_target[1] = f1_w0_odd ? f1_pred.itt_target[0] : f1_pred.itt_target[1];
-    f1_push_meta.itt_hist      = f1_pred.itt_hist;
+    f1_push_meta.itt_hist = f1_pred.itt_hist;
   end
 
   // Provider claim & replay handshakes (no stall replay in decoupled front end).
@@ -1661,7 +1711,7 @@ module if_stage #(
 
   // ---- Slot 1 ----
   parcel_t s1_p;
-  meta_t s1_m;
+  meta_t   s1_m;
   assign s1_p = view0;
   assign s1_m = meta0;
 
@@ -1695,8 +1745,8 @@ module if_stage #(
   logic [2:0] s1_rs1_rest;
   assign s1_source_hot = s1_comp ?
       {s1_p.rvc_bits24_20[1], s1_p.rvc_source_hot} : {s1_instr[21], s1_instr[17:16]};
-  assign s1_bits24_20  = s1_comp ? s1_p.rvc_bits24_20 : s1_instr[24:20];
-  assign s1_rs1_rest   = s1_comp ? s1_p.rvc_rs1_rest : {s1_instr[19:18], s1_instr[15]};
+  assign s1_bits24_20 = s1_comp ? s1_p.rvc_bits24_20 : s1_instr[24:20];
+  assign s1_rs1_rest = s1_comp ? s1_p.rvc_rs1_rest : {s1_instr[19:18], s1_instr[15]};
 
   logic s1_btb_taken;
   logic [XLEN-1:0] s1_btb_target;
@@ -1708,19 +1758,23 @@ module if_stage #(
   riscv_pkg::itt_lookup_t s1_itt_lookup;
   logic s1_itt_hit;
   logic [BackingTargetBits-1:0] s1_itt_target;
-  assign s1_tage_cov    = s1_p.hw_in_win[1] ? s1_m.tage_cov[1] : s1_m.tage_cov[0];
+  assign s1_tage_cov = s1_p.hw_in_win[1] ? s1_m.tage_cov[1] : s1_m.tage_cov[0];
   assign s1_tage_lookup = s1_p.hw_in_win[1] ? s1_m.tage_w1 : s1_m.tage_w0;
-  assign s1_itt_lookup  = s1_p.hw_in_win[1] ? s1_m.itt_w1 : s1_m.itt_w0;
+  assign s1_itt_lookup = s1_p.hw_in_win[1] ? s1_m.itt_w1 : s1_m.itt_w0;
   assign s1_itt_hit     = s1_tage_cov && !s1_fault &&
       (s1_p.hw_in_win[1] ? s1_m.itt_hit[1] : s1_m.itt_hit[0]);
-  assign s1_itt_target  = s1_p.hw_in_win[1] ? s1_m.itt_target[1] : s1_m.itt_target[0];
+  assign s1_itt_target = s1_p.hw_in_win[1] ? s1_m.itt_target[1] : s1_m.itt_target[0];
 
   logic [riscv_pkg::PdTargetSplit:0] s1_native_sum;
   logic [riscv_pkg::PdTargetSplit:0] s1_comp_sum;
   assign s1_native_sum = (riscv_pkg::PdTargetSplit + 1)'(s1_pc[riscv_pkg::PdTargetSplit-1:0]) +
-      (riscv_pkg::PdTargetSplit + 1)'(native_branch_imm_low(s1_instr));
+      (riscv_pkg::PdTargetSplit + 1)'(native_branch_imm_low(
+      s1_instr
+  ));
   assign s1_comp_sum = (riscv_pkg::PdTargetSplit + 1)'(s1_pc[riscv_pkg::PdTargetSplit-1:0]) +
-      (riscv_pkg::PdTargetSplit + 1)'(compressed_branch_imm_low(s1_p.parcel));
+      (riscv_pkg::PdTargetSplit + 1)'(compressed_branch_imm_low(
+      s1_p.parcel
+  ));
 
   // ---- Slot 2 (precompute +2 and +4 candidates in parallel, select by s1_comp) ----
   logic [XLEN-1:0] s2_pc_p2;
@@ -1736,16 +1790,16 @@ module if_stage #(
   logic s2_uses_meta1;
   meta_t s2_m;
 
-  assign s2_p          = s1_comp ? view1 : view2;
-  assign s2_hi_parcel  = s1_comp ? view2.parcel : view3.parcel;
-  assign s2_hi_fault   = s1_comp ? view2.fault : view3.fault;
+  assign s2_p = s1_comp ? view1 : view2;
+  assign s2_hi_parcel = s1_comp ? view2.parcel : view3.parcel;
+  assign s2_hi_fault = s1_comp ? view2.fault : view3.fault;
   // Use ring-only last flags and occupancy: when count_q == 0 both meta0 and
   // meta1 equal i_push_meta; when count_q == 1 view0 ends window 0 so slot 2
   // always belongs to meta1; when count_q >= 2 both view0 and view1 come from
   // the ring. This keeps F1's push count off PD's slot-2 metadata mux.
   assign s2_uses_meta1 = q_count_ge2 ?
       (s1_comp ? q_ring_last[0] : (q_ring_last[0] || q_ring_last[1])) : q_count_eq1;
-  assign s2_m          = s2_uses_meta1 ? meta1 : meta0;
+  assign s2_m = s2_uses_meta1 ? meta1 : meta0;
 
   logic s2_comp;
   logic s2_fault;
@@ -1757,7 +1811,9 @@ module if_stage #(
   assign s2_fault = s2_p.fault || (!s2_comp && s2_hi_fault);
 
   always_comb begin
-    unique case ({s1_comp, s2_comp})
+    unique case ({
+      s1_comp, s2_comp
+    })
       2'b11:   s2_have_bytes = q_avail_ge_drain[1];
       2'b10:   s2_have_bytes = q_avail_ge_drain[2];
       2'b01:   s2_have_bytes = q_avail_ge_drain[2];
@@ -1798,11 +1854,11 @@ module if_stage #(
     view2.rvc_rs1_rest[0],
     view2.rvc_extra[14:0]
   };
-  assign s2_nat_p2   = {view2.parcel, view1.parcel};
-  assign s2_nat_p4   = {view3.parcel, view2.parcel};
+  assign s2_nat_p2 = {view2.parcel, view1.parcel};
+  assign s2_nat_p4 = {view3.parcel, view2.parcel};
   assign s2_instr_p2 = (view1.parcel[1:0] != 2'b11) ? s2_rvc_exp_p2 : s2_nat_p2;
   assign s2_instr_p4 = (view2.parcel[1:0] != 2'b11) ? s2_rvc_exp_p4 : s2_nat_p4;
-  assign s2_instr    = s1_comp ? s2_instr_p2 : s2_instr_p4;
+  assign s2_instr = s1_comp ? s2_instr_p2 : s2_instr_p4;
 
   logic [2:0] s2_source_hot;
   logic [4:0] s2_bits24_20;
@@ -1812,21 +1868,29 @@ module if_stage #(
 
   assign s2_source_hot = s2_comp ?
       {s2_p.rvc_bits24_20[1], s2_p.rvc_source_hot} : {s2_instr[21], s2_instr[17:16]};
-  assign s2_bits24_20      = s2_comp ? s2_p.rvc_bits24_20 : s2_instr[24:20];
-  assign s2_rs1_rest       = s2_comp ? s2_p.rvc_rs1_rest : {s2_instr[19:18], s2_instr[15]};
+  assign s2_bits24_20 = s2_comp ? s2_p.rvc_bits24_20 : s2_instr[24:20];
+  assign s2_rs1_rest = s2_comp ? s2_p.rvc_rs1_rest : {s2_instr[19:18], s2_instr[15]};
   assign s2_decomp_illegal = s2_comp && s2_p.rvc_extra[22];
   assign s2_is_cond_branch = (s2_instr[6:0] == riscv_pkg::OPC_BRANCH) && (s2_instr[14:13] != 2'b01);
 
   logic [riscv_pkg::PdTargetSplit:0] s2_nat_sum_p2, s2_nat_sum_p4;
   logic [riscv_pkg::PdTargetSplit:0] s2_cmp_sum_p2, s2_cmp_sum_p4;
   assign s2_nat_sum_p2 = (riscv_pkg::PdTargetSplit + 1)'(s2_pc_p2[riscv_pkg::PdTargetSplit-1:0]) +
-      (riscv_pkg::PdTargetSplit + 1)'(native_branch_imm_low(s2_instr_p2));
+      (riscv_pkg::PdTargetSplit + 1)'(native_branch_imm_low(
+      s2_instr_p2
+  ));
   assign s2_nat_sum_p4 = (riscv_pkg::PdTargetSplit + 1)'(s2_pc_p4[riscv_pkg::PdTargetSplit-1:0]) +
-      (riscv_pkg::PdTargetSplit + 1)'(native_branch_imm_low(s2_instr_p4));
+      (riscv_pkg::PdTargetSplit + 1)'(native_branch_imm_low(
+      s2_instr_p4
+  ));
   assign s2_cmp_sum_p2 = (riscv_pkg::PdTargetSplit + 1)'(s2_pc_p2[riscv_pkg::PdTargetSplit-1:0]) +
-      (riscv_pkg::PdTargetSplit + 1)'(compressed_branch_imm_low(view1.parcel));
+      (riscv_pkg::PdTargetSplit + 1)'(compressed_branch_imm_low(
+      view1.parcel
+  ));
   assign s2_cmp_sum_p4 = (riscv_pkg::PdTargetSplit + 1)'(s2_pc_p4[riscv_pkg::PdTargetSplit-1:0]) +
-      (riscv_pkg::PdTargetSplit + 1)'(compressed_branch_imm_low(view2.parcel));
+      (riscv_pkg::PdTargetSplit + 1)'(compressed_branch_imm_low(
+      view2.parcel
+  ));
 
   logic s2_tage_cov;
   riscv_pkg::tage_lookup_t s2_tage_lookup;
@@ -1834,12 +1898,12 @@ module if_stage #(
   logic s2_itt_hit;
   logic [BackingTargetBits-1:0] s2_itt_target;
 
-  assign s2_tage_cov    = s2_p.hw_in_win[1] ? s2_m.tage_cov[1] : s2_m.tage_cov[0];
+  assign s2_tage_cov = s2_p.hw_in_win[1] ? s2_m.tage_cov[1] : s2_m.tage_cov[0];
   assign s2_tage_lookup = s2_p.hw_in_win[1] ? s2_m.tage_w1 : s2_m.tage_w0;
-  assign s2_itt_lookup  = s2_p.hw_in_win[1] ? s2_m.itt_w1 : s2_m.itt_w0;
+  assign s2_itt_lookup = s2_p.hw_in_win[1] ? s2_m.itt_w1 : s2_m.itt_w0;
   assign s2_itt_hit     = s2_tage_cov && !s2_fault &&
       (s2_p.hw_in_win[1] ? s2_m.itt_hit[1] : s2_m.itt_hit[0]);
-  assign s2_itt_target  = s2_p.hw_in_win[1] ? s2_m.itt_target[1] : s2_m.itt_target[0];
+  assign s2_itt_target = s2_p.hw_in_win[1] ? s2_m.itt_target[1] : s2_m.itt_target[0];
 
   logic s2_btb_taken;
   logic [XLEN-1:0] s2_btb_target;
@@ -1858,63 +1922,63 @@ module if_stage #(
   // Outputs to PD Stage & Predictor Metadata
   // ===========================================================================
   always_comb begin
-    o_from_if_to_pd.program_counter                  = s1_pc;
-    o_from_if_to_pd.raw_parcel                       = s1_p.parcel;
-    o_from_if_to_pd.sel_nop                          = !s1_valid;
-    o_from_if_to_pd.sel_compressed                   = s1_comp;
-    o_from_if_to_pd.effective_instr                  = s1_instr;
-    o_from_if_to_pd.source_hot_predecoded            = s1_source_hot;
-    o_from_if_to_pd.bits24_20_predecoded             = s1_bits24_20;
-    o_from_if_to_pd.rs1_rest_predecoded              = s1_rs1_rest;
-    o_from_if_to_pd.rvc_extra_predecoded             = s1_p.rvc_extra;
-    o_from_if_to_pd.btb_predicted_taken              = s1_btb_taken;
-    o_from_if_to_pd.btb_predicted_target             = s1_btb_target;
-    o_from_if_to_pd.ras_checkpoint_tos               = s1_m.ras_ckpt_tos;
-    o_from_if_to_pd.ras_checkpoint_valid_count       = s1_m.ras_ckpt_cnt;
-    o_from_if_to_pd.ras_checkpoint_top               = s1_m.ras_ckpt_top;
-    o_from_if_to_pd.bp_dir_taken                     = s1_p.bp_dir_taken;
-    o_from_if_to_pd.bp_dir_idx                       = s1_pc[riscv_pkg::BpDirIdxBits:1];
-    o_from_if_to_pd.tage_valid                       =
-        s1_tage_cov && (|s1_tage_lookup.hit) && !s1_fault;
-    o_from_if_to_pd.tage_taken                       = s1_tage_lookup.taken;
-    o_from_if_to_pd.fetch_fault                      = s1_fault;
-    o_from_if_to_pd.fetch_fault_page                 = s1_fault_page;
-    o_from_if_to_pd.fetch_fault_hi                   = s1_fault_hi;
-    o_from_if_to_pd.decomp_illegal                   = 1'b0;
-    o_from_if_to_pd.is_cond_branch                   = 1'b0;
-    o_from_if_to_pd.pd_target_native_low             = s1_native_sum[riscv_pkg::PdTargetSplit-1:0];
-    o_from_if_to_pd.pd_target_native_high_select     =
-        {s1_instr[31], s1_native_sum[riscv_pkg::PdTargetSplit]};
-    o_from_if_to_pd.pd_target_compressed_low         = s1_comp_sum[riscv_pkg::PdTargetSplit-1:0];
-    o_from_if_to_pd.pd_target_compressed_high_select =
-        {s1_p.parcel[12], s1_comp_sum[riscv_pkg::PdTargetSplit]};
+    o_from_if_to_pd.program_counter = s1_pc;
+    o_from_if_to_pd.raw_parcel = s1_p.parcel;
+    o_from_if_to_pd.sel_nop = !s1_valid;
+    o_from_if_to_pd.sel_compressed = s1_comp;
+    o_from_if_to_pd.effective_instr = s1_instr;
+    o_from_if_to_pd.source_hot_predecoded = s1_source_hot;
+    o_from_if_to_pd.bits24_20_predecoded = s1_bits24_20;
+    o_from_if_to_pd.rs1_rest_predecoded = s1_rs1_rest;
+    o_from_if_to_pd.rvc_extra_predecoded = s1_p.rvc_extra;
+    o_from_if_to_pd.btb_predicted_taken = s1_btb_taken;
+    o_from_if_to_pd.btb_predicted_target = s1_btb_target;
+    o_from_if_to_pd.ras_checkpoint_tos = s1_m.ras_ckpt_tos;
+    o_from_if_to_pd.ras_checkpoint_valid_count = s1_m.ras_ckpt_cnt;
+    o_from_if_to_pd.ras_checkpoint_top = s1_m.ras_ckpt_top;
+    o_from_if_to_pd.bp_dir_taken = s1_p.bp_dir_taken;
+    o_from_if_to_pd.bp_dir_idx = s1_pc[riscv_pkg::BpDirIdxBits:1];
+    o_from_if_to_pd.tage_valid = s1_tage_cov && (|s1_tage_lookup.hit) && !s1_fault;
+    o_from_if_to_pd.tage_taken = s1_tage_lookup.taken;
+    o_from_if_to_pd.fetch_fault = s1_fault;
+    o_from_if_to_pd.fetch_fault_page = s1_fault_page;
+    o_from_if_to_pd.fetch_fault_hi = s1_fault_hi;
+    o_from_if_to_pd.decomp_illegal = 1'b0;
+    o_from_if_to_pd.is_cond_branch = 1'b0;
+    o_from_if_to_pd.pd_target_native_low = s1_native_sum[riscv_pkg::PdTargetSplit-1:0];
+    o_from_if_to_pd.pd_target_native_high_select = {
+      s1_instr[31], s1_native_sum[riscv_pkg::PdTargetSplit]
+    };
+    o_from_if_to_pd.pd_target_compressed_low = s1_comp_sum[riscv_pkg::PdTargetSplit-1:0];
+    o_from_if_to_pd.pd_target_compressed_high_select = {
+      s1_p.parcel[12], s1_comp_sum[riscv_pkg::PdTargetSplit]
+    };
   end
 
   always_comb begin
-    o_from_if_to_pd_2.program_counter                  = s2_pc;
-    o_from_if_to_pd_2.raw_parcel                       = s2_p.parcel;
-    o_from_if_to_pd_2.sel_nop                          = !s2_valid;
-    o_from_if_to_pd_2.sel_compressed                   = s2_comp;
-    o_from_if_to_pd_2.effective_instr                  = s2_instr;
-    o_from_if_to_pd_2.source_hot_predecoded            = s2_source_hot;
-    o_from_if_to_pd_2.bits24_20_predecoded             = s2_bits24_20;
-    o_from_if_to_pd_2.rs1_rest_predecoded              = s2_rs1_rest;
-    o_from_if_to_pd_2.rvc_extra_predecoded             = '0;
-    o_from_if_to_pd_2.btb_predicted_taken              = s2_btb_taken;
-    o_from_if_to_pd_2.btb_predicted_target             = s2_btb_target;
-    o_from_if_to_pd_2.ras_checkpoint_tos               = s1_m.ras_ckpt_tos;
-    o_from_if_to_pd_2.ras_checkpoint_valid_count       = s1_m.ras_ckpt_cnt;
-    o_from_if_to_pd_2.ras_checkpoint_top               = s1_m.ras_ckpt_top;
-    o_from_if_to_pd_2.bp_dir_taken                     = 1'b0;
-    o_from_if_to_pd_2.bp_dir_idx                       = s2_pc[riscv_pkg::BpDirIdxBits:1];
-    o_from_if_to_pd_2.tage_valid                       =
-        s2_tage_cov && (|s2_tage_lookup.hit) && !s2_fault;
-    o_from_if_to_pd_2.tage_taken                       = s2_tage_lookup.taken;
-    o_from_if_to_pd_2.fetch_fault                      = 1'b0;
-    o_from_if_to_pd_2.fetch_fault_page                 = 1'b0;
-    o_from_if_to_pd_2.fetch_fault_hi                   = 1'b0;
-    o_from_if_to_pd_2.decomp_illegal                   = s2_decomp_illegal;
-    o_from_if_to_pd_2.is_cond_branch                   = s2_is_cond_branch;
+    o_from_if_to_pd_2.program_counter = s2_pc;
+    o_from_if_to_pd_2.raw_parcel = s2_p.parcel;
+    o_from_if_to_pd_2.sel_nop = !s2_valid;
+    o_from_if_to_pd_2.sel_compressed = s2_comp;
+    o_from_if_to_pd_2.effective_instr = s2_instr;
+    o_from_if_to_pd_2.source_hot_predecoded = s2_source_hot;
+    o_from_if_to_pd_2.bits24_20_predecoded = s2_bits24_20;
+    o_from_if_to_pd_2.rs1_rest_predecoded = s2_rs1_rest;
+    o_from_if_to_pd_2.rvc_extra_predecoded = '0;
+    o_from_if_to_pd_2.btb_predicted_taken = s2_btb_taken;
+    o_from_if_to_pd_2.btb_predicted_target = s2_btb_target;
+    o_from_if_to_pd_2.ras_checkpoint_tos = s1_m.ras_ckpt_tos;
+    o_from_if_to_pd_2.ras_checkpoint_valid_count = s1_m.ras_ckpt_cnt;
+    o_from_if_to_pd_2.ras_checkpoint_top = s1_m.ras_ckpt_top;
+    o_from_if_to_pd_2.bp_dir_taken = 1'b0;
+    o_from_if_to_pd_2.bp_dir_idx = s2_pc[riscv_pkg::BpDirIdxBits:1];
+    o_from_if_to_pd_2.tage_valid = s2_tage_cov && (|s2_tage_lookup.hit) && !s2_fault;
+    o_from_if_to_pd_2.tage_taken = s2_tage_lookup.taken;
+    o_from_if_to_pd_2.fetch_fault = 1'b0;
+    o_from_if_to_pd_2.fetch_fault_page = 1'b0;
+    o_from_if_to_pd_2.fetch_fault_hi = 1'b0;
+    o_from_if_to_pd_2.decomp_illegal = s2_decomp_illegal;
+    o_from_if_to_pd_2.is_cond_branch = s2_is_cond_branch;
     o_from_if_to_pd_2.pd_target_native_low             = s1_comp ?
         s2_nat_sum_p2[riscv_pkg::PdTargetSplit-1:0] : s2_nat_sum_p4[riscv_pkg::PdTargetSplit-1:0];
     o_from_if_to_pd_2.pd_target_native_high_select     = s1_comp ?
@@ -1947,38 +2011,38 @@ module if_stage #(
   logic s2_same_region;
   assign s2_same_region = !((&s1_pc[riscv_pkg::PhysAddrBits-1:2]) && (s1_pc[1] || !s1_comp));
 
-  assign o_backing_hit[0]                  = s1_valid && !s1_fault && s1_p.backing_hit;
-  assign o_backing_compressed[0]           = s1_p.backing_compressed;
-  assign o_backing_return[0]               = s1_p.backing_return;
-  assign o_backing_target[0]               = s1_p.backing_target;
+  assign o_backing_hit[0] = s1_valid && !s1_fault && s1_p.backing_hit;
+  assign o_backing_compressed[0] = s1_p.backing_compressed;
+  assign o_backing_return[0] = s1_p.backing_return;
+  assign o_backing_target[0] = s1_p.backing_target;
   assign o_backing_slot2_return_by_size[0] = view2.backing_return;
   assign o_backing_slot2_return_by_size[1] = view1.backing_return;
   assign o_backing_slot2_target_by_size[0] = view2.backing_target;
   assign o_backing_slot2_target_by_size[1] = view1.backing_target;
-  assign o_backing_hit[1]                  = s2_valid && s2_same_region && s2_p.backing_hit;
-  assign o_backing_compressed[1]           = s2_p.backing_compressed;
-  assign o_backing_return[1]               = s1_comp ? view1.backing_return : view2.backing_return;
-  assign o_backing_target[1]               = s1_comp ? view1.backing_target : view2.backing_target;
+  assign o_backing_hit[1] = s2_valid && s2_same_region && s2_p.backing_hit;
+  assign o_backing_compressed[1] = s2_p.backing_compressed;
+  assign o_backing_return[1] = s1_comp ? view1.backing_return : view2.backing_return;
+  assign o_backing_target[1] = s1_comp ? view1.backing_target : view2.backing_target;
 
   // TAGE and ITTAGE outputs
   assign o_tage_slot_valid[0] = s1_tage_cov;
   assign o_tage_slot_valid[1] = s2_tage_cov;
-  assign o_tage_slot_lookup   = s1_tage_lookup;
+  assign o_tage_slot_lookup = s1_tage_lookup;
   assign o_tage_slot_lookup_2 = s2_tage_lookup;
   // When slot 2 is valid, slot 1 is non-control-flow, so any branch/jump in
   // the bundle belongs to slot 2's window. Use s2_valid_raw so pqueue_flush
   // does not drive the 64-bit lookup history bus (bubbles are ignored by PD).
-  assign o_tage_lookup_hist   = s2_valid_raw ? s2_m.itt_hist : s1_m.itt_hist;
-  assign o_itt_slot_lookup    = s1_itt_lookup;
-  assign o_itt_slot_lookup_2  = s2_itt_lookup;
-  assign o_itt_hit[0]         = s1_itt_hit;
-  assign o_itt_hit[1]         = s2_itt_hit;
-  assign o_itt_target[0]      = s1_itt_target;
-  assign o_itt_target[1]      = s2_itt_target;
+  assign o_tage_lookup_hist = s2_valid_raw ? s2_m.itt_hist : s1_m.itt_hist;
+  assign o_itt_slot_lookup = s1_itt_lookup;
+  assign o_itt_slot_lookup_2 = s2_itt_lookup;
+  assign o_itt_hit[0] = s1_itt_hit;
+  assign o_itt_hit[1] = s2_itt_hit;
+  assign o_itt_target[0] = s1_itt_target;
+  assign o_itt_target[1] = s2_itt_target;
 
   // Frontend validity tracker control taps
   assign o_slot1_has_control_flow = s1_valid && s1_p.is_control;
-  assign o_slot1_is_indirect      = s1_p.is_indirect;
+  assign o_slot1_is_indirect = s1_p.is_indirect;
 
   // ===========================================================================
   // Width-Funnel Profiling Events (registered)
@@ -1993,19 +2057,18 @@ module if_stage #(
   logic kill_window_limit;
   logic kill_transient;
 
-  assign width_deliver1     = !i_pipeline_ctrl.stall && s1_valid;
-  assign width_deliver2     = width_deliver1 && s2_valid;
+  assign width_deliver1 = !i_pipeline_ctrl.stall && s1_valid;
+  assign width_deliver2 = width_deliver1 && s2_valid;
   assign width_slot2_killed = width_deliver1 && !s2_valid;
 
-  assign kill_s1_native_ctrl      = !s1_fault && !s1_comp && s1_p.is_control;
+  assign kill_s1_native_ctrl = !s1_fault && !s1_comp && s1_p.is_control;
   assign kill_s1_native_serialize = !s1_fault && !s1_comp && !s1_p.is_control &&
       !s1_p.allows_slot2_after;
-  assign kill_s1_comp_ctrl        = !s1_fault && s1_comp && s1_p.is_control;
+  assign kill_s1_comp_ctrl = !s1_fault && s1_comp && s1_p.is_control;
   assign kill_class               = !s1_fault && s1_p.allows_slot2_after &&
       s2_have_bytes && !s2_fault && !s2_p.slot2_start_valid;
-  assign kill_window_limit        = !s1_fault && s1_p.allows_slot2_after && !s2_have_bytes;
-  assign kill_transient           =
-      s1_fault || (s1_p.allows_slot2_after && s2_have_bytes && s2_fault);
+  assign kill_window_limit = !s1_fault && s1_p.allows_slot2_after && !s2_have_bytes;
+  assign kill_transient = s1_fault || (s1_p.allows_slot2_after && s2_have_bytes && s2_fault);
 
   riscv_pkg::if_width_events_t width_events_q;
   always_ff @(posedge i_clk) begin
@@ -2074,24 +2137,24 @@ module if_stage #(
   (* mark_debug = "true" *) logic dbg_ila_if_pd2_sel_nop;
   (* mark_debug = "true" *) logic dbg_ila_if_pd2_fetch_fault;
 
-  assign dbg_ila_if_pc             = o_pc[15:0];
-  assign dbg_ila_if_instr_valid    = i_instr_valid;
-  assign dbg_ila_if_f0_launch      = f0_launch;
-  assign dbg_ila_if_f1_accept      = f1_accept;
-  assign dbg_ila_if_stop_fetch     = q_stop_fetch;
-  assign dbg_ila_if_flush          = i_pipeline_ctrl.flush;
-  assign dbg_ila_if_stall          = i_pipeline_ctrl.stall;
-  assign dbg_ila_if_pd_redirect    = i_pd_redirect;
-  assign dbg_ila_if_instr_fault0   = i_instr_fault0;
-  assign dbg_ila_if_instr_fault1   = i_instr_fault1;
-  assign dbg_ila_if_pd_pc          = o_from_if_to_pd.program_counter[15:0];
-  assign dbg_ila_if_pd_instr       = o_from_if_to_pd.effective_instr;
-  assign dbg_ila_if_pd_sel_nop     = o_from_if_to_pd.sel_nop;
-  assign dbg_ila_if_pd_fetch_fault = o_from_if_to_pd.fetch_fault;
+  assign dbg_ila_if_pc                = o_pc[15:0];
+  assign dbg_ila_if_instr_valid       = i_instr_valid;
+  assign dbg_ila_if_f0_launch         = f0_launch;
+  assign dbg_ila_if_f1_accept         = f1_accept;
+  assign dbg_ila_if_stop_fetch        = q_stop_fetch;
+  assign dbg_ila_if_flush             = i_pipeline_ctrl.flush;
+  assign dbg_ila_if_stall             = i_pipeline_ctrl.stall;
+  assign dbg_ila_if_pd_redirect       = i_pd_redirect;
+  assign dbg_ila_if_instr_fault0      = i_instr_fault0;
+  assign dbg_ila_if_instr_fault1      = i_instr_fault1;
+  assign dbg_ila_if_pd_pc             = o_from_if_to_pd.program_counter[15:0];
+  assign dbg_ila_if_pd_instr          = o_from_if_to_pd.effective_instr;
+  assign dbg_ila_if_pd_sel_nop        = o_from_if_to_pd.sel_nop;
+  assign dbg_ila_if_pd_fetch_fault    = o_from_if_to_pd.fetch_fault;
   assign dbg_ila_if_pd_fetch_fault_hi = o_from_if_to_pd.fetch_fault_hi;
-  assign dbg_ila_if_pd2_pc         = o_from_if_to_pd_2.program_counter[15:0];
-  assign dbg_ila_if_pd2_sel_nop    = o_from_if_to_pd_2.sel_nop;
-  assign dbg_ila_if_pd2_fetch_fault = o_from_if_to_pd_2.fetch_fault;
+  assign dbg_ila_if_pd2_pc            = o_from_if_to_pd_2.program_counter[15:0];
+  assign dbg_ila_if_pd2_sel_nop       = o_from_if_to_pd_2.sel_nop;
+  assign dbg_ila_if_pd2_fetch_fault   = o_from_if_to_pd_2.fetch_fault;
 `endif
 
 `ifndef SYNTHESIS
@@ -2142,16 +2205,15 @@ module if_stage #(
 
     sim_f0_ras_srcs = {
       f0_launch && f0_btb_steer_now && (btb_is_call || btb_is_return),
-      f0_launch && f0_span_btb_fire &&
-          (span_btb_pending_q.is_call || span_btb_pending_q.is_return),
+      f0_launch && f0_span_btb_fire && (span_btb_pending_q.is_call || span_btb_pending_q.is_return),
       f1_collapsed_btb_steer && (f1_req_q.btb_is_call || f1_req_q.btb_is_return),
       f1_collapsed_span_fire && (span_btb_pending_q.is_call || span_btb_pending_q.is_return)
     };
 
     sim_served_word = i_served_high ? i_served_word_high : i_served_word_low;
-    sim_q_avail     = {1'b0, sim_q_cnt_q} + (f1_push_valid ? {3'b0, f1_push_count} : 6'd0);
-    sim_m_avail     = {1'b0, sim_m_cnt_q} + (f1_push_valid ? 5'd1 : 5'd0);
-    sim_m_pop       = 3'd0;
+    sim_q_avail = {1'b0, sim_q_cnt_q} + (f1_push_valid ? {3'b0, f1_push_count} : 6'd0);
+    sim_m_avail = {1'b0, sim_m_cnt_q} + (f1_push_valid ? 5'd1 : 5'd0);
+    sim_m_pop = 3'd0;
     for (int k = 0; k < 4; k++) begin
       if ((3'(k) < q_pop_count) && q_view_last[k]) begin
         sim_m_pop = sim_m_pop + 3'd1;
@@ -2205,8 +2267,13 @@ module if_stage #(
                                                    riscv_pkg::PcIncrement32bit)));
       end
       if (!$isunknown(
-              {o_from_if_to_pd.sel_compressed, o_backing_return[1], o_backing_target[1],
-               o_backing_slot2_return_by_size, o_backing_slot2_target_by_size}
+              {
+                o_from_if_to_pd.sel_compressed,
+                o_backing_return[1],
+                o_backing_target[1],
+                o_backing_slot2_return_by_size,
+                o_backing_slot2_target_by_size
+              }
           )) begin
         p_if_backing_slot2_by_size_exact :
         assert ({o_backing_return[1], o_backing_target[1]} ==
@@ -2233,8 +2300,11 @@ module if_stage #(
         assert (o_from_if_to_pd_2.sel_compressed == (o_from_if_to_pd_2.raw_parcel[1:0] != 2'b11));
       end
       if (!$isunknown(
-              {o_backing_hit[1], o_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
-               o_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]}
+              {
+                o_backing_hit[1],
+                o_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
+                o_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]
+              }
           )) begin
         p_if_slot2_backing_hit_same_region :
         assert (!o_backing_hit[1] ||
@@ -2245,8 +2315,9 @@ module if_stage #(
         p_if_ras_cached_shadow_exact :
         assert (ras_top_is_cached == riscv_pkg::pma_cached_ok(ras_top));
       end
-      if (eff_ras_nonempty && !ras_restore_pure_pop_q &&
-          !$isunknown({eff_ras_top, eff_ras_top_cached})) begin
+      if (eff_ras_nonempty && !ras_restore_pure_pop_q && !$isunknown(
+              {eff_ras_top, eff_ras_top_cached}
+          )) begin
         p_if_eff_ras_cached_exact :
         assert (eff_ras_top_cached == riscv_pkg::pma_cached_ok(eff_ras_top));
       end
@@ -2260,7 +2331,9 @@ module if_stage #(
       end
       if (!pqueue_flush && !i_fetch_trap_hold && !s1_fault && s1_p.allows_slot2_after &&
           !s2_fault && s2_p.slot2_start_valid &&
-          !$isunknown({s2_have_bytes, s1_comp, s2_comp, q_avail_ge})) begin
+          !$isunknown(
+              {s2_have_bytes, s1_comp, s2_comp, q_avail_ge}
+          )) begin
         p_if_drain_avail_s2_exact :
         assert (s2_have_bytes ==
                 (s1_comp ? (s2_comp ? q_avail_ge[1] : q_avail_ge[2]) :
@@ -2268,8 +2341,9 @@ module if_stage #(
       end
 
       // 1) First emitted PC after a redirect equals the redirect target.
-      if (!any_redirect && sim_redir_expect_valid_q && !o_from_if_to_pd.sel_nop &&
-          !$isunknown({o_from_if_to_pd.program_counter, sim_redir_expect_pc_q})) begin
+      if (!any_redirect && sim_redir_expect_valid_q && !o_from_if_to_pd.sel_nop && !$isunknown(
+              {o_from_if_to_pd.program_counter, sim_redir_expect_pc_q}
+          )) begin
         p_if_first_pc_after_redirect_matches_target :
         assert (o_from_if_to_pd.program_counter == sim_redir_expect_pc_q);
       end
@@ -2290,10 +2364,10 @@ module if_stage #(
 
       // 3) A bare-mode fetch outside executable PMA carries a fetch fault at
       //    both F0 (IMMU) and the emitted slot-1 packet.
-      if (!i_fetch_translation_active && fetch_pa_valid &&
-          !$isunknown({pc, pc_word_p1, fetch_fault0_live, o_fetch_fault1})) begin
-        p_if_bare_f0_pma_bad_faults :
-        assert (riscv_pkg::pma_fetch_ok(pc) || fetch_fault0_live);
+      if (!i_fetch_translation_active && fetch_pa_valid && !$isunknown(
+              {pc, pc_word_p1, fetch_fault0_live, o_fetch_fault1}
+          )) begin
+        p_if_bare_f0_pma_bad_faults : assert (riscv_pkg::pma_fetch_ok(pc) || fetch_fault0_live);
         p_if_bare_f0_word1_pma_bad_faults :
         assert (riscv_pkg::pma_fetch_ok({pc_word_p1, 2'b00}) || o_fetch_fault1);
       end
@@ -2306,25 +2380,42 @@ module if_stage #(
                o_from_if_to_pd.fetch_fault}
           )) begin
         p_if_bare_fetch_fault_matches_pma :
-        assert ((riscv_pkg::pma_fetch_ok(o_from_if_to_pd.program_counter) &&
-                 (o_from_if_to_pd.sel_compressed ||
-                  riscv_pkg::pma_fetch_ok(o_from_if_to_pd.program_counter + XLEN'(2)))) ||
-                o_from_if_to_pd.fetch_fault);
+        assert ((riscv_pkg::pma_fetch_ok(
+            o_from_if_to_pd.program_counter
+        ) && (o_from_if_to_pd.sel_compressed || riscv_pkg::pma_fetch_ok(
+            o_from_if_to_pd.program_counter + XLEN'(2)
+        ))) || o_from_if_to_pd.fetch_fault);
       end
 `endif
 
       // 4) At most one speculative RAS op per window, never on a fault/stall/
       //    redirect, and never colliding with a registered restore at u_ras.
-      if (!$isunknown({sim_f0_ras_srcs, f0_ras_push, f0_ras_pop, f0_launch, f1_collapsed_accept,
-                       f0_stop_fetch, fetch_fault0_live, any_redirect,
-                       i_from_ex_comb.ras_misprediction, f1_ras_restore_comb,
-                       ras_restore_q, f0_ras_push_q, f0_ras_pop_q, pd_ras_restore,
-                       i_pipeline_ctrl.stall, frontend_flush})) begin
+      if (!$isunknown(
+              {
+                sim_f0_ras_srcs,
+                f0_ras_push,
+                f0_ras_pop,
+                f0_launch,
+                f1_collapsed_accept,
+                f0_stop_fetch,
+                fetch_fault0_live,
+                any_redirect,
+                i_from_ex_comb.ras_misprediction,
+                f1_ras_restore_comb,
+                ras_restore_q,
+                f0_ras_push_q,
+                f0_ras_pop_q,
+                pd_ras_restore,
+                i_pipeline_ctrl.stall,
+                frontend_flush
+              }
+          )) begin
         p_if_ras_one_op_per_window :
-        assert ($onehot0(sim_f0_ras_srcs) &&
-                (!(f0_ras_push || f0_ras_pop) ||
-                 ((f0_launch || f1_collapsed_accept) && !f0_stop_fetch && !fetch_fault0_live &&
-                  !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore_comb)));
+        assert ($onehot0(
+            sim_f0_ras_srcs
+        ) && (!(f0_ras_push || f0_ras_pop) ||
+              ((f0_launch || f1_collapsed_accept) && !f0_stop_fetch && !fetch_fault0_live &&
+               !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore_comb)));
         p_if_ras_no_restore_collision :
         assert (!(ras_restore_q && (f0_ras_push_q || f0_ras_pop_q)));
         p_if_pd_ras_restore_unstalled :
@@ -2344,17 +2435,16 @@ module if_stage #(
                 (u_ras.valid_count == sim_prev_eff_ras_cnt_q) &&
                 ((u_ras.valid_count != '0) == sim_prev_eff_ras_nonempty_q) &&
                 (!sim_prev_eff_ras_nonempty_q ||
-                 (!$isunknown({u_ras.stored_top, sim_prev_eff_ras_top_q}) &&
-                  (u_ras.stored_top == sim_prev_eff_ras_top_q))) &&
-                ((f0_ras_push_q || f0_ras_pop_q) ||
-                 ((ras_nonempty == sim_prev_eff_ras_nonempty_q) &&
-                  (ras_tos == sim_prev_eff_ras_tos_q) &&
-                  (ras_valid_count == sim_prev_eff_ras_cnt_q) &&
-                  (!sim_prev_eff_ras_nonempty_q ||
-                   (!$isunknown({ras_top, ras_top_is_cached, sim_prev_eff_ras_top_q,
-                                 sim_prev_eff_ras_top_cached_q}) &&
-                    (ras_top == sim_prev_eff_ras_top_q) &&
-                    (ras_top_is_cached == sim_prev_eff_ras_top_cached_q))))));
+                 (!$isunknown(
+            {u_ras.stored_top, sim_prev_eff_ras_top_q}
+        ) && (u_ras.stored_top == sim_prev_eff_ras_top_q))) &&
+            ((f0_ras_push_q || f0_ras_pop_q) ||
+             ((ras_nonempty == sim_prev_eff_ras_nonempty_q) &&
+              (ras_tos == sim_prev_eff_ras_tos_q) && (ras_valid_count == sim_prev_eff_ras_cnt_q) &&
+              (!sim_prev_eff_ras_nonempty_q || (!$isunknown(
+            {ras_top, ras_top_is_cached, sim_prev_eff_ras_top_q, sim_prev_eff_ras_top_cached_q}
+        ) && (ras_top == sim_prev_eff_ras_top_q) &&
+            (ras_top_is_cached == sim_prev_eff_ras_top_cached_q))))));
       end
 
       // 6) if_stage-level parcel-queue headroom check (no parcel/meta
@@ -2445,7 +2535,9 @@ module if_stage #(
                 {o_from_if_to_pd_2.effective_instr[31],
                  (riscv_pkg::PdTargetSplit + 1)'(
                      o_from_if_to_pd_2.program_counter[riscv_pkg::PdTargetSplit-1:0] +
-                     native_branch_imm_low(o_from_if_to_pd_2.effective_instr))});
+                     native_branch_imm_low(
+            o_from_if_to_pd_2.effective_instr
+        ))});
       end
       f_if_slot2_pd_target_compressed_exact :
       assert ({o_from_if_to_pd_2.pd_target_compressed_high_select[1],
@@ -2454,7 +2546,9 @@ module if_stage #(
               {o_from_if_to_pd_2.raw_parcel[12],
                (riscv_pkg::PdTargetSplit + 1)'(
                    o_from_if_to_pd_2.program_counter[riscv_pkg::PdTargetSplit-1:0] +
-                   compressed_branch_imm_low(o_from_if_to_pd_2.raw_parcel))});
+                   compressed_branch_imm_low(
+          o_from_if_to_pd_2.raw_parcel
+      ))});
       f_if_slot2_pc_step_exact :
       assert (o_from_if_to_pd_2.program_counter ==
               (o_from_if_to_pd.program_counter +
@@ -2510,8 +2604,7 @@ module if_stage #(
     p_fault_packet_clears_slot2_taken :
     assert (!o_from_if_to_pd_2.fetch_fault || !o_from_if_to_pd_2.btb_predicted_taken);
     p_fault_f0_vetoes_span_btb : assert (!fetch_fault0_live || !f0_span_btb_fire);
-    p_fault_f0_clears_ras_op :
-    assert (!fetch_fault0_live || (!f0_ras_push && !f0_ras_pop));
+    p_fault_f0_clears_ras_op : assert (!fetch_fault0_live || (!f0_ras_push && !f0_ras_pop));
   end
 
   always_ff @(posedge i_clk) begin
@@ -2520,8 +2613,7 @@ module if_stage #(
     f_prev_span_tail_fault_q <= !i_pipeline_ctrl.reset && !any_redirect &&
         !i_from_ex_comb.ras_misprediction && f1_span_tail_fault;
     if (f_fault_past_valid) begin
-      p_prev_fault0_clears_ras_q :
-      assert (!f_prev_fault0_q || (!f0_ras_push_q && !f0_ras_pop_q));
+      p_prev_fault0_clears_ras_q : assert (!f_prev_fault0_q || (!f0_ras_push_q && !f0_ras_pop_q));
       p_prev_span_tail_fault_clears_ras_q :
       assert (!f_prev_span_tail_fault_q || (!f0_ras_push_q && !f0_ras_pop_q));
       p_span_tail_fault_restores_ras :
@@ -2555,8 +2647,7 @@ module if_stage #(
       p_slot2_valid_no_fault : assert (o_from_if_to_pd_2.sel_nop || (!s1_fault && !s2_fault));
       p_slot2_btb_requires_valid :
       assert (!o_from_if_to_pd_2.btb_predicted_taken || !o_from_if_to_pd_2.sel_nop);
-      p_slot2_fault_clears_btb :
-      assert (!s2_fault || !o_from_if_to_pd_2.btb_predicted_taken);
+      p_slot2_fault_clears_btb : assert (!s2_fault || !o_from_if_to_pd_2.btb_predicted_taken);
       p_slot1_fault_kills_slot2 : assert (!s1_fault || o_from_if_to_pd_2.sel_nop);
     end
   end

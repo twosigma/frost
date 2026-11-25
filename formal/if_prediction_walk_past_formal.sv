@@ -361,7 +361,7 @@ module if_prediction_walk_past_formal (
     logic [4:0] q_cnt;
     q_head = u_if_stage.u_parcel_queue.head_q;
     q_tail = u_if_stage.u_parcel_queue.tail_q;
-    q_cnt  = u_if_stage.u_parcel_queue.count_q;
+    q_cnt = u_if_stage.u_parcel_queue.count_q;
 
     queue_source_ok = (q_cnt <= 5'd16) && (q_tail == (q_head + q_cnt[3:0])) &&
         (u_if_stage.u_parcel_queue.count_ge_q == {
@@ -478,9 +478,9 @@ module fetch_btb_2w #(
   logic [XLEN-1:0] eff_target;
   logic eff_cached;
   logic same_tier;
-  assign eff_target = (f_ret && i_ras_nonempty) ? i_ras_top : {f_target_hw, 1'b0};
-  assign eff_cached = (f_ret && i_ras_nonempty) ? i_ras_top_is_cached : f_tgt_cached;
-  assign same_tier  = i_fetch_translation_active || (eff_cached == i_pc_is_cached);
+  assign eff_target            = (f_ret && i_ras_nonempty) ? i_ras_top : {f_target_hw, 1'b0};
+  assign eff_cached            = (f_ret && i_ras_nonempty) ? i_ras_top_is_cached : f_tgt_cached;
+  assign same_tier             = i_fetch_translation_active || (eff_cached == i_pc_is_cached);
 
   assign o_taken               = f_taken && same_tier;
   assign o_is_span             = o_taken && (f_pos == 2'd3) && !f_comp;

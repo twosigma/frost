@@ -1948,9 +1948,8 @@ class DelayedBranchFetchCoverage:
                     )
                 ):
                     self._pending_target_pc = None
-            if (
-                (_read_bool(s["f0_launch"]) or _read_bool(s["f1_collapsed"]))
-                and (_read_bool(s["btb_steer"]) or _read_bool(s["span_fire"]))
+            if (_read_bool(s["f0_launch"]) or _read_bool(s["f1_collapsed"])) and (
+                _read_bool(s["btb_steer"]) or _read_bool(s["span_fire"])
             ):
                 self._pending_target_pc = _read_int(s["next_pc"])
             if _read_bool(s["resteer"]):

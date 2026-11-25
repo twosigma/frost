@@ -1115,9 +1115,7 @@ def test_optional_predecode_metadata_uses_scalar_overlay() -> None:
     assert "i_response_ready && !i_retarget" not in presenter
 
     if_stage = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv").read_text()
-    pc_block_match = re.search(
-        r"fetch_pc_decoupled #\((.*?)\n  \);", if_stage, re.S
-    )
+    pc_block_match = re.search(r"fetch_pc_decoupled #\((.*?)\n  \);", if_stage, re.S)
     assert pc_block_match is not None
     pc_block = pc_block_match.group(1)
     assert ".i_clk," in pc_block

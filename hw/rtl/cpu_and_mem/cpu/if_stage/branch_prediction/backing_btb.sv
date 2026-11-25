@@ -105,7 +105,7 @@ module backing_btb #(
     // Optional four-halfword window response for decoupled fetch: compares
     // the newest read (images 0 and 1) against i_win_pc and returns per-
     // halfword hits and fields in {W+1:hi, W+1:lo, W:hi, W:lo} order.
-    input  logic [XLEN-1:0] i_win_pc = '0,
+    input logic [XLEN-1:0] i_win_pc = '0,
     output logic [3:0] o_win_hit,
     output logic [3:0] o_win_compressed,
     output logic [3:0] o_win_return,

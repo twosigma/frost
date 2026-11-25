@@ -246,16 +246,14 @@ module cpu_tb
             tb_use_next_pc_q <= 1'b0;
           end
           if (!device_under_test.pipeline_ctrl.stall) begin
-            tb_buf_lo_q      <= instruction_from_testbench;
-            tb_req_pc_q      <= tb_idle_pc;
-            tb_bank_sel_q    <= tb_idle_pc[2];
-            tb_fault0_q      <= (tb_idle_pc == cpu_o_pc) ?
-                o_fetch_fault0 : tb_idle_verdict.bare_fault0;
+            tb_buf_lo_q <= instruction_from_testbench;
+            tb_req_pc_q <= tb_idle_pc;
+            tb_bank_sel_q <= tb_idle_pc[2];
+            tb_fault0_q <= (tb_idle_pc == cpu_o_pc) ? o_fetch_fault0 : tb_idle_verdict.bare_fault0;
             tb_fault0_page_q <= (tb_idle_pc == cpu_o_pc) ? o_fetch_fault0_page : 1'b0;
-            tb_fault1_q      <= (tb_idle_pc == cpu_o_pc) ?
-                o_fetch_fault1 : tb_idle_verdict.bare_fault1;
+            tb_fault1_q <= (tb_idle_pc == cpu_o_pc) ? o_fetch_fault1 : tb_idle_verdict.bare_fault1;
             tb_fault1_page_q <= (tb_idle_pc == cpu_o_pc) ? o_fetch_fault1_page : 1'b0;
-            tb_state_q       <= TB_HAVE_LO;
+            tb_state_q <= TB_HAVE_LO;
           end else begin
             tb_state_q <= TB_IDLE;
           end
@@ -263,9 +261,8 @@ module cpu_tb
         TB_HAVE_LO: begin
           if (!device_under_test.pipeline_ctrl.stall) begin
             if (o_fetch_live_claim) begin
-              tb_state_q       <= TB_IDLE;
-              tb_next_pc_q     <= {tb_req_pc_q[riscv_pkg::XLEN-1:2] + (riscv_pkg::XLEN - 2)'(2),
-                                   2'b00};
+              tb_state_q <= TB_IDLE;
+              tb_next_pc_q <= {tb_req_pc_q[riscv_pkg::XLEN-1:2] + (riscv_pkg::XLEN - 2)'(2), 2'b00};
               tb_use_next_pc_q <= 1'b1;
             end else begin
               tb_buf_hi_q <= instruction_from_testbench;
@@ -275,9 +272,8 @@ module cpu_tb
         end
         TB_HOLD_WIN: begin
           if (o_fetch_live_claim) begin
-            tb_state_q       <= TB_IDLE;
-            tb_next_pc_q     <= {tb_req_pc_q[riscv_pkg::XLEN-1:2] + (riscv_pkg::XLEN - 2)'(2),
-                                 2'b00};
+            tb_state_q <= TB_IDLE;
+            tb_next_pc_q <= {tb_req_pc_q[riscv_pkg::XLEN-1:2] + (riscv_pkg::XLEN - 2)'(2), 2'b00};
             tb_use_next_pc_q <= 1'b1;
           end
         end
@@ -303,8 +299,7 @@ module cpu_tb
   // Per-word predecode sideband, computed by the same pure function the RTL
   // fetch path uses (riscv_pkg::imem_make_sideband; no lookahead).
   assign i_instr_sideband = {
-    riscv_pkg::imem_make_sideband(tb_hi_word),
-    riscv_pkg::imem_make_sideband(tb_buf_lo_q)
+    riscv_pkg::imem_make_sideband(tb_hi_word), riscv_pkg::imem_make_sideband(tb_buf_lo_q)
   };
   assign i_instr_pc_metadata = {
     i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],

@@ -219,7 +219,7 @@ async def _reset_dut(
     boot_addr: int = BASE_PC,
     enable_bp: bool = False,
 ) -> None:
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_inputs(dut, boot_addr=boot_addr)
     dut.i_disable_branch_prediction.value = int(not enable_bp)
     _drive_pipeline_ctrl(dut, {"reset": 1})
