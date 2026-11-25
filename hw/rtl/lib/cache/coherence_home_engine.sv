@@ -136,7 +136,7 @@ module coherence_home_engine #(
   // handshake.
   logic absent_q;
   wire  prefetch = request_q.opcode == coherence_pkg::Prefetch;
-  logic probe_matches, upper, run, needs_probe, needs_data;
+  logic probe_matches, upper, run, needs_probe, needs_data, snapshot_read;
   localparam int unsigned ProbeAddrGroups = (ADDR_WIDTH + 7) / 8;
   (* keep = "true" *) wire [ProbeAddrGroups-1:0] probe_addr_equal;
   logic reply_fire, reply_fatal, service_error, service_dirty, service_complete;
@@ -147,11 +147,11 @@ module coherence_home_engine #(
   assign reply = i_r;
   assign work_in = i_work;
   assign upper = LINE_BYTES == 64 && request_q.addr[5];
-  assign needs_probe = request_q.opcode == coherence_pkg::Atomic ||
+  assign snapshot_read = request_q.opcode == coherence_pkg::ReadOnceIF ||
+      request_q.opcode == coherence_pkg::ReadOncePTW || request_q.opcode == coherence_pkg::DMARead;
+  assign needs_probe = snapshot_read || request_q.opcode == coherence_pkg::Atomic ||
       request_q.opcode == coherence_pkg::StoreConditional ||
-      request_q.opcode == coherence_pkg::ReadOnceIF ||
-      request_q.opcode == coherence_pkg::ReadOncePTW ||
-      request_q.opcode == coherence_pkg::DMARead || request_q.opcode == coherence_pkg::DMAWrite;
+      request_q.opcode == coherence_pkg::DMAWrite;
   assign needs_data = request_q.opcode != coherence_pkg::DMAWrite &&
       request_q.opcode != coherence_pkg::Prefetch;
   assign o_idle = phase_q == Free;
@@ -333,7 +333,8 @@ module coherence_home_engine #(
           probe_q.size <= request_q.size;
           probe_q.opcode <= request_q.opcode == coherence_pkg::StoreConditional ?
               coherence_pkg::CheckSC : request_q.opcode == coherence_pkg::DMAWrite ?
-              coherence_pkg::ProbeInvalidate : coherence_pkg::ProbeRead;
+              coherence_pkg::ProbeInvalidate : snapshot_read ?
+              coherence_pkg::ProbeSnapshot : coherence_pkg::ProbeRead;
           probe_q.reason <= request_q.opcode == coherence_pkg::StoreConditional ?
               coherence_pkg::Check : request_q.opcode == coherence_pkg::DMAWrite ?
               coherence_pkg::Write : coherence_pkg::Read;
@@ -434,6 +435,13 @@ module coherence_home_engine #(
         assert ((phase_q == Service || phase_q == Fatal) && read_sent_q && !read_done_q);
       if (i_updated) assert (phase_q == UpdateWait);
       if (o_r_ready) assert (probe_matches);
+      if (phase_q == Service) begin
+        p_snapshot_request :
+        assert ((probe_q.opcode == coherence_pkg::ProbeSnapshot) ==
+            (request_q.opcode == coherence_pkg::ReadOnceIF ||
+             request_q.opcode == coherence_pkg::ReadOncePTW ||
+             request_q.opcode == coherence_pkg::DMARead));
+      end
       if (phase_q == Lookup) assert (!read_sent_q && !read_done_q && !dirty_q && !error_q);
       if (phase_q == Update || phase_q == UpdateWait || phase_q == Result)
         if (!error_q) assert (read_done_q && probe_phase_q == ProbeDone);
@@ -450,7 +458,7 @@ module coherence_home_engine #(
   logic f_past_valid = 1'b0;
   (* anyconst *) logic [4:0] f_byte;
   logic [7:0] f_baseline_q, f_dirty_value_q;
-  logic f_baseline_valid_q, f_dirty_valid_q;
+  logic f_baseline_valid_q, f_dirty_valid_q, f_updated_q;
   wire [7:0] f_write_byte = request_q.wdata[8*f_byte+:8];
   wire f_write_mask = request_q.mask[f_byte];
   wire [7:0] f_image_byte = o_image[8*f_byte+:8];
@@ -476,7 +484,10 @@ module coherence_home_engine #(
     if (i_rst || i_work_valid) begin
       f_baseline_valid_q <= 1'b0;
       f_dirty_valid_q <= 1'b0;
+      f_updated_q <= 1'b0;
     end else if (run) begin
+      if (i_updated) f_updated_q <= 1'b1;
+      if (o_result_valid && !error_q && f_dirty_valid_q) p_dirty_persisted : assert (f_updated_q);
       if (i_data_valid) begin
         f_baseline_q <= f_data_byte;
         f_baseline_valid_q <= 1'b1;
@@ -520,6 +531,16 @@ module coherence_home_engine #(
         assert ({o_update_data, o_update_mask} == $past({o_update_data, o_update_mask}));
       end
       cover (i_r_valid && o_r_ready && reply.data_valid && i_data_valid);
+      if (reply_fire && probe_q.opcode == coherence_pkg::ProbeSnapshot &&
+          !reply.error && reply.state == coherence_pkg::Modified) begin
+        c_snapshot_data_first : cover (reply.data_valid && !data_complete);
+        c_snapshot_data_together : cover (reply.data_valid && i_data_valid);
+        c_snapshot_data_last : cover (reply.data_valid && read_done_q);
+        c_snapshot_current : cover (!reply.data_valid && !reply.absorbed);
+      end
+      c_snapshot_absorbed :
+      cover (reply_fire && probe_q.opcode == coherence_pkg::ProbeSnapshot &&
+          reply.absorbed && reply.data_valid && !reply.error);
       cover (o_result_valid && failed_q);
       cover (o_result_valid && i_result_ready && absent_q);
       cover (o_result_valid && f_dirty_valid_q && request_q.opcode == coherence_pkg::DMAWrite);

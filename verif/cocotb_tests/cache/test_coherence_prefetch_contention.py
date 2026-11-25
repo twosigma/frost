@@ -41,7 +41,7 @@ async def demand_contention(dut: Any) -> None:
                     address = base + index * b.line
                     grant = await b.start(1, address)
                     await b.finish(grant, written=True)
-                    b.private[address] = (3, (index + 1) * 0x0101010101010101)
+                    b.set_modified(address, (index + 1) * 0x0101010101010101)
             base += 0x1000
             await b.prime(base, delay)
             await b.tick(35)

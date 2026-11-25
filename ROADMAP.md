@@ -167,13 +167,15 @@ acquisitions overlap on borrowed load endpoints, and each read slot holds one
 load. The home has eight
 fills and a stream prefetcher. Two instruction-refill slots can overlap;
 instruction and page-table readers capture data and errors at the grant and
-hold their identities through release. The probe for an instruction or
-page-table read downgrades a Modified sector to Shared, so the next store to it
-acquires it again. An AMO or SC on a sector the L1D holds Modified completes in
-the L1D once endpoint 0 and that sector are free; other AMOs drain every L1D
-request and go through the home. Further work targets reader latency and DMA
-throughput. The single-hart queue sizes and lane choices will need revisiting
-for the second hart's memory traffic.
+hold their identities through release. Instruction, page-table and DMA
+reads leave a Modified sector in the L1D. When the L1D holds newer
+bytes, the home collects them before granting the read. A later store
+that hits the Modified sector reuses its permission. An AMO or SC on a
+Modified sector completes in the L1D once endpoint 0 and that sector are
+free. Other AMOs drain every L1D request and go through the home.
+Further work targets reader latency and DMA throughput. The single-hart
+queue sizes and lane choices will need revisiting for the second
+hart's memory traffic.
 
 Writable BRAM stays private to one hart. Its read caches are outside the
 coherent ingress, and its instruction and data copies are separate, so a
@@ -361,10 +363,10 @@ trace of 40 cycles or fewer reaches the first, and a store-only search found
 none for the second.
 
 Open: `coherence_l1d.sby`, `coherence_store_boundary.sby` and the
-unbounded pair of `coherent_hart_cache.sby` run a plain `opt` while their
-registers have no free starting value, which SymbiYosys gives them only
-after the script. A register without an initial value can then be fixed to
-the constant it loads, fused with a register that shares its input, or
+original unbounded pair of `coherent_hart_cache.sby` run a plain `opt`
+before SymbiYosys gives their registers free starting values. A
+register without an initial value can then be fixed to the constant it
+loads, fused with a register that shares its input, or
 folded to a constant x that each reader resolves separately, which drops
 behaviors from their checks. With every register starting free, the
 store-boundary BMCs take about 3.5 times as long per frame, more than the
@@ -373,11 +375,12 @@ cycle does not shorten them, because the added state is registers without
 a reset that the load tasks never load, such as the AMO operand and SC
 table registers. A word-level engine is slower still: in twenty minutes
 smtbmc with Boolector checks the sound load BMC's first 38 steps, where
-CaDiCaL checks 75 frames and main's script all 80 in seven minutes. From
-the state after the reset cycle with every other register free, the hart
-maintenance lemma induction passes in about two minutes
-(`coh_hart_maint_owned_reset_prove` keeps that check), but the PDR proof
-that assumes its lemmas leaves one property unresolved in two hours.
+CaDiCaL checks 75 frames and main's script all 80 in seven minutes.
+The hart task `coh_hart_maint_owned_reset_prove` checks ownership by
+induction from the state after reset with every other register free.
+Two PDR tasks check maintenance with unspecified initial values left
+free. One proves all 286 ownership facts. The other assumes those
+facts and proves the remaining 89 assertions.
 Fifty-two other `.sby` files run such an optimization after their own
 `setundef` or without one, and twenty-one files in `DONT_CARE_OPEN` (three of
 them without `opt`: `coherence_l1d_twin.sby`, `coherence_read_capture.sby`,
@@ -399,8 +402,10 @@ store-home BMCs run `peepopt`, and its compact covers `abc` and
 capture checks run `abc` after cutting every flip-flop; and the AXI
 bridge's partitions map their assertions with a file of their own. In
 files named above, the L1D conflict proofs run `opt -full` and `sat` after
-cutting every flip-flop, the hart reset-state task starts from `sim`'s
-state after the reset cycle, and the hart covers zero undefined constants.
+cutting every flip-flop. The hart reset-state task starts from `sim`'s
+state after the reset cycle. The original two hart maintenance covers
+zero undefined constants. The retained-snapshot cover and the two
+free-state maintenance PDR tasks preserve those initial values.
 
 No list of forms keeps undefined constants, which SymbiYosys also makes
 free only after the script. Passes inside the forms the check accepts fuse
