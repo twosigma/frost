@@ -37,7 +37,7 @@ module coherent_lq_issue_selector #(
     input logic [DEPTH-1:0] rob_head_match_q,
     input logic [DEPTH-1:0] blocked_by_amo_phys_q,
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] lq_rob_tag_flat,
-    input logic [$clog2(DEPTH)-1:0] head_idx,
+    input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] i_entry_age_flat,
     input logic i_sq_committed_empty,
     input logic [DEPTH-1:0] i_staged_younger,
     // i_staged_younger at the ROB-head entry, when rob_head_match_q is set.
@@ -57,12 +57,12 @@ module coherent_lq_issue_selector #(
     output logic [DEPTH-1:0] o_merged_scan_onehot,
     output logic o_stored_scan_found,
     output logic [$clog2(DEPTH)-1:0] o_stored_scan_idx,
-    output logic [$clog2(DEPTH)-1:0] o_stored_scan_pos,
+    output logic [(riscv_pkg::ReorderBufferTagWidth+$clog2(DEPTH))-1:0] o_stored_scan_pos,
     output logic [DEPTH-1:0] o_stored_scan_onehot,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_stored_scan_rob_tag,
     output logic o_update_scan_found,
     output logic [$clog2(DEPTH)-1:0] o_update_scan_idx,
-    output logic [$clog2(DEPTH)-1:0] o_update_scan_pos,
+    output logic [(riscv_pkg::ReorderBufferTagWidth+$clog2(DEPTH))-1:0] o_update_scan_pos,
     output logic [DEPTH-1:0] o_update_scan_onehot,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_update_scan_rob_tag,
     output logic o_head_mem_stored_found,
@@ -74,18 +74,22 @@ module coherent_lq_issue_selector #(
     output logic [DEPTH-1:0] o_head_mem_update_onehot,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_mem_update_rob_tag
 );
+  localparam int unsigned IdxWidth = $clog2(DEPTH);
+  localparam int unsigned TagWidth = riscv_pkg::ReorderBufferTagWidth;
+  localparam int unsigned PosWidth = TagWidth + IdxWidth;
+
   typedef struct packed {
     logic issue_cdb_found;
     logic [$clog2(DEPTH)-1:0] issue_cdb_idx;
     logic [DEPTH-1:0] merged_scan_onehot;
     logic stored_scan_found;
     logic [$clog2(DEPTH)-1:0] stored_scan_idx;
-    logic [$clog2(DEPTH)-1:0] stored_scan_pos;
+    logic [PosWidth-1:0] stored_scan_pos;
     logic [DEPTH-1:0] stored_scan_onehot;
     logic [riscv_pkg::ReorderBufferTagWidth-1:0] stored_scan_rob_tag;
     logic update_scan_found;
     logic [$clog2(DEPTH)-1:0] update_scan_idx;
-    logic [$clog2(DEPTH)-1:0] update_scan_pos;
+    logic [PosWidth-1:0] update_scan_pos;
     logic [DEPTH-1:0] update_scan_onehot;
     logic [riscv_pkg::ReorderBufferTagWidth-1:0] update_scan_rob_tag;
     logic head_mem_stored_found;
@@ -100,28 +104,20 @@ module coherent_lq_issue_selector #(
   selection_t selected;
   wire [$bits(selected)-1:0] choices[2];
 
-  localparam int unsigned IdxWidth = $clog2(DEPTH);
-  localparam int unsigned TagWidth = riscv_pkg::ReorderBufferTagWidth;
+  logic [TagWidth-1:0] entry_age[DEPTH];
+  for (genvar i = 0; i < DEPTH; i++) begin : gen_entry_age
+    assign entry_age[i] = i_entry_age_flat[i*TagWidth+:TagWidth];
+  end
+
+  // Order entries by ROB-head-relative age, breaking equal-age ties by
+  // physical index so every input vector induces a strict total order.
   logic [DEPTH-1:0] precedes[DEPTH];
   for (genvar selected = 0; selected < DEPTH; selected++) begin : gen_order
-    for (genvar other = 0; other < DEPTH; other++) begin : gen_other
-      if (other < selected) begin : gen_below
-        if (selected == DEPTH - 1) begin : gen_last
-          assign precedes[selected][other] = head_idx <= IdxWidth'(other);
-        end else begin : gen_not_last
-          assign precedes[selected][other] = head_idx <= IdxWidth'(other) ||
-              head_idx > IdxWidth'(selected);
-        end
-      end else if (other > selected) begin : gen_above
-        if (other == DEPTH - 1) begin : gen_last
-          assign precedes[selected][other] = head_idx > IdxWidth'(selected);
-        end else begin : gen_not_last
-          assign precedes[selected][other] = head_idx <= IdxWidth'(other) &&
-              head_idx > IdxWidth'(selected);
-        end
-      end else begin : gen_same
-        assign precedes[selected][other] = 1'b0;
-      end
+    assign precedes[selected][selected] = 1'b0;
+    for (genvar other = 0; other < selected; other++) begin : gen_pair
+      wire sel_older = entry_age[selected] < entry_age[other];
+      assign precedes[other][selected] = sel_older;
+      assign precedes[selected][other] = !sel_older;
     end
   end
 
@@ -229,13 +225,13 @@ module coherent_lq_issue_selector #(
       for (int index = 0; index < DEPTH; index++) begin
         choice.issue_cdb_idx |= IdxWidth'(index) & {IdxWidth{first[3][index]}};
         choice.stored_scan_idx |= IdxWidth'(index) & {IdxWidth{first[0][index]}};
-        choice.stored_scan_pos |= IdxWidth'(IdxWidth'(index) - head_idx) &
-            {IdxWidth{first[0][index]}};
+        choice.stored_scan_pos |= {entry_age[index], IdxWidth'(index)} &
+            {PosWidth{first[0][index]}};
         choice.stored_scan_rob_tag |= lq_rob_tag_flat[index*TagWidth+:TagWidth] &
             {TagWidth{first[0][index]}};
         choice.update_scan_idx |= IdxWidth'(index) & {IdxWidth{first[1][index]}};
-        choice.update_scan_pos |= IdxWidth'(IdxWidth'(index) - head_idx) &
-            {IdxWidth{first[1][index]}};
+        choice.update_scan_pos |= {entry_age[index], IdxWidth'(index)} &
+            {PosWidth{first[1][index]}};
         choice.update_scan_rob_tag |= lq_rob_tag_flat[index*TagWidth+:TagWidth] &
             {TagWidth{first[1][index]}};
         choice.head_mem_stored_idx |= IdxWidth'(index) & {IdxWidth{rob_head_match_q[index]}};
@@ -296,7 +292,7 @@ module coherent_lq_issue_selector #(
       .rob_head_match_q(rob_head_match_q),
       .blocked_by_amo_phys_q(blocked_by_amo_phys_q),
       .lq_rob_tag_flat(lq_rob_tag_flat),
-      .head_idx(head_idx),
+      .i_entry_age_flat(i_entry_age_flat),
       .i_sq_committed_empty(i_sq_committed_empty),
       .o_issue_cdb_found(reference.issue_cdb_found),
       .o_issue_cdb_idx(reference.issue_cdb_idx),

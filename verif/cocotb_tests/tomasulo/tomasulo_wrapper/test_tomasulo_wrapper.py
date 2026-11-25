@@ -8185,3 +8185,284 @@ async def test_unready_short_mul_does_not_backpressure_full_mul(dut: Any) -> Non
         assert seen_cdb.get(mul2_tag) == 72
         assert seen_cdb.get(short_tag) == 15
     cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_mmio_stores_do_not_starve_older_ready_load(dut: Any) -> None:
+    """Back-to-back MMIO stores must not starve an older ready load via hole reuse.
+
+    Two back-to-back MMIO stores commit and drain while an older producer holds
+    the ROB head. A completed early load frees LQ slot 1, and a younger ready
+    load reuses that hole ahead of an older ready load in slot 2 while a younger
+    load in slot 3 sits staged in sq_check behind an unresolved intervening
+    store. When the older load's address arrives, it must evict the younger
+    staged load and complete without waiting to reach the ROB head.
+    """
+    cocotb.log.info("=== Test: Back-To-Back MMIO Stores Do Not Starve Older Load ===")
+    dut_if, _model = await setup_test(dut)
+    dut_if.set_fu_ready(RS_MEM, True)
+    dut_if.set_commit_hold(True)
+
+    mmio_addr = 0x4000_0000
+
+    # Back-to-back MMIO stores at ROB head: S0 (tag 0) and S1 (tag 1).
+    tag_s0 = await dut_if.dispatch(make_store_req(pc=0x5000))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_s0,
+        op=OP_SW,
+        src1_ready=True,
+        src1_value=mmio_addr,
+        src2_ready=True,
+        src2_value=0x11,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    await wait_for_rs_issue(dut_if, RS_MEM)
+    await dut_if.step()
+
+    tag_s1 = await dut_if.dispatch(make_store_req(pc=0x5004))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_s1,
+        op=OP_SW,
+        src1_ready=True,
+        src1_value=mmio_addr,
+        src2_ready=True,
+        src2_value=0x22,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    await wait_for_rs_issue(dut_if, RS_MEM)
+    await dut_if.step()
+
+    # Producers for the anchor load/intervening store and the older load.
+    tag_p_anchor = await dut_if.dispatch(make_int_req(pc=0x5008, rd=1))
+    tag_p_old = await dut_if.dispatch(make_int_req(pc=0x500C, rd=2))
+
+    # LQ slot 0: unaddressed anchor load waiting on tag_p_anchor.
+    tag_l_anchor = await dut_if.dispatch(make_int_req(pc=0x5010, rd=3))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_l_anchor,
+        op=OP_LW,
+        src1_ready=False,
+        src1_tag=tag_p_anchor,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # LQ slot 1: load that completes immediately to leave a hole at slot 1.
+    tag_l_hole = await dut_if.dispatch(make_int_req(pc=0x5014, rd=4))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_l_hole,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=0x1000,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    for _ in range(12):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"]:
+            break
+        await dut_if.step()
+    assert mem_req["en"] and mem_req["addr"] == 0x1000
+    await dut_if.step()
+    dut_if.drive_lq_mem_response(0x1111_2222)
+    cdb = await wait_for_cdb(dut_if)
+    dut_if.clear_lq_mem_response()
+    assert cdb.tag == tag_l_hole
+    await dut_if.step()
+    assert int(dut.u_lq.lq_valid.value) == 0b0000_0001
+
+    # LQ slot 2: older load waiting on tag_p_old.
+    tag_l_old = await dut_if.dispatch(make_int_req(pc=0x5018, rd=5))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_l_old,
+        op=OP_LW,
+        src1_ready=False,
+        src1_tag=tag_p_old,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Intervening store with unknown address (blocks all younger loads in SQ).
+    tag_s_mid = await dut_if.dispatch(make_store_req(pc=0x501C))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_s_mid,
+        op=OP_SW,
+        src1_ready=False,
+        src1_tag=tag_p_anchor,
+        src2_ready=True,
+        src2_value=0x33,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # LQ slot 3: younger load that stages in sq_check and blocks on tag_s_mid.
+    tag_l_staged = await dut_if.dispatch(make_int_req(pc=0x5020, rd=6))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_l_staged,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=0x3000,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    for _ in range(10):
+        if (
+            int(dut.u_lq.sq_check_pending.value)
+            and int(dut.u_lq.sq_check_rob_tag_q.value) == tag_l_staged
+        ):
+            break
+        await dut_if.step()
+    assert int(dut.u_lq.sq_check_pending.value)
+    assert int(dut.u_lq.sq_check_rob_tag_q.value) == tag_l_staged
+
+    # Fill LQ slots 4..7 with younger ready loads (all blocked by tag_s_mid).
+    for idx in range(4):
+        tag_fill = await dut_if.dispatch(make_int_req(pc=0x5024 + 4 * idx, rd=7 + idx))
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MEM,
+            rob_tag=tag_fill,
+            op=OP_LW,
+            src1_ready=True,
+            src1_value=0x3100 + 0x100 * idx,
+            src2_ready=True,
+            src3_ready=True,
+            imm=0,
+            use_imm=True,
+            mem_size=2,
+            mem_signed=False,
+        )
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+        await wait_for_rs_issue(dut_if, RS_MEM)
+        await dut_if.step()
+    assert int(dut.u_lq.lq_valid.value) == 0b1111_1101
+
+    # Reuse the hole at LQ slot 1 with an even younger ready load.
+    tag_l_ring = await dut_if.dispatch(make_int_req(pc=0x5034, rd=11))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=tag_l_ring,
+        op=OP_LW,
+        src1_ready=True,
+        src1_value=0x4000,
+        src2_ready=True,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+        mem_signed=False,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    await wait_for_rs_issue(dut_if, RS_MEM)
+    await dut_if.step()
+    assert int(dut.u_lq.lq_valid.value) == 0xFF
+    assert int(dut.u_lq.lq_rob_tag[1].value) == tag_l_ring
+    assert int(dut.u_lq.lq_rob_tag[2].value) == tag_l_old
+
+    # Release commit hold so both back-to-back MMIO stores (S0 and S1) commit
+    # and begin draining while tag_p_anchor holds the ROB head.
+    dut_if.set_commit_hold(False)
+    for _ in range(10):
+        if dut_if.head_tag == tag_p_anchor:
+            break
+        await dut_if.step()
+    assert dut_if.head_tag == tag_p_anchor, (
+        f"Expected S0 and S1 to commit and leave tag_p_anchor at head, got {dut_if.head_tag}"
+    )
+
+    sq_draining = False
+    for _ in range(10):
+        sq_write = dut_if.read_sq_mem_write()
+        if sq_write["en"] or int(dut.u_sq.write_inflight_cnt.value) != 0:
+            sq_draining = True
+            break
+        await dut_if.step()
+    assert sq_draining, "Back-to-back MMIO stores should begin draining"
+
+    # Wake tag_p_old so the older load (slot 2) resolves its address (0x2000)
+    # while the back-to-back MMIO stores are draining.
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_p_old, value=0x2000)
+    await dut_if.step()
+    dut_if.clear_fu_complete(FU_FP_ADD)
+
+    # The older load must evict tag_l_staged from sq_check and launch its read
+    # at 0x2000 without waiting to reach the ROB head. Drain both MMIO writes
+    # if needed while watching for the older load's read request.
+    launched = False
+    writes_completed = 0
+    for _ in range(24):
+        mem_req = dut_if.read_lq_mem_request()
+        if mem_req["en"] and mem_req["addr"] == 0x2000:
+            launched = True
+            break
+        if int(dut.u_sq.write_inflight_cnt.value) != 0 and writes_completed < 2:
+            dut_if.drive_sq_mem_write_done()
+            await dut_if.step()
+            dut_if.clear_sq_mem_write_done()
+            writes_completed += 1
+            continue
+        await dut_if.step()
+    assert launched, (
+        "Older ready load was starved behind younger staged load and reused hole "
+        f"(staged_tag={int(dut.u_lq.sq_check_rob_tag_q.value)})"
+    )
+    assert dut_if.head_tag == tag_p_anchor, (
+        "Older load should launch while tag_p_anchor still holds the ROB head"
+    )
+
+    await dut_if.step()
+    dut_if.drive_lq_mem_response(0xCAFE_6666)
+    cdb_old = await wait_for_cdb(dut_if)
+    dut_if.clear_lq_mem_response()
+    assert cdb_old.tag == tag_l_old
+    assert cdb_old.value == 0xCAFE_6666
+    cocotb.log.info("=== Test Passed ===")
