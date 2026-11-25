@@ -2297,6 +2297,10 @@ module if_stage #(
         p_if_bare_f0_word1_pma_bad_faults :
         assert (riscv_pkg::pma_fetch_ok({pc_word_p1, 2'b00}) || o_fetch_fault1);
       end
+`ifndef FROST_RVFI_DII
+      // TestRIG builds (hw/sim/frost_rvfi_dii.sv) drop instruction access
+      // faults on purpose when injecting DII instructions, so skip the
+      // emitted-packet check there while keeping the F0 IMMU check above.
       if (!i_fetch_translation_active && !o_from_if_to_pd.sel_nop && !$isunknown(
               {o_from_if_to_pd.program_counter, o_from_if_to_pd.sel_compressed,
                o_from_if_to_pd.fetch_fault}
@@ -2307,6 +2311,7 @@ module if_stage #(
                   riscv_pkg::pma_fetch_ok(o_from_if_to_pd.program_counter + XLEN'(2)))) ||
                 o_from_if_to_pd.fetch_fault);
       end
+`endif
 
       // 4) At most one speculative RAS op per window, never on a fault/stall/
       //    redirect, and never colliding with a registered restore at u_ras.
