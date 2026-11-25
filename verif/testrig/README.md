@@ -152,7 +152,7 @@ the SoC with its own DDR model timing (`FROST_DDR_MODEL_SEED`, see
 | `--vector` | off | Replay this many random vector-instruction tests on a core built with the vector unit (see [The vector extension](#the-vector-extension)) |
 | `--vector-length` | 20 | Operation groups per generated vector trace |
 | `--vector-source-widths` | off | Add the directed integer, FP and memory source-width traces to `--vector` |
-| `--vector-directed` | off | Add the directed vector CSR, scalar-result, fractional LMUL, FP and cached DDR memory traces to `--vector` |
+| `--vector-directed` | off | Add the directed vector CSR, scalar-result, fractional LMUL, FP, cached DDR and uncached region memory traces to `--vector` |
 | `--vector-segments` | off | Replay the five seeded generated segment traces from `verif/testrig/vector_segments.py` plus `verif/testrig/vector_segment.S` (sets `--vlen` to 128 when omitted) |
 | `--vector-ext` | off | Replay the directed RVA23 vector extension traces (sets `--vlen` to 128 when omitted) |
 | `--vlen` | 128 with `--vector` / `--vector-segments` | Build FROST with the vector unit at this vector length (128, 256 or 512) and configure Sail to match; needed to replay vector traces with `--trace` or `--trace-dir` |
@@ -517,7 +517,7 @@ legal controls. The memory trace checks traps before an access.
 [Integer](vector_source_widths_integer.S) · [Floating point](vector_source_widths_fp.S)
 · [Memory](vector_source_widths_memory.S)
 
-The `--vector-directed` option replays 25 directed base-V and Zfa traces (the
+The `--vector-directed` option replays 27 directed base-V and Zfa traces (the
 directed segment trace `vector_segment.S` runs with `--vector-segments`):
 
 | Trace | Instruction family and coverage |
@@ -536,6 +536,7 @@ directed segment trace `vector_segment.S` runs with `--vector-segments`):
 | [`vector_segment.S`](vector_segment.S) | Runs in `--vector-segments`: aligned cached-DDR unit-stride (`vlseg`/`vsseg`) and strided (`vlsseg`/`vssseg`) segment transfers for `nf = 2..8` across `e8..e64`, masked/unmasked, page crossings, and scalar store readbacks |
 | [`vector_fof.S`](vector_fof.S) | Aligned `vle{8,16,32,64}ff.v` loads at the `0xC0000000` cached-DDR upper boundary: later-element `vl` trimming, masked fault preservation, and element-0 traps |
 | [`vector_vstart_resume.S`](vector_vstart_resume.S) | Nonzero-`vstart` resumption across strided, indexed (including in-place `vd == vs2`), segment, and fault-only-first loads and stores: prestart preservation, `vstart >= vl`, fault-only-first trimming at `i > vstart` and `i == vstart`, fault-triggered resumption, and scalar store readbacks |
+| [`vector_uncached.S`](vector_uncached.S) | Uncached vector loads and stores across low BRAM, MMIO, APLIC, and IMSIC windows (unit-stride `e8..e64`, masked, mask `vlm`/`vsm`, whole-register under `vill`, strided, ordered and unordered indexed, mixed DDR/BRAM/MMIO/APLIC gather, unit-stride and strided segments, fault-only-first trimming at `0x40000` and `0x40031000`, alignment and unmapped PMA faults, partial element-1 `vstart` traps, nonzero-`vstart` resume, and scalar store readbacks) |
 | [`vector_int_compare.S`](vector_int_compare.S) | Vector, scalar, and immediate integer comparisons at `SEW = 32` and `64`, mask-undisturbed preservation, and signed/unsigned ordering |
 | [`vector_int_widen_narrow.S`](vector_int_widen_narrow.S) | Widening add/sub/mul/macc, `vzext`/`vsext`, narrowing right shifts, shift-amount masking, legal overlaps, and illegal width/LMUL traps |
 | [`vector_fixed_point.S`](vector_fixed_point.S) | Saturating add/sub, averaging add/sub, `vsmul`, scaling shifts, and narrowing clips across all four `vxrm` modes, sticky `vxsat`, and overlap traps |
