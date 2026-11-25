@@ -35,6 +35,7 @@ read_slang --top if_prediction_walk_past_formal --single-unit -DSYNTHESIS -DPRED
 hierarchy -top if_prediction_walk_past_formal
 script free_undefined.ys
 setattr -unset dont_touch *
+setattr -unset keep *
 setattr -mod -unset keep_hierarchy *
 setundef -undriven -anyseq
 # Keep fetch on a deterministic 2-wide self-loop at the boot address during
@@ -45,9 +46,14 @@ cover_backing: connect -set boot_addr_hw 0
 cover_backing: connect -set raw_stall 0
 cover_backing: connect -set raw_trap_taken 0
 cover_backing: connect -set raw_mret_taken 0
+cover_backing: connect -set raw_trap_target_hw 0
 cover_backing: connect -set raw_branch_taken 0
+cover_backing: connect -set raw_branch_target_hw 0
 cover_backing: connect -set raw_fence_i_flush 0
+cover_backing: connect -set raw_fence_i_target_hw 0
 cover_backing: connect -set raw_pd_redirect 0
+cover_backing: connect -set raw_pd_redirect_taken 0
+cover_backing: connect -set raw_pd_redirect_target_hw 0
 cover_backing: connect -set raw_instr_valid 1
 cover_backing: connect -set i_disable_branch_prediction 0
 cover_backing: connect -set i_fetch_translation_active 0
@@ -69,6 +75,8 @@ cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_call 0
 cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_ret 0
 cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_tgt_cached 0
 cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_target_hw 0
+cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_w0 0
+cover_backing: connect -set u_if_stage.u_fetch_btb_2w.f_w1 0
 cover_backing: connect -set u_if_stage.u_immu.f_pa_valid 1
 cover_backing: connect -set u_if_stage.u_immu.f_fault0 0
 cover_backing: connect -set u_if_stage.u_immu.f_fault0_page 0
@@ -76,6 +84,9 @@ cover_backing: connect -set u_if_stage.u_immu.f_fault1 0
 cover_backing: connect -set u_if_stage.u_immu.f_fault1_page 0
 cover_backing: connect -set u_if_stage.u_immu.f_pa0 0
 cover_backing: connect -set u_if_stage.u_immu.f_pa1 4
+cover_backing: connect -set u_if_stage.u_immu.f_line_ok 0
+cover_backing: connect -set u_if_stage.u_immu.f_walk_req 0
+cover_backing: connect -set u_if_stage.u_immu.f_walk_vpn 0
 cover_backing: connect -set u_if_stage.u_fetch_dir_4b.f_taken 0
 cover_backing: connect -set u_if_stage.u_ras.f_nonempty 0
 cover_backing: connect -set u_if_stage.u_ras.f_top_hw 0

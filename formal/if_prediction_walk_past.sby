@@ -6,6 +6,7 @@ cover
 [options]
 bmc: mode bmc
 bmc: depth 12
+bmc: aigsmt boolector
 continuity: mode bmc
 continuity: depth 8
 continuity: aigsmt boolector
@@ -13,8 +14,8 @@ cover: mode cover
 cover: depth 10
 
 [engines]
-~continuity: smtbmc boolector
-continuity: abc bmc3 -c
+cover: smtbmc boolector
+~cover: abc bmc3 -c
 
 [script]
 ~continuity: read_slang --top if_prediction_walk_past_formal --single-unit -DSYNTHESIS -DIF_WALK_PAST_PROOF riscv_pkg.sv sdp_dist_ram.sv fetch_parcel_queue.sv fetch_pc_decoupled.sv if_stage.sv if_prediction_walk_past_formal.sv
@@ -22,6 +23,7 @@ continuity: read_slang --top if_prediction_walk_past_formal --single-unit -DSYNT
 hierarchy -top if_prediction_walk_past_formal
 script free_undefined.ys
 setattr -unset dont_touch *
+setattr -unset keep *
 setattr -mod -unset keep_hierarchy *
 setundef -undriven -anyseq
 prep -flatten -top if_prediction_walk_past_formal

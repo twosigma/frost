@@ -40,7 +40,8 @@
  */
 module fetch_btb_2w #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    parameter int unsigned BTB_INDEX_BITS = 8  // 256 total entries (128 per bank)
+    parameter int unsigned BTB_INDEX_BITS = 8,  // 256 total entries (128 per bank)
+    parameter int unsigned BIM_BITS = riscv_pkg::BpDirIdxBits
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -49,18 +50,27 @@ module fetch_btb_2w #(
     input logic [XLEN-1:0] i_pc,
     // Precomputed even-bank index: i_pc[BTB_INDEX_BITS+1:3] + i_pc[2].
     input logic [BTB_INDEX_BITS-2:0] i_pc_even_idx,
+    // Parallel tier-check and RAS target inputs evaluated alongside tag compare.
+    input logic i_fetch_translation_active,
+    input logic i_pc_is_cached,
+    input logic i_ras_nonempty,
+    input logic i_ras_top_is_cached,
+    input logic [XLEN-1:0] i_ras_top,
+    input logic [BIM_BITS-3:0] i_ras_even_dir_idx,
 
     // Winning predicted-taken result across words W and W+1 (W has priority)
-    output logic            o_taken,
-    output logic [     1:0] o_taken_pos,  // {word_in_win, halfword}: 0..3
-    output logic [XLEN-1:0] o_target,
-    output logic            o_compressed,
-    output logic            o_is_call,
-    output logic            o_is_return,
-    output logic            o_is_span,    // 32-bit taken branch at W+1 upper halfword (pos 3)
-    output logic            o_target_is_cached,
-    output logic            o_w0_hit,
-    output logic            o_w1_hit,
+    output logic                o_taken,
+    output logic                o_taken_steer,          // o_taken && !o_is_span
+    output logic [         1:0] o_taken_pos,            // {word_in_win, halfword}: 0..3
+    output logic [    XLEN-1:0] o_target,
+    output logic [BIM_BITS-3:0] o_target_even_dir_idx,
+    output logic                o_compressed,
+    output logic                o_is_call,
+    output logic                o_is_return,
+    output logic                o_is_span,              // 32-bit taken branch at W+1 upper halfword (pos 3)
+    output logic                o_target_is_cached,
+    output logic                o_w0_hit,
+    output logic                o_w1_hit,
 
     // Selected training update (at most one per cycle)
     input logic            i_update,
@@ -84,11 +94,12 @@ module fetch_btb_2w #(
 
   localparam int unsigned BankIndexBits = BTB_INDEX_BITS - 1;
   localparam int unsigned BankEntries = 1 << BankIndexBits;
+  localparam int unsigned EvenDirBits = BIM_BITS - 2;
   localparam int unsigned UpperTagBits = XLEN - BTB_INDEX_BITS - 2;  // PC[63:10] = 54b
   localparam int unsigned TagBits = UpperTagBits + 1;  // {upper, PC[1]} = 55b
   localparam int unsigned TargetBits = riscv_pkg::PhysAddrBits;
-  // {target[TargetBits-1:1], target_is_cached, comp, call, ret}
-  localparam int unsigned PayloadBits = (TargetBits - 1) + 4;
+  // {target[TargetBits-1:1], target_even_dir_idx, target_is_cached, comp, call, ret}
+  localparam int unsigned PayloadBits = (TargetBits - 1) + EvenDirBits + 4;
 
   localparam logic [1:0] StronglyNotTaken = 2'b00;
   localparam logic [1:0] WeaklyNotTaken = 2'b01;
@@ -138,10 +149,14 @@ module fetch_btb_2w #(
   (* keep = "true" *) logic [1:0] late_next_counter;
 
   logic update_target_is_cached;
+  logic [EvenDirBits-1:0] update_target_even_dir_idx;
   assign update_target_is_cached = riscv_pkg::pma_cached_ok(i_update_target);
+  assign update_target_even_dir_idx =
+      i_update_target[BIM_BITS:3] + EvenDirBits'(i_update_target[2]);
 
   assign update_payload = {
     i_update_target[TargetBits-1:1],
+    update_target_even_dir_idx,
     update_target_is_cached,
     i_update_compressed,
     i_update_call,
@@ -280,65 +295,99 @@ module fetch_btb_2w #(
   end
 
   logic [1:0] bank_valid_lookup;
-  logic [1:0] bank_upper_match;
   logic [1:0] bank_hw_lookup;
-  assign bank_valid_lookup[0] = btb_valid[0][bank_lookup_idx[0]];
-  assign bank_valid_lookup[1] = btb_valid[1][bank_lookup_idx[1]];
-  assign bank_upper_match[0]  = bank_valid_lookup[0] && (&bank_upper_eq_l2[0]);
-  assign bank_upper_match[1]  = bank_valid_lookup[1] && (&bank_upper_eq_l2[1]);
-  assign bank_hw_lookup[0]    = bank_tag_lookup[0][0];
-  assign bank_hw_lookup[1]    = bank_tag_lookup[1][0];
+  logic [1:0] bank_is_ret;
+  logic [1:0] bank_is_call;
+  logic [1:0] bank_is_comp;
+  logic [1:0] bank_tgt_cached;
+  logic [1:0] bank_use_ras;
+  logic [1:0] bank_eff_cached;
+  logic [1:0] bank_same_tier;
+  logic [1:0] bank_w0_elig;
+  logic [1:0] bank_is_span;
+  logic [XLEN-1:0] bank_eff_target[2];
+  logic [EvenDirBits-1:0] bank_eff_even_dir[2];
 
-  // Map even/odd banks to window words W (slot 0) and W+1 (slot 1).
+  for (genvar b = 0; b < 2; b++) begin : gen_bank_meta
+    assign bank_valid_lookup[b] = btb_valid[b][bank_lookup_idx[b]];
+    assign bank_hw_lookup[b]    = bank_tag_lookup[b][0];
+    assign bank_is_ret[b]       = bank_payload_lookup[b][0];
+    assign bank_is_call[b]      = bank_payload_lookup[b][1];
+    assign bank_is_comp[b]      = bank_payload_lookup[b][2];
+    assign bank_tgt_cached[b]   = bank_payload_lookup[b][3];
+    assign bank_use_ras[b]      = bank_is_ret[b] && i_ras_nonempty;
+    assign bank_eff_cached[b]   = bank_use_ras[b] ? i_ras_top_is_cached : bank_tgt_cached[b];
+    assign bank_same_tier[b]    = i_fetch_translation_active || (bank_eff_cached[b] == i_pc_is_cached);
+    assign bank_w0_elig[b]      = !i_pc[1] || bank_hw_lookup[b];
+    assign bank_is_span[b]      = bank_hw_lookup[b] && !bank_is_comp[b];
+    assign bank_eff_target[b]   = bank_use_ras[b] ?
+        i_ras_top : {i_pc[XLEN-1:TargetBits], bank_payload_lookup[b][PayloadBits-1:4+EvenDirBits], 1'b0};
+    assign bank_eff_even_dir[b] = bank_use_ras[b] ?
+        i_ras_even_dir_idx : bank_payload_lookup[b][4+:EvenDirBits];
+  end
+
+  // Fold valid, upper-tag match, direction counter bit, and same-tier check
+  // into one 6-input LUT per bank so W0/W1 resolution stays shallow.
+  (* keep = "true" *) logic [1:0] bank_raw_taken;
+  (* keep = "true" *) logic [1:0] bank_taken_ok;
+  for (genvar b = 0; b < 2; b++) begin : gen_bank_taken
+    assign bank_raw_taken[b] = bank_valid_lookup[b] && (&bank_upper_eq_l2[b]) &&
+        bank_counter_lookup[b][1];
+    assign bank_taken_ok[b] = bank_valid_lookup[b] && (&bank_upper_eq_l2[b]) &&
+        bank_counter_lookup[b][1] && bank_same_tier[b];
+  end
+
   logic w0_is_odd;
   logic w1_wraps_block;
   assign w0_is_odd      = i_pc[2];
   assign w1_wraps_block = &i_pc[BTB_INDEX_BITS+1:2];
 
-  logic w0_upper_hit;
-  logic w1_upper_hit;
-  logic w0_hw;
-  logic w1_hw;
-  logic [1:0] w0_cnt;
-  logic [1:0] w1_cnt;
-  logic [PayloadBits-1:0] w0_payload;
-  logic [PayloadBits-1:0] w1_payload;
-
-  assign w0_upper_hit = w0_is_odd ? bank_upper_match[1] : bank_upper_match[0];
-  assign w1_upper_hit = w0_is_odd ? bank_upper_match[0] : bank_upper_match[1];
-  assign w0_hw        = w0_is_odd ? bank_hw_lookup[1] : bank_hw_lookup[0];
-  assign w1_hw        = w0_is_odd ? bank_hw_lookup[0] : bank_hw_lookup[1];
-  assign w0_cnt       = w0_is_odd ? bank_counter_lookup[1] : bank_counter_lookup[0];
-  assign w1_cnt       = w0_is_odd ? bank_counter_lookup[0] : bank_counter_lookup[1];
-  assign w0_payload   = w0_is_odd ? bank_payload_lookup[1] : bank_payload_lookup[0];
-  assign w1_payload   = w0_is_odd ? bank_payload_lookup[0] : bank_payload_lookup[1];
-
   // W hit must lie at or after the entry halfword i_pc[1].
   // W+1 hit is suppressed when W+1 wraps into the next tag block.
   logic w0_hit;
   logic w1_hit;
+  logic w0_raw_taken;
   logic w0_taken;
+  logic w1_taken_cand;
+  logic w1_steer_cand;
   logic w1_taken;
-  assign w0_hit   = w0_upper_hit && (!i_pc[1] || w0_hw);
-  assign w1_hit   = w1_upper_hit && !w1_wraps_block;
-  assign w0_taken = w0_hit && w0_cnt[1];
-  assign w1_taken = w1_hit && w1_cnt[1];
+  logic w0_hw;
+  logic w1_hw;
+  assign w0_hw = w0_is_odd ? bank_hw_lookup[1] : bank_hw_lookup[0];
+  assign w1_hw = w0_is_odd ? bank_hw_lookup[0] : bank_hw_lookup[1];
 
-  logic sel_w1;
-  logic [PayloadBits-1:0] sel_payload;
-  assign sel_w1      = !w0_taken && w1_taken;
-  assign sel_payload = sel_w1 ? w1_payload : w0_payload;
+  assign w0_hit = (w0_is_odd ? (bank_valid_lookup[1] && (&bank_upper_eq_l2[1])) :
+                               (bank_valid_lookup[0] && (&bank_upper_eq_l2[0]))) &&
+                  (!i_pc[1] || w0_hw);
+  assign w1_hit = (w0_is_odd ? (bank_valid_lookup[0] && (&bank_upper_eq_l2[0])) :
+                               (bank_valid_lookup[1] && (&bank_upper_eq_l2[1]))) &&
+                  !w1_wraps_block;
 
-  assign o_w0_hit           = w0_hit;
-  assign o_w1_hit           = w1_hit;
-  assign o_taken            = w0_taken || w1_taken;
-  assign o_taken_pos        = sel_w1 ? {1'b1, w1_hw} : {1'b0, w0_hw};
-  assign o_target           = {i_pc[XLEN-1:TargetBits], sel_payload[PayloadBits-1:4], 1'b0};
-  assign o_target_is_cached = sel_payload[3];
-  assign o_compressed       = o_taken && sel_payload[2];
-  assign o_is_call          = o_taken && sel_payload[1];
-  assign o_is_return        = o_taken && sel_payload[0];
-  assign o_is_span          = o_taken && (o_taken_pos == 2'd3) && !sel_payload[2];
+  assign w0_raw_taken = w0_is_odd ?
+      (bank_raw_taken[1] && bank_w0_elig[1]) : (bank_raw_taken[0] && bank_w0_elig[0]);
+  assign w0_taken = w0_is_odd ?
+      (bank_taken_ok[1] && bank_w0_elig[1]) : (bank_taken_ok[0] && bank_w0_elig[0]);
+  assign w1_taken_cand = (w0_is_odd ? bank_taken_ok[0] : bank_taken_ok[1]) && !w1_wraps_block;
+  assign w1_steer_cand = (w0_is_odd ? (bank_taken_ok[0] && !bank_is_span[0]) :
+                                      (bank_taken_ok[1] && !bank_is_span[1])) && !w1_wraps_block;
+  // W0 keeps strict priority even if W0 crosses tiers (w0_raw_taken blocks W1).
+  assign w1_taken = !w0_raw_taken && w1_taken_cand;
+
+  logic sel_bank1;
+  assign sel_bank1 = (w0_is_odd && w0_taken) || (!w0_is_odd && w1_taken);
+
+  assign o_w0_hit              = w0_hit;
+  assign o_w1_hit              = w1_hit;
+  assign o_taken               = w0_taken || w1_taken;
+  assign o_taken_steer         = w0_taken || (!w0_raw_taken && w1_steer_cand);
+  assign o_taken_pos           = w1_taken ? {1'b1, w1_hw} : {1'b0, w0_hw};
+  assign o_target              = sel_bank1 ? bank_eff_target[1] : bank_eff_target[0];
+  assign o_target_even_dir_idx = sel_bank1 ? bank_eff_even_dir[1] : bank_eff_even_dir[0];
+  assign o_target_is_cached    = sel_bank1 ? bank_eff_cached[1] : bank_eff_cached[0];
+  assign o_compressed          = o_taken && (sel_bank1 ? bank_is_comp[1] : bank_is_comp[0]);
+  assign o_is_call             = o_taken && (sel_bank1 ? bank_is_call[1] : bank_is_call[0]);
+  assign o_is_return           = o_taken && (sel_bank1 ? bank_is_ret[1] : bank_is_ret[0]);
+  assign o_is_span             = w1_taken && (w0_is_odd ? bank_is_span[0] : bank_is_span[1]);
 
   // ===========================================================================
   // Parallel Early/Late Counter RMW

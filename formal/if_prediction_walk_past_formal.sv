@@ -419,15 +419,24 @@ endmodule : if_prediction_walk_past_formal
 // verilog_lint: waive module-filename
 module fetch_btb_2w #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    parameter int unsigned BTB_INDEX_BITS = 8
+    parameter int unsigned BTB_INDEX_BITS = 8,
+    parameter int unsigned BIM_BITS = riscv_pkg::BpDirIdxBits
 ) (
     input  logic                      i_clk,
     input  logic                      i_rst,
     input  logic [          XLEN-1:0] i_pc,
     input  logic [BTB_INDEX_BITS-2:0] i_pc_even_idx,
+    input  logic                      i_fetch_translation_active,
+    input  logic                      i_pc_is_cached,
+    input  logic                      i_ras_nonempty,
+    input  logic                      i_ras_top_is_cached,
+    input  logic [          XLEN-1:0] i_ras_top,
+    input  logic [      BIM_BITS-3:0] i_ras_even_dir_idx,
     output logic                      o_taken,
+    output logic                      o_taken_steer,
     output logic [               1:0] o_taken_pos,
     output logic [          XLEN-1:0] o_target,
+    output logic [      BIM_BITS-3:0] o_target_even_dir_idx,
     output logic                      o_compressed,
     output logic                      o_is_call,
     output logic                      o_is_return,
@@ -453,16 +462,25 @@ module fetch_btb_2w #(
   (* anyseq *) logic [1:0] f_pos;
   (* anyseq *) logic [XLEN-2:0] f_target_hw;
 
-  assign o_taken            = f_taken;
-  assign o_taken_pos        = f_pos;
-  assign o_target           = {f_target_hw, 1'b0};
-  assign o_compressed       = f_comp;
-  assign o_is_call          = f_taken && f_call;
-  assign o_is_return        = f_taken && f_ret;
-  assign o_is_span          = f_taken && (f_pos == 2'd3) && !f_comp;
-  assign o_target_is_cached = f_tgt_cached;
-  assign o_w0_hit           = f_w0;
-  assign o_w1_hit           = f_w1;
+  logic [XLEN-1:0] eff_target;
+  logic eff_cached;
+  logic same_tier;
+  assign eff_target = (f_ret && i_ras_nonempty) ? i_ras_top : {f_target_hw, 1'b0};
+  assign eff_cached = (f_ret && i_ras_nonempty) ? i_ras_top_is_cached : f_tgt_cached;
+  assign same_tier  = i_fetch_translation_active || (eff_cached == i_pc_is_cached);
+
+  assign o_taken               = f_taken && same_tier;
+  assign o_is_span             = o_taken && (f_pos == 2'd3) && !f_comp;
+  assign o_taken_steer         = o_taken && !o_is_span;
+  assign o_taken_pos           = f_pos;
+  assign o_target              = eff_target;
+  assign o_target_even_dir_idx = eff_target[BIM_BITS:3] + (BIM_BITS - 2)'(eff_target[2]);
+  assign o_compressed          = f_comp;
+  assign o_is_call             = o_taken && f_call;
+  assign o_is_return           = o_taken && f_ret;
+  assign o_target_is_cached    = eff_cached;
+  assign o_w0_hit              = f_w0;
+  assign o_w1_hit              = f_w1;
 endmodule : fetch_btb_2w
 
 // verilog_lint: waive module-filename
