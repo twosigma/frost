@@ -5127,8 +5127,10 @@ module cpu_ooo #(
     logic [ma_pkg::CauseBits-1:0] ma_fault_cause;
     logic [riscv_pkg::PhysAddrBits-1:0] ma_fatal_addr_q;
     // Debug Mode keeps the exception, so a program-buffer access parks.
+    // Vector memory misaligned traps keep vec_head_shield raised in
+    // HM_WAIT_TRAP and take their architectural exception directly with vstart.
     assign ma_exception_assist = coherent_exception_valid && !ma_fault_pending_q &&
-        !rob_head_mem_atomic && !csr_debug_mode &&
+        !rob_head_mem_atomic && !vec_head_shield && !csr_debug_mode &&
         ((rob_trap_cause == riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]) ||
          (rob_trap_cause == riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]));
     ma_engine #(
