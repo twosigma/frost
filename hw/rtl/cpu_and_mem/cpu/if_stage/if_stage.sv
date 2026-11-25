@@ -2099,6 +2099,66 @@ module if_stage #(
   parcel_t check_parcel;
   meta_t check_meta;
 
+  // Simulation-only shadow trackers for independent IF-stage contract checks:
+  // 1) first emitted PC after any redirect matches the redirect target;
+  // 2) forwarded eff_ras_* on non-pure-pop restores equals u_ras next cycle;
+  // 3) independent queue occupancy / headroom shadow against u_parcel_queue.
+  logic sim_redir_has_target;
+  logic [XLEN-1:0] sim_redir_target;
+  logic sim_redir_expect_valid_q;
+  logic [XLEN-1:0] sim_redir_expect_pc_q;
+
+  logic [3:0] sim_f0_ras_srcs;
+  logic sim_prev_ras_fwd_q;
+  logic sim_prev_eff_ras_nonempty_q;
+  logic [RasPtrBits-1:0] sim_prev_eff_ras_tos_q;
+  logic [RasPtrBits:0] sim_prev_eff_ras_cnt_q;
+  logic [XLEN-1:0] sim_prev_eff_ras_top_q;
+  logic sim_prev_eff_ras_top_cached_q;
+
+  logic [4:0] sim_q_cnt_q;
+  logic [3:0] sim_m_cnt_q;
+  logic [5:0] sim_q_avail;
+  logic [4:0] sim_m_avail;
+  logic [2:0] sim_m_pop;
+  logic [XLEN-3:0] sim_served_word;
+
+  always_comb begin
+    sim_redir_has_target = 1'b0;
+    sim_redir_target     = '0;
+    if (i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken) begin
+      sim_redir_has_target = 1'b1;
+      sim_redir_target     = {i_trap_ctrl.trap_target[XLEN-1:1], 1'b0};
+    end else if (i_fence_i_flush) begin
+      sim_redir_has_target = 1'b1;
+      sim_redir_target     = {i_fence_i_target[XLEN-1:1], 1'b0};
+    end else if (i_from_ex_comb.branch_taken) begin
+      sim_redir_has_target = 1'b1;
+      sim_redir_target     = {i_from_ex_comb.branch_target_address[XLEN-1:1], 1'b0};
+    end else if (i_pd_redirect && !i_pipeline_ctrl.stall) begin
+      sim_redir_has_target = 1'b1;
+      sim_redir_target     = {i_pd_redirect_target[XLEN-1:1], 1'b0};
+    end
+
+    sim_f0_ras_srcs = {
+      f0_launch && f0_btb_steer_now && (btb_is_call || btb_is_return),
+      f0_launch && f0_span_btb_fire &&
+          (span_btb_pending_q.is_call || span_btb_pending_q.is_return),
+      f1_collapsed_btb_steer && (f1_req_q.btb_is_call || f1_req_q.btb_is_return),
+      f1_collapsed_span_fire && (span_btb_pending_q.is_call || span_btb_pending_q.is_return)
+    };
+
+    sim_served_word = i_served_high ? i_served_word_high : i_served_word_low;
+    sim_q_avail     = {1'b0, sim_q_cnt_q} + (f1_push_valid ? {3'b0, f1_push_count} : 6'd0);
+    sim_m_avail     = {1'b0, sim_m_cnt_q} + (f1_push_valid ? 5'd1 : 5'd0);
+    sim_m_pop       = 3'd0;
+    for (int k = 0; k < 4; k++) begin
+      if ((3'(k) < q_pop_count) && q_view_last[k]) begin
+        sim_m_pop = sim_m_pop + 3'd1;
+      end
+    end
+  end
+
   initial begin
     if ($bits(check_parcel) != ParcelBits)
       $fatal(
@@ -2109,8 +2169,19 @@ module if_stage #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) sim_reset_seen_q <= 1'b1;
-    if (sim_reset_seen_q && !i_pipeline_ctrl.reset) begin
+    if (i_pipeline_ctrl.reset) begin
+      sim_reset_seen_q              <= 1'b1;
+      sim_redir_expect_valid_q      <= 1'b0;
+      sim_redir_expect_pc_q         <= '0;
+      sim_prev_ras_fwd_q            <= 1'b0;
+      sim_prev_eff_ras_nonempty_q   <= 1'b0;
+      sim_prev_eff_ras_tos_q        <= '0;
+      sim_prev_eff_ras_cnt_q        <= '0;
+      sim_prev_eff_ras_top_q        <= '0;
+      sim_prev_eff_ras_top_cached_q <= 1'b0;
+      sim_q_cnt_q                   <= '0;
+      sim_m_cnt_q                   <= '0;
+    end else if (sim_reset_seen_q) begin
       if (!$isunknown({o_from_if_to_pd.sel_nop, o_from_if_to_pd_2.sel_nop})) begin
         p_if_slot1_nop_implies_slot2_nop :
         assert (!o_from_if_to_pd.sel_nop || o_from_if_to_pd_2.sel_nop);
@@ -2194,6 +2265,129 @@ module if_stage #(
         assert (s2_have_bytes ==
                 (s1_comp ? (s2_comp ? q_avail_ge[1] : q_avail_ge[2]) :
                            (s2_comp ? q_avail_ge[2] : q_avail_ge[3])));
+      end
+
+      // 1) First emitted PC after a redirect equals the redirect target.
+      if (!any_redirect && sim_redir_expect_valid_q && !o_from_if_to_pd.sel_nop &&
+          !$isunknown({o_from_if_to_pd.program_counter, sim_redir_expect_pc_q})) begin
+        p_if_first_pc_after_redirect_matches_target :
+        assert (o_from_if_to_pd.program_counter == sim_redir_expect_pc_q);
+      end
+
+      // 2) An accepted window's served-word tag matches independently of the
+      //    chunked/grouped comparator tree.
+      if (!pqueue_flush && f1_push_valid && !$isunknown(
+              {i_instr_valid, i_served_high, i_instr_pc_metadata_served_high, sim_served_word,
+               f1_req_q.pc, f1_push_meta.word0_pc, f1_req_valid_q, collapsed_armed_q,
+               f0_stop_fetch}
+          )) begin
+        p_if_accepted_window_tag_matches :
+        assert (i_instr_valid && (i_served_high == i_instr_pc_metadata_served_high) &&
+                (sim_served_word == f1_req_q.pc[XLEN-1:2]) &&
+                (f1_push_meta.word0_pc == sim_served_word) &&
+                (f1_req_valid_q || (collapsed_armed_q && !f0_stop_fetch)));
+      end
+
+      // 3) A bare-mode fetch outside executable PMA carries a fetch fault at
+      //    both F0 (IMMU) and the emitted slot-1 packet.
+      if (!i_fetch_translation_active && fetch_pa_valid &&
+          !$isunknown({pc, pc_word_p1, fetch_fault0_live, o_fetch_fault1})) begin
+        p_if_bare_f0_pma_bad_faults :
+        assert (riscv_pkg::pma_fetch_ok(pc) || fetch_fault0_live);
+        p_if_bare_f0_word1_pma_bad_faults :
+        assert (riscv_pkg::pma_fetch_ok({pc_word_p1, 2'b00}) || o_fetch_fault1);
+      end
+      if (!i_fetch_translation_active && !o_from_if_to_pd.sel_nop && !$isunknown(
+              {o_from_if_to_pd.program_counter, o_from_if_to_pd.sel_compressed,
+               o_from_if_to_pd.fetch_fault}
+          )) begin
+        p_if_bare_fetch_fault_matches_pma :
+        assert ((riscv_pkg::pma_fetch_ok(o_from_if_to_pd.program_counter) &&
+                 (o_from_if_to_pd.sel_compressed ||
+                  riscv_pkg::pma_fetch_ok(o_from_if_to_pd.program_counter + XLEN'(2)))) ||
+                o_from_if_to_pd.fetch_fault);
+      end
+
+      // 4) At most one speculative RAS op per window, never on a fault/stall/
+      //    redirect, and never colliding with a registered restore at u_ras.
+      if (!$isunknown({sim_f0_ras_srcs, f0_ras_push, f0_ras_pop, f0_launch, f1_collapsed_accept,
+                       f0_stop_fetch, fetch_fault0_live, any_redirect,
+                       i_from_ex_comb.ras_misprediction, f1_ras_restore_comb,
+                       ras_restore_q, f0_ras_push_q, f0_ras_pop_q, pd_ras_restore,
+                       i_pipeline_ctrl.stall, frontend_flush})) begin
+        p_if_ras_one_op_per_window :
+        assert ($onehot0(sim_f0_ras_srcs) &&
+                (!(f0_ras_push || f0_ras_pop) ||
+                 ((f0_launch || f1_collapsed_accept) && !f0_stop_fetch && !fetch_fault0_live &&
+                  !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore_comb)));
+        p_if_ras_no_restore_collision :
+        assert (!(ras_restore_q && (f0_ras_push_q || f0_ras_pop_q)));
+        p_if_pd_ras_restore_unstalled :
+        assert (!pd_ras_restore || (!i_pipeline_ctrl.stall && !frontend_flush &&
+                                    !i_from_ex_comb.ras_misprediction));
+      end
+
+      // 5) Forwarded eff_ras_* on a non-pure-pop restore matches u_ras one
+      //    cycle later (both u_ras stored state and live outputs when idle).
+      if (sim_prev_ras_fwd_q && !$isunknown(
+              {u_ras.tos, u_ras.valid_count, sim_prev_eff_ras_tos_q, sim_prev_eff_ras_cnt_q,
+               sim_prev_eff_ras_nonempty_q, f0_ras_push_q, f0_ras_pop_q, ras_nonempty, ras_tos,
+               ras_valid_count}
+          )) begin
+        p_if_eff_ras_matches_u_ras_next_cycle :
+        assert ((u_ras.tos == sim_prev_eff_ras_tos_q) &&
+                (u_ras.valid_count == sim_prev_eff_ras_cnt_q) &&
+                ((u_ras.valid_count != '0) == sim_prev_eff_ras_nonempty_q) &&
+                (!sim_prev_eff_ras_nonempty_q ||
+                 (!$isunknown({u_ras.stored_top, sim_prev_eff_ras_top_q}) &&
+                  (u_ras.stored_top == sim_prev_eff_ras_top_q))) &&
+                ((f0_ras_push_q || f0_ras_pop_q) ||
+                 ((ras_nonempty == sim_prev_eff_ras_nonempty_q) &&
+                  (ras_tos == sim_prev_eff_ras_tos_q) &&
+                  (ras_valid_count == sim_prev_eff_ras_cnt_q) &&
+                  (!sim_prev_eff_ras_nonempty_q ||
+                   (!$isunknown({ras_top, ras_top_is_cached, sim_prev_eff_ras_top_q,
+                                 sim_prev_eff_ras_top_cached_q}) &&
+                    (ras_top == sim_prev_eff_ras_top_q) &&
+                    (ras_top_is_cached == sim_prev_eff_ras_top_cached_q))))));
+      end
+
+      // 6) if_stage-level parcel-queue headroom check (no parcel/meta
+      //    overflow, pop <= avail, F0 launch respects headroom).
+      if (!pqueue_flush && !$isunknown(
+              {sim_q_cnt_q, sim_m_cnt_q, f1_push_valid, f1_push_count, q_pop_count, q_avail,
+               sim_m_pop, f0_launch}
+          )) begin
+        p_if_queue_no_parcel_overflow : assert (sim_q_avail <= 6'd16);
+        p_if_queue_pop_le_avail : assert ({3'b0, q_pop_count} <= sim_q_avail);
+        p_if_queue_no_meta_overflow : assert (sim_m_avail <= 5'd8);
+        p_if_queue_avail_matches_shadow : assert ({1'b0, q_avail} == sim_q_avail);
+        p_if_f0_launch_has_headroom :
+        assert (!f0_launch || ((sim_q_cnt_q <= 5'd7) && (sim_m_cnt_q <= 4'd6)));
+      end
+
+      // Advance simulation-only shadow trackers.
+      if (any_redirect) begin
+        sim_redir_expect_valid_q <= sim_redir_has_target;
+        sim_redir_expect_pc_q    <= sim_redir_target;
+      end else if (sim_redir_expect_valid_q && !o_from_if_to_pd.sel_nop &&
+                   !i_pipeline_ctrl.stall) begin
+        sim_redir_expect_valid_q <= 1'b0;
+      end
+
+      sim_prev_ras_fwd_q            <= ras_restore_q && !ras_restore_pure_pop_q;
+      sim_prev_eff_ras_nonempty_q   <= eff_ras_nonempty;
+      sim_prev_eff_ras_tos_q        <= eff_ras_tos;
+      sim_prev_eff_ras_cnt_q        <= eff_ras_cnt;
+      sim_prev_eff_ras_top_q        <= eff_ras_top;
+      sim_prev_eff_ras_top_cached_q <= eff_ras_top_cached;
+
+      if (pqueue_flush) begin
+        sim_q_cnt_q <= '0;
+        sim_m_cnt_q <= '0;
+      end else begin
+        sim_q_cnt_q <= 5'(sim_q_avail - {3'b0, q_pop_count});
+        sim_m_cnt_q <= 4'(sim_m_avail - {2'b0, sim_m_pop});
       end
     end
   end
