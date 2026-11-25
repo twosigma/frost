@@ -1756,21 +1756,23 @@ module csr_file #(
     // to the read-only vl, vtype and vlenb illegal at allocation.
     logic vmem_fault_vstart_write;
     assign vec_csr_write = storage_csr_write && vec_addr_writable && (i_csr_op[1:0] != 2'b00);
-    // Only a synchronous M/S-mode exception entry (cause MSB 0, not Debug Mode)
-    // writes a faulting vector memory op's vstart and dirties VS. Both happen
-    // on the edge after the entry, so the late take terms reach one register
-    // here; nothing retires or writes a CSR in the cycle after a trap entry.
-    // The earliest reader is the dispatch-side vtype tracker, which reloads
-    // |vstart in the second cycle after the entry (its flush_all is the entry
-    // registered once, and it holds its state while that is high): the write
-    // lands on the edge before that read, with no cycle to spare.
+    // An M/S trap (synchronous fault or interrupt) or Debug Mode halt entry
+    // writes a vector memory op's vstart and dirties VS. Debug Mode re-park
+    // exceptions do not assert an entry enable and leave vstart unchanged.
+    // Both happen on the edge after the entry, so the late take terms reach
+    // one register here; nothing retires or writes a CSR in the cycle after a
+    // trap entry. The earliest reader is the dispatch-side vtype tracker,
+    // which reloads |vstart in the second cycle after the entry (its flush_all
+    // is the entry registered once, and it holds its state while that is
+    // high): the write lands on the edge before that read, with no cycle to
+    // spare.
     logic vmem_fault_write_q;
     logic [VstartBits-1:0] vmem_fault_vstart_q;
     always_ff @(posedge i_clk) begin
       if (i_rst) vmem_fault_write_q <= 1'b0;
       else
-        vmem_fault_write_q <= i_vmem_fault_vstart_valid && (i_trap_save_m || i_trap_save_s) &&
-            !i_trap_cause[XLEN-1];
+        vmem_fault_write_q <= i_vmem_fault_vstart_valid &&
+            (i_trap_save_m || i_trap_save_s || i_trap_enter_d);
       vmem_fault_vstart_q <= i_vmem_fault_vstart[VstartBits-1:0];
     end
     assign vmem_fault_vstart_write = vmem_fault_write_q;
@@ -2569,8 +2571,7 @@ module csr_file #(
       (i_csr_op[1:0] != 2'b00) &&
       (i_csr_address == riscv_pkg::CsrVstart || i_csr_address == riscv_pkg::CsrVxsat ||
        i_csr_address == riscv_pkg::CsrVxrm || i_csr_address == riscv_pkg::CsrVcsr);
-  wire f_vmem_fault_write = VECTOR && i_vmem_fault_vstart_valid &&
-      i_trap_taken && !i_trap_to_d && !i_trap_cause[XLEN-1];
+  wire f_vmem_fault_write = VECTOR && i_vmem_fault_vstart_valid && i_trap_taken;
   // The fault's vstart write and VS update land on the following edge.
   reg f_vmem_fault_write_q = 1'b0;
   reg [15:0] f_vmem_fault_vstart_q = '0;
@@ -3347,6 +3348,18 @@ module csr_file #(
         cover (f_past_valid && $past(
             !i_rst && f_vmem_fault_write_q && f_vmem_fault_vstart_q[VstartBits-1:0] != '0
         ) && vec_vstart != '0 && vs_dirty);
+        cover_vstart_vmem_irq_write :
+        cover (f_past_valid2 && $past(
+            !i_rst && f_vmem_fault_write && !i_trap_to_d && i_trap_cause[XLEN-1] &&
+                i_vmem_fault_vstart[VstartBits-1:0] != '0,
+            2
+        ) && vec_vstart != '0 && vs_dirty);
+        cover_vstart_vmem_debug_halt_write :
+        cover (f_past_valid2 && $past(
+            !i_rst && f_vmem_fault_write && i_trap_to_d &&
+                i_vmem_fault_vstart[VstartBits-1:0] != '0,
+            2
+        ) && vec_vstart != '0 && vs_dirty && debug_mode_q);
         cover_vstore_preserves_vs_clean :
         cover (f_past_valid && $past(
             !i_rst && i_vstore_commit && vec_vstart == '0 && mstatus_vs == 2'b10

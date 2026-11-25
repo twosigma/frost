@@ -318,6 +318,7 @@ result depends on timing, out of the default run:
 | The `atomic` and `memAmo` templates | They put traps between LR and SC (see [The A extension](#the-a-extension)); `--atomics` covers the A extension instead |
 | `unstructured` template | Random 32-bit words reach custom CSRs and other implementation-defined encodings |
 | CHERI and HPM event templates | Not applicable |
+| Vector stores that trap part-way | Sail emits the last performed element's store fields on a trapping partial vector store while FROST's RVFI emits none (see [The vector extension](#the-vector-extension)) |
 
 ## Directed behavior
 
@@ -534,6 +535,7 @@ directed segment trace `vector_segment.S` runs with `--vector-segments`):
 | [`vector_indexed.S`](vector_indexed.S) | Aligned cached-DDR unordered and ordered indexed loads/stores (`8..64`-bit indices), cross-width EMUL, duplicate-index ordering, in-place gathers, page crossings, and scalar store readbacks |
 | [`vector_segment.S`](vector_segment.S) | Runs in `--vector-segments`: aligned cached-DDR unit-stride (`vlseg`/`vsseg`) and strided (`vlsseg`/`vssseg`) segment transfers for `nf = 2..8` across `e8..e64`, masked/unmasked, page crossings, and scalar store readbacks |
 | [`vector_fof.S`](vector_fof.S) | Aligned `vle{8,16,32,64}ff.v` loads at the `0xC0000000` cached-DDR upper boundary: later-element `vl` trimming, masked fault preservation, and element-0 traps |
+| [`vector_vstart_resume.S`](vector_vstart_resume.S) | Nonzero-`vstart` resumption across strided, indexed (including in-place `vd == vs2`), segment, and fault-only-first loads and stores: prestart preservation, `vstart >= vl`, fault-only-first trimming at `i > vstart` and `i == vstart`, fault-triggered resumption, and scalar store readbacks |
 | [`vector_int_compare.S`](vector_int_compare.S) | Vector, scalar, and immediate integer comparisons at `SEW = 32` and `64`, mask-undisturbed preservation, and signed/unsigned ordering |
 | [`vector_int_widen_narrow.S`](vector_int_widen_narrow.S) | Widening add/sub/mul/macc, `vzext`/`vsext`, narrowing right shifts, shift-amount masking, legal overlaps, and illegal width/LMUL traps |
 | [`vector_fixed_point.S`](vector_fixed_point.S) | Saturating add/sub, averaging add/sub, `vsmul`, scaling shifts, and narrowing clips across all four `vxrm` modes, sticky `vxsat`, and overlap traps |
@@ -588,6 +590,14 @@ Additional vector-extension behaviors are not compared against Sail 0.16:
   `vec_crypto_exec_v{128,256,512}`
   (`verif/cocotb_tests/vector/test_vec_crypto_exec.py`), and
   `tests/test_vector_legality_reference.py --forms crypto`.
+- Vector stores that trap part-way (after performing one or more elements):
+  `verif/testrig/run_stats.py` clears Sail's memory payload only for retiring
+  (`trap == 0`) vector stores. On a trapping partial vector store, Sail 0.16
+  emits the last performed element's store fields while FROST's RVFI emits
+  none, so TestRIG cannot check vector stores that trap part-way. These cases
+  are covered outside TestRIG by `vec_vstart_irq_test_v{128,256,512}`
+  (`sw/apps/vec_vstart_irq_test/main.c`) and `vec_debug_partial`
+  (`verif/cocotb_tests/vector/test_vec_debug_partial.py`).
 
 The `--vector-ext` option replays eight directed RVA23 vector extension traces:
 

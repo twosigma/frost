@@ -18,6 +18,10 @@ module coherence_d_arbiter #(
     parameter int unsigned WIDTH = 344,
     parameter int unsigned PORTS = 2,
     parameter bit HOLD_VALID = 0,
+    // Pass the picked offer through directly while no selection is held,
+    // advancing fairness immediately if accepted on that cycle and latching
+    // it only if stalled.
+    parameter bit BYPASS_IDLE = 0,
     // The payload register loads on every cycle without a held selection,
     // so its enable is the selection flop alone rather than the offers'
     // reduction. For consumers that read o_payload only while o_valid (or
@@ -96,11 +100,12 @@ module coherence_d_arbiter #(
       pick_payload |= {WIDTH{pick_ports[port_idx]}} & i_payload[port_idx];
     end
   end
-  assign o_ready = {PORTS{i_ready}} & selected_ports_q;
-  assign o_selected = selected_ports_q;
+  wire bypass_active = BYPASS_IDLE && !selected_q;
+  assign o_ready = {PORTS{i_ready}} & (bypass_active ? pick_ports : selected_ports_q);
+  assign o_selected = bypass_active ? pick_ports : selected_ports_q;
   // Live offers pass through the held mask in groups before the final reduction.
-  assign o_valid = HOLD_VALID ? selected_q : |offer_groups;
-  assign o_payload = payload_q;
+  assign o_valid = bypass_active ? found : (HOLD_VALID ? selected_q : |offer_groups);
+  assign o_payload = bypass_active ? pick_payload : payload_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       selected_q <= 1'b0;
@@ -110,9 +115,15 @@ module coherence_d_arbiter #(
       later_q <= '1;
     end else if (!selected_q) begin
       if (found) begin
-        selected_q <= 1'b1;
-        selected_port_q <= pick;
-        selected_ports_q <= pick_ports;
+        if (BYPASS_IDLE && i_ready) begin
+          next_q <= pick == PortBits'(PORTS - 1) ? '0 : pick + 1'b1;
+          for (int port_idx = 0; port_idx < PORTS; port_idx++)
+          later_q[port_idx] <= pick == PortBits'(PORTS - 1) || port_idx > int'(pick);
+        end else begin
+          selected_q <= 1'b1;
+          selected_port_q <= pick;
+          selected_ports_q <= pick_ports;
+        end
       end
     end else if (o_valid && i_ready) begin
       selected_q <= 1'b0;
@@ -150,7 +161,9 @@ module coherence_d_arbiter #(
       assert (o_payload == i_payload[selected_port_q]);
     if (sim_reset_seen_q && !i_rst) begin
       assert (selected_ports_q == (selected_q ? PORTS'(1) << selected_port_q : PORTS'(0)));
-      p_valid_select : assert (o_valid == (selected_q && (HOLD_VALID || i_valid[selected_port_q])));
+      p_valid_select :
+      assert (o_valid == (bypass_active ? found :
+          (selected_q && (HOLD_VALID || i_valid[selected_port_q]))));
       for (int port_idx = 0; port_idx < PORTS; port_idx++)
       assert (later_q[port_idx] == (port_idx >= int'(next_q)));
       if (found)

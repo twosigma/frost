@@ -945,9 +945,15 @@ async def buffered_hit_burst_yields_to_waiting_reads(dut: Any) -> None:
     for _ in range(80):
         if b.get("store_pop"):
             events.append("store")
-        # The hit path answers the read beside the installations; the
-        # controller answers it only if the hit path refused it.
-        if b.get("read_hit") or b.get("s4_valid_q"):
+        # Count every read answer across controller hits, fill answers and the
+        # hit path (stage-3 bypass or stage-4 buffered): the hit path answers
+        # beside the installations, and the controller only if refused.
+        if (
+            b.get("read_hit")
+            or b.get("read_fill")
+            or b.get("bypass_path_s3")
+            or b.get("s4_valid_q")
+        ):
             events.append("read")
             assert b.get("o_pending_store")
         assert not b.get("o_d_valid") and not b.get("o_fatal")

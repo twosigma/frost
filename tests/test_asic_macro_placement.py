@@ -40,8 +40,8 @@ def test_nic_transmit_macro_fits_the_floorplan(tmp_path: Path) -> None:
     add("home.array.gen_tag_ultra.gen_column[{i}].u_macro", "sram_1w1r_1024x18", 4)
     add("soc.data_memory.gen_row[{i}].u_macro", "sram_2rw_4096x64_m8", 4)
     add("l1d.array.gen_data_bank[{i}].u_macro", "sram_1w1r_1024x64_m8", 16)
-    add("l1d.array.gen_tag_block.gen_way[{i}].u_macro", "sram_1w1r_1024x19", 4)
-    add("l1d.array.gen_hit_port.gen_copy[{i}].u_macro", "sram_1w1r_1024x19", 4)
+    add("l1d.array.gen_tag_block.gen_way[{i}].u_macro", "sram_1w1r_1024x20", 4)
+    add("l1d.array.gen_hit_port.gen_copy[{i}].u_macro", "sram_1w1r_1024x20", 4)
     add("l1i.gen_data_banks.bank[{i}].u_macro", "sram_1w1r_128x64_m8", 16)
     add("nic.u_rx_fifo.storage.gen_row[{i}].u_macro", "sram_1w1r_512x68", 16)
     add("nic.u_tx_fifo.storage.gen_row[{i}].u_macro", "sram_1w1r_512x68", 1)
@@ -225,6 +225,101 @@ def test_home_array_sram_macro_names_match_floorplan(tmp_path: Path) -> None:
     assert "TAGS 4" in lines, tcl_run.stdout
     slices = [int(line.split()[1]) for line in lines if line.startswith("SLICE ")]
     assert slices == list(range(8))
+
+
+def test_l1d_array_sram_macro_names_match_floorplan(tmp_path: Path) -> None:
+    """Elaborated L1D-array SRAM macros match the floorplan's selectors."""
+    yosys = shutil.which("yosys")
+    if yosys is None:
+        pytest.skip("yosys is missing")
+    libs = sorted((ROOT / "asic/sram/macros").glob("*/*.lib"))
+    sources = (
+        ROOT / "asic/sram/frost_sram_1w1r.sv",
+        ROOT / "hw/rtl/lib/ram/sdp_block_ram.sv",
+        ROOT / "hw/rtl/lib/ram/sdp_packed_tag_uram.sv",
+        ROOT / "hw/rtl/lib/ram/sdp_ram_byte_en.sv",
+        ROOT / "hw/rtl/lib/cache/coherence_array.sv",
+    )
+    netlist = tmp_path / "l1d_array.json"
+    commands = [f"read_liberty -lib {lib}" for lib in libs]
+    commands += [
+        f"read_verilog -sv -defer -DSYNTHESIS -DFROST_SRAM_MACROS {source}"
+        for source in sources
+    ]
+    commands += [
+        "chparam -set ADDR_WIDTH 32 -set LINE_BYTES 32 -set CACHE_BYTES 131072 "
+        "-set WAYS 4 -set BIMODAL_INSERT 1 -set HIT_PORT 1 coherence_array",
+        "hierarchy -check -top coherence_array",
+        "proc; opt_expr; opt_clean; flatten; opt_clean; memory_collect",
+        f"write_json {netlist}",
+    ]
+    result = subprocess.run(
+        [yosys, "-Q", "-T", "-p", "; ".join(commands)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    cells = json.loads(netlist.read_text())["modules"]["coherence_array"]["cells"]
+    prefix = "cpu.hart.gen_coherent_tier.hart_cache.l1d.array."
+    macros = sorted(
+        (prefix + name, cell["type"])
+        for name, cell in cells.items()
+        if cell["type"].startswith("sram_")
+    )
+    assert [macro for _, macro in macros].count("sram_1w1r_1024x64_m8") == 16
+    assert [macro for _, macro in macros].count("sram_1w1r_1024x20") == 8
+    large_arrays = [
+        (name, int(cell["parameters"]["SIZE"], 2), int(cell["parameters"]["WIDTH"], 2))
+        for name, cell in cells.items()
+        if cell["type"] in ("$mem", "$mem_v2")
+        and int(cell["parameters"]["SIZE"], 2) * int(cell["parameters"]["WIDTH"], 2)
+        > 4096
+    ]
+    assert large_arrays == []
+
+    placement_source = (ROOT / "asic/macro_placement.tcl").read_text()
+    selectors = placement_source[: placement_source.index("set frost_core_width")]
+    tcl = (
+        "namespace eval ord {proc get_db_block {} {return block}}\n"
+        "proc block {method} {\n"
+        "  switch $method {\n"
+        "    getDefUnits {return 1000}\n"
+        "    getCoreArea {return core}\n"
+        "    getInsts {return $::instances}\n"
+        "  }\n"
+        "}\n"
+        "proc master {id method} { return 1 }\n"
+        "proc instance {id method} {\n"
+        "  switch $method {\n"
+        "    getMaster {return master$id}\n"
+        "    getName {return $::name($id)}\n"
+        "  }\n"
+        "}\n"
+        "set instances {}\n"
+    )
+    for index, (name, _) in enumerate(macros):
+        tcl += (
+            f"set name({index}) {{{name}}}\n"
+            f"interp alias {{}} master{index} {{}} master {index}\n"
+            f"interp alias {{}} inst{index} {{}} instance {index}\n"
+            f"lappend instances inst{index}\n"
+        )
+    tcl += (
+        selectors
+        + 'puts "DATA [llength $frost_l1d_data]"\n'
+        + 'puts "TAGS [llength $frost_l1d_tags]"\n'
+    )
+    harness = tmp_path / "l1d_macros.tcl"
+    harness.write_text(tcl)
+    tcl_run = subprocess.run(
+        ["tclsh", str(harness)], capture_output=True, text=True, check=False
+    )
+    assert tcl_run.returncode == 0, tcl_run.stdout + tcl_run.stderr
+    lines = tcl_run.stdout.splitlines()
+    assert "DATA 16" in lines, tcl_run.stdout
+    assert "TAGS 8" in lines, tcl_run.stdout
 
 
 @pytest.mark.parametrize(

@@ -96,14 +96,20 @@ four: chparam -set WAYS 4 -set FILLS 3 -set PREFETCH_RESERVE 1 coherence_home_co
 ultra: chparam -set ULTRA 1 -set PREFETCH_RESERVE 0 coherence_home_control_harness
 partition: chparam -set PREFETCH_SLOTS 1 coherence_home_control_harness
 fast: chparam -set FAST_TAG_LAUNCH 1 coherence_home_control_harness
+ctl: hierarchy -top coherence_home_control_harness
+ctl: script free_undefined.ys
 ctl: prep -flatten -top coherence_home_control_harness
 slang_ctl: hierarchy -top coherence_home_control_harness
 slang_ctl: script free_undefined.ys
 slang_ctl: prep -flatten -top coherence_home_control_harness
 cmo_fast_ctl: select -assert-count 5 t:$check r:FLAVOR=cover %i
 cmo_fast_ctl: select -clear
+unit: hierarchy -top coherence_home
+unit: script free_undefined.ys
 unit: prep -flatten -top coherence_home
 error: chparam -set FAIL_B 1 coherence_home_harness
+covers: hierarchy -top coherence_home_harness
+covers: script free_undefined.ys
 covers: prep -flatten -top coherence_home_harness
 ~slang_ctl: memory_map
 ~slang_ctl: opt

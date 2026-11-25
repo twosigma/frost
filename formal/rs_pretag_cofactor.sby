@@ -32,11 +32,12 @@ hierarchy -top reservation_station
 script free_undefined.ys
 prep -top reservation_station
 select -assert-none t:$assume
-bmc: select -assert-count 1 t:$check
-bmc_tag_indexed: select -assert-count 1 t:$check
-bmc_export: select -assert-count 7 t:$check
-bmc_export_tag_indexed: select -assert-count 7 t:$check
-bmc_ready_vector: select -assert-count 8 t:$check
+select -assert-none t:$check r:FLAVOR=assume %i
+bmc: select -assert-count 1 t:$check r:FLAVOR=assert %i
+bmc_tag_indexed: select -assert-count 1 t:$check r:FLAVOR=assert %i
+bmc_export: select -assert-count 7 t:$check r:FLAVOR=assert %i
+bmc_export_tag_indexed: select -assert-count 7 t:$check r:FLAVOR=assert %i
+bmc_ready_vector: select -assert-count 8 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

@@ -120,12 +120,14 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
     input logic [8*LINE_BYTES-1:0] i_update_data,
     // With HIT_PORT, a request taken with o_hp_ready reads a copy of the tags
     // and every bank's row of its set on one edge, so its tags and data are
-    // one image of the array. o_hp_hit shows its hit two cycles later and
-    // o_hp_data the hit's dword a cycle after that.
+    // one image of the array. o_hp_hit and o_hp_dword show the hit and its
+    // dword two cycles later, and o_hp_data registers o_hp_dword a cycle after
+    // that.
     input logic i_hp_valid = 1'b0,
     input logic [ADDR_WIDTH-1:0] i_hp_addr = '0,
     output logic o_hp_ready,
     output logic o_hp_hit,
+    output logic [63:0] o_hp_dword,
     output logic [63:0] o_hp_data
 );
 `ifndef SYNTHESIS
@@ -516,6 +518,7 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
     o_hp_data   <= hp_dword;
   end
   assign o_hp_hit = hp3_hit_q;
+  assign o_hp_dword = hp_dword;
   // A hit marks its way recent in stage 3, unless the array writes
   // replacement state in that cycle.
   assign hp_touch = hp3_hit_q;
@@ -956,6 +959,9 @@ DATA_READ_LATENCY + DATA_WRITE_LATENCY + TAG_READ_LATENCY + 3
         assert ({o_resp_home_current, o_resp_state,
             o_resp_addr[ADDR_WIDTH-1:OffsetBits+SetBits]} == f_tag_entry);
       if (f_hp2_tag_q) p_hp_tag_value : assert (copy_rdata[f_row_way] == f_hp2_entry_q);
+      if (f_hp3_byte_q && hp3_hit_q && hp_touch_way == f_row_way &&
+          hp3_dword_q == f_byte[OffsetBits-1:3])
+        p_hp3_byte_value : assert (o_hp_dword[8*f_byte[2:0]+:8] == f_hp3_value_q);
       if (f_hp4_byte_q) p_hp_byte_value : assert (o_hp_data[8*f_byte[2:0]+:8] == f_hp4_value_q);
       // The port reads the banks only when no lookup reads data, and never
       // in a cycle that writes its set.

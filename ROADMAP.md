@@ -31,10 +31,10 @@ larger pieces come before the second hart:
   V, Zvbb, Zvbc, Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb,
   Zvkg, Zvkn, Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, Zvl32b, Zvl64b,
   Zvl128b and Zvl256b. Strided, indexed, segment and
-  fault-only-first loads and stores run one element at a time, and an interrupt
-  or debug halt that arrives after such a run has begun waits until the
-  instruction finishes; taking them between elements, with `vstart` naming the
-  next one, is later work. Vector loads and stores are executed in cached memory
+  fault-only-first loads and stores run one element at a time and take pending
+  interrupts and debug halts between elements (or between segments for segment
+  forms), with `vstart` naming the next element and execution resuming from
+  `vstart` after `mret`, `sret` or `dret`. Vector loads and stores are executed in cached memory
   only: an element address in any other region, such as the low BRAM or a
   device, raises an access fault. In the bare-metal DDR layout, a program built
   with the vector extension therefore has its stack in cached DDR as well, so
@@ -337,14 +337,14 @@ with the core's `SPLIT_RS_DISPATCH`, `ROB_SHARED_LINK_BANK`,
 four early-load-wakeup checks. The store queue's precise uncached rule is
 checked in simulation only, not proved of the ROB and cpu_ooo.
 
-Open: shorten the two deepest store-boundary proofs,
-`coherence_store_boundary:bmc_intervening` and
-`coherence_store_boundary:bmc_four`, which dominate formal CI time, and
-restore `coherence_store_boundary:bmc_four` to depth 120 with the L1D hit
-path. Splitting by selector, unbounded PDR, and switching from CaDiCaL to
-Glucose did not speed them up; reducing their runtime needs additional
-lemmas, smaller check cones, or model refinement so both tasks stay within
-their CI budgets.
+Open: restore the four-record store-boundary partitions
+(`coherence_store_boundary:bmc_four_control` and `bmc_four_value_0` through
+`bmc_four_value_3`, currently at depth 114 with the L1D hit path) to depth
+120, and further shorten `bmc_four_value_0` and
+`bmc_intervening_other_value`. Splitting by assertion partition and
+watched-store / sector case brought every partition under 15,840 s;
+restoring depth 120 needs additional lemmas, smaller check cones, or model
+refinement.
 
 Open: `coherence_store_boundary:cover_edges_same_combined` reaches its three
 covers on the back-to-back schedule without itself requiring that the two
@@ -413,10 +413,10 @@ or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
 `opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
 `prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). Of the 254 scripts, 231 require the shared opening
-(`hierarchy -top` or `hierarchy -check -top` followed by
-`script free_undefined.ys`) across every task; `free_undefined.ys` lowers
-processes pass by pass, frees the
+each case). All 257 scripts in `formal/` open undefined values before optimization.
+236 scripts require the shared opening (`hierarchy -top` or
+`hierarchy -check -top` followed by `script free_undefined.ys`) across
+every task; `free_undefined.ys` lowers processes pass by pass, frees the
 undefined inputs of every multiplexer and the undefined bits of every
 connection with `setundef -anyseq` before `proc_dlatch` and every other
 undefined bit before `proc_dff`, and then runs `proc`'s own closing
@@ -424,13 +424,14 @@ undefined bit before `proc_dff`, and then runs `proc`'s own closing
 port, a connection or a register when those passes run. Commands that a
 script's open entry pins are the exception: a plain `memory_map`, for one,
 writes x for words that nothing writes, and a plain `opt` after it can read
-them before SymbiYosys frees them. The fast check requires the shared
-opening for every task of those 231 scripts.
-
-Open: the 6 scripts listed in `UNDEFINED_OPENING_PENDING` in
-`tests/test_run_formal.py`, each to be opened with every task rerun. The 17
-scripts listed in `UNDEFINED_OPENING_TWINS` need an opening for each
-form and a pairing for corresponding free values.
+them before SymbiYosys frees them. The other 21 scripts (the 35 in-script
+equivalence tasks declared in `TWIN_COMPARISONS`) open both forms with
+`free_undefined.ys`, check matching compiled ports and initializers in
+`twin_ports.json`, cut every register, pin their free-cell counts and
+point floors, and prove every point with unrestricted `equiv_simple` and
+`equiv_status -assert`. The fast check enforces the opening across all
+257 scripts; both `UNDEFINED_OPENING_PENDING` and
+`UNDEFINED_OPENING_TWINS` in `tests/test_run_formal.py` are empty.
 
 Before the opening, a dump of every registered task's model
 before the first two `opt_muxtree` steps of each `opt` without `-fast` and
@@ -695,32 +696,25 @@ and targeted microbenchmarks give these items:
    ahead of the stream, up to eight lines ahead and within the 4 KiB page,
    through its two highest-numbered load endpoints. More cached loads in
    flight or one read slot per line for loads to the same line would let one
-   stream keep more lines in flight. Dependent loads are also slower than
-   through the previous hierarchy: in simulation an L2 hit takes 28 cycles
-   against 23 and a DRAM miss about 4 cycles more. In a serial pointer
-   chase, a working set that overflows the L1D into the L2 adds about 23
-   cycles per step, and one that overflows the L2 adds about 35 more. The
+   stream keep more lines in flight. In simulation, a dependent load that
+   misses the L1D and hits the L2 takes 24 cycles. In a serial pointer
+   chase, a working set that overflows the L1D into the L2 adds about 21
+   cycles per step, and one that overflows the L2 adds about 36 more. The
    L1D answers a load from its grant, and registered stages and arbitration
    add the rest. The home grants the load or store that misses
    first from the arriving line; requests that join its fill, and instruction,
    page-table and DMA reads, repeat the tag lookup and data read after the
-   line installs. Planned work trims the L1D-miss to L2-hit round trip in
-   order. First, the home holds an accepted request before entering L2 tag
-   lookup; starting the lookup as the request is accepted, with live
-   line-conflict checks on that edge, removes that wait. Second, the home's
-   speculative L2 data read waits after the tag request; launching both on
-   the same edge removes that wait. Third, an accepted grant pauses at the
-   L1D endpoint before reaching the core; answering the core straight from
-   the accepted grant removes that wait. Fourth, on the request path from L1D
-   to home, a miss waits after endpoint acquisition, at an idle request
-   arbiter, and for the controller's own lookup; presenting the request at
-   acquisition, passing a lone offer straight through an idle arbiter, and
-   optionally acquiring from the hit path's miss result remove those waits.
-9. L1D read hits. A dependent load that hits in the L1D takes about nine
-   cycles from one load launch to the next. A hit path beside the coherent
-   L1D's controller answers loads that hit. Its answers still wait a cycle in
-   the read slots' response registers, which answering from its last stage
-   would remove, and a variant without that stage would be shorter again.
+   line installs. Four waits on that path are gone. The home starts the L2
+   tag lookup as it accepts a request and, on the FPGA builds, starts the
+   speculative L2 data read in the same cycle. The L1D answers the core
+   straight from the arriving fill when nothing else is waiting, and the
+   hart's idle request arbiter passes a lone request straight through. Two
+   waits remain between the L1D and the home: after the L1D acquires an
+   endpoint, and for the controller's own lookup.
+9. L1D read hits. In simulation, a dependent load that hits in the L1D takes
+   about seven cycles from one load launch to the next. A hit path beside the
+   coherent L1D's controller answers loads that hit, straight into the read
+   output register when nothing else is waiting.
    Offering the hit port directly from the L1D input instead of its input
    registers would remove a cycle on hits, at the risk of crossing the
    core-to-cache boundary into the cache arrays in one cycle at the target

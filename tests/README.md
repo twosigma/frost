@@ -255,7 +255,7 @@ The Zicbom programs and cluster benches run the following cases.
 | `svpbmt_cmo_test`, `svpbmt_cmo_test_inval_flush` | Cacheable, NC and IO mappings of the same physical block, with per-operation DDR write checks in the default and flush-only configurations. Adjacent CMO/load pairs exercise every combination of the two mappings with a dirty cached line. |
 | `nic_cmo_loopback` | Eight transmitted payloads and descriptor completions while the CPU cleans packet blocks that DMA is reading, in both memory tiers. |
 | `coherence_home`, `coherence_home_equal` | An older DMA fill, a management request and a younger DMA read complete in order with 64-byte and 32-byte home lines. |
-| `coherence_cbo_mgmt` | Dirty private and home copies, either dirty sector, absent or clean lines, DMA and write-backs in flight. |
+| `coherence_cbo_mgmt`, `coherence_cbo_mgmt_fast_tag` | Dirty private and home copies, either dirty sector, absent or clean lines, DMA and write-backs in flight, with default and direct tag launch in the home. |
 | `coherence_cbo_mgmt_misses`, `coherence_cbo_mgmt_equal_lines`, `coherence_cbo_mgmt_links` | The same data and ordering checks with three miss endpoints, 32-byte home lines or registered links. |
 
 The `coherence_endpoints`, `coherence_endpoints_single`, and
@@ -672,7 +672,7 @@ of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256`, `vec_crypto_irq_test_v256` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256`, `vec_vstart_irq_test_v256`, `vec_crypto_irq_test_v256` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `opensbi_reset_cold`, `opensbi_reset_warm` | Each bench issues its own S-mode reset and stops at the first retired boot instruction |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
@@ -1166,7 +1166,8 @@ permits and the ones it reserves; faults on an element in low BRAM and an Sv39
 page fault part-way through, with resumption; scalar ordering on element
 addresses; pointer masking; illegal forms; timer interrupts during long
 gathers; and a gather whose destination is its own index group under timer
-interrupts, which is correct only if a started instruction runs to its end.
+interrupts, verifying mid-run interruption at an element boundary with
+`vstart` set and resumption without re-reading overwritten indices.
 
 The `vec_segment_test_v128`, `vec_segment_test_v256`, and
 `vec_segment_test_v512` programs check segment loads and stores with
@@ -1185,6 +1186,19 @@ element 0 traps and keeps `vl`; with `vstart` = k nothing is loaded and `vl`
 becomes k; a masked-off element on the unmapped page keeps `vl`; and `csrr vl`,
 a tail-undisturbed `vadd.vi`, `vsetvli x0, x0` and `vcpop.m` placed right behind
 a trimming load all see the trimmed `vl`.
+
+The `vec_vstart_irq_test_v128`, `vec_vstart_irq_test_v256`, and
+`vec_vstart_irq_test_v512` programs take machine and delegated supervisor timer
+interrupts mid-run during long strided, indexed, segment, and fault-only-first
+loads and stores. The handlers verify `mepc`/`sepc`, `0 < vstart < vl`,
+`mstatus.VS` Dirty, single-element latency bounds, completion of elements below
+`vstart`, poisoning of prestart locations so resumption cannot rewrite them,
+fault-only-first trimming after resumption, and agreement with synchronous page
+faults on the same instruction. `vec_debug_partial` also asserts JTAG `haltreq`
+mid-run on strided, indexed, segment, and fault-only-first loads and stores,
+checking `dpc`, `dcsr.cause`, `vstart`, `mstatus.VS`, prestart preservation,
+and completion after `dret`, and single-steps over multi-element strided loads
+and stores to verify the whole instruction completes before halting.
 
 ### `test_riscv_vector_tests.py`
 
@@ -1647,7 +1661,7 @@ advertising `misa.V=1`.
 source-width traces. `--vector-directed` includes the `misa.V`, vector CSR,
 scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison,
 FP conversion, cached DDR probe, unit-stride memory, strided memory,
-indexed memory, fault-only-first load, integer comparison,
+indexed memory, fault-only-first load, nonzero-`vstart` resumption, integer comparison,
 widening and narrowing integer, fixed-point, single-width FP, whole-register
 memory, widening FP, permute, reduction, carry/borrow, mask-register,
 integer multiply-add and integer scalar/merge traces. `--vector-segments`
@@ -1905,12 +1919,13 @@ multi-endpoint control BMC has 300 minutes in its own 330-minute job. The
 L1D data tasks run in three jobs (330, 330 and 270 minutes), with each word
 variant taking its representative's measured allowance. The remaining L1D
 tasks and AXI bridges retain their 330-minute job. The scheduled local
-real-array checks keep all 80 cycles and run in three parallel 30-minute
-jobs: `coh_l1d_local_data_bmc` checks byte preservation and deferred probe
-data, `coh_l1d_local_hold_bmc` checks wide payload identities and holds, and
-`coh_l1d_local_control_bmc` checks every other assertion. All three retain
-the 1,200-second SBY limit and assume nothing from each other. A fast test
-checks that the models match the scheduled local cover, the assertion
+real-array checks cover 80 cycles in three parallel jobs:
+`coh_l1d_local_data_bmc` checks byte preservation and deferred probe data
+(30-minute job, 1,200-second SBY limit), `coh_l1d_local_hold_bmc` checks wide
+payload identities and holds (30-minute job, 1,200-second SBY limit), and
+`coh_l1d_local_control_bmc` checks every other assertion (80-minute job,
+3,600-second SBY and runner limit). None assumes facts from the others. A fast
+test checks that the models match the scheduled local cover, the assertion
 selections cover every property, and each task runs in exactly one CI job.
 
 The scripted stream checks also use complementary property groups:
@@ -2247,7 +2262,7 @@ and Fast Python Tests jobs locally.
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, `--cmo 80`, `--fp-ext 60`, and `--zcb 50`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
-| Formal verification | The 58 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home (two jobs), coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (five jobs), L1D free stream, hart maintenance, hart snapshot ownership, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), frontend and predictor, block proofs, floating-point and vector memory, ROB retirement successor, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
+| Formal verification | The 68 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home (two jobs), store lookup banks, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (fifteen jobs), L1D free stream, hart maintenance, hart snapshot ownership, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), frontend and predictor, block proofs, floating-point and vector memory, ROB retirement successor, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) synthesis and floorplanning on Nangate45, with OpenRAM's SRAM macros, in a separate workflow, which a newer push to `main` does not cancel; the rest of the flow, to GDS, runs with `./asic/orfs.py run` outside CI |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges coverage from 33 jobs into a report |
@@ -2387,7 +2402,7 @@ the selection's total cost.
 
 The other job families have a ceiling of 360 minutes, which is also the
 default for jobs without a configured timeout. In regular CI the two cocotb
-unit jobs and the Store boundary four records proof use 360-minute limits.
+unit jobs and the Coherence L1D multi-endpoint proof use 360-minute limits.
 
 Give each program that boots OpenSBI its own BRAM-only shard with coverage,
 including variants that disable a hardware feature or exercise reset through

@@ -15,7 +15,8 @@ hierarchy -top c_ext_state
 script free_undefined.ys
 prep -top c_ext_state
 select -assert-none t:$assume
-select -assert-count 1 t:$check
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 1 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

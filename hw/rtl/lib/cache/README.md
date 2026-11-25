@@ -544,11 +544,16 @@ image. Controller answers take priority over the hit path, which takes priority
 over a failed-read clear.
 
 Ready read slots share one response register in circular slot order. Each
-selection advances the pointer past that slot. A continuously ready slot has
-at most seven other responses ahead of it among the eight read IDs, including
-an occupied response register. A consumed ID reused for another read cannot
-pass that slot again. Consumer backpressure holds the response register and
-can extend the wait in cycles; it does not extend this bound on transfers.
+selection advances the pointer past that slot. When the response register can
+accept and no buffered ready read is waiting, a stage-3 hit-path hit, a fill
+answer or a controller hit loads the response register directly and retires its
+slot in `coherence_read_flags` on the same edge, bypassing `rd_data_q` and
+`rd_ready_q`; otherwise it stages into `rd_data_q` and `rd_ready_q` (via stage
+4 for a hit-path hit) and drains in circular slot order. A continuously ready
+slot has at most seven other responses ahead of it among the eight read IDs,
+including an occupied response register. A consumed ID reused for another read
+cannot pass that slot again. Consumer backpressure holds the response register
+and can extend the wait in cycles; it does not extend this bound on transfers.
 Grant answers, merged answers and read-hit answers use this same order.
 
 Read status uses per-slot masks for allocation, response transfer, lookup
@@ -668,13 +673,15 @@ arrives, the L1D offers it to the array's hit port from registers, unless a
 probe is in service, an owner holds its slot, or a holder blocks its sector
 by the rule above. The sector hold lasts through the older store's masked
 write, including when another sector reads beside its ownership lookup.
-A hit completes the slot's read four cycles after its
-arrival, and the response leaves like any other. In stage 4, as the hit path
-answers it, the slot is out of read selection. A read that the controller
-selects while the hit path holds it, including one selected in its stage-3
-cycle, gets a shadow lookup, which reads tags only, leaves replacement state
-alone and answers nothing if either lookup hits; a read that misses both takes
-the miss path from that lookup.
+A hit bypasses `o_hp_dword` straight to the read output register three cycles
+after arrival when the output register can accept and no buffered ready read
+waits, retiring the slot directly; otherwise it advances to stage 4 (`o_hp_data`)
+and completes the slot four cycles after arrival, leaving like any other ready
+read. Both stage-3 hits and stage-4 slots are excluded from read selection. A
+read that the controller selects while the hit path holds it gets a shadow
+lookup, which reads tags only, leaves replacement state alone and answers
+nothing if either lookup hits (observing a stage-3 hit on the same cycle); a
+read that misses both takes the miss path from that lookup.
 Hit-path hits train the stream detector through two entries on its second
 input, which it compares apart from the controller's load reports and takes
 in cycles without one; a hit only advances a confirmed stream, and one that
@@ -811,8 +818,8 @@ other requests.
 ports. Each request carries a response token. With `ULTRA` and without
 `FROST_SRAM_MACROS`, and with `TAG_READ_LATENCY + 2 <= DATA_READ_LATENCY`,
 the data array has a bank per way, indexed by set, and a
-lookup with `i_req_spec` reads every way of its set on its first tag-read
-cycle while no data write of that set is in the write pipeline or on offer.
+lookup with `i_req_spec` reads every way of its set on its acceptance cycle
+while no data write of that set is in the write pipeline or on offer.
 An unresolved parallel-read stage blocks data writes to its set until the
 response keeps the selected way (`i_resp_keep`), drops the read, or the stage
 expires.
@@ -1175,7 +1182,7 @@ and `coherent_cut` cover controller ownership, inclusion, cuts, atomics,
 probe service and the DMA sector handoff, parallel way reads beside set writes
 and back-to-back lookups, UltraRAM row reads after the decision
 (`PARALLEL_READ=0`), direct D selection and direct tag launch into an idle array
-(`FAST_TAG_LAUNCH=1`, default `0`, exposed through `HOME_FAST_TAG_LAUNCH`), and a primary granted from its
+(`FAST_TAG_LAUNCH=1`, default `1` through `HOME_FAST_TAG_LAUNCH` in the platform hierarchy and `0` in standalone home and cluster harnesses), and a primary granted from its
 fill's line before the install completes. Their prefetch cases cover the slot
 partition, the no-fill flag, prefetch fills that install, take a demand seat
 or fail, the fill reserve, the last available way and the last write-back
@@ -1207,6 +1214,10 @@ hart and DMA inputs and the hart's data, instruction and walker inputs. Each
 arbiter holds its selection during backpressure and acknowledges only that input.
 Every C source, including each DMA ingress slot, holds its offer until
 acceptance, so these arbiters present their captured selection as C validity.
+The hart's D arbiter (`coherent_hart_cache`) uses `HOLD_VALID=1` and
+`BYPASS_IDLE=1` so an idle arbiter passes a picked hart demand straight through
+on arrival and latches it only on backpressure, while the cluster D arbiter
+(`frost_cluster_memory`) keeps its registered stage ahead of the home.
 
 The `coherence_array_equiv` target checks that `coherence_array` matches,
 output for output on every cycle, a reference array with one data RAM of
@@ -2048,7 +2059,7 @@ to answer.
 | `coherence_cbo_zero*` | Line-scope cbo.zero on the hart-and-home cluster with one and three L1D endpoints and 64- and 32-byte home lines: zero fills that read no memory, a DMA write or read of the upper sector at every delay after a cbo.zero (a zero-filled block keeps the later write), a stale Shared copy that the twin upgrades to Modified zeros, dirty resident blocks, and back-to-back blocks with stores and loads in program order |
 | `coherence_stale_line_prefetch_l2` | `cbo.zero` twin beside an L1D stream or flushed load retry on the cluster with eight L1D request endpoints, stream prefetching and a 64 KiB home: no stream prefetch acquires a sector held by a pending store record or waiting twin (including a `cbo.zero` pushed during the prefetch lookup); while a fourth-slot `cbo.zero`'s twin still waits behind an older head twin, look-ahead requests neither sector of its block, so a dropped wrong-path load retry cannot overwrite the zeroed twin sector, and the block acquires with `GetMZero` once its own twin allocates; no request for the upper sector is accepted while an endpoint holds `GetMZero` through Done |
 | `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
-| `coherence_cbo_mgmt*` | Zicbom write-back on the hart-and-home cluster with one and three L1D endpoints, 32- and 64-byte home lines and link stages: clean and flush of L1D-Modified, half-dirty and L2-only dirty blocks write the latest bytes to memory before done, inval leaves memory and the next load at memory's bytes, clean, resident and absent blocks write nothing, no eviction rewrites a cleaned block after a non-coherent write, DMA writes at every delay around a flush, a block whose dirty sector is leaving as a PutM, and stores, loads and CMOs in program order |
+| `coherence_cbo_mgmt*` | Zicbom write-back on the hart-and-home cluster with one and three L1D endpoints, direct tag launch in the home, 32- and 64-byte home lines and link stages: clean and flush of L1D-Modified, half-dirty and L2-only dirty blocks write the latest bytes to memory before done, inval leaves memory and the next load at memory's bytes, clean, resident and absent blocks write nothing, no eviction rewrites a cleaned block after a non-coherent write, DMA writes at every delay around a flush, a block whose dirty sector is leaving as a PutM, and stores, loads and CMOs in program order |
 | `coherence_full_line*` | Full-line stores on the hart-and-home cluster with one and three L1D endpoints, 64- and 32-byte home lines and a two-set L1D: stores at the SQ cadence and back to back fill blocks without memory reads; the same stores without the SQ hint, partial, reversed and byte-written blocks fill; loads between the stores, DMA reads and writes of the block at every delay, stale Shared and dirty copies, and streams through evictions keep every byte; streams with irregular gaps keep the store queue's claim standing between writes and combine claimed writes at four records; a hint whose stores the store queue flushes holds a record only for its window; a reset with a gathering head, a pair hold or a held look-ahead leaves the cluster clean |
 | `full_line_test` (program) | Full-line stores from the production store queue into the L1D on the whole system: gapped, unaligned and partial memset and copy streams, stores squashed by a mispredicted branch or a faulting load inside a gathered line, ordering after two overlapped cached stores (forwarding, fence, fence.i, cbo.clean/flush/inval/zero, LR/SC), and DMA copies and fills of lines the CPU writes whole; `FullLineWatch` requires the store-queue hints, claims at three and four records, overlap, gather and pair holds, head and look-ahead pairs, data twins, flushes in a window and DMA requests that waited for a pair's window |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, dirty-L1D walker coherence, and one refill event per allocation that reads a line |

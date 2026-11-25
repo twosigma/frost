@@ -31,8 +31,9 @@ prep -top load_queue
 # counts. Every check still runs.
 select -assert-count 22 t:$check r:FLAVOR=assert %i load_queue/p_local_* %i
 select -assert-count 1 t:$check r:FLAVOR=cover %i load_queue/cover_local_* %i
-select -assert-count 4 t:$check load_queue/p_lq_*_free_tree_* %i
+select -assert-count 4 t:$check r:FLAVOR=assert %i load_queue/p_lq_*_free_tree_* %i
 select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

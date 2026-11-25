@@ -4,9 +4,9 @@
 `timescale 1ns / 1ps
 // OpenRAM SRAM model
 // Words: 1024
-// Word size: 19
+// Word size: 20
 
-module sram_1w1r_1024x19(
+module sram_1w1r_1024x20(
 `ifdef USE_POWER_PINS
     vdd,
     gnd,
@@ -17,7 +17,7 @@ module sram_1w1r_1024x19(
     clk1,csb1,addr1,dout1
   );
 
-  parameter DATA_WIDTH = 19 ;
+  parameter DATA_WIDTH = 20 ;
   parameter ADDR_WIDTH = 10 ;
   parameter RAM_DEPTH = 1 << ADDR_WIDTH;
   // FIXME: This delay is arbitrary.
@@ -65,7 +65,7 @@ module sram_1w1r_1024x19(
     addr1_reg = addr1;
     if (VERBOSE && !csb0 && !csb1 && (addr0 == addr1))
          $display($time," WARNING: Writing and reading addr0=%b and addr1=%b simultaneously!",addr0,addr1);
-    #(T_HOLD) dout1 = 19'bx;
+    #(T_HOLD) dout1 = 20'bx;
     if ( !csb1_reg && VERBOSE ) 
       $display($time," Reading %m addr1=%b dout1=%b",addr1_reg,mem[addr1_reg]);
   end
@@ -76,7 +76,7 @@ module sram_1w1r_1024x19(
   always @ (negedge clk0)
   begin : MEM_WRITE0
     if (!csb0_reg) begin
-        mem[addr0_reg][18:0] = din0_reg[18:0];
+        mem[addr0_reg][19:0] = din0_reg[19:0];
     end
   end
 

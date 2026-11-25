@@ -71,6 +71,7 @@ class OrderInterface(StreamInterface):
                 "s2": int(c.s2_valid_q.value),
                 "s3": int(c.s3_valid_q.value),
                 "s4": int(c.s4_valid_q.value),
+                "answer": int(c.s4_valid_q.value) | int(c.bypass_path_s3.value),
                 "probe": int(c.probe_valid_q.value),
                 "capture": int(self.dut.i_probe_valid.value)
                 & int(self.dut.o_probe_ready.value),
@@ -174,9 +175,11 @@ async def run_offset(dut: Any, offset: int) -> dict[str, Any]:
     trap_pending = bool(int(dut.o_trap_pending.value))
     trap_cause = int(dut.o_trap_cause.value)
     committed = [c["tag"] for c in b.commits]
-    s4_cycles = [t["cycle"] for t in b.trace if t["s4"] and t["cycle"] >= issue_cycle]
+    answer_cycles = [
+        t["cycle"] for t in b.trace if t["answer"] and t["cycle"] >= issue_cycle
+    ]
     s2_cycles = [t["cycle"] for t in b.trace if t["s2"] and t["cycle"] >= issue_cycle]
-    overlap = [t["cycle"] for t in b.trace if t["s4"] and t["probe"]]
+    overlap = [t["cycle"] for t in b.trace if t["answer"] and t["probe"]]
     return {
         "offset": offset,
         "older": older,
@@ -193,8 +196,8 @@ async def run_offset(dut: Any, offset: int) -> dict[str, Any]:
         "capture": capture_cycle,
         "reply": reply_cycle,
         "s2": s2_cycles,
-        "s4": s4_cycles,
-        "s4_during_probe": overlap,
+        "answer": answer_cycles,
+        "answer_during_probe": overlap,
     }
 
 
@@ -219,13 +222,13 @@ async def corr_hit_path_across_invalidating_probe(dut: Any) -> None:
             assert r["trap_pending"] and r["trap_cause"] == EXC_MEM_REPLAY, r
         if r["b_committed"]:
             assert r["b_value"] == NEW, r
-    # The sweep must reach the reviewed case: a hit-path stage-4 answer while
-    # the invalidating probe is in service.
-    assert any(r["s4_during_probe"] for r in results), results
+    # The sweep must reach the reviewed case: a hit-path answer (stage-3 bypass
+    # or stage-4 buffered) while the invalidating probe is in service.
+    assert any(r["answer_during_probe"] for r in results), results
     assert any(r["b_value"] == OLD for r in results), results
     # The offsets must also bracket B's hit path: a probe captured before B
     # enters it (B misses and reads the new value) and one captured after B's
-    # stage-4 answer. A change of hit-path depth that moves the window out of
+    # hit-path answer. A change of hit-path depth that moves the window out of
     # the swept offsets fails one of these.
-    assert any(r["b_value"] == NEW and not r["s4"] for r in results), results
-    assert any(r["s4"] and r["capture"] > r["s4"][0] for r in results), results
+    assert any(r["b_value"] == NEW and not r["answer"] for r in results), results
+    assert any(r["answer"] and r["capture"] > r["answer"][0] for r in results), results

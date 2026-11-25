@@ -109,6 +109,7 @@ module coherence_array_progress #(
         .i_hp_addr(i_hp_addr[n*ADDR_WIDTH+:ADDR_WIDTH]),
         .o_hp_ready(hp_ready[n]),
         .o_hp_hit(hp_hit[n]),
+        .o_hp_dword(),
         .o_hp_data(),
         .o_f_phase(phase[n]),
         .o_f_count(count[n]),

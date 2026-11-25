@@ -15,7 +15,8 @@ hierarchy -top sq_early_addr_pipeline
 script free_undefined.ys
 prep -top sq_early_addr_pipeline
 select -assert-none t:$assume
-select -assert-count 2 t:$check
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 2 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
