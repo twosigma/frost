@@ -253,7 +253,9 @@ module vec_unit #(
 
   logic [31:0] insn_q[RobDepth];
   logic [VmtIdxW-1:0] vmt_idx_by_tag_q[RobDepth];
-  logic [1:0] vtox_sew_q[RobDepth];
+  // Packed off-head VTOX/VTOF metadata per ROB tag (pre-decoded in alloc_q):
+  //   {sew[1:0], vs2[4:0], is_fp_mv, is_mask_red, is_first, masked}
+  logic [10:0] vtox_meta_q[RobDepth];
   logic [4:0] rob_vd_q[RobDepth];
   logic [2:0] rob_wlast_q[RobDepth];
   // Packed commit-time VIQ metadata per ROB tag (single read port at i_commit_tag):
@@ -346,9 +348,19 @@ module vec_unit #(
 
   // Pipelined commit-time and off-head metadata tables (populated one cycle
   // after allocation, before earliest registered commit).
+  logic alloc_vtox_is_mask_red;
+  assign alloc_vtox_is_mask_red =
+      (alloc_q_insn[14:12] == 3'b010) && (alloc_q_insn[19:15] != 5'b00000);
   always_ff @(posedge i_clk) begin
     if (alloc_q_valid) begin
-      vtox_sew_q[alloc_q_tag] <= alloc_q_vtype[4:3];
+      vtox_meta_q[alloc_q_tag] <= {
+        alloc_q_vtype[4:3],
+        alloc_q_insn[24:20],
+        alloc_q_insn[14:12] == 3'b001,
+        alloc_vtox_is_mask_red,
+        alloc_q_insn[19:15] == 5'b10001,
+        alloc_vtox_is_mask_red && !alloc_q_insn[25]
+      };
       rob_vd_q[alloc_q_tag] <= alloc_q_insn[11:7];
       rob_wlast_q[alloc_q_tag] <= alloc_wlast;
       rob_meta_q[alloc_q_tag] <= {
@@ -909,21 +921,12 @@ module vec_unit #(
     end
   end
 
-  logic [31:0] ov_pick_insn;
-  logic ov_pick_is_mask_red;
-  assign ov_pick_insn = insn_q[ov_pick_tag];
-  assign ov_pick_is_mask_red = (ov_pick_insn[14:12] == 3'b010) && (ov_pick_insn[19:15] != 5'b00000);
-
   // Off-head datapath registers (state-only enables; no reset or kill fanout).
   always_ff @(posedge i_clk) begin
     if (ov_state_q == OV_IDLE) begin
-      ov_tag_q         <= ov_pick_tag;
-      ov_vs2_q         <= ov_pick_insn[24:20];
-      ov_is_fp_mv_q    <= (ov_pick_insn[14:12] == 3'b001);
-      ov_is_mask_red_q <= ov_pick_is_mask_red;
-      ov_is_first_q    <= (ov_pick_insn[19:15] == 5'b10001);
-      ov_masked_q      <= ov_pick_is_mask_red && !ov_pick_insn[25];
-      ov_sew_q         <= vtox_sew_q[ov_pick_tag];
+      ov_tag_q <= ov_pick_tag;
+      {ov_sew_q, ov_vs2_q, ov_is_fp_mv_q, ov_is_mask_red_q,
+       ov_is_first_q, ov_masked_q} <= vtox_meta_q[ov_pick_tag];
     end
     if (ov_state_q == OV_CHK) ov_vl_q <= i_vl;
     if ((ov_state_q == OV_RD0) && !ov_s2_cap_q) ov_s2_q <= xr_data;

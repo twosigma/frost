@@ -209,7 +209,7 @@ module vec_engine #(
   logic seq_ok_q, seq_no_body_q, seq_mask_dest_q, seq_unary_q;
   logic seq_use_scalar_q, seq_masked_q, seq_need_vs2_q, seq_need_vs1_q, seq_need_v0_q;
   vec_pkg::int_op_e seq_op_q;
-  logic [4:0] seq_vd_q, seq_vs2_q, seq_vs1_q;
+  logic [4:0] seq_vd_q, r_vs2_addr_q, r_vs1_addr_q;
   logic [1:0] seq_sew_q;
   logic [2:0] seq_epr_shift_q;
   logic [3:0] seq_g_q, seq_last_g_q;
@@ -411,20 +411,75 @@ module vec_engine #(
   assign o_wr_mask = pipe_wr_mask | cmp_wr_mask |
       ((seq_valid_q && seq_ok_q && !seq_no_body_q) ? seq_wr_mask_q : 32'd0);
 
-  // Source read addresses for the current sequencer group (pure flops + 5-bit add).
-  logic [4:0] r_vs2_addr, r_vs1_addr;
-  assign r_vs2_addr   = seq_vs2_q + 5'(seq_g_q);
-  assign r_vs1_addr   = seq_unary_q ? seq_vs2_q : (seq_vs1_q + 5'(seq_g_q));
-  assign int_raddr[0] = r_vs2_addr;
-  assign int_raddr[1] = r_vs1_addr;
+  // Registered source read addresses for the current sequencer group.
+  assign int_raddr[0] = r_vs2_addr_q;
+  assign int_raddr[1] = r_vs1_addr_q;
   assign int_raddr[2] = seq_vd_q;
   assign int_raddr[3] = 5'd0;
 
-  // RAW hazard check for the current sequencer group (pure flops -> 3 LUTs).
+  // Direct 5-bit RAW hazard checks against the five in-flight pipeline stages
+  // (avoids routing through the 32-bit exported pipe_wr_mask).
+  function automatic logic stage_raw_hit(input logic v, input logic [4:0] vd, input logic need_vs2,
+                                         input logic [4:0] vs2, input logic need_vs1,
+                                         input logic [4:0] vs1, input logic need_v0,
+                                         input logic need_vd, input logic [4:0] cur_vd);
+    stage_raw_hit = v &&
+        ((need_vs2 && (vd == vs2)) || (need_vs1 && (vd == vs1)) ||
+         (need_v0 && (vd == 5'd0)) || (need_vd && (vd == cur_vd)));
+  endfunction
+
   logic raw_hazard;
-  assign raw_hazard = (seq_need_vs2_q && pipe_wr_mask[r_vs2_addr]) ||
-      (seq_need_vs1_q && pipe_wr_mask[r_vs1_addr]) || (seq_need_v0_q && pipe_wr_mask[0]) ||
-      (seq_mask_dest_q && pipe_wr_mask[seq_vd_q]);
+  assign raw_hazard = stage_raw_hit(
+      e0_valid_q && !e0_mask_dest_q,
+      e0_vd_reg_q,
+      seq_need_vs2_q,
+      r_vs2_addr_q,
+      seq_need_vs1_q,
+      r_vs1_addr_q,
+      seq_need_v0_q,
+      seq_mask_dest_q,
+      seq_vd_q
+  ) || stage_raw_hit(
+      e1_valid_q && !e1_mask_dest_q,
+      e1_vd_reg_q,
+      seq_need_vs2_q,
+      r_vs2_addr_q,
+      seq_need_vs1_q,
+      r_vs1_addr_q,
+      seq_need_v0_q,
+      seq_mask_dest_q,
+      seq_vd_q
+  ) || stage_raw_hit(
+      e2_valid_q && !e2_mask_dest_q,
+      e2_vd_reg_q,
+      seq_need_vs2_q,
+      r_vs2_addr_q,
+      seq_need_vs1_q,
+      r_vs1_addr_q,
+      seq_need_v0_q,
+      seq_mask_dest_q,
+      seq_vd_q
+  ) || stage_raw_hit(
+      w_valid_q && !w_mask_dest_q,
+      w_vd_reg_q,
+      seq_need_vs2_q,
+      r_vs2_addr_q,
+      seq_need_vs1_q,
+      r_vs1_addr_q,
+      seq_need_v0_q,
+      seq_mask_dest_q,
+      seq_vd_q
+  ) || stage_raw_hit(
+      mwr_pending_q,
+      mwr_vd_q,
+      seq_need_vs2_q,
+      r_vs2_addr_q,
+      seq_need_vs1_q,
+      r_vs1_addr_q,
+      seq_need_v0_q,
+      seq_mask_dest_q,
+      seq_vd_q
+  );
 
   logic grp_pipe_busy, cmp_in_flight, seq_issue_fire, seq_finishing, seq_accept;
   assign grp_pipe_busy = e0_valid_q || e1_valid_q || e2_valid_q || w_valid_q || mwr_pending_q;
@@ -527,30 +582,10 @@ module vec_engine #(
     end else begin
       o_unsupported <= seq_valid_q && !seq_ok_q;
 
-      // Sequencer (Stage R)
+      // Sequencer control (Stage R)
       if (seq_accept) begin
-        seq_valid_q      <= 1'b1;
-        seq_started_q    <= 1'b0;
-        seq_ok_q         <= d_ok;
-        seq_no_body_q    <= d_no_body;
-        seq_mask_dest_q  <= d_mask_dest;
-        seq_unary_q      <= d_unary;
-        seq_use_scalar_q <= d_use_scalar;
-        seq_masked_q     <= d_masked;
-        seq_need_vs2_q   <= (d_op != vec_pkg::VI_MV);
-        seq_need_vs1_q   <= !d_use_scalar && !d_unary;
-        seq_need_v0_q    <= d_masked || d_merge;
-        seq_op_q         <= d_op;
-        seq_vd_q         <= d_vd;
-        seq_vs2_q        <= d_vs2;
-        seq_vs1_q        <= d_vs1;
-        seq_sew_q        <= i_vsew[1:0];
-        seq_epr_shift_q  <= d_epr_shift;
-        seq_g_q          <= d_first_g_raw[3:0];
-        seq_last_g_q     <= d_eff_last_g;
-        seq_vl_q         <= i_vl;
-        seq_vstart_q     <= i_vstart;
-        seq_scalar_q     <= d_scalar_rep;
+        seq_valid_q   <= 1'b1;
+        seq_started_q <= 1'b0;
       end else if (seq_valid_q) begin
         if (!seq_ok_q || seq_no_body_q) begin
           seq_valid_q   <= 1'b0;
@@ -560,7 +595,6 @@ module vec_engine #(
             seq_valid_q   <= 1'b0;
             seq_started_q <= 1'b0;
           end else begin
-            seq_g_q       <= seq_g_q + 4'd1;
             seq_started_q <= 1'b1;
           end
         end
@@ -633,9 +667,35 @@ module vec_engine #(
     end
   end
 
-  // Registered sequencer write mask (reset-free CE-only latch).
+  // Reset-free sequencer datapath latches (CE-only, no i_rst gating).
   always_ff @(posedge i_clk) begin
-    if (seq_accept) seq_wr_mask_q <= d_wr_mask;
+    if (seq_accept) begin
+      seq_ok_q         <= d_ok;
+      seq_no_body_q    <= d_no_body;
+      seq_mask_dest_q  <= d_mask_dest;
+      seq_unary_q      <= d_unary;
+      seq_use_scalar_q <= d_use_scalar;
+      seq_masked_q     <= d_masked;
+      seq_need_vs2_q   <= (d_op != vec_pkg::VI_MV);
+      seq_need_vs1_q   <= !d_use_scalar && !d_unary;
+      seq_need_v0_q    <= d_masked || d_merge;
+      seq_op_q         <= d_op;
+      seq_vd_q         <= d_vd;
+      seq_sew_q        <= i_vsew[1:0];
+      seq_epr_shift_q  <= d_epr_shift;
+      seq_last_g_q     <= d_eff_last_g;
+      seq_vl_q         <= i_vl;
+      seq_vstart_q     <= i_vstart;
+      seq_scalar_q     <= d_scalar_rep;
+      seq_wr_mask_q    <= d_wr_mask;
+      seq_g_q          <= d_first_g_raw[3:0];
+      r_vs2_addr_q     <= d_vs2 + 5'(d_first_g_raw[3:0]);
+      r_vs1_addr_q     <= d_unary ? d_vs2 : (d_vs1 + 5'(d_first_g_raw[3:0]));
+    end else if (seq_issue_fire) begin
+      seq_g_q      <= seq_g_q + 4'd1;
+      r_vs2_addr_q <= r_vs2_addr_q + 5'd1;
+      if (!seq_unary_q) r_vs1_addr_q <= r_vs1_addr_q + 5'd1;
+    end
   end
 
   // Group-ALU VRF writes, driven directly from registered lane/mask outputs.
