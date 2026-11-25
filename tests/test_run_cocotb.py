@@ -6748,10 +6748,10 @@ for _program, (_what, _budget, _cflags) in VECTOR_BRING_UP_PROGRAMS.items():
                 *((("EXTRA_CFLAGS", _cflags),) if _cflags else ()),
             ),
         )
-# Vector loads and stores reach only cached DDR, so a bring-up program whose
-# vector code touches its static data or its stack needs the DDR tier, where a
-# program built with the vector extension has its stack in cached DDR as well:
-# vec_ldst also runs that way.
+# Misaligned vector loads and stores execute only in cached DDR (low BRAM
+# enforces natural alignment), so vec_ldst also runs in the DDR tier where a
+# program built with the vector extension places its static data and stack in
+# cached DDR.
 for _vlen in (128, 256, 512):
     TEST_REGISTRY[f"vec_ldst_ddr_v{_vlen}"] = CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

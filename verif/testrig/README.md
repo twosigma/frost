@@ -618,7 +618,7 @@ TestRIG shards (`core`, `segment` and `ext`) at each of VLEN 128, 256 and 512,
 sharing one prebuilt simulator per vector length. The `core` shard replays
 12 generated traces of 20 operation groups from seed 42, the source-width
 traces and the directed
-state, fractional LMUL, FP, cached DDR, integer comparison, widening and
+state, fractional LMUL, FP, cached DDR, uncached region, integer comparison, widening and
 narrowing integer, fixed-point, single-width FP, whole-register memory,
 widening FP, permute, reduction, carry/borrow, mask-register, integer
 multiply-add and integer scalar/merge traces. The `segment` shard runs
