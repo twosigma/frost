@@ -664,7 +664,7 @@ of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256`, `vec_crypto_irq_test_v256` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256`, `vec_vstart_irq_test_v256`, `vec_crypto_irq_test_v256` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `opensbi_reset_cold`, `opensbi_reset_warm` | Each bench issues its own S-mode reset and stops at the first retired boot instruction |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
@@ -1158,7 +1158,8 @@ permits and the ones it reserves; faults on an element in low BRAM and an Sv39
 page fault part-way through, with resumption; scalar ordering on element
 addresses; pointer masking; illegal forms; timer interrupts during long
 gathers; and a gather whose destination is its own index group under timer
-interrupts, which is correct only if a started instruction runs to its end.
+interrupts, verifying mid-run interruption at an element boundary with
+`vstart` set and resumption without re-reading overwritten indices.
 
 The `vec_segment_test_v128`, `vec_segment_test_v256`, and
 `vec_segment_test_v512` programs check segment loads and stores with
@@ -1177,6 +1178,18 @@ element 0 traps and keeps `vl`; with `vstart` = k nothing is loaded and `vl`
 becomes k; a masked-off element on the unmapped page keeps `vl`; and `csrr vl`,
 a tail-undisturbed `vadd.vi`, `vsetvli x0, x0` and `vcpop.m` placed right behind
 a trimming load all see the trimmed `vl`.
+
+The `vec_vstart_irq_test_v128`, `vec_vstart_irq_test_v256`, and
+`vec_vstart_irq_test_v512` programs take machine and delegated supervisor timer
+interrupts mid-run during long strided, indexed, segment, and fault-only-first
+loads and stores. The handlers verify `mepc`/`sepc`, `0 < vstart < vl`,
+`mstatus.VS` Dirty, single-element latency bounds, completion of elements below
+`vstart`, poisoning of prestart locations so resumption cannot rewrite them,
+fault-only-first trimming after resumption, and agreement with synchronous page
+faults on the same instruction. `vec_debug_partial` also asserts JTAG `haltreq`
+mid-run on strided, indexed, segment, and fault-only-first loads and stores,
+checking `dpc`, `dcsr.cause`, `vstart`, `mstatus.VS`, prestart preservation,
+and completion after `dret`.
 
 ### `test_riscv_vector_tests.py`
 
@@ -1638,7 +1651,7 @@ advertising `misa.V=1`.
 source-width traces. `--vector-directed` includes the `misa.V`, vector CSR,
 scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison,
 FP conversion, cached DDR probe, unit-stride memory, strided memory,
-indexed memory, fault-only-first load, integer comparison,
+indexed memory, fault-only-first load, nonzero-`vstart` resumption, integer comparison,
 widening and narrowing integer, fixed-point, single-width FP, whole-register
 memory, widening FP, permute, reduction, carry/borrow, mask-register,
 integer multiply-add and integer scalar/merge traces. `--vector-segments`

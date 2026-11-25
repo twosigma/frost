@@ -31,10 +31,10 @@ ABI. Two larger pieces come before the second hart:
   V, Zvbb, Zvbc, Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb,
   Zvkg, Zvkn, Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, Zvl32b, Zvl64b,
   Zvl128b and Zvl256b. Strided, indexed, segment and
-  fault-only-first loads and stores run one element at a time, and an interrupt
-  or debug halt that arrives after such a run has begun waits until the
-  instruction finishes; taking them between elements, with `vstart` naming the
-  next one, is later work. Vector loads and stores are executed in cached memory
+  fault-only-first loads and stores run one element at a time and take pending
+  interrupts and debug halts between elements (or between segments for segment
+  forms), with `vstart` naming the next element and execution resuming from
+  `vstart` after `mret`, `sret` or `dret`. Vector loads and stores are executed in cached memory
   only: an element address in any other region, such as the low BRAM or a
   device, raises an access fault. In the bare-metal DDR layout, a program built
   with the vector extension therefore has its stack in cached DDR as well, so

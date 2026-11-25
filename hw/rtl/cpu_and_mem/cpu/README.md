@@ -1082,8 +1082,10 @@ elements lie on a valid first page before a faulting second page, `vec_vmu`
 executes those first-page elements before a synchronous machine or supervisor
 trap records the first unexecuted element in `vstart`. The CSR file registers
 that entry and writes `vstart`, and sets VS Dirty, on the following edge;
-nothing retires or writes a CSR in between. A partial-load fault in
-Debug Mode re-parks without that `vstart` update. After retirement, `vector/vec_vmu.sv` splits the
+nothing retires or writes a CSR in between. Machine or supervisor interrupts
+and Debug Mode halts between elements of a strided, indexed, segment, or
+fault-only-first run use the same `vstart` path; a partial-load fault in Debug
+Mode re-parks without that `vstart` update. After retirement, `vector/vec_vmu.sv` splits the
 access into 32-byte sectors across six line-client identities (IDs 2..7) to the
 coherence home, freeing the `vec_vmt` entry once all sector responses and VRF
 writes finish. A failed sector response after retirement, or during a partial
@@ -1127,14 +1129,18 @@ group `vd + f * EMUL` (EMUL at least one register), so a fault on a segment is
 reported before any of its fields is accessed. NF * EMUL may not exceed 8, the
 last field group may not pass `v31`, and an indexed segment load's field groups
 may not overlap the index group. The first access waits for older committed
-scalar stores to drain and raises
-the interrupt shield, which stays up until the instruction traps or retires,
-so from the first access on, interrupts and debug requests wait for the rest of
-the instruction; one armed before the first access is taken first, and the
-instruction then runs again from its start. A fault on
-element `i` is reported with `vstart = i` after elements `vstart..i-1` are
-performed; `xtval` is the element's transformed address, or the second page's
-base when the element straddles into a faulting page. The instruction never
+scalar stores to drain. Before launching each element (or segment), the unit
+raises the interrupt shield, keeping it up across all fields of a segment and
+dropping it once the element completes (holding it through completion on the
+final active element). While the shield is down between elements, the head unit
+advertises the next element index on the `vstart` sideband so a pending,
+enabled interrupt or a debug halt stops the instruction precisely at that
+boundary, writes `vstart` and sets VS Dirty, and resumes from `vstart` after
+`mret`, `sret`, or `dret`; one armed before the first access is taken first,
+and the instruction then runs from its initial `vstart`. A fault on
+element `i` is reported on the same sideband with `vstart = i` after elements
+`vstart..i-1` are performed; `xtval` is the element's transformed address, or
+the second page's base when the element straddles into a faulting page. The instruction never
 writes a range into `vec_vmt`, so every younger scalar load and store waits
 until the entry is freed, which happens when the instruction retires after its
 last element. A load whose head-executed part (an element of a run, or the
