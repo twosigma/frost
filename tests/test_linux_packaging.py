@@ -42,6 +42,7 @@ SBI_PACKER = (
 )
 OPENSBI_HELPER = REPO_ROOT / "linux" / "opensbi_build.py"
 DEBIAN_KERNEL = REPO_ROOT / "linux" / "debian_kernel.py"
+CRYPTO_SELFTEST = REPO_ROOT / "linux" / "crypto_selftest.py"
 DRIVER_DIR = REPO_ROOT / "linux" / "frost-net10g"
 MEMERR_DIR = REPO_ROOT / "linux" / "frost-memerr"
 LOADER = REPO_ROOT / "fpga" / "load_software" / "load_software.py"
@@ -3168,3 +3169,84 @@ def test_sbi_packer_accepts_supplied_dtb_and_checks_initrd_range(
     short_dtb.write_bytes(supplied.read_bytes()[:-4])
     with pytest.raises(ValueError, match="totalsize"):
         packer.load_dtb(short_dtb, tmp_path, None)
+
+
+def test_crypto_selftest_keys_driver_sets_to_kernel_release() -> None:
+    """Crypto self-test checks require arch/riscv/crypto on 6.12 and lib/crypto on 7.3."""
+    mod = _load_module(CRYPTO_SELFTEST)
+
+    spec_612 = mod.crypto_spec_for_release("6.12.113+deb13-riscv64")
+    spec_734 = mod.crypto_spec_for_release("7.3.4+deb13-riscv64")
+    assert spec_612.layout == "arch/riscv/crypto"
+    assert spec_734.layout == "lib/crypto"
+    assert spec_734.tcrypt_modes == (35,)
+
+    def _make_proc_crypto(
+        drivers: tuple[str, ...],
+        overrides: dict[str, str] | None = None,
+        extra: str = "",
+    ) -> str:
+        ov = overrides or {}
+        stanzas = [
+            f"name         : alg\ndriver       : {drv}\nselftest     : {ov.get(drv, 'passed')}"
+            for drv in drivers
+        ]
+        if extra:
+            stanzas.append(extra.strip())
+        return "\n\n".join(stanzas) + "\n"
+
+    pc_612 = _make_proc_crypto(mod.CRYPTO_DRIVERS_ARCH_RISCV)
+    # Real 7.3.4 /proc/crypto has a duplicate dh-generic stanza with selftest: unknown.
+    pc_734 = _make_proc_crypto(
+        mod.CRYPTO_DRIVERS_LIB_CRYPTO,
+        extra="name : dh\ndriver : dh-generic\nselftest : unknown",
+    )
+
+    res_612 = mod.verify_crypto_selftests("6.12.113+deb13-riscv64", pc_612)
+    assert res_612["layout"] == "arch/riscv/crypto"
+    assert res_612["passed"] == len(mod.CRYPTO_DRIVERS_ARCH_RISCV)
+
+    res_734 = mod.verify_crypto_selftests("7.3.4+deb13-riscv64", pc_734)
+    assert res_734["layout"] == "lib/crypto"
+    assert res_734["passed"] == len(mod.CRYPTO_DRIVERS_LIB_CRYPTO)
+
+    # Cross-kernel mismatches must fail rather than accepting either set.
+    with pytest.raises(ValueError, match="missing arch/riscv/crypto"):
+        mod.verify_crypto_selftests("6.12.113+deb13-riscv64", pc_734)
+    with pytest.raises(ValueError, match="missing lib/crypto"):
+        mod.verify_crypto_selftests("7.3.4+deb13-riscv64", pc_612)
+
+    # Any required driver that fails or has not finished testing must fail.
+    bad_req = _make_proc_crypto(
+        mod.CRYPTO_DRIVERS_LIB_CRYPTO,
+        overrides={"gcm_base(ctr-aes-lib,ghash-lib)": "failed"},
+    )
+    with pytest.raises(ValueError, match="failed selftest"):
+        mod.verify_crypto_selftests("7.3.4+deb13-riscv64", bad_req)
+
+    # Any global failed or testing stanza must fail.
+    bad_global = _make_proc_crypto(
+        mod.CRYPTO_DRIVERS_LIB_CRYPTO,
+        extra="name : sha3-256\ndriver : sha3-256-lib\nselftest : testing",
+    )
+    with pytest.raises(ValueError, match="non-passed self-tests"):
+        mod.verify_crypto_selftests("7.3.4+deb13-riscv64", bad_global)
+
+    # Kernel dmesg self-test failure must fail.
+    with pytest.raises(ValueError, match="dmesg reported"):
+        mod.verify_crypto_selftests(
+            "7.3.4+deb13-riscv64",
+            pc_734,
+            dmesg="[  1.23] alg: aead: gcm_base(ctr-aes-lib,ghash-lib) self-test failed",
+        )
+
+    # Malformed and intermediate kernel releases must fail closed.
+    for bad_rel in ("", "riscv64", "7", "6.19.0", "7.0.0"):
+        with pytest.raises(ValueError):
+            mod.crypto_spec_for_release(bad_rel)
+
+    # Guest load script covers both kernel layouts.
+    script = mod.guest_load_script()
+    assert "aes-riscv64" in script
+    assert "crc32-cryptoapi" in script
+    assert "tcrypt mode=35" in script

@@ -176,7 +176,17 @@ Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn,
 Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, and the Zvl32b, Zvl64b, Zvl128b
 and Zvl256b length guarantees. Those builds set `misa.V` and have `VLEN=256`
 and `ELEN=64`. These entries describe the vector capabilities for Linux ISA
-discovery. The default VCU118 device tree describes its scalar configuration.
+discovery. In the pinned Debian 7.3 kernel, the RISC-V vector-crypto (`Zvkned`,
+`Zvknha`/`Zvknhb`, `Zvkg`, `Zvkb`, `Zvbb`) and carry-less CRC32 (`Zbc`)
+implementations reside in `lib/crypto` and `lib/crc`: `aes-lib`,
+`ecb-aes-lib`, `cbc-aes-lib`, `cts-cbc-aes-lib`, `ctr-aes-lib`, `xts-aes-lib`,
+and `sha224/256/384/512-lib` are built in, while `chacha`, `gcm` (instantiated
+as `gcm_base(ctr-aes-lib,ghash-lib)` through `tcrypt mode=35`),
+`crc32-cryptoapi`, and `crc32c-cryptoapi` are loadable modules.
+[`crypto_selftest.py`](crypto_selftest.py) checks the expected `/proc/crypto`
+self-test set for the running kernel release (supporting both Linux 6.12's
+`arch/riscv/crypto` modules and Linux 7.3's `lib/crypto` drivers). The default
+VCU118 device tree describes its scalar configuration.
 Both the default and `--vector` VCU118 device trees omit `svpbmt` because the
 VCU118's 2 GiB DDR map has no uncached alias.
 
