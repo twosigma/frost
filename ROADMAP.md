@@ -638,7 +638,7 @@ and targeted microbenchmarks give these items:
    retired instructions, and the shared page walker is busy about 11% of
    cycles. A miss in all of them walks, and the walker cache takes the walk to
    one dependent read; for a data miss the second-level lookup comes first, so
-   a dependent load that walks takes 29 cycles, one more than without the
+   a dependent load that walks takes 26 cycles, one more than without the
    array. Starting the walk in parallel with the second-level
    lookup and cancelling it on a hit would remove that cycle. A 32-entry
    superpage side array in the second-level TLB holds 2 MiB and 1 GiB leaves.
