@@ -329,10 +329,10 @@ module tage_predictor #(
   localparam bit RandomStart = 1'b0;
 `endif
 
-  logic train_valid_q = RandomStart ? 'x : 1'b0;
+  (* max_fanout = 64 *) logic train_valid_q = RandomStart ? 'x : 1'b0;
   riscv_pkg::tage_lookup_t train_lookup_q;
   logic train_taken_q;
-  logic train_mispredicted_q;
+  (* max_fanout = 64, equivalent_register_removal = "no" *) logic train_mispredicted_q;
   logic [TABLES-1:0] provider;
   logic [TABLES-1:0] above;
   logic [TABLES-1:0] owned;  // the saved entry still holds the branch

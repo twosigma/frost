@@ -78,7 +78,10 @@ module backing_btb #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned ENTRIES = riscv_pkg::BackingBtbEntries,
     parameter int unsigned WAYS = riscv_pkg::BackingBtbWays,
-    parameter int unsigned TARGET_BITS = riscv_pkg::PhysAddrBits
+    parameter int unsigned TARGET_BITS = riscv_pkg::PhysAddrBits,
+    // When set, compare the window tags against i_lookup_pc in the lookup
+    // cycle and register per-halfword match qualifiers for o_win_*.
+    parameter bit PRECOMPARE_WIN_PC = 1'b0
 ) (
     input logic i_clk,
     input logic i_reset,
@@ -103,8 +106,10 @@ module backing_btb #(
     output logic [1:0][TARGET_BITS-2:0] o_slot2_target_by_size,
 
     // Optional four-halfword window response for decoupled fetch: compares
-    // the newest read (images 0 and 1) against i_win_pc and returns per-
-    // halfword hits and fields in {W+1:hi, W+1:lo, W:hi, W:lo} order.
+    // the newest read (images 0 and 1) against i_win_pc (or i_lookup_pc in the
+    // lookup cycle when PRECOMPARE_WIN_PC is set) and returns per-halfword
+    // hits and fields in {W+1:hi, W+1:lo, W:hi, W:lo} order.
+    input logic [XLEN-1:0] i_lookup_pc = '0,
     input logic [XLEN-1:0] i_win_pc = '0,
     output logic [3:0] o_win_hit,
     output logic [3:0] o_win_compressed,
@@ -179,7 +184,7 @@ module backing_btb #(
   // ===========================================================================
   // Reset sweep
   // ===========================================================================
-  logic sweep_active;
+  (* max_fanout = 32 *) logic sweep_active;
   logic [IndexBits-1:0] sweep_index;
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
@@ -277,15 +282,15 @@ module backing_btb #(
   // Stage C registers the set, the chosen way and the request, then writes.
   // A refresh that misses writes nothing.
   logic c_valid;
-  logic c_refresh;
+  (* max_fanout = 32 *) logic c_refresh;
   logic [IndexBits-1:0] c_index;
   logic [SetBits-1:0] c_set;
   logic c_hit;
-  logic [WayBits-1:0] c_way;
+  (* max_fanout = 32 *) logic [WayBits-1:0] c_way;
   logic [UpperBits-1:0] c_upper;
   logic c_halfword;
   logic [TARGET_BITS-2:0] c_target;
-  logic c_region_ok;
+  (* max_fanout = 32 *) logic c_region_ok;
   logic c_compressed, c_return;
   logic b_accepted;
   assign b_accepted = b_valid && !(c_valid && !c_refresh && c_index == b_index) &&
@@ -380,6 +385,7 @@ module backing_btb #(
     else request_valid_q <= !sweep_active && !i_redirect;
   end
 
+  logic [1:0][TagRowBits-1:0] tag_rows_comb;
   logic [1:0][TagRowBits-1:0] tags_q;
   logic [1:0][PayloadRowBits-1:0] payload_rows;
   // The held read: the last response aligned with its packet.
@@ -403,6 +409,7 @@ module backing_btb #(
         .i_write_data(write_tags),
         .o_read_data(tag_row)
     );
+    assign tag_rows_comb[image] = tag_row;
     always_ff @(posedge i_clk) tags_q[image] <= tag_row;
 
     sdp_block_ram #(
@@ -651,39 +658,115 @@ module backing_btb #(
 
   // Four-halfword window response from the newest read (src 0): image 0 holds
   // word W (halfwords 0 and 1), image 1 holds word W+1 (halfwords 2 and 3,
-  // suppressed past the last set).
+  // suppressed past the last set). When PRECOMPARE_WIN_PC is set, compare
+  // the combinational tag-RAM reads against i_lookup_pc in F0 and register
+  // only the per-halfword hit/way qualifiers so F1 selects BRAM targets in a
+  // single shallow mux without repeating wide tag comparisons.
+  // Keep multi-dimensional arrays at module scope for Yosys read_verilog -sv.
+  logic f0_last_set;
+  logic [1:0][WAYS-1:0] f0_win_upper_match;
+  logic [1:0][WAYS-1:0] f0_tag_comp;
+  logic [1:0][WAYS-1:0] f0_tag_ret;
+  logic [3:0][WAYS-1:0] f0_win_hw_match;
+  logic [3:0] f0_win_hit;
+  logic [3:0] f0_win_comp;
+  logic [3:0] f0_win_ret;
+  logic [3:0][WAYS-1:0] win_hw_match_q;
+  logic [3:0] win_hit_q;
+  logic [3:0] win_comp_q;
+  logic [3:0] win_ret_q;
   logic win_aligned;
-  assign win_aligned = request_valid_q && (request_index_q == i_win_pc[IndexBits+1:2]);
   logic [1:0][WAYS-1:0] win_upper_match;
   logic [3:0][WAYS-1:0] win_hw_match;
-  for (genvar img = 0; img < 2; img++) begin : gen_win_img
-    for (genvar way = 0; way < WAYS; way++) begin : gen_win_way
-      tag_t wtag;
-      assign wtag = tags_q[img][way*TagEntryBits+:TagEntryBits];
-      assign win_upper_match[img][way] = wtag.valid &&
-          (wtag.upper == i_win_pc[XLEN-1:IndexBits+2]) && !(img == 1 && last_set);
-      assign win_hw_match[img*2+0][way] = win_upper_match[img][way] && !wtag.halfword;
-      assign win_hw_match[img*2+1][way] = win_upper_match[img][way] && wtag.halfword;
-    end
-  end
-  always_comb begin
-    o_win_hit        = '0;
-    o_win_compressed = '0;
-    o_win_return     = '0;
-    o_win_target     = '0;
-    for (int h = 0; h < 4; h++) begin
-      int img;
-      img = h >> 1;
-      for (int way = 0; way < WAYS; way++) begin
-        if (win_hw_match[h][way]) begin
-          o_win_hit[h]        = win_aligned;
-          o_win_compressed[h] = o_win_compressed[h] || entry_compressed[0][img][way];
-          o_win_return[h]     = o_win_return[h] || entry_return[0][img][way];
-          o_win_target[h]     = o_win_target[h] | entry_target[0][img][way];
+
+  generate
+    if (PRECOMPARE_WIN_PC) begin : gen_win_precompare
+      assign f0_last_set = &i_lookup_index;
+      for (genvar img = 0; img < 2; img++) begin : gen_f0_img
+        for (genvar way = 0; way < WAYS; way++) begin : gen_f0_way
+          tag_t f0_tag;
+          assign f0_tag = tag_rows_comb[img][way*TagEntryBits+:TagEntryBits];
+          assign f0_tag_comp[img][way] = f0_tag.compressed;
+          assign f0_tag_ret[img][way] = f0_tag.is_return;
+          assign f0_win_upper_match[img][way] =
+              f0_tag.valid && (f0_tag.upper == i_lookup_pc[XLEN-1:IndexBits+2]) &&
+              !(img == 1 && f0_last_set);
+          assign f0_win_hw_match[img*2+0][way] = f0_win_upper_match[img][way] && !f0_tag.halfword;
+          assign f0_win_hw_match[img*2+1][way] = f0_win_upper_match[img][way] && f0_tag.halfword;
+        end
+      end
+      always_comb begin
+        f0_win_hit  = '0;
+        f0_win_comp = '0;
+        f0_win_ret  = '0;
+        for (int h = 0; h < 4; h++) begin
+          for (int way = 0; way < WAYS; way++) begin
+            if (f0_win_hw_match[h][way]) begin
+              f0_win_hit[h]  = 1'b1;
+              f0_win_comp[h] = f0_win_comp[h] || f0_tag_comp[h>>1][way];
+              f0_win_ret[h]  = f0_win_ret[h] || f0_tag_ret[h>>1][way];
+            end
+          end
+        end
+      end
+
+      always_ff @(posedge i_clk) begin
+        win_hw_match_q <= f0_win_hw_match;
+        win_comp_q     <= f0_win_comp;
+        win_ret_q      <= f0_win_ret;
+        if (i_reset || sweep_active || i_redirect) begin
+          win_hit_q <= '0;
+        end else begin
+          win_hit_q <= f0_win_hit;
+        end
+      end
+
+      assign o_win_hit        = win_hit_q;
+      assign o_win_compressed = win_comp_q;
+      assign o_win_return     = win_ret_q;
+      always_comb begin
+        o_win_target = '0;
+        for (int h = 0; h < 4; h++) begin
+          for (int way = 0; way < WAYS; way++) begin
+            if (win_hw_match_q[h][way]) begin
+              o_win_target[h] =
+                  o_win_target[h] | payload_rows[h>>1][way*PayloadEntryBits+:PayloadEntryBits];
+            end
+          end
+        end
+      end
+    end else begin : gen_win_postcompare
+      assign win_aligned = request_valid_q && (request_index_q == i_win_pc[IndexBits+1:2]);
+      for (genvar img = 0; img < 2; img++) begin : gen_win_img
+        for (genvar way = 0; way < WAYS; way++) begin : gen_win_way
+          tag_t wtag;
+          assign wtag = tags_q[img][way*TagEntryBits+:TagEntryBits];
+          assign win_upper_match[img][way] = wtag.valid &&
+              (wtag.upper == i_win_pc[XLEN-1:IndexBits+2]) && !(img == 1 && last_set);
+          assign win_hw_match[img*2+0][way] = win_upper_match[img][way] && !wtag.halfword;
+          assign win_hw_match[img*2+1][way] = win_upper_match[img][way] && wtag.halfword;
+        end
+      end
+      always_comb begin
+        o_win_hit        = '0;
+        o_win_compressed = '0;
+        o_win_return     = '0;
+        o_win_target     = '0;
+        for (int h = 0; h < 4; h++) begin
+          int img;
+          img = h >> 1;
+          for (int way = 0; way < WAYS; way++) begin
+            if (win_hw_match[h][way]) begin
+              o_win_hit[h]        = win_aligned;
+              o_win_compressed[h] = o_win_compressed[h] || entry_compressed[0][img][way];
+              o_win_return[h]     = o_win_return[h] || entry_return[0][img][way];
+              o_win_target[h]     = o_win_target[h] | entry_target[0][img][way];
+            end
+          end
         end
       end
     end
-  end
+  endgenerate
 
   // Whether a set's tag row holds each valid tag once.
   function automatic logic tags_unique(input logic [TagRowBits-1:0] tags);
