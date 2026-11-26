@@ -19,8 +19,9 @@
  * bare-metal build needs.
  *
  * The string functions are byte-by-byte loops, written for code size rather
- * than speed. memset and memcpy take a word-wide fast path when the operands
- * and length are word-aligned; memmove is always byte-wise.
+ * than speed. memset and memcpy copy whole words in the aligned middle of the
+ * region, whatever its length, with byte head and tail; memmove is always
+ * byte-wise.
  */
 
 #include "string.h"
@@ -45,61 +46,73 @@ static inline void frost_memory_write_fence(void) {}
 #endif
 
 /* Fill memory region with specified byte value.
- * Fast path writes one machine word at a time when the destination and length
- * are word-aligned; otherwise falls back to a byte fill. */
+ * Head bytes up to the first word boundary, then whole words, then the tail
+ * bytes, so a length that is not a multiple of the word size still takes the
+ * word path. */
 void *memset(void *dst, int c, size_t n)
 {
-    if ((((uintptr_t) dst | n) & (sizeof(uintptr_t) - 1)) == 0) {
-        uintptr_t word = (unsigned char) c;
-        word |= word << 8;
-        word |= word << 16;
-#if UINTPTR_MAX > 0xffffffffU
-        word |= word << 32;
-#endif
-        uintptr_t *d = (uintptr_t *) dst;
-        uintptr_t *end = (uintptr_t *) ((char *) dst + n);
-        while (d < end)
-            *d++ = word;
-    } else {
-        unsigned char *p = (unsigned char *) dst;
-        while (n--)
-            *p++ = (unsigned char) c;
+    unsigned char *p = (unsigned char *) dst;
+    while (n != 0 && ((uintptr_t) p & (sizeof(uintptr_t) - 1)) != 0) {
+        *p++ = (unsigned char) c;
+        n--;
     }
+    uintptr_t word = (unsigned char) c;
+    word |= word << 8;
+    word |= word << 16;
+#if UINTPTR_MAX > 0xffffffffU
+    word |= word << 32;
+#endif
+    uintptr_t *d = (uintptr_t *) p;
+    uintptr_t *end = d + n / sizeof(uintptr_t);
+    while (d < end)
+        *d++ = word;
+    p = (unsigned char *) d;
+    n &= sizeof(uintptr_t) - 1;
+    while (n--)
+        *p++ = (unsigned char) c;
     frost_memory_write_fence();
     return dst;
 }
 
 /* Copy memory from source to destination.
- * Fast path copies machine words in 8-word unrolled blocks when the source,
- * destination, and length are all word-aligned; otherwise falls back to a byte
- * copy. Does not handle overlap (use memmove for that). */
+ * When source and destination are congruent modulo the word size, copy head
+ * bytes up to the first word boundary, then machine words in 8-word unrolled
+ * blocks, then the tail bytes. The length does not matter: an odd length still
+ * takes the word path. Copies whose pointers differ in word phase are
+ * byte-wise. Does not handle overlap (use memmove for that). */
 void *memcpy(void *dst, const void *src, size_t n)
 {
-    if ((((uintptr_t) dst | (uintptr_t) src | n) & (sizeof(uintptr_t) - 1)) == 0) {
-        uintptr_t *d = (uintptr_t *) dst;
-        const uintptr_t *s = (const uintptr_t *) src;
-        uintptr_t *end = (uintptr_t *) ((char *) dst + n);
-        while (d + 8 < end) {
-            uintptr_t reg[8] = {s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]};
-            d[0] = reg[0];
-            d[1] = reg[1];
-            d[2] = reg[2];
-            d[3] = reg[3];
-            d[4] = reg[4];
-            d[5] = reg[5];
-            d[6] = reg[6];
-            d[7] = reg[7];
-            d += 8;
-            s += 8;
+    unsigned char *d = (unsigned char *) dst;
+    const unsigned char *s = (const unsigned char *) src;
+    if ((((uintptr_t) d ^ (uintptr_t) s) & (sizeof(uintptr_t) - 1)) == 0) {
+        while (n != 0 && ((uintptr_t) d & (sizeof(uintptr_t) - 1)) != 0) {
+            *d++ = *s++;
+            n--;
         }
-        while (d < end)
-            *d++ = *s++;
-    } else {
-        unsigned char *d = (unsigned char *) dst;
-        const unsigned char *s = (const unsigned char *) src;
-        while (n--)
-            *d++ = *s++;
+        uintptr_t *dw = (uintptr_t *) d;
+        const uintptr_t *sw = (const uintptr_t *) s;
+        uintptr_t *end = dw + n / sizeof(uintptr_t);
+        while (dw + 8 <= end) {
+            uintptr_t reg[8] = {sw[0], sw[1], sw[2], sw[3], sw[4], sw[5], sw[6], sw[7]};
+            dw[0] = reg[0];
+            dw[1] = reg[1];
+            dw[2] = reg[2];
+            dw[3] = reg[3];
+            dw[4] = reg[4];
+            dw[5] = reg[5];
+            dw[6] = reg[6];
+            dw[7] = reg[7];
+            dw += 8;
+            sw += 8;
+        }
+        while (dw < end)
+            *dw++ = *sw++;
+        d = (unsigned char *) dw;
+        s = (const unsigned char *) sw;
+        n &= sizeof(uintptr_t) - 1;
     }
+    while (n--)
+        *d++ = *s++;
     frost_memory_write_fence();
     return dst;
 }
