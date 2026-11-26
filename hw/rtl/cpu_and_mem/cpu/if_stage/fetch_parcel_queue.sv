@@ -48,8 +48,9 @@ module fetch_parcel_queue #(
 
     // Push interface (up to 4 packed halfword parcels + 1 window metadata entry)
     input logic                                    i_push_valid,
-    input logic [           2:0]                   i_push_count,    // 1..4 when i_push_valid
+    input logic [           2:0]                   i_push_count,         // 1..4 when i_push_valid
     input logic [           3:0][PARCEL_WIDTH-1:0] i_push_parcels,
+    input logic                                    i_push_shift = 1'b0,
     input logic [META_WIDTH-1:0]                   i_push_meta,
 
     // Pop interface (0..4 parcels consumed by drain this cycle)
@@ -74,36 +75,39 @@ module fetch_parcel_queue #(
     output logic o_stop_fetch
 );
 
-  localparam int unsigned PtrBits       = $clog2(DEPTH);       // 4
-  localparam int unsigned CountBits     = PtrBits + 1;         // 5
-  localparam int unsigned BankRows      = DEPTH / 4;           // 4
-  localparam int unsigned RowBits       = $clog2(BankRows);    // 2
-  localparam int unsigned EntryBits     = PARCEL_WIDTH + 1;    // {last_of_window, parcel}
+  localparam int unsigned PtrBits = $clog2(DEPTH);  // 4
+  localparam int unsigned CountBits = PtrBits + 1;  // 5
+  localparam int unsigned BankRows = DEPTH / 4;  // 4
+  localparam int unsigned RowBits = $clog2(BankRows);  // 2
+  localparam int unsigned EntryBits = PARCEL_WIDTH + 1;  // {last_of_window, parcel}
 
-  localparam int unsigned MetaPtrBits   = $clog2(META_DEPTH);  // 3
-  localparam int unsigned MetaCountBits = MetaPtrBits + 1;     // 4
-  localparam int unsigned MetaBankBits  = MetaPtrBits - 1;     // 2
+  localparam int unsigned MetaPtrBits = $clog2(META_DEPTH);  // 3
+  localparam int unsigned MetaCountBits = MetaPtrBits + 1;  // 4
+  localparam int unsigned MetaBankBits = MetaPtrBits - 1;  // 2
 
   // ===========================================================================
   // Parcel Ring State (4 banks x BankRows entries in FFs, no reset on data)
   // ===========================================================================
   (* ram_style = "registers" *) logic [EntryBits-1:0] ring_q[4][BankRows];
-  logic [PtrBits-1:0] head_q;
-  logic [PtrBits-1:0] tail_q;
+  (* max_fanout = 24 *) logic [PtrBits-1:0] head_q;
+  (* max_fanout = 24 *) logic [PtrBits-1:0] tail_q;
   logic [CountBits-1:0] count_q;
-  logic [3:0] count_ge_q;
+  (* max_fanout = 24 *) logic [3:0] count_ge_q;
   logic count_eq1_q;
-  logic [3:0][RowBits-1:0] rd_row_q;
-  logic [3:0][RowBits-1:0] wr_row_q;
-  logic [3:0] bank_free_q;
+  (* max_fanout = 24 *) logic [3:0][RowBits-1:0] rd_row_q;
+  (* max_fanout = 64 *) logic [3:0][RowBits-1:0] wr_row_q;
+  (* max_fanout = 64 *) logic [3:0] bank_free_q;
 
   // ===========================================================================
   // Window Metadata Ring State (2 banks x META_DEPTH/2 entries in dist RAM)
   // ===========================================================================
-  logic [MetaPtrBits-1:0] meta_head_q;
-  logic [MetaPtrBits-1:0] meta_tail_q;
+  (* max_fanout = 64 *) logic [MetaPtrBits-1:0] meta_head_q;
+  (* max_fanout = 64 *) logic [MetaPtrBits-1:0] meta_tail_q;
   logic [MetaCountBits-1:0] meta_count_q;
   logic [MetaBankBits-1:0] meta_head_even_idx_q;
+  // Pre-decoded per-bank metadata write enables for the unoccupied tail slot,
+  // keeping i_push_valid off all distributed-RAM WE pins.
+  (* max_fanout = 64 *) logic [1:0] meta_we_q;
   logic stop_fetch_q;
 
   logic [META_WIDTH-1:0] meta_bank_rd[2];
@@ -112,10 +116,8 @@ module fetch_parcel_queue #(
   assign meta_bank_raddr[1] = meta_head_q[MetaPtrBits-1:1];
 
   for (genvar mb = 0; mb < 2; mb++) begin : gen_meta_bank
-    (* keep = "true", max_fanout = 64 *) logic mb_we;
-    // Flush clears meta_count_q and meta_tail_q on the same edge, so writes
-    // during a flush target unused slots and need not gate on !i_flush.
-    assign mb_we = i_push_valid && (meta_tail_q[0] == 1'(mb));
+    logic mb_we;
+    assign mb_we = meta_we_q[mb];
 
     sdp_dist_ram #(
         .ADDR_WIDTH(MetaBankBits),
@@ -161,27 +163,27 @@ module fetch_parcel_queue #(
   end
 
   logic [EntryBits-1:0] ring_view[4];
-  logic [EntryBits-1:0] push_entries[4];
+  logic [3:0] push_is_last;
   for (genvar k = 0; k < 4; k++) begin : gen_view
     logic [1:0] src_bank;
     logic [1:0] push_idx;
+    logic [1:0] push_parcel_idx;
     logic from_ring;
-    logic is_push_last;
 
     assign src_bank = head_q[1:0] + 2'(k);
     assign ring_view[k] = bank_rd[src_bank];
 
-    assign is_push_last = (3'(k) == (i_push_count - 3'd1));
-    assign push_entries[k] = {is_push_last, i_push_parcels[k]};
+    assign push_is_last[k] = (3'(k) == (i_push_count - 3'd1));
 
     assign from_ring = count_ge_q[k];
     // When !from_ring, count_q is in 0..k <= 3, so k - count_q[1:0] selects the bypassed parcel.
+    // Folding i_push_shift into the 2-bit index avoids a separate 2:1 shifter ahead of the queue.
     assign push_idx = 2'(k) - count_q[1:0];
+    assign push_parcel_idx = push_idx + {1'b0, i_push_shift};
 
     assign o_view_parcels[k] = from_ring ?
-        ring_view[k][PARCEL_WIDTH-1:0] : i_push_parcels[push_idx];
-    assign o_view_last[k] = from_ring ?
-        ring_view[k][PARCEL_WIDTH] : push_entries[push_idx][PARCEL_WIDTH];
+        ring_view[k][PARCEL_WIDTH-1:0] : i_push_parcels[push_parcel_idx];
+    assign o_view_last[k] = from_ring ? ring_view[k][PARCEL_WIDTH] : push_is_last[push_idx];
   end
 
   assign o_ring_last = {ring_view[1][PARCEL_WIDTH], ring_view[0][PARCEL_WIDTH]};
@@ -280,17 +282,18 @@ module fetch_parcel_queue #(
 
   // Per-bank write controls (at most one write per bank per cycle since push_count <= 4).
   // Write every bank whose tail slot is currently unoccupied (bank_free_q[b]):
-  // since i_push_count <= DEPTH - count_q, every pushed parcel is written and
-  // any extra write targets unoccupied slots past tail_next, keeping i_push_count
-  // off all ring_q clock enables.
-  (* keep = "true", max_fanout = 64 *) logic [3:0] bank_we;
+  // since i_push_count <= DEPTH - count_q, every pushed parcel lands in an
+  // unoccupied slot and writes on !i_push_valid or past tail_next only touch
+  // unoccupied slots, keeping both i_push_valid and i_push_count off ring_q CEs.
+  logic [3:0] bank_we;
   logic [EntryBits-1:0] bank_wdata[4];
   for (genvar b = 0; b < 4; b++) begin : gen_bank_wr
     logic [1:0] wr_off;
+    logic [1:0] wr_parcel_idx;
     assign wr_off = 2'(b) - tail_q[1:0];
-    // Flush clears count_q and tail_q on the same edge; keep !i_flush off the write enables.
-    assign bank_we[b] = i_push_valid && bank_free_q[b];
-    assign bank_wdata[b] = push_entries[wr_off];
+    assign wr_parcel_idx = wr_off + {1'b0, i_push_shift};
+    assign bank_we[b] = bank_free_q[b];
+    assign bank_wdata[b] = {push_is_last[wr_off], i_push_parcels[wr_parcel_idx]};
   end
 
   always_ff @(posedge i_clk) begin
@@ -302,8 +305,14 @@ module fetch_parcel_queue #(
   end
 
   logic [3:0][1:0] wr_off_next;
-  for (genvar b = 0; b < 4; b++) begin : gen_wr_off_next
-    assign wr_off_next[b] = 2'(b) - tail_next[1:0];
+  logic [3:0][RowBits-1:0] wr_row_next;
+  logic [3:0] bank_free_next;
+  always_comb begin
+    for (int b = 0; b < 4; b++) begin
+      wr_off_next[b]    = 2'(b) - tail_next[1:0];
+      wr_row_next[b]    = tail_next[PtrBits-1:2] + ((2'(b) < tail_next[1:0]) ? RowBits'(1) : '0);
+      bank_free_next[b] = (CountBits'(wr_off_next[b]) < (CountBits'(DEPTH) - count_next));
+    end
   end
 
   always_ff @(posedge i_clk) begin
@@ -320,6 +329,7 @@ module fetch_parcel_queue #(
       meta_tail_q          <= '0;
       meta_count_q         <= '0;
       meta_head_even_idx_q <= '0;
+      meta_we_q            <= 2'b01;
       stop_fetch_q         <= 1'b0;
     end else begin
       head_q               <= head_next;
@@ -334,11 +344,13 @@ module fetch_parcel_queue #(
       meta_tail_q          <= meta_tail_next;
       meta_count_q         <= meta_count_next;
       meta_head_even_idx_q <= meta_head_even_idx_next;
+      meta_we_q[0]         <= (meta_count_next < MetaCountBits'(META_DEPTH)) && !meta_tail_next[0];
+      meta_we_q[1]         <= (meta_count_next < MetaCountBits'(META_DEPTH)) && meta_tail_next[0];
       stop_fetch_q         <= stop_fetch_next;
       for (int b = 0; b < 4; b++) begin
         rd_row_q[b]    <= head_next[PtrBits-1:2] + ((2'(b) < head_next[1:0]) ? RowBits'(1) : '0);
-        wr_row_q[b]    <= tail_next[PtrBits-1:2] + ((2'(b) < tail_next[1:0]) ? RowBits'(1) : '0);
-        bank_free_q[b] <= (CountBits'(wr_off_next[b]) < (CountBits'(DEPTH) - count_next));
+        wr_row_q[b]    <= wr_row_next[b];
+        bank_free_q[b] <= bank_free_next[b];
       end
     end
   end
@@ -398,7 +410,9 @@ module fetch_parcel_queue #(
   // Legal environment protocol
   always_comb begin
     if (!i_rst) begin
-      if (i_push_valid) assume (i_push_count >= 3'd1 && i_push_count <= 3'd4);
+      if (i_push_valid) begin
+        assume (i_push_count >= 3'd1 && i_push_count <= (i_push_shift ? 3'd3 : 3'd4));
+      end
       assume (i_pop_count <= 3'd4);
       if (!i_flush) begin
         assume (CountBits'(i_pop_count) <= avail_sum);
@@ -439,7 +453,7 @@ module fetch_parcel_queue #(
             // it does not remain resident in the ring.
             if ((f_count_q + CountBits'(k)) >= CountBits'(pop_cnt_eff)) begin
               f_watch_valid_q  <= 1'b1;
-              f_watch_parcel_q <= i_push_parcels[k];
+              f_watch_parcel_q <= i_push_parcels[2'(k)+{1'b0, i_push_shift}];
               f_watch_last_q   <= (3'(k) == (i_push_count - 3'd1));
             end
           end
@@ -484,6 +498,11 @@ module fetch_parcel_queue #(
       p_f_meta_even_idx :
       assert (meta_head_even_idx_q ==
               (meta_head_q[MetaPtrBits-1:1] + MetaBankBits'(meta_head_q[0])));
+      p_f_meta_we :
+      assert (meta_we_q == {
+                (f_mcount_q < MetaCountBits'(META_DEPTH)) && f_mtail_q[0],
+                (f_mcount_q < MetaCountBits'(META_DEPTH)) && !f_mtail_q[0]
+              });
       if (f_mcount_q >= MetaCountBits'(1)) begin
         if (f_mhead_q == f_watch_midx) begin
           p_f_meta0_ring : assert (f_mwatch_valid_q && (o_meta0 == f_mwatch_meta_q));
@@ -528,7 +547,8 @@ module fetch_parcel_queue #(
           end
         end else begin
           p_f_view_bypass_exact :
-          assert (o_view_parcels[k] == i_push_parcels[2'(k) - f_count_q[1:0]] &&
+          assert (o_view_parcels[k] ==
+                  i_push_parcels[2'(k)-f_count_q[1:0]+{1'b0, i_push_shift}] &&
                   o_view_last[k] == (3'(2'(k) - f_count_q[1:0]) == (i_push_count - 3'd1)));
         end
       end
@@ -540,9 +560,10 @@ module fetch_parcel_queue #(
       p_f_flush_clears_stop_fetch : assert (!o_stop_fetch && count_q == '0 && meta_count_q == '0);
     end
     if (f_past_valid && !i_rst && !i_flush) begin
-      // Cover zero-cycle empty bypass, partial bypass, wraparound, and backpressure.
+      // Cover zero-cycle empty bypass, partial bypass, shifted push, wraparound, and backpressure.
       cover (count_q == '0 && i_push_valid && i_pop_count == 3'd2);
       cover (count_q == 5'd1 && i_push_valid && i_pop_count == 3'd3);
+      cover (i_push_valid && i_push_shift && i_push_count == 3'd3);
       cover (meta_freed == 3'd2);
       cover (o_stop_fetch);
       cover (head_q == 4'd15 && o_avail_ge[3]);
