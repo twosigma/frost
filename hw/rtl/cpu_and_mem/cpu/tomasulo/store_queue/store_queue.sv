@@ -304,6 +304,8 @@ module store_queue #(
   localparam int unsigned IdxWidth = $clog2(DEPTH);
   localparam int unsigned PtrWidth = IdxWidth + 1;  // Extra MSB for full/empty
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
+  localparam int unsigned HalfDepth = DEPTH / 2;
+  localparam int unsigned HalfCountWidth = $clog2(HalfDepth + 1);
   localparam int unsigned MemSizeWidth = 2;
 
   // ===========================================================================
@@ -314,11 +316,11 @@ module store_queue #(
   function automatic logic is_younger(input logic [ReorderBufferTagWidth-1:0] entry_tag,
                                       input logic [ReorderBufferTagWidth-1:0] flush_tag,
                                       input logic [ReorderBufferTagWidth-1:0] head);
-    logic [ReorderBufferTagWidth:0] entry_age;
-    logic [ReorderBufferTagWidth:0] flush_age;
+    logic [ReorderBufferTagWidth-1:0] entry_age;
+    logic [ReorderBufferTagWidth-1:0] flush_age;
     begin
-      entry_age  = {1'b0, entry_tag} - {1'b0, head};
-      flush_age  = {1'b0, flush_tag} - {1'b0, head};
+      entry_age  = entry_tag - head;
+      flush_age  = flush_tag - head;
       is_younger = entry_age > flush_age;
     end
   endfunction
@@ -402,28 +404,61 @@ module store_queue #(
   // mirror after registering the winning index. Valid flags gate reads;
   // allocation need not zero the payload.
 
-  // Write port: resolved CAM match index from data_update
-  logic                                             sq_data_we;
-  logic                 [             IdxWidth-1:0] sq_data_wr_idx;
+  // Write port: per-entry CAM match from data_update. The forwarding mirror
+  // consumes the match mask directly per entry; the drain LUTRAM encodes the
+  // highest-index match in parallel nibbles.
+  logic [   DEPTH-1:0] sq_data_tag_match;
+  logic                sq_data_we;
+  logic [IdxWidth-1:0] sq_data_wr_idx;
 
   always_comb begin
-    sq_data_we     = 1'b0;
-    sq_data_wr_idx = '0;
     // Reset and a full flush clear entry validity on this edge, so a
     // coincident payload write remains hidden.
     // A Zicbom entry is never data-valid and frees only when it drains, so
     // after commit it can still hold a ROB tag that a younger store reuses.
     // It takes no payload, as in the control CAM below.
-    if (i_data_update_capture_valid) begin
+    for (int i = 0; i < DEPTH; i++) begin
+      sq_data_tag_match[i] = sq_valid[i] && !sq_data_valid[i] && !sq_is_cmo[i] &&
+          (sq_rob_tag[i] == i_data_update.rob_tag);
+    end
+  end
+
+  if (DEPTH == 16) begin : gen_sq_data_wr_idx_16
+    logic [3:0] nib_any, nib_hi, nib_lo;
+    always_comb begin
+      for (int n = 0; n < 4; n++) begin
+        nib_any[n] = |sq_data_tag_match[4*n+:4];
+        nib_hi[n]  = sq_data_tag_match[4*n+3] || sq_data_tag_match[4*n+2];
+        nib_lo[n]  = sq_data_tag_match[4*n+3] ||
+            (!sq_data_tag_match[4*n+2] && sq_data_tag_match[4*n+1]);
+      end
+      sq_data_we        = i_data_update_capture_valid && (|nib_any);
+      sq_data_wr_idx[3] = nib_any[3] || nib_any[2];
+      sq_data_wr_idx[2] = nib_any[3] || (!nib_any[2] && nib_any[1]);
+      if (nib_any[3]) sq_data_wr_idx[1:0] = {nib_hi[3], nib_lo[3]};
+      else if (nib_any[2]) sq_data_wr_idx[1:0] = {nib_hi[2], nib_lo[2]};
+      else if (nib_any[1]) sq_data_wr_idx[1:0] = {nib_hi[1], nib_lo[1]};
+      else sq_data_wr_idx[1:0] = {nib_hi[0], nib_lo[0]};
+    end
+  end else begin : gen_sq_data_wr_idx_generic
+    always_comb begin
+      sq_data_we     = i_data_update_capture_valid && (|sq_data_tag_match);
+      sq_data_wr_idx = '0;
       for (int i = 0; i < DEPTH; i++) begin
-        if (sq_valid[i] && !sq_data_valid[i] && !sq_is_cmo[i] &&
-            sq_rob_tag[i] == i_data_update.rob_tag) begin
-          sq_data_we     = 1'b1;
-          sq_data_wr_idx = IdxWidth'(i);
-        end
+        if (sq_data_tag_match[i]) sq_data_wr_idx = IdxWidth'(i);
       end
     end
   end
+
+`ifndef SYNTHESIS
+  logic [IdxWidth-1:0] sq_data_wr_idx_reference;
+  always_comb begin
+    sq_data_wr_idx_reference = '0;
+    for (int i = 0; i < DEPTH; i++) begin
+      if (sq_data_tag_match[i]) sq_data_wr_idx_reference = IdxWidth'(i);
+    end
+  end
+`endif
 
   // Read outputs
   logic [IdxWidth-1:0] drain_idx_q;  // drain cursor (see Drain Cursor below)
@@ -432,6 +467,7 @@ module store_queue #(
   logic [FLEN-1:0] sq_data_fwd_entry[DEPTH];
   logic [(DEPTH*FLEN)-1:0] sq_data_fwd_flat;
 
+`ifndef SYNTHESIS
 `ifdef FROST_RANDOM_START
   initial begin
     for (int row = 0; row < DEPTH; row++)
@@ -441,10 +477,15 @@ module store_queue #(
 `else
   initial for (int i = 0; i < DEPTH; i++) sq_data_fwd_entry[i] = '0;
 `endif
+`endif
 
   always_ff @(posedge i_clk) begin
-    if (sq_data_we) begin
-      sq_data_fwd_entry[sq_data_wr_idx] <= i_data_update.data;
+    if (i_data_update_capture_valid) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (sq_data_tag_match[i]) begin
+          sq_data_fwd_entry[i] <= i_data_update.data;
+        end
+      end
     end
   end
 
@@ -476,10 +517,16 @@ module store_queue #(
   // Limit fanout to dispatch and front-end stall logic.
   (* max_fanout = 32 *)logic                  dispatch_full_q;
   (* max_fanout = 32 *)logic                  dispatch_full_for_2_q;
-  // Update live count on the same edge and events as sq_valid. Register it
-  // for timing because LQ issue consumes empty.
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_q;
-  logic [CountWidth-1:0] live_count_next;
+  // Keep per-half live counts on the same edge and events as sq_valid,
+  // splitting the removal popcount and subtraction across halves.
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_q;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_q;
+  logic [HalfCountWidth-1:0] live_count_lo_next;
+  logic [HalfCountWidth-1:0] live_count_hi_next;
+  logic [HalfCountWidth-1:0] live_remove_lo_count;
+  logic [HalfCountWidth-1:0] live_remove_hi_count;
+  logic [CountWidth-1:0] live_count_sum;
+  logic [CountWidth-1:0] live_count_next_sum;
   logic [CountWidth-1:0] live_remove_count;
   // Kept so the removal counts read each entry's mask gate directly (see the
   // staged mask below).
@@ -487,14 +534,19 @@ module store_queue #(
   logic [     DEPTH-1:0] sc_discard_remove_mask;
   logic                  drain_remove_valid;
   logic                  committed_empty_q;
-  // Precompute counts for no request, one request, and a pair, then select
-  // with dispatch valids for timing. Either lone slot uses alloc_room_1;
-  // a pair also uses alloc_room_2.
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_if_none;
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_if_one;
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_if_both;
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_alloc_one;
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_alloc_both;
+  // Precompute per-half counts for no request, one request, and a pair, then
+  // select with dispatch valids. Either lone slot uses alloc_room_1; a pair
+  // also uses alloc_room_2.
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_if_none;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_if_one;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_if_both;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_alloc_one;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_alloc_both;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_if_none;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_if_one;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_if_both;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_alloc_one;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_alloc_both;
 
   logic [CountWidth-1:0] dispatch_count_if_none;
   logic [CountWidth-1:0] dispatch_count_if_one;
@@ -562,7 +614,9 @@ module store_queue #(
   // full_for_2: room for at most 1 more entry, so a 2-wide bundle of two
   // stores would not fit even if neither slot has been allocated yet.
   assign full_for_2 = (window_occupancy >= PtrWidth'(DEPTH - 1));
-  assign empty = (live_count_q == CountWidth'(0));
+  assign empty = (live_count_lo_q == HalfCountWidth'(0)) &&
+      (live_count_hi_q == HalfCountWidth'(0));
+  assign live_count_sum = CountWidth'(live_count_lo_q) + CountWidth'(live_count_hi_q);
 
   assign o_full = full;
   assign o_full_for_2 = full_for_2;
@@ -570,8 +624,8 @@ module store_queue #(
   assign o_dispatch_full_for_2 = dispatch_full_for_2_q;
   assign o_empty = empty;
   assign o_dispatch_empty = empty;
-  assign o_count = live_count_q;
-  assign o_dispatch_count = live_count_q;
+  assign o_count = live_count_sum;
+  assign o_dispatch_count = live_count_sum;
 
   // When both slots allocate, slot 1 takes tail and slot 2 takes tail+1.
   // Either slot alone takes tail.
@@ -861,43 +915,122 @@ module store_queue #(
       drain_mask_post_fire_above_head[i] =
           drain_mask_post_fire[i] && (IdxWidth'(i) >= head_ptr[IdxWidth-1:0]);
     end
+  end
 
-    drain_base_first_above_idx   = '0;
-    drain_base_first_above_found = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_base_above_head[i] && !drain_base_first_above_found) begin
-        drain_base_first_above_idx   = IdxWidth'(i);
-        drain_base_first_above_found = 1'b1;
+  // Priority-encode the four drain masks. At 16 entries, fold four-entry
+  // nibbles in parallel before the top selection so the scans do not ripple
+  // across all 16 entries.
+  if (DEPTH == 16) begin : gen_drain_scan_16
+    logic [3:0] ba_any, ba_hi, ba_lo;
+    logic [3:0] bany_any, bany_hi, bany_lo;
+    logic [3:0] pa_any, pa_hi, pa_lo;
+    logic [3:0] pany_any, pany_hi, pany_lo;
+    always_comb begin
+      for (int n = 0; n < 4; n++) begin
+        ba_any[n] = |drain_mask_base_above_head[4*n+:4];
+        ba_hi[n] = !drain_mask_base_above_head[4*n] && !drain_mask_base_above_head[4*n+1] &&
+            (drain_mask_base_above_head[4*n+2] || drain_mask_base_above_head[4*n+3]);
+        ba_lo[n] = !drain_mask_base_above_head[4*n] &&
+            (drain_mask_base_above_head[4*n+1] ||
+             (!drain_mask_base_above_head[4*n+2] && drain_mask_base_above_head[4*n+3]));
+
+        bany_any[n] = |drain_mask_base[4*n+:4];
+        bany_hi[n] = !drain_mask_base[4*n] && !drain_mask_base[4*n+1] &&
+            (drain_mask_base[4*n+2] || drain_mask_base[4*n+3]);
+        bany_lo[n] = !drain_mask_base[4*n] &&
+            (drain_mask_base[4*n+1] || (!drain_mask_base[4*n+2] && drain_mask_base[4*n+3]));
+
+        pa_any[n] = |drain_mask_post_fire_above_head[4*n+:4];
+        pa_hi[n] = !drain_mask_post_fire_above_head[4*n] &&
+            !drain_mask_post_fire_above_head[4*n+1] &&
+            (drain_mask_post_fire_above_head[4*n+2] || drain_mask_post_fire_above_head[4*n+3]);
+        pa_lo[n] = !drain_mask_post_fire_above_head[4*n] &&
+            (drain_mask_post_fire_above_head[4*n+1] ||
+             (!drain_mask_post_fire_above_head[4*n+2] && drain_mask_post_fire_above_head[4*n+3]));
+
+        pany_any[n] = |drain_mask_post_fire[4*n+:4];
+        pany_hi[n] = !drain_mask_post_fire[4*n] && !drain_mask_post_fire[4*n+1] &&
+            (drain_mask_post_fire[4*n+2] || drain_mask_post_fire[4*n+3]);
+        pany_lo[n] = !drain_mask_post_fire[4*n] &&
+            (drain_mask_post_fire[4*n+1] ||
+             (!drain_mask_post_fire[4*n+2] && drain_mask_post_fire[4*n+3]));
+      end
+
+      drain_base_first_above_found = |ba_any;
+      drain_base_first_above_idx[3] = !ba_any[0] && !ba_any[1] && (ba_any[2] || ba_any[3]);
+      drain_base_first_above_idx[2] = !ba_any[0] && (ba_any[1] || (!ba_any[2] && ba_any[3]));
+      if (ba_any[0]) drain_base_first_above_idx[1:0] = {ba_hi[0], ba_lo[0]};
+      else if (ba_any[1]) drain_base_first_above_idx[1:0] = {ba_hi[1], ba_lo[1]};
+      else if (ba_any[2]) drain_base_first_above_idx[1:0] = {ba_hi[2], ba_lo[2]};
+      else drain_base_first_above_idx[1:0] = {ba_hi[3], ba_lo[3]};
+
+      drain_base_first_any_found = |bany_any;
+      drain_base_first_any_idx[3] = !bany_any[0] && !bany_any[1] && (bany_any[2] || bany_any[3]);
+      drain_base_first_any_idx[2] = !bany_any[0] && (bany_any[1] || (!bany_any[2] && bany_any[3]));
+      if (bany_any[0]) drain_base_first_any_idx[1:0] = {bany_hi[0], bany_lo[0]};
+      else if (bany_any[1]) drain_base_first_any_idx[1:0] = {bany_hi[1], bany_lo[1]};
+      else if (bany_any[2]) drain_base_first_any_idx[1:0] = {bany_hi[2], bany_lo[2]};
+      else drain_base_first_any_idx[1:0] = {bany_hi[3], bany_lo[3]};
+
+      drain_post_fire_first_above_found = |pa_any;
+      drain_post_fire_first_above_idx[3] = !pa_any[0] && !pa_any[1] && (pa_any[2] || pa_any[3]);
+      drain_post_fire_first_above_idx[2] = !pa_any[0] && (pa_any[1] || (!pa_any[2] && pa_any[3]));
+      if (pa_any[0]) drain_post_fire_first_above_idx[1:0] = {pa_hi[0], pa_lo[0]};
+      else if (pa_any[1]) drain_post_fire_first_above_idx[1:0] = {pa_hi[1], pa_lo[1]};
+      else if (pa_any[2]) drain_post_fire_first_above_idx[1:0] = {pa_hi[2], pa_lo[2]};
+      else drain_post_fire_first_above_idx[1:0] = {pa_hi[3], pa_lo[3]};
+
+      drain_post_fire_first_any_found = |pany_any;
+      drain_post_fire_first_any_idx[3] =
+          !pany_any[0] && !pany_any[1] && (pany_any[2] || pany_any[3]);
+      drain_post_fire_first_any_idx[2] =
+          !pany_any[0] && (pany_any[1] || (!pany_any[2] && pany_any[3]));
+      if (pany_any[0]) drain_post_fire_first_any_idx[1:0] = {pany_hi[0], pany_lo[0]};
+      else if (pany_any[1]) drain_post_fire_first_any_idx[1:0] = {pany_hi[1], pany_lo[1]};
+      else if (pany_any[2]) drain_post_fire_first_any_idx[1:0] = {pany_hi[2], pany_lo[2]};
+      else drain_post_fire_first_any_idx[1:0] = {pany_hi[3], pany_lo[3]};
+    end
+  end else begin : gen_drain_scan_generic
+    always_comb begin
+      drain_base_first_above_idx   = '0;
+      drain_base_first_above_found = 1'b0;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (drain_mask_base_above_head[i] && !drain_base_first_above_found) begin
+          drain_base_first_above_idx   = IdxWidth'(i);
+          drain_base_first_above_found = 1'b1;
+        end
+      end
+
+      drain_base_first_any_idx   = '0;
+      drain_base_first_any_found = 1'b0;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (drain_mask_base[i] && !drain_base_first_any_found) begin
+          drain_base_first_any_idx   = IdxWidth'(i);
+          drain_base_first_any_found = 1'b1;
+        end
+      end
+
+      drain_post_fire_first_above_idx   = '0;
+      drain_post_fire_first_above_found = 1'b0;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (drain_mask_post_fire_above_head[i] && !drain_post_fire_first_above_found) begin
+          drain_post_fire_first_above_idx   = IdxWidth'(i);
+          drain_post_fire_first_above_found = 1'b1;
+        end
+      end
+
+      drain_post_fire_first_any_idx   = '0;
+      drain_post_fire_first_any_found = 1'b0;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (drain_mask_post_fire[i] && !drain_post_fire_first_any_found) begin
+          drain_post_fire_first_any_idx   = IdxWidth'(i);
+          drain_post_fire_first_any_found = 1'b1;
+        end
       end
     end
+  end
 
-    drain_base_first_any_idx   = '0;
-    drain_base_first_any_found = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_base[i] && !drain_base_first_any_found) begin
-        drain_base_first_any_idx   = IdxWidth'(i);
-        drain_base_first_any_found = 1'b1;
-      end
-    end
-
-    drain_post_fire_first_above_idx   = '0;
-    drain_post_fire_first_above_found = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_post_fire_above_head[i] && !drain_post_fire_first_above_found) begin
-        drain_post_fire_first_above_idx   = IdxWidth'(i);
-        drain_post_fire_first_above_found = 1'b1;
-      end
-    end
-
-    drain_post_fire_first_any_idx   = '0;
-    drain_post_fire_first_any_found = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_post_fire[i] && !drain_post_fire_first_any_found) begin
-        drain_post_fire_first_any_idx   = IdxWidth'(i);
-        drain_post_fire_first_any_found = 1'b1;
-      end
-    end
-
+  always_comb begin
     drain_base_idx_d = !drain_base_first_any_found ? head_idx :
         (drain_base_first_above_found ? drain_base_first_above_idx : drain_base_first_any_idx);
     drain_post_fire_idx_d = !drain_post_fire_first_any_found ? head_idx :
@@ -1034,9 +1167,47 @@ module store_queue #(
   assign precommit_shared_ready = uncached_armed_q && i_uncached_store_shield &&
       i_head_side_effects_allowed && !i_flush_en && !i_flush_all &&
       !o_uncached_store_complete.valid;
+  localparam logic [XLEN-1:0] UncachedMask = XLEN'(riscv_pkg::PmaUncachedBytes) - 1'b1;
+  localparam logic [XLEN-1:0] DebugSliceAddr = XLEN'(riscv_pkg::DebugSliceBase);
+  localparam int unsigned UncachedBits =
+      (riscv_pkg::PmaUncachedBytes > 1) ? $clog2(riscv_pkg::PmaUncachedBytes) : 1;
+  localparam bit UncachedRegionAligned = (riscv_pkg::PmaUncachedBytes != 0) &&
+      (riscv_pkg::PmaUncachedBase == 0) &&
+      ((XLEN'(riscv_pkg::PmaUncachedBytes) & UncachedMask) == 0) &&
+      (DebugSliceAddr < XLEN'(riscv_pkg::PmaUncachedBytes)) &&
+      (UncachedBits >= 13) && (UncachedBits <= 24);
+  localparam int unsigned UncachedHighBits = XLEN - UncachedBits;
+  localparam int unsigned UncachedHighChunks = (UncachedHighBits + 5) / 6;
+  localparam int unsigned UncachedHighPaddedBits = 6 * UncachedHighChunks;
   for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_cached_class
     // Resolve PMA, SC and MMIO qualification before selecting the cursor.
-    wire normal_buffered = CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_address[slot]);
+    // For a power-of-two base-zero uncached Normal region, fold the upper zero
+    // test in parallel 6-bit chunks beside the debug-page exclude check.
+    logic normal_buffered;
+    if (CACHE_NORMAL_MEMORY && UncachedRegionAligned) begin : gen_wt_aligned
+      wire [UncachedHighPaddedBits-1:0] upper_padded =
+          UncachedHighPaddedBits'(sq_address[slot][XLEN-1:UncachedBits]);
+      (* keep = "true" *) logic [UncachedHighChunks-1:0] upper_zero_chunk;
+      logic not_debug_page;
+      for (genvar c = 0; c < UncachedHighChunks; c++) begin : gen_chunk
+        assign upper_zero_chunk[c] = ~(|upper_padded[6*c+:6]);
+      end
+      assign not_debug_page =
+          sq_address[slot][UncachedBits-1:12] != DebugSliceAddr[UncachedBits-1:12];
+      assign normal_buffered = (&upper_zero_chunk) && not_debug_page;
+    end else begin : gen_wt_generic
+      assign normal_buffered = CACHE_NORMAL_MEMORY &&
+          riscv_pkg::pma_writethrough_ok(sq_address[slot]);
+    end
+`ifndef SYNTHESIS
+    always_comb begin
+`ifndef FORMAL
+      if (!$isunknown(sq_address[slot]))
+`endif
+      assert (normal_buffered ==
+              (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_address[slot])));
+    end
+`endif
     assign sq_cached_class[slot] = address_is_cached(sq_address[slot]);
     assign sq_cached_plain_class[slot] = sq_cached_class[slot] && !sq_is_sc[slot] &&
         !sq_is_zero[slot];
@@ -2083,57 +2254,99 @@ endmodule
 `endif
   `undef SQ_LIVE_REMOVE_CHECK
 
-  // Precompute allocation increments before subtracting removals for timing.
-  assign live_count_alloc_one = live_count_q + CountWidth'(alloc_room_1);
-  assign live_count_alloc_both = live_count_q + CountWidth'(alloc_room_1) +
-      CountWidth'(alloc_room_2);
-  // Count the removals in kept groups of six entries, each count one gate of
-  // its mask bits, so the subtractions below read the group counts directly
-  // instead of a serial count of the whole mask.
-  localparam int unsigned RemoveGroups = (DEPTH + 5) / 6;
-  localparam int unsigned RemovePaddedBits = 6 * RemoveGroups;
-  wire [RemovePaddedBits-1:0] live_remove_mask_padded = RemovePaddedBits'(live_remove_mask);
-  (* keep = "true" *) logic [RemoveGroups-1:0][2:0] live_remove_group_count;
+  // Precompute per-half allocation increments before subtracting each half's
+  // removals. A lone slot allocates at alloc_target (half first_alloc_in_hi);
+  // a pair also places slot 2 at alloc_target_2 (half second_alloc_in_hi).
+  logic first_alloc_in_hi;
+  logic second_alloc_in_hi;
+  assign first_alloc_in_hi = alloc_target[IdxWidth-1];
+  assign second_alloc_in_hi = alloc_target_2[IdxWidth-1];
+  assign live_count_lo_alloc_one = live_count_lo_q +
+      HalfCountWidth'(alloc_room_1 && !first_alloc_in_hi);
+  assign live_count_lo_alloc_both = live_count_lo_alloc_one +
+      HalfCountWidth'(alloc_room_2 && !second_alloc_in_hi);
+  assign live_count_hi_alloc_one = live_count_hi_q +
+      HalfCountWidth'(alloc_room_1 && first_alloc_in_hi);
+  assign live_count_hi_alloc_both = live_count_hi_alloc_one +
+      HalfCountWidth'(alloc_room_2 && second_alloc_in_hi);
+  // Count each half's removals in kept groups of six entries, each count one
+  // gate of its mask bits, so each half's subtraction stays at eight-entry
+  // width.
+  localparam int unsigned HalfRemoveGroups = (HalfDepth + 5) / 6;
+  localparam int unsigned HalfRemovePaddedBits = 6 * HalfRemoveGroups;
+  wire [HalfRemovePaddedBits-1:0] live_remove_lo_padded =
+      HalfRemovePaddedBits'(live_remove_mask[HalfDepth-1:0]);
+  wire [HalfRemovePaddedBits-1:0] live_remove_hi_padded =
+      HalfRemovePaddedBits'(live_remove_mask[DEPTH-1:HalfDepth]);
+  (* keep = "true" *) logic [HalfRemoveGroups-1:0][2:0] live_remove_lo_group_count;
+  (* keep = "true" *) logic [HalfRemoveGroups-1:0][2:0] live_remove_hi_group_count;
   always_comb begin
-    for (int g = 0; g < int'(RemoveGroups); g++) begin
-      live_remove_group_count[g] = '0;
+    for (int g = 0; g < int'(HalfRemoveGroups); g++) begin
+      live_remove_lo_group_count[g] = '0;
+      live_remove_hi_group_count[g] = '0;
       for (int b = 0; b < 6; b++) begin
-        live_remove_group_count[g] = live_remove_group_count[g] +
-            3'(live_remove_mask_padded[6*g+b]);
+        live_remove_lo_group_count[g] = live_remove_lo_group_count[g] +
+            3'(live_remove_lo_padded[6*g+b]);
+        live_remove_hi_group_count[g] = live_remove_hi_group_count[g] +
+            3'(live_remove_hi_padded[6*g+b]);
       end
     end
   end
   always_comb begin
-    live_remove_count = '0;
-    for (int g = 0; g < int'(RemoveGroups); g++) begin
-      live_remove_count = live_remove_count + CountWidth'(live_remove_group_count[g]);
+    live_remove_lo_count = '0;
+    live_remove_hi_count = '0;
+    for (int g = 0; g < int'(HalfRemoveGroups); g++) begin
+      live_remove_lo_count = live_remove_lo_count +
+          HalfCountWidth'(live_remove_lo_group_count[g]);
+      live_remove_hi_count = live_remove_hi_count +
+          HalfCountWidth'(live_remove_hi_group_count[g]);
     end
 
-    live_count_if_none = live_count_q - live_remove_count;
-    live_count_if_one  = live_count_alloc_one - live_remove_count;
-    live_count_if_both = live_count_alloc_both - live_remove_count;
+    live_count_lo_if_none = live_count_lo_q - live_remove_lo_count;
+    live_count_lo_if_one  = live_count_lo_alloc_one - live_remove_lo_count;
+    live_count_lo_if_both = live_count_lo_alloc_both - live_remove_lo_count;
+    live_count_hi_if_none = live_count_hi_q - live_remove_hi_count;
+    live_count_hi_if_one  = live_count_hi_alloc_one - live_remove_hi_count;
+    live_count_hi_if_both = live_count_hi_alloc_both - live_remove_hi_count;
     case ({
       i_alloc.valid, i_alloc_2.valid
     })
-      2'b11: live_count_next = live_count_if_both;
-      2'b10, 2'b01: live_count_next = live_count_if_one;
-      default: live_count_next = live_count_if_none;
+      2'b11: begin
+        live_count_lo_next = live_count_lo_if_both;
+        live_count_hi_next = live_count_hi_if_both;
+      end
+      2'b10, 2'b01: begin
+        live_count_lo_next = live_count_lo_if_one;
+        live_count_hi_next = live_count_hi_if_one;
+      end
+      default: begin
+        live_count_lo_next = live_count_lo_if_none;
+        live_count_hi_next = live_count_hi_if_none;
+      end
     endcase
   end
+  assign live_remove_count = CountWidth'(live_remove_lo_count) + CountWidth'(live_remove_hi_count);
+  assign live_count_next_sum =
+      CountWidth'(live_count_lo_next) + CountWidth'(live_count_hi_next);
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) begin
-      live_count_q <= '0;
+    if (!i_rst_n) begin
+      live_count_lo_q <= '0;
+      live_count_hi_q <= '0;
+    end else if (i_flush_all) begin
+      live_count_lo_q <= '0;
+      live_count_hi_q <= '0;
     end else begin
-      live_count_q <= live_count_next;
+      live_count_lo_q <= live_count_lo_next;
+      live_count_hi_q <= live_count_hi_next;
     end
   end
 
 `ifndef SYNTHESIS
   // Adder form of the live count, compared in simulation and formal with
-  // the selected per-outcome candidate above.
+  // the selected per-outcome candidates above.
   logic [CountWidth-1:0] live_count_next_reference;
-  assign live_count_next_reference = live_count_q + CountWidth'(slot1_alloc_en) +
+  assign live_count_next_reference = live_count_sum + CountWidth'(slot1_alloc_en) +
       CountWidth'(slot2_alloc_en) - live_remove_count;
 `endif
 
@@ -2310,11 +2523,16 @@ endmodule
         assert (1'b0) else
 `endif
         $error("SQ: merged allocation pulses differ from the slot pulses");
-      if (live_count_next != live_count_next_reference)
+      if (live_count_next_sum != live_count_next_reference)
 `ifdef FROST_SIM_ASSERTIONS
         assert (1'b0) else
 `endif
         $error("SQ: selected live-count candidate differs from the adder form");
+      if ((|sq_data_tag_match) && (sq_data_wr_idx != sq_data_wr_idx_reference))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("SQ: parallel data write index differs from the reference");
       if (live_remove_mask != live_remove_mask_reference)
 `ifdef FROST_SIM_ASSERTIONS
         assert (1'b0) else
@@ -2341,28 +2559,49 @@ endmodule
   // Formal Verification
   // ===========================================================================
 `ifdef SQ_LIVE_COUNT_LOCAL_PROOF
-  logic [CountWidth-1:0] f_count_none, f_count_one, f_count_both;
-  assign f_count_none = live_count_q - live_remove_count;
-  assign f_count_one  = f_count_none + CountWidth'(alloc_room_1);
-  assign f_count_both = f_count_one + CountWidth'(alloc_room_2);
-  // The reference mask counted one entry at a time.
-  logic [CountWidth-1:0] f_remove_count_reference;
+  logic [HalfCountWidth-1:0] f_count_lo_none, f_count_lo_one, f_count_lo_both;
+  logic [HalfCountWidth-1:0] f_count_hi_none, f_count_hi_one, f_count_hi_both;
+  assign f_count_lo_none = live_count_lo_q - live_remove_lo_count;
+  assign f_count_lo_one = f_count_lo_none + HalfCountWidth'(alloc_room_1 && !first_alloc_in_hi);
+  assign f_count_lo_both = f_count_lo_one + HalfCountWidth'(alloc_room_2 && !second_alloc_in_hi);
+  assign f_count_hi_none = live_count_hi_q - live_remove_hi_count;
+  assign f_count_hi_one = f_count_hi_none + HalfCountWidth'(alloc_room_1 && first_alloc_in_hi);
+  assign f_count_hi_both = f_count_hi_one + HalfCountWidth'(alloc_room_2 && second_alloc_in_hi);
+  // The reference mask counted one entry at a time per half.
+  logic [HalfCountWidth-1:0] f_remove_lo_reference, f_remove_hi_reference;
+  logic [HalfCountWidth-1:0] f_alloc_lo_reference, f_alloc_hi_reference;
   always_comb begin
-    f_remove_count_reference = '0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      f_remove_count_reference = f_remove_count_reference +
-          CountWidth'(live_remove_mask_reference[i]);
+    f_remove_lo_reference = '0;
+    f_remove_hi_reference = '0;
+    f_alloc_lo_reference  = '0;
+    f_alloc_hi_reference  = '0;
+    for (int unsigned i = 0; i < HalfDepth; i++) begin
+      f_remove_lo_reference = f_remove_lo_reference +
+          HalfCountWidth'(live_remove_mask_reference[i]);
+      f_remove_hi_reference = f_remove_hi_reference +
+          HalfCountWidth'(live_remove_mask_reference[HalfDepth+i]);
+      f_alloc_lo_reference = f_alloc_lo_reference + HalfCountWidth'(alloc_oh[i]);
+      f_alloc_hi_reference = f_alloc_hi_reference + HalfCountWidth'(alloc_oh[HalfDepth+i]);
     end
   end
+  logic f_halves_in_range;
+  assign f_halves_in_range = (live_count_lo_q <= HalfCountWidth'(HalfDepth)) &&
+      (live_count_hi_q <= HalfCountWidth'(HalfDepth)) &&
+      (f_remove_lo_reference <= live_count_lo_q) &&
+      (f_remove_hi_reference <= live_count_hi_q);
   always_comb begin
-    assert (live_count_if_none == f_count_none);
-    assert (live_count_if_one == f_count_one);
-    assert (live_count_if_both == f_count_both);
-    assert (live_count_next == live_count_q + CountWidth'(slot1_alloc_en) +
-        CountWidth'(slot2_alloc_en) - live_remove_count);
+    assert (live_count_lo_if_none == f_count_lo_none);
+    assert (live_count_lo_if_one == f_count_lo_one);
+    assert (live_count_lo_if_both == f_count_lo_both);
+    assert (live_count_hi_if_none == f_count_hi_none);
+    assert (live_count_hi_if_one == f_count_hi_one);
+    assert (live_count_hi_if_both == f_count_hi_both);
     assert (live_remove_mask == live_remove_mask_reference);
-    assert (live_count_next == live_count_q + CountWidth'(slot1_alloc_en) +
-        CountWidth'(slot2_alloc_en) - f_remove_count_reference);
+    assert (live_count_lo_next == live_count_lo_q + f_alloc_lo_reference - f_remove_lo_reference);
+    assert (live_count_hi_next == live_count_hi_q + f_alloc_hi_reference - f_remove_hi_reference);
+    assert (!f_halves_in_range || (live_count_next_sum == live_count_sum +
+        CountWidth'(slot1_alloc_en) + CountWidth'(slot2_alloc_en) -
+        (CountWidth'(f_remove_lo_reference) + CountWidth'(f_remove_hi_reference))));
   end
 `endif
 
@@ -2410,7 +2649,8 @@ endmodule
       p_slot2_alloc_oh_reference : assert (slot2_alloc_oh == slot2_alloc_oh_reference);
       // The per-outcome count candidates selected by the valids equal the
       // reference adder forms.
-      p_live_count_next_reference : assert (live_count_next == live_count_next_reference);
+      p_live_count_next_reference : assert (live_count_next_sum == live_count_next_reference);
+      p_sq_data_wr_idx_reference : assert (sq_data_wr_idx == sq_data_wr_idx_reference);
       p_dispatch_full_next_reference : assert (dispatch_full_next == dispatch_full_next_reference);
       p_dispatch_full_for_2_next_reference :
       assert (dispatch_full_for_2_next == dispatch_full_for_2_next_reference);
@@ -2489,13 +2729,18 @@ endmodule
   // Combinational assertions
   // -------------------------------------------------------------------------
 
-  // Number of valid entries.
+  // Number of valid entries, total and per half.
   logic [CountWidth-1:0] f_valid_count;
+  logic [HalfCountWidth-1:0] f_valid_count_lo, f_valid_count_hi;
   always_comb begin
-    f_valid_count = '0;
-    for (int i = 0; i < DEPTH; i++) begin
-      f_valid_count = f_valid_count + {{(CountWidth - 1) {1'b0}}, sq_valid[i]};
+    f_valid_count_lo = '0;
+    f_valid_count_hi = '0;
+    for (int i = 0; i < HalfDepth; i++) begin
+      f_valid_count_lo = f_valid_count_lo + {{(HalfCountWidth - 1) {1'b0}}, sq_valid[i]};
+      f_valid_count_hi =
+          f_valid_count_hi + {{(HalfCountWidth - 1) {1'b0}}, sq_valid[HalfDepth+i]};
     end
+    f_valid_count = CountWidth'(f_valid_count_lo) + CountWidth'(f_valid_count_hi);
   end
 
   // Dead slots count toward the ring window, so full && empty can be transient.
@@ -2523,13 +2768,17 @@ endmodule
   // count consistent with valid entries
   always_comb begin
     if (i_rst_n) begin
+      p_count_lo_consistent : assert (live_count_lo_q == f_valid_count_lo);
+      p_count_hi_consistent : assert (live_count_hi_q == f_valid_count_hi);
       p_count_consistent : assert (o_count == f_valid_count);
       p_empty_matches_valid : assert (o_empty == (f_valid_count == CountWidth'(0)));
       p_dispatch_count_exact : assert (o_dispatch_count == f_valid_count);
       p_dispatch_empty_exact : assert (o_dispatch_empty == o_empty);
-      p_live_remove_bounded : assert (live_remove_count <= live_count_q);
+      p_live_remove_lo_bounded : assert (live_remove_lo_count <= live_count_lo_q);
+      p_live_remove_hi_bounded : assert (live_remove_hi_count <= live_count_hi_q);
       if (!i_flush_all) begin
-        p_live_count_next_bounded : assert (live_count_next <= CountWidth'(DEPTH));
+        p_live_count_lo_next_bounded : assert (live_count_lo_next <= HalfCountWidth'(HalfDepth));
+        p_live_count_hi_next_bounded : assert (live_count_hi_next <= HalfCountWidth'(HalfDepth));
       end
     end
   end

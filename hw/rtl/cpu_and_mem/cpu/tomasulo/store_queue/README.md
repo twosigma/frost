@@ -78,10 +78,11 @@ Dispatch uses the registered `o_dispatch_full` and `o_dispatch_full_for_2`
 flags. They count this cycle's allocations but give no credit for this cycle's
 drains, flushes, or SC discards, so they err only on the side of stalling;
 early credit would let dispatch send a store the SQ cannot accept. `o_full`
-and `o_full_for_2` give the exact combinational status, and a separate counter
-drives `o_count` and `o_empty`. The counter forms each entry's removal from
-the queue's state and the flush and tag inputs first; the SC discard and the
-write completion apply next, and the registered commit pulses last.
+and `o_full_for_2` give the exact combinational status, and a pair of per-half
+live counters (lower and upper eight entries) drive `o_count` and `o_empty`.
+Each counter forms its half's removal from the queue's state and the flush and
+tag inputs first; the SC discard and the write completion apply next, and the
+registered commit pulses last.
 
 Addresses arrive from the early-address pipeline or from MEM_RS issue, and
 data from MEM_RS issue, matched to entries by ROB tag. Each early-address slot
@@ -260,7 +261,9 @@ the entry without writing memory. The LR reservation lives in the LQ.
 
 Control fields are flip-flops, because the address CAM, the forwarding scan,
 and flushes read every entry at once. Store data lives in a LUTRAM read by the
-drain, plus a per-entry flip-flop copy read by the forwarding path. The LQ
+drain (written via a nibble-encoded match index), plus a per-entry flip-flop
+copy written directly from each entry's ROB-tag match and read by the
+forwarding path. The LQ
 sends four identical copies of the check address (`i_sq_check_addr` and
 `_b`, `_c`, `_d`), each compared against a quarter of the entries (four).
 

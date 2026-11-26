@@ -83,6 +83,9 @@ module sc_pending_unit #(
     // alloc-time capture is already the PA.
     input logic i_sct_alloc_addr_valid,
     input logic i_sct_addr_fill_valid,
+    // Payload-only fill capture enable omitting flush and fault gates.
+    // sct_addr_valid remains gated by i_sct_addr_fill_valid.
+    input logic i_sct_addr_fill_capture_valid,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_sct_addr_fill_tag,
     input logic [riscv_pkg::XLEN-1:0] i_sct_addr_fill_addr,
     input logic i_speculative_flush_all,
@@ -244,16 +247,38 @@ module sc_pending_unit #(
     end
   end
 
-  // First free slot for a newly-issued SC.
+  // First free slot for a newly-issued SC. At 16 entries, compute nibble
+  // fullness in parallel so the one-hot mask does not ripple across all 16.
   logic                    sct_has_free;
   logic [ScTableDepth-1:0] sct_free_oh;
-  always_comb begin
-    sct_has_free = 1'b0;
-    sct_free_oh  = '0;
-    for (int i = 0; i < ScTableDepth; i++) begin
-      if (!sct_valid[i] && !sct_has_free) begin
-        sct_has_free   = 1'b1;
-        sct_free_oh[i] = 1'b1;
+  if (ScTableDepth == 16) begin : gen_sct_free_oh_16
+    logic [3:0] nib_has_free;
+    logic [3:0] nib_prior_full;
+    always_comb begin
+      for (int n = 0; n < 4; n++) begin
+        nib_has_free[n] = !(&sct_valid[4*n+:4]);
+      end
+      nib_prior_full[0] = 1'b1;
+      nib_prior_full[1] = &sct_valid[3:0];
+      nib_prior_full[2] = &sct_valid[7:0];
+      nib_prior_full[3] = &sct_valid[11:0];
+      sct_has_free = |nib_has_free;
+      for (int n = 0; n < 4; n++) begin
+        sct_free_oh[4*n+0] = nib_prior_full[n] && !sct_valid[4*n+0];
+        sct_free_oh[4*n+1] = nib_prior_full[n] && sct_valid[4*n+0] && !sct_valid[4*n+1];
+        sct_free_oh[4*n+2] = nib_prior_full[n] && (&sct_valid[4*n+:2]) && !sct_valid[4*n+2];
+        sct_free_oh[4*n+3] = nib_prior_full[n] && (&sct_valid[4*n+:3]) && !sct_valid[4*n+3];
+      end
+    end
+  end else begin : gen_sct_free_oh_generic
+    always_comb begin
+      sct_has_free = 1'b0;
+      sct_free_oh  = '0;
+      for (int i = 0; i < ScTableDepth; i++) begin
+        if (!sct_valid[i] && !sct_has_free) begin
+          sct_has_free   = 1'b1;
+          sct_free_oh[i] = 1'b1;
+        end
       end
     end
   end
@@ -416,7 +441,7 @@ module sc_pending_unit #(
       end
       // Allocation targets a free slot; fire, fault, and flush target valid slots,
       // so their indices cannot collide. ScTableDepth guarantees a free slot.
-      if (sct_alloc && sct_has_free) begin
+      if (sct_alloc) begin
         for (int i = 0; i < ScTableDepth; i++) if (sct_free_oh[i]) sct_valid[i] <= 1'b1;
       end
     end
@@ -428,7 +453,7 @@ module sc_pending_unit #(
     if (!i_rst_n) begin
       sct_addr_valid <= '0;
     end else begin
-      if (sct_payload_alloc && sct_has_free) begin
+      if (sct_payload_alloc) begin
         for (int i = 0; i < ScTableDepth; i++) begin
           if (sct_free_oh[i]) sct_addr_valid[i] <= i_sct_alloc_addr_valid;
         end
@@ -441,23 +466,29 @@ module sc_pending_unit #(
     end
   end
 
-  // SC tag/addr capture (no reset; gated by the alloc one-hot), plus the
-  // MMU's later PA fill under active translation.
-  always_ff @(posedge i_clk) begin
-    if (i_sct_addr_fill_valid) begin
-      for (int i = 0; i < ScTableDepth; i++) begin
-        if (sct_valid[i] && (sct_tag[i] == i_sct_addr_fill_tag)) begin
-          sct_addr[i] <= i_sct_addr_fill_addr;
-        end
-      end
+  // Per-entry payload fill match omits flush and fault gates; sct_addr_valid
+  // keeps faulted fills hidden, and a flush clears sct_valid on the same edge.
+  logic [ScTableDepth-1:0] sct_fill_capture_oh;
+  always_comb begin
+    for (int i = 0; i < ScTableDepth; i++) begin
+      sct_fill_capture_oh[i] = i_sct_addr_fill_capture_valid && sct_valid[i] &&
+          !sct_addr_valid[i] && (sct_tag[i] == i_sct_addr_fill_tag);
     end
-    if (sct_payload_alloc && sct_has_free) begin
-      for (int i = 0; i < ScTableDepth; i++) begin
-        if (sct_free_oh[i]) begin
-          sct_tag[i]  <= o_mem_rs_issue.rob_tag;
-          // SC has no immediate: dispatch supplies imm==0, so src1 is its address.
-          sct_addr[i] <= o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
-        end
+  end
+
+  // SC tag/addr capture (no reset; gated by the alloc one-hot), plus the
+  // MMU's later PA fill under active translation. Fill targets valid entries
+  // and allocation targets free entries, so sct_valid selects the address
+  // source directly without pulling issue controls onto the data pin.
+  always_ff @(posedge i_clk) begin
+    for (int i = 0; i < ScTableDepth; i++) begin
+      if (sct_payload_alloc && sct_free_oh[i]) begin
+        sct_tag[i] <= o_mem_rs_issue.rob_tag;
+      end
+      if (sct_fill_capture_oh[i] || (sct_payload_alloc && sct_free_oh[i])) begin
+        // SC has no immediate: dispatch supplies imm==0, so src1 is its address.
+        sct_addr[i] <= sct_valid[i] ? i_sct_addr_fill_addr :
+            o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
       end
     end
   end

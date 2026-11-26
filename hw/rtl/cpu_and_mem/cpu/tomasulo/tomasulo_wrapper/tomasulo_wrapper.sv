@@ -1876,6 +1876,7 @@ module tomasulo_wrapper #(
                                                      : store_misalign_issue_legacy;
   // Declared here, driven in the dmmu section below (the MMU's issue-out
   // pulse split by fault/ok and routed by its needs_sq echo).
+  logic dmmu_out_sq_capture_valid;
   logic dmmu_out_is_sc;
   logic dmmu_out_is_cmo;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dmmu_out_tag;
@@ -2393,6 +2394,7 @@ module tomasulo_wrapper #(
       .i_sq_effective_addr             (sq_effective_addr),
       .i_sct_alloc_addr_valid          (!i_translation_active),
       .i_sct_addr_fill_valid           (dmmu_store_ok && dmmu_out_is_sc),
+      .i_sct_addr_fill_capture_valid   (dmmu_out_sq_capture_valid && dmmu_out_is_sc),
       .i_sct_addr_fill_tag             (dmmu_out_tag),
       .i_sct_addr_fill_addr            (dmmu_out_addr),
       .i_speculative_flush_all         (speculative_flush_all),
@@ -4548,7 +4550,6 @@ module tomasulo_wrapper #(
 
   logic dmmu_out_valid;
   logic dmmu_out_lq_capture_valid;
-  logic dmmu_out_sq_capture_valid;
   logic dmmu_out_is_mmio;
   logic dmmu_out_needs_sq;
   logic [riscv_pkg::XLEN-1:0] dmmu_out_amo_rs2;

@@ -6894,8 +6894,8 @@ TWIN_COMPARISONS = {
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
     ),
     ("store_queue_twin", "sq_twin"): TwinComparison(
-        primitive_points=87,
-        all_points=9057,
+        primitive_points=104,
+        all_points=15796,
         top="store_queue",
         gold_inputs=(
             "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
@@ -6906,17 +6906,17 @@ TWIN_COMPARISONS = {
             "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
             "vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv",
         ),
-        registers=165,
+        registers=166,
         clock="i_clk",
-        gold_only_free=555,
-        gate_only_free=555,
+        gold_only_free=536,
+        gate_only_free=536,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
-        initialized_nets=32,
+        initialized_nets=16,
     ),
     ("store_queue_twin", "sq_twin_cpu"): TwinComparison(
-        primitive_points=87,
-        all_points=9066,
+        primitive_points=104,
+        all_points=16717,
         top="store_queue",
         gold_inputs=(
             "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
@@ -6931,13 +6931,13 @@ TWIN_COMPARISONS = {
             "chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 "
             "-set CACHE_NORMAL_MEMORY 1 store_queue",
         ),
-        registers=169,
+        registers=170,
         clock="i_clk",
-        gold_only_free=558,
-        gate_only_free=558,
+        gold_only_free=539,
+        gate_only_free=539,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
-        initialized_nets=32,
+        initialized_nets=16,
     ),
     ("coherence_l1d_twin", "l1d_twin_single"): TwinComparison(
         primitive_points=9,

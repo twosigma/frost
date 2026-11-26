@@ -136,7 +136,10 @@ A separate valid bit, which does see reset, flush, or fault, is the only
 thing that makes each payload observable; a later insertion overwrites the
 payload on the same edge that sets its valid bit. The data MMU's pre-kill
 result pulses follow the same pattern: the SQ uses
-`dmmu_out_sq_capture_valid` for payload only, and the LQ uses
+`dmmu_out_sq_capture_valid` for payload only, the SC table uses
+`dmmu_out_sq_capture_valid && dmmu_out_is_sc` for its physical-address payload
+while keeping `sct_addr_valid` gated by `dmmu_store_ok && dmmu_out_is_sc`, and
+the LQ uses
 `dmmu_out_lq_capture_valid` as its address-update valid because a flush clears
 the targeted LQ entry on the same edge.
 

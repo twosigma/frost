@@ -1344,6 +1344,7 @@ module coherence_store_boundary_formal #(
       .i_sq_effective_addr(address1),
       .i_sct_alloc_addr_valid(1'b1),
       .i_sct_addr_fill_valid('0),
+      .i_sct_addr_fill_capture_valid('0),
       .i_sct_addr_fill_tag('0),
       .i_sct_addr_fill_addr('0),
       .i_speculative_flush_all('0),
