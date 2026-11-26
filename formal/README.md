@@ -721,7 +721,8 @@ simultaneous in-flight loads and stores, partial recovery and full flush with
 both queues occupied, memory wakeup merges at frames 4 and 5 (including a
 staged load alongside a registered CDB broadcast), and `FU_ALU` and `FU_ALU2`
 completions on the registered CDB; `cover_fu_depth6` (depth 8, same narrowed
-environment) reaches carry-less multiplier (`MUL_SEL_CL`), word multiplier
+environment with `i_translation_active` tied low, which keeps the data MMU out
+of its search) reaches carry-less multiplier (`MUL_SEL_CL`), word multiplier
 (`MUL_SEL_SEXT_W`), and abstract `fp_shim` engine (`FU_FP_ADD`) completions on
 the CDB through their adapters (`fp_fma_pipe` and 64-bit `multiplier` require
 longer pipelines covered by `fp_forward_wake`, `fp_forward_route`, and
