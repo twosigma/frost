@@ -102,6 +102,10 @@ module backing_btb_twin_side (
   };
   assign state.sweep_active = dut.sweep_active;
   assign state.sweep_index = dut.sweep_index;
+  for (genvar n = 0; n < 2; n++) begin : gen_state_image_wr
+    assign state.image_write_en[n]  = dut.gen_image[n].u_tag_ram.i_write_enable;
+    assign state.image_write_idx[n] = dut.gen_image[n].u_tag_ram.i_write_address;
+  end
   assign state.c_set = dut.c_set;
   assign state.c_hit = dut.c_hit;
   assign state.c_way = dut.c_way;

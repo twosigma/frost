@@ -72,6 +72,12 @@ module predictor_table_twin_side (
   assign state.provider = dut.provider;
   assign state.above = dut.above;
   assign state.owned = dut.owned;
+  for (genvar t = 0; t < predictor_table_twin_pkg::Tables; t++) begin : gen_state_write
+    assign state.write_we[t][0] = dut.gen_bank[0].gen_table[t].u_lookup_copy.i_write_enable;
+    assign state.write_we[t][1] = dut.gen_bank[1].gen_table[t].u_lookup_copy.i_write_enable;
+    assign state.write_index[t] = dut.gen_bank[0].gen_table[t].u_lookup_copy.i_write_address;
+    assign state.write_entry[t] = dut.gen_bank[0].gen_table[t].u_lookup_copy.i_write_data;
+  end
 `ifdef PREDICTOR_TWIN_DIRECTION
   assign state.taken = dut.train_taken_q;
   assign state.useful_update = dut.useful_update;

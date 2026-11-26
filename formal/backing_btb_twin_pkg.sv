@@ -61,6 +61,8 @@ package backing_btb_twin_pkg;
   typedef struct packed {
     logic sweep_active;
     index_t sweep_index;
+    logic [1:0] image_write_en;
+    index_t [1:0] image_write_idx;
     request_t a, b, c;
     set_t c_set, forward_set;
     logic c_hit, b_forward;

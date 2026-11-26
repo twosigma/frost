@@ -73,6 +73,9 @@ package predictor_table_twin_pkg;
     logic train_valid, write_bank, mispredicted;
     lookup_t train_lookup;
     logic [Tables-1:0] provider, above, owned;
+    logic [Tables-1:0][1:0] write_we;
+    logic [Tables-1:0][IndexBits-1:0] write_index;
+    logic [Tables-1:0][EntryBits-1:0] write_entry;
 `ifdef PREDICTOR_TWIN_DIRECTION
     logic taken, useful_update, useful_value;
 `else

@@ -310,6 +310,28 @@ module backing_btb #(
     c_return     <= b_return;
   end
 
+  // Register per-image write enables and addresses in parallel with stage C
+  // and sweep so the lookup distributed RAMs take flop-direct write controls
+  // that synthesis can replicate cleanly.
+  (* max_fanout = 48, equivalent_register_removal = "no" *) logic [1:0] image_write_en_q;
+  (* max_fanout = 48, equivalent_register_removal = "no" *)
+  logic [1:0][IndexBits-1:0] image_write_idx_q;
+  logic image_sweep_stay;
+  logic [IndexBits-1:0] image_next_idx;
+  assign image_sweep_stay = sweep_active && (sweep_index != IndexBits'(Sets - 1));
+  assign image_next_idx   = image_sweep_stay ? (sweep_index + IndexBits'(1)) : b_index;
+  always_ff @(posedge i_clk) begin
+    if (i_reset) begin
+      image_write_en_q     <= 2'b11;
+      image_write_idx_q[0] <= '0;
+      image_write_idx_q[1] <= '1;
+    end else begin
+      image_write_en_q     <= {2{image_sweep_stay || b_accepted}};
+      image_write_idx_q[0] <= image_next_idx;
+      image_write_idx_q[1] <= image_next_idx - IndexBits'(1);
+    end
+  end
+
   // An update writes its way, a hit or an allocation, only for a target in
   // the jump's region. A hit with a target outside it is invalidated, and a
   // miss with one writes its set back as read. A refresh writes its set back
@@ -395,16 +417,14 @@ module backing_btb #(
   logic [1:0][PayloadRowBits-1:0] held_payload_q;
   for (genvar image = 0; image < 2; image++) begin : gen_image
     // Image 1 stores set S at row S-1, so its row Q holds the set after Q.
-    logic [ IndexBits-1:0] image_write_index;
     logic [TagRowBits-1:0] tag_row;
-    assign image_write_index = write_index - IndexBits'(image);
     sdp_dist_ram #(
         .ADDR_WIDTH(IndexBits),
         .DATA_WIDTH(TagRowBits)
     ) u_tag_ram (
         .i_clk,
-        .i_write_enable(write_enable),
-        .i_write_address(image_write_index),
+        .i_write_enable(image_write_en_q[image]),
+        .i_write_address(image_write_idx_q[image]),
         .i_read_address(i_lookup_index),
         .i_write_data(write_tags),
         .o_read_data(tag_row)
@@ -417,9 +437,9 @@ module backing_btb #(
         .DATA_WIDTH(PayloadRowBits)
     ) u_payload_ram (
         .i_clk,
-        .i_write_enable(write_enable),
+        .i_write_enable(image_write_en_q[image]),
         .i_bulk_clear(1'b0),
-        .i_write_address(image_write_index),
+        .i_write_address(image_write_idx_q[image]),
         .i_read_address(i_lookup_index),
         .i_write_data(write_payloads),
         .o_read_data(payload_rows[image])
