@@ -16,9 +16,12 @@
 
 // Committed Zvbc and AES/SHA2/GHASH execution. Four element transfers gather
 // a complete crypto group before any write, including SHA-512 across two
-// registers at VLEN128. Every operation has data-independent execution time.
+// registers at VLEN128. Setting VRF_REG_DATA=1 accommodates an extra VRF
+// output register stage in vec_engine. Every operation has data-independent
+// execution time.
 module vec_crypto_exec #(
     parameter int unsigned VLEN = 256,
+    parameter bit VRF_REG_DATA = 1'b0,
     localparam int unsigned Bytes = VLEN / 8,
     localparam int unsigned ByteBits = $clog2(Bytes),
     localparam int unsigned MaskBits = $clog2(VLEN)
@@ -42,9 +45,11 @@ module vec_crypto_exec #(
   typedef enum logic [3:0] {
     IDLE,
     PRE,
+    PRE2,
     SNAP,
     ADDRESS,
     READ,
+    READ2,
     CAPTURE,
     EXTRACT,
     NEXT_WORD,
@@ -61,6 +66,7 @@ module vec_crypto_exec #(
   logic [63:0] scalar_q;
   logic [VLEN-1:0] mask_q;
   logic [2:0][VLEN-1:0] regs_q;
+  logic [3:0][4:0] raddr_q;
   logic [255:0] a_q, b_q, d_q, result_q;
   logic clmul, scalar_key, sha, ghash, active;
   // An LMUL group spans at most eight registers. OP-VE starts on a
@@ -85,12 +91,7 @@ module vec_crypto_exec #(
   assign key_word = scalar_key ? (ByteBits - 2)'(word_q) : byte_index[ByteBits-1:2];
   assign write_word = (sew_q == 3) ? result_q[64*word_q+:64] : 64'(result_q[32*word_q+:32]);
   assign active = !clmul || insn_q[25] || mask_q[MaskBits'(idx_q)];
-  always_comb begin
-    o_raddr[0] = scalar_key ? vs2 : vs2 + 5'(byte_index >> ByteBits);
-    o_raddr[1] = vs1 + 5'(byte_index >> ByteBits);
-    o_raddr[2] = vd + 5'(byte_index >> ByteBits);
-    o_raddr[3] = 0;
-  end
+  assign o_raddr = raddr_q;
   vec_pkg::aes_op_e aes_op;
   vec_pkg::sha_op_e sha_op;
   always_comb begin
@@ -158,78 +159,88 @@ module vec_crypto_exec #(
   );
   assign o_idle = state == IDLE;
   assign o_we   = state == WRITE && active;
+
+  // Control state machine (reset-bearing flop only).
   always_ff @(posedge i_clk) begin
     if (i_rst) state <= IDLE;
     else
       case (state)
-        IDLE:
-        if (i_valid) begin
-          insn_q <= i_insn;
-          sew_q <= i_sew;
-          vl_q <= i_vl;
-          idx_q <= i_vstart;
-          scalar_q <= i_scalar;
-          word_q <= 0;
-          state <= PRE;
-        end
-        PRE: state <= SNAP;
-        SNAP: begin
-          mask_q <= i_rdata[3];
-          state  <= ADDRESS;
-        end
+        IDLE: if (i_valid) state <= PRE;
+        PRE: state <= VRF_REG_DATA ? PRE2 : SNAP;
+        PRE2: state <= SNAP;
+        SNAP: state <= ADDRESS;
         ADDRESS: state <= idx_q >= vl_q ? IDLE : READ;
-        READ: state <= CAPTURE;
-        CAPTURE: begin
-          regs_q <= i_rdata[2:0];
-          state  <= EXTRACT;
-        end
-        EXTRACT: begin
-          if (sew_q == 3) begin
-            a_q[64*word_q+:64] <= regs_q[0][64*byte_index[ByteBits-1:3]+:64];
-            b_q[64*word_q+:64] <= regs_q[1][64*byte_index[ByteBits-1:3]+:64];
-            d_q[64*word_q+:64] <= regs_q[2][64*byte_index[ByteBits-1:3]+:64];
-          end else begin
-            a_q[32*word_q+:32] <= regs_q[0][32*key_word+:32];
-            b_q[32*word_q+:32] <= regs_q[1][32*byte_index[ByteBits-1:2]+:32];
-            d_q[32*word_q+:32] <= regs_q[2][32*byte_index[ByteBits-1:2]+:32];
-          end
-          state <= NEXT_WORD;
-        end
-        NEXT_WORD: begin
-          word_q <= word_q + 1;
-          if (clmul || word_q == 3) begin
-            word_q <= 0;
-            state  <= LAUNCH;
-          end else state <= ADDRESS;
-        end
+        READ: state <= VRF_REG_DATA ? READ2 : CAPTURE;
+        READ2: state <= CAPTURE;
+        CAPTURE: state <= EXTRACT;
+        EXTRACT: state <= NEXT_WORD;
+        NEXT_WORD: state <= (clmul || word_q == 3) ? LAUNCH : ADDRESS;
         LAUNCH: state <= WAIT_RESULT;
-        WAIT_RESULT:
-        if (av || sv || gv || cv) begin
-          result_q <= cv ? 256'(cr) : gv ? 256'(gr) : av ? 256'(ar) : sr;
-          state <= FORMAT;
-        end
-        FORMAT: begin
-          o_waddr <= vd + 5'(byte_index >> ByteBits);
-          // Replicate the word across the port. Only the addressed 32- or
-          // 64-bit slice has its byte enables set.
-          for (int k = 0; k < VLEN / 32; k++) begin
-            o_wdata[32*k+:32] <= (sew_q == 3 && k % 2 == 1) ? write_word[63:32] : write_word[31:0];
-            o_wbe[4*k+:4] <= {4{(sew_q == 3) ? (int'(byte_index[ByteBits-1:3]) == k/2) :
-                (int'(byte_index[ByteBits-1:2]) == k)}};
-          end
-          state <= WRITE;
-        end
-        WRITE: begin
-          word_q <= word_q + 1;
-          state  <= clmul || word_q == 3 ? ADVANCE : FORMAT;
-        end
-        ADVANCE: begin
-          word_q <= 0;
-          idx_q  <= idx_q + (clmul ? 16'd1 : 16'd4);
-          state  <= ADDRESS;
-        end
+        WAIT_RESULT: if (av || sv || gv || cv) state <= FORMAT;
+        FORMAT: state <= WRITE;
+        WRITE: state <= (clmul || word_q == 3) ? ADVANCE : FORMAT;
+        ADVANCE: state <= ADDRESS;
         default: state <= IDLE;
       endcase
+  end
+
+  // Reset-free datapath registers (no i_rst fanout on wide datapath flops).
+  always_ff @(posedge i_clk) begin
+    case (state)
+      IDLE:
+      if (i_valid) begin
+        insn_q <= i_insn;
+        sew_q <= i_sew;
+        vl_q <= i_vl;
+        idx_q <= i_vstart;
+        scalar_q <= i_scalar;
+        word_q <= 0;
+        raddr_q[0] <= i_insn[24:20];
+        raddr_q[1] <= i_insn[19:15];
+        raddr_q[2] <= i_insn[11:7];
+        raddr_q[3] <= 5'd0;
+      end
+      SNAP: mask_q <= i_rdata[3];
+      ADDRESS: begin
+        raddr_q[0] <= scalar_key ? vs2 : (vs2 + 5'(byte_index >> ByteBits));
+        raddr_q[1] <= vs1 + 5'(byte_index >> ByteBits);
+        raddr_q[2] <= vd + 5'(byte_index >> ByteBits);
+        raddr_q[3] <= 5'd0;
+      end
+      CAPTURE: regs_q <= i_rdata[2:0];
+      EXTRACT: begin
+        if (sew_q == 3) begin
+          a_q[64*word_q+:64] <= regs_q[0][64*byte_index[ByteBits-1:3]+:64];
+          b_q[64*word_q+:64] <= regs_q[1][64*byte_index[ByteBits-1:3]+:64];
+          d_q[64*word_q+:64] <= regs_q[2][64*byte_index[ByteBits-1:3]+:64];
+        end else begin
+          a_q[32*word_q+:32] <= regs_q[0][32*key_word+:32];
+          b_q[32*word_q+:32] <= regs_q[1][32*byte_index[ByteBits-1:2]+:32];
+          d_q[32*word_q+:32] <= regs_q[2][32*byte_index[ByteBits-1:2]+:32];
+        end
+      end
+      NEXT_WORD: word_q <= (clmul || word_q == 3) ? 2'd0 : (word_q + 2'd1);
+      WAIT_RESULT:
+      if (av || sv || gv || cv) begin
+        result_q <= cv ? 256'(cr) : gv ? 256'(gr) : av ? 256'(ar) : sr;
+      end
+      FORMAT: begin
+        o_waddr <= vd + 5'(byte_index >> ByteBits);
+        // Replicate the word across the port. Only the addressed 32- or
+        // 64-bit slice has its byte enables set.
+        for (int k = 0; k < VLEN / 32; k++) begin
+          o_wdata[32*k+:32] <= (sew_q == 3 && k % 2 == 1) ? write_word[63:32] : write_word[31:0];
+          o_wbe[4*k+:4] <= {4{(sew_q == 3) ? (int'(byte_index[ByteBits-1:3]) == k/2) :
+              (int'(byte_index[ByteBits-1:2]) == k)}};
+        end
+      end
+      WRITE: word_q <= word_q + 2'd1;
+      ADVANCE: begin
+        word_q <= 0;
+        idx_q  <= idx_q + (clmul ? 16'd1 : 16'd4);
+      end
+      default: ;
+    endcase
   end
 
 `ifndef SYNTHESIS

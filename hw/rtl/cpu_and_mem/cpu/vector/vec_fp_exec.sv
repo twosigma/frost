@@ -14,14 +14,16 @@
  *    limitations under the License.
  */
 
-// Serial committed floating-point execution. Reads, element extraction,
-// arithmetic and writes are registered. Unordered sum reductions use the
-// permitted ordered evaluation; inactive elements contribute no exception flags.
-// The flags of an instruction's active elements leave in one registered pulse
-// after its last element, sent only if one is set, and o_idle stays low until
-// that pulse has left.
+// Serial committed floating-point execution. Read addresses, element
+// extraction, arithmetic and writes are registered. Setting VRF_REG_DATA=1
+// accommodates an extra VRF output register stage in vec_engine. Unordered sum
+// reductions use the permitted ordered evaluation; inactive elements
+// contribute no exception flags. The flags of an instruction's active elements
+// leave in one registered pulse after its last element, sent only if one is
+// set, and o_idle stays low until that pulse has left.
 module vec_fp_exec #(
     parameter int unsigned VLEN = 256,
+    parameter bit VRF_REG_DATA = 1'b0,
     localparam int unsigned Bytes = VLEN / 8,
     localparam int unsigned ByteBits = $clog2(Bytes),
     localparam int unsigned MaskBits = $clog2(VLEN)
@@ -48,9 +50,11 @@ module vec_fp_exec #(
   typedef enum logic [3:0] {
     IDLE,
     PRE,
+    PRE2,
     SNAP,
     ADDRESS,
     READ,
+    READ2,
     CAPTURE,
     EXTRACT,
     OPERANDS,
@@ -68,6 +72,7 @@ module vec_fp_exec #(
   logic [63:0] scalar_q, a_q, b_q, c_q, acc_q, result_q;
   logic [VLEN-1:0] mask_q;
   logic [2:0][VLEN-1:0] regs_q;
+  logic [3:0][4:0] raddr_q;
   logic active_q, write_q;
   logic [4:0] flags_q, acc_flags_q;
   logic [5:0] f6;
@@ -75,7 +80,7 @@ module vec_fp_exec #(
   logic scalar_form, reduce_op, wide, conversion, narrowing, mask_dest;
   logic scalar_move, merge_op, slide_op;
   logic [1:0] aw, bw, dw;
-  logic [15:0] abyte, bbyte, dbyte;
+  logic [15:0] next_source_idx, abyte, abyte_addr, bbyte, dbyte;
   assign f6 = insn_q[31:26];
   assign vd = insn_q[11:7];
   assign vs1 = insn_q[19:15];
@@ -93,16 +98,13 @@ module vec_fp_exec #(
   assign aw = sew_q + 2'(narrowing || f6 == 6'h34 || f6 == 6'h36);
   assign dw = sew_q + 2'(wide);
   assign bw = reduce_op ? dw : sew_q;
+  assign next_source_idx = slide_op ? (f6[0] ? idx_q + 16'd1 : idx_q - 16'd1) : idx_q;
   assign abyte = source_idx_q << aw;
+  assign abyte_addr = next_source_idx << aw;
   assign bbyte = (reduce_op ? 16'd0 : idx_q) << bw;
   assign dbyte = (reduce_op ? 16'd0 : idx_q) << dw;
-  always_comb begin
-    o_raddr[0] = vs2 + 5'(abyte >> ByteBits);
-    o_raddr[1] = vs1 + 5'(bbyte >> ByteBits);
-    o_raddr[2] = vd + 5'(dbyte >> ByteBits);
-    o_raddr[3] = 0;
-    if (mask_dest) o_raddr[2] = vd;
-  end
+  assign o_raddr = raddr_q;
+
   function automatic logic [63:0] cut(input logic [63:0] x, input logic [1:0] w);
     case (w)
       0: cut = 64'(x[7:0]);
@@ -217,6 +219,8 @@ module vec_fp_exec #(
   );
   assign o_idle = (state == IDLE) && !o_flags_valid;
   assign o_we   = state == WRITE && write_q;
+
+  // Control state machine (reset-bearing flops only).
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       state <= IDLE;
@@ -224,94 +228,106 @@ module vec_fp_exec #(
     end else begin
       o_flags_valid <= 1'b0;
       case (state)
-        IDLE:
-        if (i_valid) begin
-          insn_q <= i_insn;
-          sew_q <= i_sew;
-          rm_q <= i_frm;
-          vl_q <= i_vl;
-          idx_q <= i_vstart;
-          limit_q <= i_vl;
-          scalar_q <= i_scalar;
-          acc_flags_q <= '0;
-          state <= PRE;
-        end
-        PRE: state <= SNAP;
-        SNAP: begin
-          mask_q <= i_rdata[3];
-          if (scalar_move) begin
-            limit_q <= idx_q < vl_q ? 16'd1 : 16'd0;
-            idx_q   <= 0;
-          end
-          state <= ADDRESS;
-        end
+        IDLE: if (i_valid) state <= PRE;
+        PRE: state <= VRF_REG_DATA ? PRE2 : SNAP;
+        PRE2: state <= SNAP;
+        SNAP: state <= ADDRESS;
         ADDRESS: begin
-          source_idx_q <= idx_q;
-          if (slide_op) source_idx_q <= f6[0] ? idx_q + 1 : idx_q - 1;
           if (idx_q >= limit_q) begin
-            o_flags <= acc_flags_q;
             o_flags_valid <= |acc_flags_q;
             state <= IDLE;
           end else state <= READ;
         end
-        READ: state <= CAPTURE;
-        CAPTURE: begin
-          regs_q <= i_rdata[2:0];
-          state  <= EXTRACT;
-        end
-        EXTRACT: begin
-          a_q <= cut(64'(regs_q[0] >> (8 * int'(abyte[ByteBits-1:0]))), aw);
-          b_q <= scalar_form ? unbox(
-              scalar_q, sew_q
-          ) : cut(
-              64'(regs_q[1] >> (8 * int'(bbyte[ByteBits-1:0]))), bw
-          );
-          c_q <= cut(64'(regs_q[2] >> (8 * int'(dbyte[ByteBits-1:0]))), dw);
-          if (reduce_op && idx_q == 0) acc_q <= cut(64'(regs_q[1]), dw);
-          active_q <= scalar_move || merge_op || insn_q[25] || mask_q[MaskBits'(idx_q)];
-          flags_q <= '0;
-          state <= OPERANDS;
-        end
-        OPERANDS: begin
-          write_q <= reduce_op ? idx_q + 1 == limit_q : active_q;
-          state   <= LAUNCH;
-        end
-        LAUNCH: begin
-          if (scalar_move || merge_op || slide_op) begin
-            result_q <= a_q;
-            if (scalar_move || (merge_op && (insn_q[25] || mask_q[MaskBits'(idx_q)])) ||
-                (slide_op && ((!f6[0] && idx_q == 0) || (f6[0] && idx_q+1 == vl_q))))
-              result_q <= b_q;
-            state <= FORMAT;
-          end else state <= WAIT_RESULT;
-        end
-        WAIT_RESULT:
-        if (lane_valid) begin
-          result_q <= reduce_op && !active_q ? acc_q : lane_result;
-          if (mask_dest && f6 == 6'h1c) result_q <= lane_result ^ 64'd1;
-          if (reduce_op && active_q) acc_q <= lane_result;
-          flags_q <= active_q ? lane_flags : 5'b0;
-          state   <= FORMAT;
-        end
-        FORMAT: begin
-          o_waddr <= vd + 5'(dbyte >> ByteBits);
-          o_wdata <= VLEN'(result_q) << (8 * int'(dbyte[ByteBits-1:0]));
-          o_wbe   <= ((Bytes'(1) << (4'd1 << dw)) - Bytes'(1)) << int'(dbyte[ByteBits-1:0]);
-          if (mask_dest) begin
-            o_waddr <= vd;
-            o_wdata <= (regs_q[2] & ~(VLEN'(1) << idx_q)) | (VLEN'(result_q[0]) << idx_q);
-            o_wbe   <= Bytes'(1) << (idx_q >> 3);
-          end
-          acc_flags_q <= acc_flags_q | flags_q;
-          state <= WRITE;
-        end
+        READ: state <= VRF_REG_DATA ? READ2 : CAPTURE;
+        READ2: state <= CAPTURE;
+        CAPTURE: state <= EXTRACT;
+        EXTRACT: state <= OPERANDS;
+        OPERANDS: state <= LAUNCH;
+        LAUNCH: state <= (scalar_move || merge_op || slide_op) ? FORMAT : WAIT_RESULT;
+        WAIT_RESULT: if (lane_valid) state <= FORMAT;
+        FORMAT: state <= WRITE;
         WRITE: state <= ADVANCE;
-        ADVANCE: begin
-          idx_q <= idx_q + 1;
-          state <= ADDRESS;
-        end
+        ADVANCE: state <= ADDRESS;
         default: state <= IDLE;
       endcase
     end
+  end
+
+  // Reset-free datapath registers (no i_rst fanout on wide datapath flops).
+  always_ff @(posedge i_clk) begin
+    case (state)
+      IDLE:
+      if (i_valid) begin
+        insn_q <= i_insn;
+        sew_q <= i_sew;
+        rm_q <= i_frm;
+        vl_q <= i_vl;
+        idx_q <= i_vstart;
+        limit_q <= i_vl;
+        scalar_q <= i_scalar;
+        acc_flags_q <= '0;
+        raddr_q[0] <= i_insn[24:20];
+        raddr_q[1] <= i_insn[19:15];
+        raddr_q[2] <= i_insn[11:7];
+        raddr_q[3] <= 5'd0;
+      end
+      SNAP: begin
+        mask_q <= i_rdata[3];
+        if (scalar_move) begin
+          limit_q <= idx_q < vl_q ? 16'd1 : 16'd0;
+          idx_q   <= 0;
+        end
+      end
+      ADDRESS: begin
+        source_idx_q <= next_source_idx;
+        raddr_q[0]   <= vs2 + 5'(abyte_addr >> ByteBits);
+        raddr_q[1]   <= vs1 + 5'(bbyte >> ByteBits);
+        raddr_q[2]   <= mask_dest ? vd : (vd + 5'(dbyte >> ByteBits));
+        raddr_q[3]   <= 5'd0;
+        if (idx_q >= limit_q) o_flags <= acc_flags_q;
+      end
+      CAPTURE: regs_q <= i_rdata[2:0];
+      EXTRACT: begin
+        a_q <= cut(64'(regs_q[0] >> (8 * int'(abyte[ByteBits-1:0]))), aw);
+        b_q <= scalar_form ? unbox(
+            scalar_q, sew_q
+        ) : cut(
+            64'(regs_q[1] >> (8 * int'(bbyte[ByteBits-1:0]))), bw
+        );
+        c_q <= cut(64'(regs_q[2] >> (8 * int'(dbyte[ByteBits-1:0]))), dw);
+        if (reduce_op && idx_q == 0) acc_q <= cut(64'(regs_q[1]), dw);
+        active_q <= scalar_move || merge_op || insn_q[25] || mask_q[MaskBits'(idx_q)];
+        flags_q <= '0;
+      end
+      OPERANDS: write_q <= reduce_op ? idx_q + 1 == limit_q : active_q;
+      LAUNCH: begin
+        if (scalar_move || merge_op || slide_op) begin
+          result_q <= a_q;
+          if (scalar_move || (merge_op && (insn_q[25] || mask_q[MaskBits'(idx_q)])) ||
+              (slide_op && ((!f6[0] && idx_q == 0) || (f6[0] && idx_q+1 == vl_q))))
+            result_q <= b_q;
+        end
+      end
+      WAIT_RESULT:
+      if (lane_valid) begin
+        result_q <= reduce_op && !active_q ? acc_q : lane_result;
+        if (mask_dest && f6 == 6'h1c) result_q <= lane_result ^ 64'd1;
+        if (reduce_op && active_q) acc_q <= lane_result;
+        flags_q <= active_q ? lane_flags : 5'b0;
+      end
+      FORMAT: begin
+        o_waddr <= vd + 5'(dbyte >> ByteBits);
+        o_wdata <= VLEN'(result_q) << (8 * int'(dbyte[ByteBits-1:0]));
+        o_wbe   <= ((Bytes'(1) << (4'd1 << dw)) - Bytes'(1)) << int'(dbyte[ByteBits-1:0]);
+        if (mask_dest) begin
+          o_waddr <= vd;
+          o_wdata <= (regs_q[2] & ~(VLEN'(1) << idx_q)) | (VLEN'(result_q[0]) << idx_q);
+          o_wbe   <= Bytes'(1) << (idx_q >> 3);
+        end
+        acc_flags_q <= acc_flags_q | flags_q;
+      end
+      ADVANCE: idx_q <= idx_q + 1;
+      default: ;
+    endcase
   end
 endmodule

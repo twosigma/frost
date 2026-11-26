@@ -19,20 +19,23 @@
   The vector engine executes committed vector instructions over DLEN = VLEN
   register groups.
 
-  The single-width integer ALU, compare, merge, move and Zvbb unary path is
-  pipelined at one register group per cycle across the VRF read stage, the
-  three-stage vec_int_lane pipeline, and writeback. Groups before vstart and
-  past vl are skipped. Consecutive group-ALU instructions overlap and chain at
-  register-group granularity, stalling only when a source register (or v0 / old
-  vd when used) is still pending write in the pipeline.
+  Engine VRF read ports 0..3 pass through a fabric output register (rf_rdata_q)
+  before reaching the execution pipelines. The single-width integer ALU,
+  compare, merge, move and Zvbb unary path is pipelined at one register group
+  per cycle across the VRF address stage (R), the VRF data register stage (R1),
+  the three-stage vec_int_lane pipeline (E0..E2), and writeback (W). Groups
+  before vstart and past vl are skipped. Consecutive group-ALU instructions
+  overlap and chain at register-group granularity, stalling only when a source
+  register (or v0 / old vd when used) is still pending write in the pipeline.
 
-  vec_int_exec executes integer multiply/MAC (group-wide), reductions
-  (pipelined 64-bit lane per cycle), and mixed-width/fixed-point/divide/mask/
-  permutation operations. vec_fp_exec sequences FP16/32/64 arithmetic,
-  conversions and reductions. vec_crypto_exec gathers registered element
-  groups for AES, SHA-2 and GHASH, and handles Zvbc carry-less multiplication.
-  These auxiliary executors take exclusive ownership of engine VRF ports while
-  busy. o_unsupported pulses for unrecognized encodings.
+  vec_int_exec executes integer multiply/MAC (two 64-bit lanes per pipelined
+  beat), reductions (pipelined 64-bit lane per cycle), and mixed-width/
+  fixed-point/divide/mask/permutation operations. vec_fp_exec sequences
+  FP16/32/64 arithmetic, conversions and reductions. vec_crypto_exec gathers
+  registered element groups for AES, SHA-2 and GHASH, and handles Zvbc
+  carry-less multiplication. These auxiliary executors take exclusive ownership
+  of engine VRF ports while busy. o_unsupported pulses for unrecognized
+  encodings.
 
   Masking and the tail use the register file's byte enables: only active body
   elements (vstart <= i < vl, and v0[i] set when masked) are written, so tail
@@ -82,7 +85,8 @@ module vec_engine #(
 
   // --------------------------------------------------------------------------
   // Register file: reads 0 vs2, 1 vs1, 2 old vd, 3 v0, 4 memory side;
-  // writes 0 engine, 1 memory side.
+  // writes 0 engine, 1 memory side. Engine read ports 0..3 are registered once
+  // more in fabric (rf_rdata_q) before fanning out to the execution units.
   // --------------------------------------------------------------------------
   logic [1:0] rf_we;
   logic [1:0][4:0] rf_waddr;
@@ -90,6 +94,7 @@ module vec_engine #(
   logic [1:0][Bytes-1:0] rf_wbe;
   logic [4:0][4:0] rf_raddr;
   logic [4:0][VLEN-1:0] rf_rdata;
+  logic [3:0][VLEN-1:0] rf_rdata_q;
   vec_vrf #(
       .DEPTH(32),
       .WIDTH(VLEN),
@@ -104,6 +109,9 @@ module vec_engine #(
       .i_raddr(rf_raddr),
       .o_rdata(rf_rdata)
   );
+  always_ff @(posedge i_clk) begin
+    rf_rdata_q <= rf_rdata[3:0];
+  end
   assign rf_raddr[4] = i_xr_addr;
   assign o_xr_data   = rf_rdata[4];
   assign rf_we[1]    = i_xw_en;
@@ -134,7 +142,7 @@ module vec_engine #(
       .o_idle(aux_idle),
       .o_sat(o_sat),
       .o_raddr(aux_raddr),
-      .i_rdata(rf_rdata[3:0]),
+      .i_rdata(rf_rdata_q),
       .o_we(aux_we),
       .o_waddr(aux_waddr),
       .o_wdata(aux_wdata),
@@ -147,7 +155,8 @@ module vec_engine #(
   logic [Bytes-1:0] fp_wbe;
   assign d_fp = riscv_pkg::vector_fp_ok(i_insn) && !(i_insn[14:12] == 1 && i_insn[31:26] == 6'h10);
   vec_fp_exec #(
-      .VLEN(VLEN)
+      .VLEN(VLEN),
+      .VRF_REG_DATA(1'b1)
   ) u_fp_exec (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -162,7 +171,7 @@ module vec_engine #(
       .o_flags_valid(o_flags_valid),
       .o_flags(o_flags),
       .o_raddr(fp_raddr),
-      .i_rdata(rf_rdata[3:0]),
+      .i_rdata(rf_rdata_q),
       .o_we(fp_we),
       .o_waddr(fp_waddr),
       .o_wdata(fp_wdata),
@@ -175,7 +184,8 @@ module vec_engine #(
   logic [Bytes-1:0] crypto_wbe;
   assign d_crypto = riscv_pkg::vector_crypto_ok(i_insn);
   vec_crypto_exec #(
-      .VLEN(VLEN)
+      .VLEN(VLEN),
+      .VRF_REG_DATA(1'b1)
   ) u_crypto_exec (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -187,7 +197,7 @@ module vec_engine #(
       .i_scalar(i_rs1),
       .o_idle(crypto_idle),
       .o_raddr(crypto_raddr),
-      .i_rdata(rf_rdata[3:0]),
+      .i_rdata(rf_rdata_q),
       .o_we(crypto_we),
       .o_waddr(crypto_waddr),
       .o_wdata(crypto_wdata),
@@ -217,12 +227,20 @@ module vec_engine #(
   logic [63:0] seq_scalar_q;
   logic [31:0] seq_wr_mask_q;
 
-  // Pipeline stages aligned with vec_int_lane:
+  // Pipeline stages aligned with rf_rdata_q and vec_int_lane:
   //   R  -> VRF read address presented (seq_*_q)
-  //   E0 -> VRF data ready, presented to vec_int_lane
+  //   R1 -> VRF output exiting BRAM, latched into rf_rdata_q on the R1->E0 edge
+  //   E0 -> rf_rdata_q ready, presented to vec_int_lane
   //   E1 -> vec_int_lane stage 0 (s0)
   //   E2 -> vec_int_lane stage 1 (s1)
   //   W  -> vec_int_lane output valid (o_result / o_mask), writes VRF
+  logic r1_valid_q, r1_mask_dest_q, r1_masked_q, r1_use_scalar_q, r1_first_q, r1_last_q;
+  vec_pkg::int_op_e r1_op_q;
+  logic [1:0] r1_sew_q;
+  logic [4:0] r1_vd_reg_q;
+  logic [15:0] r1_gbase_q, r1_vl_q, r1_vstart_q;
+  logic [63:0] r1_scalar_q;
+
   logic e0_valid_q, e0_mask_dest_q, e0_masked_q, e0_use_scalar_q, e0_first_q, e0_last_q;
   vec_pkg::int_op_e e0_op_q;
   logic [1:0] e0_sew_q;
@@ -377,13 +395,14 @@ module vec_engine #(
   assign d_vs2_init = d_vs2 + 5'(d_first_g_raw[3:0]);
   assign r_vs2_next = r_vs2_addr_q + 5'd1;
 
-  // Registered write mask of pipeline tail stages (E1, E2, W and compare MWR),
-  // updated each cycle from the previous stages' flops so RAW hazard checks
-  // only combine this registered mask with stage E0. Because vec_vrf reads
-  // return pre-edge data, a register stays hazardous through stage W.
+  // Registered write mask of pipeline tail stages (E0, E1, E2, W and compare
+  // MWR), updated each cycle from the previous stages' flops so RAW hazard
+  // checks only combine this registered mask with stage R1. Because vec_vrf
+  // reads return pre-edge data, a register stays hazardous through stage W.
   logic [31:0] pipe_tail_wr_mask_d, pipe_tail_wr_mask_q, pipe_wr_mask;
   always_comb begin
     pipe_tail_wr_mask_d = 32'd0;
+    if (r1_valid_q && !r1_mask_dest_q) pipe_tail_wr_mask_d[r1_vd_reg_q] = 1'b1;
     if (e0_valid_q && !e0_mask_dest_q) pipe_tail_wr_mask_d[e0_vd_reg_q] = 1'b1;
     if (e1_valid_q && !e1_mask_dest_q) pipe_tail_wr_mask_d[e1_vd_reg_q] = 1'b1;
     if (e2_valid_q && !e2_mask_dest_q) pipe_tail_wr_mask_d[e2_vd_reg_q] = 1'b1;
@@ -391,7 +410,7 @@ module vec_engine #(
   end
   always_comb begin
     pipe_wr_mask = pipe_tail_wr_mask_q;
-    if (e0_valid_q && !e0_mask_dest_q) pipe_wr_mask[e0_vd_reg_q] = 1'b1;
+    if (r1_valid_q && !r1_mask_dest_q) pipe_wr_mask[r1_vd_reg_q] = 1'b1;
   end
 
   // Exported write mask includes in-flight compares (whose stages are excluded
@@ -400,6 +419,7 @@ module vec_engine #(
   logic [31:0] cmp_wr_mask, d_wr_mask;
   always_comb begin
     cmp_wr_mask = 32'd0;
+    if (r1_valid_q && r1_mask_dest_q) cmp_wr_mask[r1_vd_reg_q] = 1'b1;
     if (e0_valid_q && e0_mask_dest_q) cmp_wr_mask[e0_vd_reg_q] = 1'b1;
     if (e1_valid_q && e1_mask_dest_q) cmp_wr_mask[e1_vd_reg_q] = 1'b1;
     if (e2_valid_q && e2_mask_dest_q) cmp_wr_mask[e2_vd_reg_q] = 1'b1;
@@ -424,8 +444,8 @@ module vec_engine #(
   assign int_raddr[2] = seq_vd_q;
   assign int_raddr[3] = 5'd0;
 
-  // RAW hazard checks combine the registered tail write mask (E1..MWR) with
-  // a direct 5-bit tag compare against stage E0.
+  // RAW hazard checks combine the registered tail write mask (E0..MWR) with
+  // a direct 5-bit tag compare against stage R1.
   function automatic logic stage_raw_hit(input logic v, input logic [4:0] vd, input logic need_vs2,
                                          input logic [4:0] vs2, input logic need_vs1,
                                          input logic [4:0] vs1, input logic need_v0,
@@ -440,8 +460,8 @@ module vec_engine #(
       (seq_need_vs1_q && pipe_tail_wr_mask_q[r_vs1_addr_q]) ||
       (seq_need_v0_q && pipe_tail_wr_mask_q[0]) ||
       (seq_mask_dest_q && pipe_tail_wr_mask_q[seq_vd_q]) || stage_raw_hit(
-      e0_valid_q && !e0_mask_dest_q,
-      e0_vd_reg_q,
+      r1_valid_q && !r1_mask_dest_q,
+      r1_vd_reg_q,
       seq_need_vs2_q,
       r_vs2_addr_q,
       seq_need_vs1_q,
@@ -452,10 +472,11 @@ module vec_engine #(
   );
 
   logic grp_pipe_busy, cmp_in_flight, seq_issue_fire, seq_finishing, seq_accept;
-  assign grp_pipe_busy = e0_valid_q || e1_valid_q || e2_valid_q || w_valid_q || mwr_pending_q;
-  assign cmp_in_flight = (seq_valid_q && seq_mask_dest_q) || (e0_valid_q && e0_mask_dest_q) ||
-      (e1_valid_q && e1_mask_dest_q) || (e2_valid_q && e2_mask_dest_q) ||
-      (w_valid_q && w_mask_dest_q) || mwr_pending_q;
+  assign grp_pipe_busy = r1_valid_q || e0_valid_q || e1_valid_q || e2_valid_q ||
+      w_valid_q || mwr_pending_q;
+  assign cmp_in_flight = (seq_valid_q && seq_mask_dest_q) || (r1_valid_q && r1_mask_dest_q) ||
+      (e0_valid_q && e0_mask_dest_q) || (e1_valid_q && e1_mask_dest_q) ||
+      (e2_valid_q && e2_mask_dest_q) || (w_valid_q && w_mask_dest_q) || mwr_pending_q;
   logic seq_last_fire;
   assign seq_issue_fire = seq_valid_q && seq_ok_q && !seq_no_body_q && !raw_hazard;
   assign seq_last_fire = seq_issue_fire && !seq_mask_dest_q && seq_on_last_q;
@@ -474,12 +495,12 @@ module vec_engine #(
   logic [Lanes-1:0][63:0] lane_a, lane_b, lane_res;
   logic [Lanes-1:0][7:0] lane_min, lane_mout;
   logic [VLEN-1:0] e0_gmask_full;
-  assign e0_gmask_full = rf_rdata[3] >> e0_gbase_q;
+  assign e0_gmask_full = rf_rdata_q[3] >> e0_gbase_q;
 
   always_comb begin
     for (int l = 0; l < Lanes; l++) begin
-      lane_a[l] = rf_rdata[0][64*l+:64];
-      lane_b[l] = e0_use_scalar_q ? e0_scalar_q : rf_rdata[1][64*l+:64];
+      lane_a[l] = rf_rdata_q[0][64*l+:64];
+      lane_b[l] = e0_use_scalar_q ? e0_scalar_q : rf_rdata_q[1][64*l+:64];
       unique case (e0_sew_q)
         2'd0: lane_min[l] = e0_gmask_full[8*l+:8];
         2'd1: lane_min[l] = 8'(e0_gmask_full[4*l+:4]);
@@ -539,10 +560,12 @@ module vec_engine #(
     end
   end
 
+  // Control pipeline valid flags (reset-bearing flops only).
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       seq_valid_q         <= 1'b0;
       seq_started_q       <= 1'b0;
+      r1_valid_q          <= 1'b0;
       e0_valid_q          <= 1'b0;
       e1_valid_q          <= 1'b0;
       e2_valid_q          <= 1'b0;
@@ -572,74 +595,18 @@ module vec_engine #(
         end
       end
 
-      // Stage R -> E0
-      e0_valid_q <= seq_issue_fire;
-      if (seq_issue_fire) begin
-        e0_op_q         <= seq_op_q;
-        e0_sew_q        <= seq_sew_q;
-        e0_mask_dest_q  <= seq_mask_dest_q;
-        e0_masked_q     <= seq_masked_q;
-        e0_use_scalar_q <= seq_use_scalar_q;
-        e0_first_q      <= !seq_started_q;
-        e0_last_q       <= seq_on_last_q;
-        e0_vd_reg_q     <= seq_mask_dest_q ? seq_vd_q : (seq_vd_q + 5'(seq_g_q));
-        e0_gbase_q      <= {12'd0, seq_g_q} << seq_epr_shift_q;
-        e0_vl_q         <= seq_vl_q;
-        e0_vstart_q     <= seq_vstart_q;
-        e0_scalar_q     <= seq_scalar_q;
-      end
-
-      // Stage E0 -> E1 (aligned with vec_int_lane s0)
+      r1_valid_q <= seq_issue_fire;
+      e0_valid_q <= r1_valid_q;
       e1_valid_q <= e0_valid_q;
-      if (e0_valid_q) begin
-        e1_sew_q       <= e0_sew_q;
-        e1_mask_dest_q <= e0_mask_dest_q;
-        e1_masked_q    <= e0_masked_q;
-        e1_last_q      <= e0_last_q;
-        e1_vd_reg_q    <= e0_vd_reg_q;
-        e1_gbase_q     <= e0_gbase_q;
-        e1_vl_q        <= e0_vl_q;
-        e1_vstart_q    <= e0_vstart_q;
-        e1_gmask_q     <= e0_gmask_full[Bytes-1:0];
-        if (e0_mask_dest_q && e0_first_q) mres_q <= rf_rdata[2];
-      end
-
-      // Stage E1 -> E2 (aligned with vec_int_lane s1)
       e2_valid_q <= e1_valid_q;
-      if (e1_valid_q) begin
-        e2_sew_q       <= e1_sew_q;
-        e2_mask_dest_q <= e1_mask_dest_q;
-        e2_last_q      <= e1_last_q;
-        e2_vd_reg_q    <= e1_vd_reg_q;
-        e2_gbase_q     <= e1_gbase_q;
-        e2_act_q       <= e2_act_d;
-      end
+      w_valid_q  <= e2_valid_q;
 
-      // Stage E2 -> W (aligned with vec_int_lane o_valid)
-      w_valid_q <= e2_valid_q;
-      if (e2_valid_q) begin
-        w_sew_q       <= e2_sew_q;
-        w_mask_dest_q <= e2_mask_dest_q;
-        w_last_q      <= e2_last_q;
-        w_vd_reg_q    <= e2_vd_reg_q;
-        w_gbase_q     <= e2_gbase_q;
-        w_wbe_q       <= w_wbe_d;
-        w_act_sh_q    <= w_act_sh_d;
-      end
-
-      // Stage W -> compare mask accumulate and MWR
       if (mwr_pending_q) mwr_pending_q <= 1'b0;
-      if (w_valid_q && w_mask_dest_q) begin
-        mres_q <= (mres_q & ~w_act_sh_q) | ((gcmp << w_gbase_q) & w_act_sh_q);
-        if (w_last_q) begin
-          mwr_pending_q <= 1'b1;
-          mwr_vd_q      <= w_vd_reg_q;
-        end
-      end
+      if (w_valid_q && w_mask_dest_q && w_last_q) mwr_pending_q <= 1'b1;
     end
   end
 
-  // Reset-free sequencer datapath latches (CE-only, no i_rst gating).
+  // Reset-free pipeline and sequencer datapath latches (CE-only, no i_rst).
   always_ff @(posedge i_clk) begin
     if (seq_accept) begin
       seq_ok_q         <= d_ok;
@@ -670,6 +637,79 @@ module vec_engine #(
       if (seq_need_vs2_q) r_vs2_addr_q <= r_vs2_next;
       if (!seq_unary_q) r_vs1_addr_q <= r_vs1_addr_q + 5'd1;
     end
+
+    // Stage R -> R1
+    if (seq_issue_fire) begin
+      r1_op_q         <= seq_op_q;
+      r1_sew_q        <= seq_sew_q;
+      r1_mask_dest_q  <= seq_mask_dest_q;
+      r1_masked_q     <= seq_masked_q;
+      r1_use_scalar_q <= seq_use_scalar_q;
+      r1_first_q      <= !seq_started_q;
+      r1_last_q       <= seq_on_last_q;
+      r1_vd_reg_q     <= seq_mask_dest_q ? seq_vd_q : (seq_vd_q + 5'(seq_g_q));
+      r1_gbase_q      <= {12'd0, seq_g_q} << seq_epr_shift_q;
+      r1_vl_q         <= seq_vl_q;
+      r1_vstart_q     <= seq_vstart_q;
+      r1_scalar_q     <= seq_scalar_q;
+    end
+
+    // Stage R1 -> E0
+    if (r1_valid_q) begin
+      e0_op_q         <= r1_op_q;
+      e0_sew_q        <= r1_sew_q;
+      e0_mask_dest_q  <= r1_mask_dest_q;
+      e0_masked_q     <= r1_masked_q;
+      e0_use_scalar_q <= r1_use_scalar_q;
+      e0_first_q      <= r1_first_q;
+      e0_last_q       <= r1_last_q;
+      e0_vd_reg_q     <= r1_vd_reg_q;
+      e0_gbase_q      <= r1_gbase_q;
+      e0_vl_q         <= r1_vl_q;
+      e0_vstart_q     <= r1_vstart_q;
+      e0_scalar_q     <= r1_scalar_q;
+    end
+
+    // Stage E0 -> E1 (aligned with vec_int_lane s0)
+    if (e0_valid_q) begin
+      e1_sew_q       <= e0_sew_q;
+      e1_mask_dest_q <= e0_mask_dest_q;
+      e1_masked_q    <= e0_masked_q;
+      e1_last_q      <= e0_last_q;
+      e1_vd_reg_q    <= e0_vd_reg_q;
+      e1_gbase_q     <= e0_gbase_q;
+      e1_vl_q        <= e0_vl_q;
+      e1_vstart_q    <= e0_vstart_q;
+      e1_gmask_q     <= e0_gmask_full[Bytes-1:0];
+      if (e0_mask_dest_q && e0_first_q) mres_q <= rf_rdata_q[2];
+    end
+
+    // Stage E1 -> E2 (aligned with vec_int_lane s1)
+    if (e1_valid_q) begin
+      e2_sew_q       <= e1_sew_q;
+      e2_mask_dest_q <= e1_mask_dest_q;
+      e2_last_q      <= e1_last_q;
+      e2_vd_reg_q    <= e1_vd_reg_q;
+      e2_gbase_q     <= e1_gbase_q;
+      e2_act_q       <= e2_act_d;
+    end
+
+    // Stage E2 -> W (aligned with vec_int_lane o_valid)
+    if (e2_valid_q) begin
+      w_sew_q       <= e2_sew_q;
+      w_mask_dest_q <= e2_mask_dest_q;
+      w_last_q      <= e2_last_q;
+      w_vd_reg_q    <= e2_vd_reg_q;
+      w_gbase_q     <= e2_gbase_q;
+      w_wbe_q       <= w_wbe_d;
+      w_act_sh_q    <= w_act_sh_d;
+    end
+
+    // Stage W -> compare mask accumulate and MWR
+    if (w_valid_q && w_mask_dest_q) begin
+      mres_q <= (mres_q & ~w_act_sh_q) | ((gcmp << w_gbase_q) & w_act_sh_q);
+      if (w_last_q) mwr_vd_q <= w_vd_reg_q;
+    end
   end
 
   // Group-ALU VRF writes, driven directly from registered lane/mask outputs.
@@ -695,6 +735,7 @@ module vec_engine #(
   logic [31:0] exp_tail_wr_mask;
   always_comb begin
     exp_tail_wr_mask = 32'd0;
+    if (e0_valid_q && !e0_mask_dest_q) exp_tail_wr_mask[e0_vd_reg_q] = 1'b1;
     if (e1_valid_q && !e1_mask_dest_q) exp_tail_wr_mask[e1_vd_reg_q] = 1'b1;
     if (e2_valid_q && !e2_mask_dest_q) exp_tail_wr_mask[e2_vd_reg_q] = 1'b1;
     if (w_valid_q && !w_mask_dest_q) exp_tail_wr_mask[w_vd_reg_q] = 1'b1;
