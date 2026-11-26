@@ -1155,8 +1155,12 @@ fields lie one after another from the segment's address, the segment's one or
 two pages are translated first, and each field then either gets its own
 `vec_vmu` descriptor (when cached) or executes as a single uncached beat on the
 head uncached data port (when uncached), for register
-group `vd + f * EMUL` (EMUL at least one register), so a fault on a segment is
-reported before any of its fields is accessed. NF * EMUL may not exceed 8, the
+group `vd + f * EMUL` (EMUL at least one register), so translation, permission,
+PMA, and alignment faults on a segment are reported before any of its fields is
+accessed (an uncached bus error on field `k > 0` occurs after fields `0..k-1`
+have completed and reports the segment's index in `vstart` with the failing
+field's address in `xtval`, or trims `vl` to the segment on a fault-only-first
+load). NF * EMUL may not exceed 8, the
 last field group may not pass `v31`, and an indexed segment load's field groups
 may not overlap the index group. The first access waits for older committed
 scalar stores to drain. Before launching each element (or segment), the unit
@@ -1169,8 +1173,9 @@ boundary, writes `vstart` and sets VS Dirty, and resumes from `vstart` after
 `mret`, `sret`, or `dret`; one armed before the first access is taken first,
 and the instruction then runs from its initial `vstart`. A fault on
 element `i` is reported on the same sideband with `vstart = i` after elements
-`vstart..i-1` are performed; `xtval` is the element's transformed address, or
-the second page's base when the element straddles into a faulting page. The instruction never
+`vstart..i-1` are performed; `xtval` is the element's transformed address, the
+second page's base when the element straddles into a faulting page, or the
+failing field's address on an uncached segment bus error. The instruction never
 writes a range into `vec_vmt`, so every younger scalar load and store waits
 until the entry is freed, which happens when the instruction retires after its
 last element. A load whose head-executed part (an element of a run, or the
