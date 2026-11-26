@@ -681,6 +681,7 @@ module coherent_hart_cache_formal #(
       .i_tid(6'(service_slot)),
       .i_work_error(error_q[service_slot]),
       .o_idle(engine_idle),
+      .o_lookup_pending(),
       .o_lookup_valid(lookup),
       .i_lookup_ready(permit_lookup),
       .o_lookup_addr(),

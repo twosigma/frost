@@ -15,7 +15,7 @@
     early forward wakeup to FP RS), a radix-16 divider and an FP engine for
     square root, conversions and misc operations; MEM feeds address generation
     and the Sv39 DMMU (16-entry DTLB, resident-hit and Bare bypass, backed by the
-    shared 512-entry four-way L2 TLB with a 32-entry superpage side array and
+    shared 2,048-entry four-way L2 TLB with a 32-entry superpage side array and
     pointer-walk-cache PTW). The load queue holds a 512-entry, eight-byte L0
     cache, checks store-queue forwarding and VMT range holds, and issues early
     load wakeups to INT and MEM stations before CDB broadcast. The store queue
@@ -54,7 +54,7 @@
       hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv:
         8-slot two-lane fixed-priority arbiter.
       hw/rtl/cpu_and_mem/cpu/mmu/{dmmu,l2tlb,ptw}.sv:
-        16-entry DTLB, 512-entry 4-way L2 TLB + 32 superpage, PTW + walk cache.
+        16-entry DTLB, 2,048-entry 4-way L2 TLB + 32 superpage, PTW + walk cache.
       hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/{load_queue,lq_l0_cache}.sv:
         8-entry LQ, 512x8 B L0 cache, SQ forwarding, VMT holds and DMA cuts.
       hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv:
@@ -225,7 +225,7 @@
     <text x="944" y="519" class="label">Address generation + DMMU</text>
     <text x="944" y="546" class="body">Sv39 DTLB · 16 entries</text>
     <text x="944" y="572" class="xs">Resident-hit or Bare bypass</text>
-    <text x="944" y="596" class="xs accent-mint">Misses → L2 TLB (512 + 32 SP) → PTW + PWC</text>
+    <text x="944" y="596" class="xs accent-mint">Misses → L2 TLB (2048 + 32 SP) → PTW + PWC</text>
   </g>
   <!-- FP pipeline 1-cycle-early forward wakeup back to FP RS -->
   <path d="M 680 560 H 702 V 416 H 680" class="broadcast" stroke-dasharray="4 3" marker-end="url(#result-arrow)"/>

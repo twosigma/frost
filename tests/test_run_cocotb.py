@@ -2882,6 +2882,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Sv39 TLB capacity, walk depth, and address space switch timing",
         extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
     ),
+    "mmu_resident": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mmu_resident",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        include_in_pytest=False,
+        description=(
+            "Sv39 timing of a 32 KiB chase and a patrol-style superpage scan after "
+            "superpage traffic pushes their 4 KiB pages out of the DTLB"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+    ),
     "ptw_coherence_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
