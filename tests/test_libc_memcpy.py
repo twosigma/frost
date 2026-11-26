@@ -32,14 +32,19 @@ OBJCOPY = "riscv64-linux-objcopy"
 )
 def test_memcpy_memset_all_offsets_and_lengths(tmp_path: Path) -> None:
     """Lengths 0 to 80 and 1,048,113 at every src/dst offset 0 to 7 match a byte copy."""
+    # The code-generation flags sw/common/common.mk builds sw/lib with.
     flags = [
-        "-march=rv64gc",
+        "-march=rv64imafdc_zicsr_zba_zbb_zbs_zicond_zcb",
         "-mabi=lp64d",
         "-mcmodel=medany",
-        "-O2",
+        "-O3",
+        "-funroll-loops",
+        "-fno-strict-aliasing",
         "-ffreestanding",
-        "-fno-builtin",
+        "-fno-unwind-tables",
+        "-fno-asynchronous-unwind-tables",
         "-ffunction-sections",
+        "-fdata-sections",
     ]
     lib = tmp_path / "string.o"
     subprocess.run(
@@ -60,7 +65,7 @@ def test_memcpy_memset_all_offsets_and_lengths(tmp_path: Path) -> None:
         check=True,
     )  # fmt: skip
     result = subprocess.run(
-        ["spike", "--isa=rv64gc", str(exe)],
+        ["spike", "--isa=rv64imafdc_zicsr_zba_zbb_zbs_zicond_zcb", str(exe)],
         capture_output=True, text=True, check=False, timeout=600,
     )  # fmt: skip
     assert result.returncode == 0, result.stdout + result.stderr

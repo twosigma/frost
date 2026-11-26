@@ -30,6 +30,10 @@
 
 #include <stdint.h>
 
+/* A machine word that may alias any object, so the word accesses below stay
+ * correct whatever the strict-aliasing flags are. */
+typedef uintptr_t __attribute__((may_alias)) frost_word_t;
+
 /* Diagnostic build switch: FROST_MEMORY_FENCE_WRITES=1 adds a fence rw, rw at
  * the end of every function here that writes memory. */
 #ifndef FROST_MEMORY_FENCE_WRITES
@@ -62,9 +66,9 @@ void *memset(void *dst, int c, size_t n)
 #if UINTPTR_MAX > 0xffffffffU
     word |= word << 32;
 #endif
-    uintptr_t *d = (uintptr_t *) p;
-    uintptr_t *end = d + n / sizeof(uintptr_t);
-    while (d < end)
+    frost_word_t *d = (frost_word_t *) p;
+    size_t words = n / sizeof(uintptr_t);
+    while (words--)
         *d++ = word;
     p = (unsigned char *) d;
     n &= sizeof(uintptr_t) - 1;
@@ -89,10 +93,10 @@ void *memcpy(void *dst, const void *src, size_t n)
             *d++ = *s++;
             n--;
         }
-        uintptr_t *dw = (uintptr_t *) d;
-        const uintptr_t *sw = (const uintptr_t *) s;
-        uintptr_t *end = dw + n / sizeof(uintptr_t);
-        while (dw + 8 <= end) {
+        frost_word_t *dw = (frost_word_t *) d;
+        const frost_word_t *sw = (const frost_word_t *) s;
+        size_t words = n / sizeof(uintptr_t);
+        for (; words >= 8; words -= 8) {
             uintptr_t reg[8] = {sw[0], sw[1], sw[2], sw[3], sw[4], sw[5], sw[6], sw[7]};
             dw[0] = reg[0];
             dw[1] = reg[1];
@@ -105,7 +109,7 @@ void *memcpy(void *dst, const void *src, size_t n)
             dw += 8;
             sw += 8;
         }
-        while (dw < end)
+        while (words--)
             *dw++ = *sw++;
         d = (unsigned char *) dw;
         s = (const unsigned char *) sw;
