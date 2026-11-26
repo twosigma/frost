@@ -671,6 +671,17 @@ invalidations, walks, coherent reads, and L0 events as JSONL. Allocation identit
 distinguish reused ROB tags. Fetch events identify page transitions. Set the
 variable inside the container invocation.
 
+`mmu_resident` is a manual benchmark too. Each of its loops warms a 4 KiB
+working set that fits the DTLB, optionally loads once from 16 superpages,
+which install in the DTLB and push the set out of it, and then times a
+32 KiB DCPerf-style pointer chase or a 1,024-line scan through a superpage
+that stores each word it reads to a 4 KiB stack page. Because an S1 cache hit
+refills the DTLB, the sweep costs a few cycles; without the refill, every
+access to the pushed-out pages would resolve in S1 and the stack page's
+stores would lose their early address. It checks the chase's final index and
+the scan's counters, reports cycles through UART, and marks each timed window
+in `sscratch` as `mmu_reach` does.
+
 `FROST_PTW_COHERENCE_TRACE` captures PTE addresses and responses, accepted
 ReadOncePTW requests, and home probe data as JSONL without application markers.
 
@@ -2175,6 +2186,9 @@ all of them.
 | `load_queue` | `cover_dma_write_hits_lr_in_flight` | A DMA write to the line of an LR in flight, which then sets no reservation |
 | `load_queue` | `cover_dma_write_hits_load_in_flight` | A DMA write to the line of a cached load in flight, whose data then does not fill the L0 |
 | `load_queue` | `cover_head_load_evicts_staged_load` | The ROB-head load takes the staging register from a younger staged load |
+| `load_queue` | `cover_nonhead_load_evicts_staged_load` | An older non-head load takes the staging register from a younger staged load |
+| `load_queue` | `cover_oldest_higher_slot_selected` | An older non-head eligible load at a higher physical index beats a younger lower-index load |
+| `load_queue` | `cover_cdb_oldest_higher_slot_selected` | An older data-ready load at a higher physical index beats a younger lower-index load for CDB issue |
 | `load_queue` | `cover_staged_load_yields_to_amo` | A staged load gives up the staging register to an older AMO that has not written |
 | `load_queue` | `cover_load_waits_for_unforwardable_store` | A load overlaps an older store that cannot forward to it, so it waits |
 | `load_queue` | `cover_cached_load_slots_full` | Every cached-load slot is busy, so no load launches |

@@ -334,11 +334,16 @@ ohp_page_caller:
     fence   rw, rw
     ld      zero, 0(t0)
 
-    /* Evict VA_PAGE1 from ITLB and L2TLB without sfence.vma or privilege switches.
-     * Under .option norvc: auipc (4B) + addi (4B) + jalr (4B) = +12 bytes to 2f. */
+    /* Evict VA_PAGE1 from L2TLB and ITLB without sfence.vma or privilege switches
+     * (sfence.vma invalidates the fast BTB, which must stay live at VA_SPAN_PC).
+     * Phase 1 walks 7 pages at stride 2 MiB (512 pages) aliasing VA_PAGE1's L2 set
+     * for any power-of-two L2TLB_SETS <= 512; phase 2 walks 16 pages in VA_PAGE1's
+     * own 2 MiB region to flush the 16-entry ITLB while keeping VA_PAGE1's L1
+     * entry in the 8-entry PTW walk cache.
+     * Under .option norvc: auipc (4B) + addi (4B) + jalr (4B) = +12 bytes to return. */
     ld      t1, 24(a5)
     ld      t2, 32(a5)
-    li      t3, 0x80000
+    li      t3, 0x200000
     auipc   t6, 0
     addi    t6, t6, 12
 3:
@@ -347,6 +352,17 @@ ohp_page_caller:
     add     t1, t1, t3
     addi    t2, t2, -1
     bnez    t2, 3b
+
+    ld      t1, 120(a5)
+    ld      t2, 128(a5)
+    li      t3, 0x1000
+    auipc   t6, 0
+    addi    t6, t6, 12
+4:
+    jalr    x0, 0(t1)
+    add     t1, t1, t3
+    addi    t2, t2, -1
+    bnez    t2, 4b
 
     /* The slot-1 prediction that the fault veto acts on needs immu's fault
      * memo for VA_PAGE1, which expires every 64 clocks, to last from the walk
@@ -378,7 +394,7 @@ ohp_page_caller:
     sd      a7, 96(a5)
     ecall
 
-    .org 0b + 0x0c0
+    .org 0b + 0x120
 ohp_inner_tramp:
     mv      s2, ra
     /* Saturate the 128-bit branch-history register so training and fault calls

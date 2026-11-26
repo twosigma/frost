@@ -384,6 +384,7 @@ can be debugged and where each one first stops.
 | `memory_test/` | Arena allocator and `malloc`/`free`/`calloc`/`realloc`, including coalescing and overflow rejection |
 | `misaligned_test/` | Misaligned loads and stores in cached DDR checked byte by byte (all sizes, FP and compressed forms, across doubleword, sector, line and page boundaries), a load to and a store of `x0`, the `minstret` count, the address-misaligned trap in low BRAM, Sv39 page crossings and lower-, upper- and both-page faults through MPRV and in S and U modes (with non-adjacent physical frames, direct and delegated traps, `SUM`, `MXR` and global leaves in S and U modes), and accesses under timer interrupts at varying phases; needs `MISALIGNED_HW` |
 | `mmu_reach/` | Sv39 TLB capacity, page-walk depth, and address-space switch latency loops |
+| `mmu_resident/` | Sv39 timing of 4 KiB working sets that fit the DTLB, before and after superpage traffic pushes them out of it: a 32 KiB pointer chase, and a patrol-style scan through a superpage that stores each word it reads to a 4 KiB stack page |
 | `mret_drain_deadlock/` | `mret` right after cached-DDR stores must wait for them to drain, then continue |
 | `mret_timer_resume_test/` | A timer pending as `mret` drops to U-mode must save the U-mode entry point in `mepc` |
 | `mtimer_stress/` | Frequent timer interrupts swept across 20,000 memory/ALU loop iterations and `mret`; a deadlock times out within the default 500,000-cycle simulation budget |

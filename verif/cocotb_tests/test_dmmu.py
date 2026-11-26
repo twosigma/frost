@@ -1323,3 +1323,299 @@ async def test_materialized_range_selective_fences(dut: Any) -> None:
         dut._log.info(
             "DTLB survivors vpn=%#x asid=%s: %d/%d", vpn, asid, hits, len(entries)
         )
+
+
+@cocotb.test()
+async def test_s1_cache_reach_pbmt_asid_and_flush(dut: Any) -> None:
+    """Level-0 leaves evicted from the 16-entry DTLB resolve in the S1 cache.
+
+    Checks 40-page reach without walks, an S1 hit that refills the DTLB so the
+    next access bypasses, 2-way set associativity, ASID coexistence and global
+    entries, Svpbmt NC/IO and live permission/atomic checks, and selective VA /
+    ASID / full flushes.
+    """
+    await _setup(dut)
+    await _clear(dut)
+    # 1) Install 40 distinct 4 KiB pages (evicts pages 0..23 from the 16-entry DTLB).
+    leaves = [Leaf(vpn=0x400 + i, ppn=0x80000 + i) for i in range(40)]
+    for leaf in leaves:
+        await _install(dut, leaf)
+    # Every page resolves locally without asking the walker.
+    for i, leaf in enumerate(leaves):
+        op = Op(va=(leaf.vpn << 12) | 0x40, tag=i % 32)
+        _issue(dut, op)
+        await _paired_cycle(dut)
+        dut.i_iss_valid.value = 0
+        if not int(dut.o_iss_out_valid.value):
+            assert not int(dut.o_walk_req_valid.value), f"page {i} missed S1 cache"
+            await _paired_cycle(dut)
+        _check(dut, op, leaf)
+        await _paired_cycle(dut)
+        assert not int(dut.o_iss_out_valid.value)
+
+    # 2) Evict page 0 from the DTLB. Its next access resolves in the S1 cache
+    #    without invoking the walker and refills the DTLB, so the access
+    #    after it takes the issue bypass.
+    for i in range(16):
+        await _install(dut, Leaf(vpn=0x500 + i, ppn=0x81000 + i))
+    op0 = Op(va=(leaves[0].vpn << 12) | 0x80, tag=7)
+    _issue(dut, op0)
+    await _paired_cycle(dut)
+    dut.i_iss_valid.value = 0
+    assert not int(dut.o_iss_out_valid.value), "evicted page bypassed DTLB"
+    assert not int(dut.o_walk_req_valid.value), "evicted page missed S1 cache"
+    await _paired_cycle(dut)
+    _check(dut, op0, leaves[0])
+    await _paired_cycle(dut)
+    op1 = Op(va=(leaves[0].vpn << 12) | 0x88, tag=8)
+    _issue(dut, op1)
+    await _paired_cycle(dut)
+    dut.i_iss_valid.value = 0
+    _check(dut, op1, leaves[0])  # one cycle after issue: the refilled DTLB
+    await _paired_cycle(dut)
+
+    # 3) 2-way associativity and ASID isolation / global pages inside S1 cache.
+    await _clear(dut)
+    way_a = Leaf(vpn=0x405, ppn=0x82000)
+    way_b = Leaf(vpn=0x485, ppn=0x82100)  # same 7-bit set index (0x05)
+    asid1_leaf = Leaf(vpn=0x406, ppn=0x82200)
+    asid2_leaf = Leaf(vpn=0x406, ppn=0x82300)  # same VPN, different ASID
+    global_leaf = Leaf(vpn=0x407, ppn=0x82400, g=1)
+    await _switch_asid(dut, 1)
+    for leaf in (way_a, way_b, asid1_leaf, global_leaf):
+        await _install(dut, leaf)
+    await _switch_asid(dut, 2)
+    await _install(dut, asid2_leaf)
+    # Evict all five from the 16-entry DTLB using unrelated sets (0x10..0x1f).
+    await _switch_asid(dut, 1)
+    for i in range(16):
+        await _install(dut, Leaf(vpn=0x610 + i, ppn=0x83000 + i))
+
+    for asid, leaf in (
+        (1, way_a),
+        (1, way_b),
+        (1, asid1_leaf),
+        (2, asid2_leaf),
+        (3, global_leaf),
+    ):
+        await _switch_asid(dut, asid)
+        op = Op(va=(leaf.vpn << 12) | 0x10, tag=3)
+        _issue(dut, op)
+        await _paired_cycle(dut)
+        dut.i_iss_valid.value = 0
+        assert not int(dut.o_walk_req_valid.value), f"missed S1 cache: {asid=} {leaf=}"
+        if not int(dut.o_iss_out_valid.value):
+            await _paired_cycle(dut)
+        _check(dut, op, leaf)
+        await _paired_cycle(dut)
+
+    # Non-global ASID 1/2 page must miss under ASID 3.
+    await _switch_asid(dut, 3)
+    op_miss = Op(va=(asid1_leaf.vpn << 12) | 0x10, tag=4)
+    _issue(dut, op_miss)
+    await _paired_cycle(dut)
+    dut.i_iss_valid.value = 0
+    assert int(dut.o_walk_req_valid.value), "S1 cache leaked entry across ASIDs"
+    _response(dut, Leaf(vpn=asid1_leaf.vpn, ppn=0x82500))
+    await _paired_cycle(dut)
+    dut.i_walk_resp_valid.value = 0
+    await _paired_cycle(dut)
+
+    # 4) Svpbmt NC/IO, permissions, and atomics checked live on S1 cache hits.
+    await _clear(dut)
+    alias_ppn = 0x8_0123 | (ALIAS_OFFSET >> 12)
+    nc_leaf = Leaf(vpn=0x40A, ppn=alias_ppn, pbmt=1)
+    ro_leaf = Leaf(vpn=0x40B, ppn=0x80010, w=0, u=1)
+    await _install(dut, nc_leaf)
+    await _install(dut, ro_leaf)
+    for i in range(16):
+        await _install(dut, Leaf(vpn=0x620 + i, ppn=0x84000 + i))
+    for op, leaf in (
+        (Op(va=(nc_leaf.vpn << 12) | 0x20, tag=1), nc_leaf),
+        (Op(va=(nc_leaf.vpn << 12) | 0x28, tag=2, atomic=1), nc_leaf),
+        (
+            Op(va=(ro_leaf.vpn << 12) | 0x20, tag=3, store=1, needs_sq=1, sum_=1),
+            ro_leaf,
+        ),
+        (Op(va=(ro_leaf.vpn << 12) | 0x28, tag=4, sum_=0), ro_leaf),
+        (Op(va=(ro_leaf.vpn << 12) | 0x30, tag=5, sum_=1), ro_leaf),
+    ):
+        _issue(dut, op)
+        await _paired_cycle(dut)
+        dut.i_iss_valid.value = 0
+        assert not int(dut.o_walk_req_valid.value), f"S1 cache missed {op=} {leaf=}"
+        if not int(dut.o_iss_out_valid.value):
+            await _paired_cycle(dut)
+        _check(dut, op, leaf)
+        await _paired_cycle(dut)
+
+    # 5) Selective VA flush removes only its set; ASID flush clears the S1 cache.
+    await _clear(dut)
+    p_flush = Leaf(vpn=0x401, ppn=0x80100)
+    p_keep = Leaf(vpn=0x402, ppn=0x80200)
+    await _switch_asid(dut, 1)
+    await _install(dut, p_flush)
+    await _install(dut, p_keep)
+    for i in range(16):
+        await _install(dut, Leaf(vpn=0x630 + i, ppn=0x85000 + i))
+    await _translation_changed(dut, _flush_cmd(vpn=p_flush.vpn, asid=1))
+    # p_flush must now miss; p_keep (different set) must still hit S1 cache.
+    op_flushed = Op(va=(p_flush.vpn << 12) | 0x10, tag=6)
+    _issue(dut, op_flushed)
+    await _paired_cycle(dut)
+    dut.i_iss_valid.value = 0
+    assert int(dut.o_walk_req_valid.value), "VA flush failed to clear S1 cache"
+    _response(dut, p_flush)
+    await _paired_cycle(dut)
+    dut.i_walk_resp_valid.value = 0
+    await _paired_cycle(dut)
+    op_kept = Op(va=(p_keep.vpn << 12) | 0x10, tag=7)
+    _issue(dut, op_kept)
+    await _paired_cycle(dut)
+    dut.i_iss_valid.value = 0
+    assert not int(dut.o_walk_req_valid.value), "VA flush evicted unrelated S1 set"
+    await _paired_cycle(dut)
+    _check(dut, op_kept, p_keep)
+    await _paired_cycle(dut)
+    # Evict p_keep from DTLB again, then flush by ASID and verify it misses.
+    for i in range(16):
+        await _install(dut, Leaf(vpn=0x640 + i, ppn=0x86000 + i))
+    await _translation_changed(dut, _flush_cmd(asid=1))
+    _issue(dut, op_kept)
+    await _paired_cycle(dut)
+    dut.i_iss_valid.value = 0
+    assert int(dut.o_walk_req_valid.value), "ASID flush failed to clear S1 cache"
+    _response(dut, p_keep)
+    await _paired_cycle(dut)
+    dut.i_walk_resp_valid.value = 0
+    await _paired_cycle(dut)
+
+
+async def _early_store_lookup(dut: Any, va: int) -> tuple[int, int]:
+    """Present va on early store port 1; return its (ok, PA) two cycles later."""
+    dut.i_early_valid.value = 1
+    dut.i_early_va.value = va
+    await _cycle(dut)
+    dut.i_early_valid.value = 0
+    await _cycle(dut)
+    return int(dut.o_early_ok.value), int(dut.o_early_pa.value)
+
+
+@cocotb.test()
+async def test_s1_cache_refill_dtlb(dut: Any) -> None:
+    """An S1 cache hit writes its leaf back into the DTLB on the next cycle.
+
+    A page pushed out of the DTLB regains the issue bypass and the early store
+    lookup after one access. An invalidation or a flush in the refill cycle
+    drops the refill, an ASID change cannot install it under the new ASID, a
+    walk response in the refill cycle loses its DTLB install but still fills
+    the S1 cache, and a page flush removes a refilled leaf.
+    """
+    await _setup(dut)
+    page = Leaf(vpn=0x405, ppn=0x80500)
+    other = Leaf(vpn=0x406, ppn=0x80600)
+    stale = Leaf(vpn=0x407, ppn=0x80700)
+    va = page.vpn << 12
+
+    async def evict() -> None:
+        # Sixteen installs in S1 cache sets 0x40..0x4f, apart from the pages.
+        for i in range(16):
+            await _install(dut, Leaf(vpn=0x740 + i, ppn=0x87000 + i))
+
+    async def s1_hit(op: Op, leaf: Leaf) -> None:
+        """Resolve op from the S1 cache; return at the start of the refill cycle."""
+        _issue(dut, op)
+        await _paired_cycle(dut)
+        dut.i_iss_valid.value = 0
+        assert not int(dut.o_iss_out_valid.value), f"{op=} bypassed"
+        assert not int(dut.o_walk_req_valid.value), f"{op=} missed the S1 cache"
+        await _paired_cycle(dut)
+        _check(dut, op, leaf)
+
+    async def bypassed(op: Op, leaf: Leaf) -> None:
+        _issue(dut, op)
+        await _paired_cycle(dut)
+        dut.i_iss_valid.value = 0
+        _check(dut, op, leaf)
+        await _paired_cycle(dut)
+
+    # 1) The refill restores the issue bypass and the early store lookup.
+    await _clear(dut)
+    await _install(dut, page)
+    await evict()
+    ok, _ = await _early_store_lookup(dut, va | 0x38)
+    assert not ok, "early store lookup hit an evicted page"
+    await s1_hit(Op(va=va | 0x10, tag=1), page)
+    await _paired_cycle(dut)
+    await bypassed(Op(va=va | 0x18, tag=2), page)
+    ok, pa = await _early_store_lookup(dut, va | 0x38)
+    assert ok and pa == (page.ppn << 12) | 0x38, "refilled page missed the early lookup"
+
+    # 2) An invalidation in the refill cycle drops the refill.
+    await evict()
+    await s1_hit(Op(va=va | 0x20, tag=3), page)
+    await _translation_changed(dut)
+    await s1_hit(Op(va=va | 0x28, tag=4), page)
+    await _paired_cycle(dut)
+    await bypassed(Op(va=va | 0x30, tag=5), page)
+
+    # 3) So does a flush of another page in the refill cycle.
+    await evict()
+    await s1_hit(Op(va=va | 0x20, tag=6), page)
+    await _translation_changed(dut, _flush_cmd(vpn=other.vpn))
+    await s1_hit(Op(va=va | 0x28, tag=7), page)
+    await _paired_cycle(dut)
+
+    # 4) An ASID change in the refill cycle, here without the invalidation the
+    #    CSR file sends with it: the ASID 1 leaf is not installed for ASID 2.
+    await _switch_asid(dut, 1)
+    await _install(dut, other)
+    await evict()
+    other_va = other.vpn << 12
+    await s1_hit(Op(va=other_va | 0x10, tag=8), other)
+    dut.i_asid.value = 2
+    await _paired_cycle(dut)
+    walked = Leaf(vpn=other.vpn, ppn=0x80660)
+    op = Op(va=other_va | 0x18, tag=9)
+    _issue(dut, op)
+    await _paired_cycle(dut)
+    dut.i_iss_valid.value = 0
+    assert not int(dut.o_iss_out_valid.value), "ASID 1 leaf bypassed under ASID 2"
+    assert int(dut.o_walk_req_valid.value), "ASID 1 leaf resolved under ASID 2"
+    _response(dut, walked)
+    await _paired_cycle(dut)
+    dut.i_walk_resp_valid.value = 0
+    _check(dut, op, walked)
+    await _paired_cycle(dut)
+
+    # 5) A walk response in the refill cycle (from an operation already
+    #    killed) loses its DTLB install to the refill and still fills the S1
+    #    cache.
+    await _switch_asid(dut, 1)
+    await _clear(dut)
+    await _install(dut, page)
+    await evict()
+    await s1_hit(Op(va=va | 0x10, tag=10), page)
+    _response(dut, stale)
+    await _paired_cycle(dut)
+    dut.i_walk_resp_valid.value = 0
+    await _paired_cycle(dut)
+    await bypassed(Op(va=va | 0x18, tag=11), page)
+    await s1_hit(Op(va=(stale.vpn << 12) | 0x10, tag=12), stale)
+    await _paired_cycle(dut)
+
+    # 6) A page flush removes the refilled leaf from the DTLB and the S1
+    #    cache: the next access walks and sees the new mapping.
+    await _translation_changed(dut, _flush_cmd(vpn=page.vpn))
+    remapped = Leaf(vpn=page.vpn, ppn=0x80550)
+    op = Op(va=va | 0x20, tag=13)
+    _issue(dut, op)
+    await _paired_cycle(dut)
+    dut.i_iss_valid.value = 0
+    assert not int(dut.o_iss_out_valid.value), "flushed page bypassed"
+    assert int(dut.o_walk_req_valid.value), "flushed page resolved without a walk"
+    _response(dut, remapped)
+    await _paired_cycle(dut)
+    dut.i_walk_resp_valid.value = 0
+    _check(dut, op, remapped)
+    await _paired_cycle(dut)

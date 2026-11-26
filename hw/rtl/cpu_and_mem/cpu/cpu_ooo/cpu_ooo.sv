@@ -65,9 +65,9 @@ module cpu_ooo #(
     // independently of this profiling option.
     parameter int unsigned PERF_COUNTERS = 0,
     // Sets of the second-level TLB in front of the walker (four ways each:
-    // 128 sets are 512 entries). Zero removes it and sends every L1 miss to
+    // 512 sets are 2,048 entries). Zero removes it and sends every L1 miss to
     // the walker.
-    parameter int unsigned L2TLB_SETS = 128,
+    parameter int unsigned L2TLB_SETS = 512,
     // Vector unit: VECTOR=1 adds the vector state, VLEN is the vector
     // register width (128, 256 or 512), and VECTOR_ADVERTISE sets misa.V.
     parameter bit VECTOR = 1'b0,
@@ -4811,6 +4811,16 @@ module cpu_ooo #(
   assign ma_walk_resp_valid = ptw_resp_valid && walk_owner_ma_q;
   assign vec_walk_resp_valid = ptw_resp_valid && walk_owner_vec_q;
 
+  // Speculative L2 TLB pre-read from the registered fetch PC when no real walk
+  // request is offered. !walk_hold guarantees the data MMU is not requesting,
+  // and excluding iwalk_req_valid, ma_walk_select and vec_walk_select keeps
+  // l2_spec_valid disjoint from ptw_req_valid.
+  logic l2_spec_en, l2_spec_valid;
+  logic [riscv_pkg::Sv39VpnBits-1:0] l2_spec_vpn;
+  assign l2_spec_en = !walk_hold && !iwalk_req_valid && !ma_walk_select && !vec_walk_select;
+  assign l2_spec_valid = l2_spec_en && csr_fetch_translation_active;
+  assign l2_spec_vpn = riscv_pkg::Sv39VpnBits'({{riscv_pkg::Sv39VpnBits{1'b0}}, o_pc} >> 12);
+
   // The second-level TLB answers repeat translations before the walker sees
   // them and stores the clean 4 KiB translations the walker returns. With
   // L2TLB_SETS = 0 the requests pass to the walker unchanged.
@@ -4829,6 +4839,8 @@ module cpu_ooo #(
         .i_req_valid(ptw_req_valid),
         .o_req_ready(ptw_req_ready),
         .i_req_vpn(ptw_req_vpn),
+        .i_spec_valid(l2_spec_valid),
+        .i_spec_vpn(l2_spec_vpn),
         .o_resp_valid(ptw_resp_valid),
         .o_resp(walk_resp),
         .o_ptw_req_valid(l2_ptw_req_valid),

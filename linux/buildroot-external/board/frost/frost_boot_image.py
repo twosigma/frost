@@ -405,7 +405,7 @@ def gen_dts(
 \tpmu {{
 \t\tcompatible = "riscv,pmu";
 \t\t/* Fixed events: retired branches, branch mispredictions, ITLB walks,
-\t\t * DTLB walks, L1D permission misses, SQ capacity stalls, cycles, and
+\t\t * DMMU walk requests, L1D permission misses, SQ capacity stalls, cycles, and
 \t\t * retired instructions on counters 3..10. Counter N selects its event
 \t\t * with mhpmeventN=N; zero disables it. With Sscofpmf, OpenSBI places
 \t\t * cycles and instructions on counters 9 and 10, which overflow and

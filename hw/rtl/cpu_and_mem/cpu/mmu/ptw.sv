@@ -67,9 +67,8 @@
  * Walk cache. Two small fully associative arrays hold upper-level pointers:
  * PWC_L1_ENTRIES level-1 pointers tagged by VPN[26:9] (the level-0 table for
  * a 2 MiB region) and PWC_ROOT_ENTRIES root pointers tagged by VPN[26:18]
- * (the level-1 table for a 1 GiB region). A walk spends two registered cycles
- * (PTW_PWC compares the tags, PTW_PWC_SEL selects the pointer) looking both
- * up, then starts at level 0 on a level-1 hit, at
+ * (the level-1 table for a 1 GiB region). A walk spends one registered cycle
+ * (PTW_PWC) looking both up, then starts at level 0 on a level-1 hit, at
  * level 1 on a root hit, and at the root otherwise, so a hit saves two or one
  * dependent line reads. Only a pointer that the walk descended through fills
  * an entry: a valid non-leaf PTE with no reserved bits, at an address the
@@ -145,8 +144,7 @@ module ptw #(
     PTW_WAIT,    // wait for the line response; capture this level's PTE
     PTW_DECODE,  // classify the captured PTE: answer, or descend a level
     PTW_RESP,    // fire the response pulse (one cycle)
-    PTW_PWC,     // compare the walk cache tags with the VPN
-    PTW_PWC_SEL  // apply the registered match: choose the starting level
+    PTW_PWC      // look up the walk cache and choose the starting level
   } ptw_state_e;
   ptw_state_e state_q;
   logic [riscv_pkg::Sv39VpnBits-1:0] vpn_q;
@@ -278,13 +276,11 @@ module ptw #(
   logic [PwcRootN-1:0] pwc_root_g_q;
   logic g_acc_q;
 
-  // Lookup in two registered steps, for timing: PTW_PWC compares the tags
-  // with the registered VPN and registers the one-hot match; PTW_PWC_SEL
-  // reduces it and selects the pointer with an AND-OR mux. Neither the VPN
-  // nor the arrays change between the two (no walk fills, and a discard ends
-  // the walk), so the registered match describes the arrays SEL reads.
-  logic [PwcL1N-1:0] pwc_l1_match_c, pwc_l1_match_q;
-  logic [PwcRootN-1:0] pwc_root_match_c, pwc_root_match_q;
+  // Single-cycle walk-cache lookup: PTW_PWC compares the tags with the
+  // registered VPN, selects the matching pointer through an AND-OR mux, and
+  // registers the starting level and table pointer into PTW_ISSUE.
+  logic [PwcL1N-1:0] pwc_l1_match_c;
+  logic [PwcRootN-1:0] pwc_root_match_c;
   logic pwc_l1_hit, pwc_root_hit;
   logic [PwcPpnBits-1:0] pwc_l1_ppn, pwc_root_ppn;
   logic pwc_l1_g, pwc_root_g;
@@ -297,34 +293,28 @@ module ptw #(
       pwc_root_match_c[e] = (PWC_ROOT_ENTRIES != 0) && pwc_root_valid_q[e] &&
           (pwc_root_tag_q[e] == vpn_q[26:18]);
     end
-  end
-  always_ff @(posedge i_clk) begin
-    pwc_l1_match_q   <= pwc_l1_match_c;
-    pwc_root_match_q <= pwc_root_match_c;
-  end
-  always_comb begin
     pwc_l1_ppn   = '0;
     pwc_root_ppn = '0;
     pwc_l1_g     = 1'b0;
     pwc_root_g   = 1'b0;
     for (int e = 0; e < PwcL1N; e++) begin
-      pwc_l1_ppn |= {PwcPpnBits{pwc_l1_match_q[e]}} & pwc_l1_ppn_q[e];
-      pwc_l1_g |= pwc_l1_match_q[e] & pwc_l1_g_q[e];
+      pwc_l1_ppn |= {PwcPpnBits{pwc_l1_match_c[e]}} & pwc_l1_ppn_q[e];
+      pwc_l1_g |= pwc_l1_match_c[e] & pwc_l1_g_q[e];
     end
     for (int e = 0; e < PwcRootN; e++) begin
-      pwc_root_ppn |= {PwcPpnBits{pwc_root_match_q[e]}} & pwc_root_ppn_q[e];
-      pwc_root_g |= pwc_root_match_q[e] & pwc_root_g_q[e];
+      pwc_root_ppn |= {PwcPpnBits{pwc_root_match_c[e]}} & pwc_root_ppn_q[e];
+      pwc_root_g |= pwc_root_match_c[e] & pwc_root_g_q[e];
     end
   end
-  assign pwc_l1_hit   = |pwc_l1_match_q;
-  assign pwc_root_hit = |pwc_root_match_q;
+  assign pwc_l1_hit   = |pwc_l1_match_c;
+  assign pwc_root_hit = |pwc_root_match_c;
 
   // Fill when a walk that is not poisoned descends through a pointer: the
   // pointer read at level 2 into the root array, at level 1 into the level-1
   // array. PTW_DECODE records the descent (pwc_*_sel_q); the fill lands
   // on the next edge, from the registered pointer and its registered address
   // check, for timing. The pointer passed the reference classification and
-  // the address check, which is why PTW_PWC_SEL may set ptr_addr_ok_q for a
+  // the address check, which is why PTW_PWC may set ptr_addr_ok_q for a
   // hit. A discard on either cycle cancels the fill: it clears the valid
   // bits with priority. PTW_DECODE registers the target entry one-hot
   // (pwc_*_sel_q) with the pointer's address and high-bit checks, so each
@@ -443,15 +433,9 @@ module ptw #(
         end
 
         PTW_PWC: begin
-          // vpn_q, the root and its address check were captured on accept;
-          // the tag compare registers this cycle. A discard ends the walk
-          // before any read; the arrays clear on the same edge.
-          state_q <= (discard_q || i_discard) ? PTW_IDLE : PTW_PWC_SEL;
-        end
-
-        PTW_PWC_SEL: begin
-          // A discard now ends the walk too, so no match registered before
-          // it is used.
+          // vpn_q, the root and its address check were captured on accept.
+          // A discard ends the walk before any read; the arrays clear on the
+          // same edge.
           if (discard_q || i_discard) begin
             state_q <= PTW_IDLE;
           end else begin
@@ -1022,13 +1006,7 @@ module ptw #(
       end
       p_pwc_matches_memory : assert (f_pwc_memory_ok);
       p_pwc_unique : assert (f_pwc_unique);
-      // The match registered in PTW_PWC still describes the arrays and VPN
-      // that PTW_PWC_SEL reads.
-      if (state_q == PTW_PWC_SEL) begin
-        p_pwc_match_current :
-        assert ((pwc_l1_match_q == pwc_l1_match_c) && (pwc_root_match_q == pwc_root_match_c));
-      end
-      if (!$past(i_rst) && ($past(state_q) == PTW_PWC_SEL) && (state_q == PTW_ISSUE)) begin
+      if (!$past(i_rst) && ($past(state_q) == PTW_PWC) && (state_q == PTW_ISSUE)) begin
         if ($past(pwc_l1_hit)) begin
           p_pwc_l1_hit_start :
           assert (level_q == 2'd0 && ptr_ppn_q == riscv_pkg::PtePpnBits'($past(pwc_l1_ppn)));
@@ -1039,9 +1017,8 @@ module ptw #(
           p_pwc_miss_start : assert (level_q == 2'd2);
         end
       end
-      c_pwc_l1_hit : cover ((state_q == PTW_PWC_SEL) && pwc_l1_hit && !i_discard);
-      c_pwc_root_hit :
-      cover ((state_q == PTW_PWC_SEL) && !pwc_l1_hit && pwc_root_hit && !i_discard);
+      c_pwc_l1_hit : cover ((state_q == PTW_PWC) && pwc_l1_hit && !i_discard);
+      c_pwc_root_hit : cover ((state_q == PTW_PWC) && !pwc_l1_hit && pwc_root_hit && !i_discard);
       c_pwc_hit_leaf :
       cover (o_resp_valid && (o_resp.fault_kind == riscv_pkg::DFAULT_NONE) &&
              (o_resp.level == 2'd0) && (f_level == 2'd0) && !f_discard_since_accept &&

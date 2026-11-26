@@ -20,7 +20,7 @@ the walker, that entries separate by ASID and global bit, that faulting and
 discarded walks are not stored, that a 2 MiB or 1 GiB leaf answers every page
 of its region from the superpage side array, that every SFENCE.VMA form (page,
 ASID, both, all) removes exactly what the privileged spec names in both arrays,
-that a request waits out a flush, and that 512 resident pages and 32 resident
+that a request waits out a flush, and that 2048 resident pages and 32 resident
 superpages all hit. A random run compares every hit against the entries a
 reference model says may still be present.
 """
@@ -37,7 +37,7 @@ from cocotb.triggers import RisingEdge, Timer
 from cocotb_tests.cpu_structs import PTW_RESP_FIELDS, TLB_FLUSH_FIELDS
 from utils.packed_structs import assert_port_width, pack_struct, unpack_struct
 
-SETS = 128
+SETS = 512
 WAYS = 4
 SP_ENTRIES = 32
 NONE, PAGE = 0, 2
@@ -127,8 +127,6 @@ class Bench:
         self.walks: list[tuple[int, int]] = []  # (asid, vpn) of each accepted walk
         self.asid = 0
         self._pending: tuple[int, int, int] | None = None  # (vpn, asid, countdown)
-        self._prev_ptw_valid = 0
-        self._prev_ptw_vpn = 0
         # Raise the discard in the very cycle the walker answers.
         self.discard_on_resp = False
         self._discarding = False
@@ -144,6 +142,8 @@ class Bench:
         d.i_discard.value = 0
         d.i_req_valid.value = 0
         d.i_req_vpn.value = 0
+        d.i_spec_valid.value = 0
+        d.i_spec_vpn.value = 0
         d.i_ptw_req_ready.value = 1
         d.i_ptw_resp_valid.value = 0
         d.i_ptw_resp.value = 0
@@ -172,8 +172,11 @@ class Bench:
     async def tick(self) -> None:
         """Advance one clock; run the model walker."""
         d = self.dut
-        # A walk accepted at the edge that is about to pass.
-        fires = self._prev_ptw_valid and int(d.i_ptw_req_ready.value)
+        # Let combinational outputs settle from any inputs driven before tick(),
+        # then sample the walker handshake just before the rising edge.
+        await Timer(1, unit="ns")
+        fires = int(d.o_ptw_req_valid.value) and int(d.i_ptw_req_ready.value)
+        ptw_vpn = int(d.o_ptw_req_vpn.value)
         await RisingEdge(d.i_clk)
         await Timer(1, unit="ns")
         d.i_ptw_resp_valid.value = 0
@@ -181,8 +184,8 @@ class Bench:
             d.i_discard.value = 0
             self._discarding = False
         if fires and self._pending is None:
-            self._pending = (self._prev_ptw_vpn, self.asid, self.latency)
-            self.walks.append((self.asid, self._prev_ptw_vpn))
+            self._pending = (ptw_vpn, self.asid, self.latency)
+            self.walks.append((self.asid, ptw_vpn))
         if self._pending is not None:
             vpn, asid, count = self._pending
             if count <= 1:
@@ -199,8 +202,6 @@ class Bench:
         d.i_ptw_req_ready.value = int(self._pending is None)
         # Let the combinational outputs follow the new inputs before sampling.
         await Timer(1, unit="ns")
-        self._prev_ptw_valid = int(d.o_ptw_req_valid.value)
-        self._prev_ptw_vpn = int(d.o_ptw_req_vpn.value)
 
     async def request(self, vpn: int, timeout: int = 400) -> tuple[Entry, int, bool]:
         """Request vpn; return (response entry, cycles from fire to response, walked)."""
@@ -241,6 +242,9 @@ class Bench:
         # Let a scanning flush finish before the next request is offered.
         for _ in range(SETS * 2 + 8):
             await self.tick()
+            if int(self.dut.o_req_ready.value):
+                return
+        raise AssertionError("flush never returned to ready")
 
     async def hits(self, vpn: int) -> bool:
         """Return whether vpn answers without a walk."""
@@ -404,7 +408,7 @@ async def superpages_answer_every_page_of_their_region(dut: Any) -> None:
     for offset in (0x005, 0x000, 0x1F0, 0x1FF):
         entry, hit_cycles, walked = await b.request((0x43 << 9) | offset)
         assert not walked and entry == two_m, (hex(offset), entry)
-        assert hit_cycles <= 4, hit_cycles
+        assert hit_cycles == 2, hit_cycles
     dut._log.info("superpage hit latency %d cycles, miss %d", hit_cycles, miss_cycles)
     # The neighbouring 2 MiB regions are not covered.
     for vpn in ((0x42 << 9) | 0x1FF, 0x44 << 9):
@@ -564,8 +568,8 @@ async def request_waits_for_a_scanning_flush(dut: Any) -> None:
 
 
 @cocotb.test()
-async def five_hundred_twelve_pages_stay_resident(dut: Any) -> None:
-    """512 sequential pages fill every way of every set and all hit; page 513 evicts one."""
+async def full_capacity_pages_stay_resident(dut: Any) -> None:
+    """All SETS*WAYS sequential pages fill every way of every set and hit; one more evicts."""
     b = Bench(dut, latency=2)
     await b.reset()
     b.set_asid(3)
@@ -589,6 +593,147 @@ async def five_hundred_twelve_pages_stay_resident(dut: Any) -> None:
     assert await b.hits(0x10000 + SETS * WAYS)
     old_hits = [await b.hits(0x10000 + k * SETS) for k in range(WAYS)]
     assert not all(old_hits), old_hits
+
+
+@cocotb.test()
+async def back_to_back_hits_have_no_bubble(dut: Any) -> None:
+    """Verify that a new request fires on the same cycle a previous hit responds."""
+    b = Bench(dut, latency=2)
+    await b.reset()
+    b.set_asid(2)
+    b.table[(2, 0x101)] = clean(0x80101)
+    b.supers[(2, 1, 0x20)] = Entry(0x84000, level=1)
+    b.table[(2, 0x102)] = clean(0x80102)
+    for vpn in (0x101, (0x20 << 9) | 0x3, 0x102):
+        _, _, walked = await b.request(vpn)
+        assert walked
+    walks_before = len(b.walks)
+    d = dut
+    seq = [
+        (0x101, 0x80101, 0),
+        ((0x20 << 9) | 0x7, 0x84000, 1),
+        (0x102, 0x80102, 0),
+    ]
+    # Fire request 0 at cycle 0, request 1 at cycle 2 (when response 0 arrives),
+    # and request 2 at cycle 4 (when response 1 arrives).
+    d.i_req_valid.value = 1
+    d.i_req_vpn.value = seq[0][0]
+    assert int(d.o_req_ready.value) == 1
+    await b.tick()
+    d.i_req_valid.value = 0
+    await b.tick()
+    # Cycle 2: response 0 is valid AND o_req_ready is already high for request 1.
+    assert int(d.o_resp_valid.value) == 1
+    got_vpn, entry = unpack_resp(int(d.o_resp.value))
+    assert got_vpn == seq[0][0] and entry.ppn == seq[0][1] and entry.level == seq[0][2]
+    assert int(d.o_req_ready.value) == 1
+    d.i_req_valid.value = 1
+    d.i_req_vpn.value = seq[1][0]
+    await b.tick()
+    d.i_req_valid.value = 0
+    await b.tick()
+    # Cycle 4: superpage response 1 is valid AND o_req_ready is high for request 2.
+    assert int(d.o_resp_valid.value) == 1
+    got_vpn, entry = unpack_resp(int(d.o_resp.value))
+    assert got_vpn == seq[1][0] and entry.ppn == seq[1][1] and entry.level == seq[1][2]
+    assert int(d.o_req_ready.value) == 1
+    d.i_req_valid.value = 1
+    d.i_req_vpn.value = seq[2][0]
+    await b.tick()
+    d.i_req_valid.value = 0
+    await b.tick()
+    assert int(d.o_resp_valid.value) == 1
+    got_vpn, entry = unpack_resp(int(d.o_resp.value))
+    assert got_vpn == seq[2][0] and entry.ppn == seq[2][1] and entry.level == seq[2][2]
+    assert len(b.walks) == walks_before
+
+
+@cocotb.test()
+async def speculative_preread_hits_in_one_cycle_and_handles_mismatch(dut: Any) -> None:
+    """Verify speculative pre-read 1-cycle hits, same-cycle miss launch, and fallbacks."""
+    b = Bench(dut, latency=2)
+    await b.reset()
+    b.set_asid(5)
+    b.table[(5, 0x201)] = clean(0x80201)
+    b.table[(5, 0x202)] = clean(0x80202)
+    b.table[(5, 0x203)] = clean(0x80203)
+    b.supers[(5, 1, 0x31)] = Entry(0x86000, level=1)
+    for vpn in (0x201, 0x202, (0x31 << 9) | 0x4):
+        _, _, walked = await b.request(vpn)
+        assert walked
+    walks_before = len(b.walks)
+    d = dut
+
+    # 1) Speculative pre-read of 4 KiB page 0x201 followed by matching request:
+    # response arrives in 1 cycle, and we overlap spec pre-read of superpage 0x31
+    # on the response cycle.
+    d.i_spec_valid.value = 1
+    d.i_spec_vpn.value = 0x201
+    await b.tick()
+    d.i_spec_valid.value = 0
+    d.i_req_valid.value = 1
+    d.i_req_vpn.value = 0x201
+    assert int(d.o_req_ready.value) == 1
+    assert int(d.o_ptw_req_valid.value) == 0
+    await b.tick()
+    # Cycle after fire: hit response is valid! Start spec pre-read of superpage now.
+    assert int(d.o_resp_valid.value) == 1
+    got_vpn, entry = unpack_resp(int(d.o_resp.value))
+    assert got_vpn == 0x201 and entry.ppn == 0x80201 and entry.level == 0
+    d.i_req_valid.value = 0
+    d.i_spec_valid.value = 1
+    d.i_spec_vpn.value = (0x31 << 9) | 0x99
+    await b.tick()
+    # Matching superpage request resolves in 1 cycle too.
+    d.i_spec_valid.value = 0
+    d.i_req_valid.value = 1
+    d.i_req_vpn.value = (0x31 << 9) | 0x99
+    await b.tick()
+    assert int(d.o_resp_valid.value) == 1
+    got_vpn, entry = unpack_resp(int(d.o_resp.value))
+    assert got_vpn == ((0x31 << 9) | 0x99) and entry.ppn == 0x86000 and entry.level == 1
+    d.i_req_valid.value = 0
+    assert len(b.walks) == walks_before
+    await b.tick()
+
+    # 2) Speculative pre-read of a missing page launches the walker on the request cycle.
+    d.i_spec_valid.value = 1
+    d.i_spec_vpn.value = 0x203
+    await b.tick()
+    d.i_spec_valid.value = 0
+    d.i_req_valid.value = 1
+    d.i_req_vpn.value = 0x203
+    await Timer(1, unit="ns")
+    assert int(d.o_ptw_req_valid.value) == 1
+    assert int(d.o_ptw_req_vpn.value) == 0x203
+    await b.tick()
+    d.i_req_valid.value = 0
+    for _ in range(10):
+        if int(d.o_resp_valid.value):
+            got_vpn, entry = unpack_resp(int(d.o_resp.value))
+            assert got_vpn == 0x203 and entry.ppn == 0x80203
+            break
+        await b.tick()
+    else:
+        raise AssertionError("spec-miss walk did not answer")
+    await b.tick()
+
+    # 3) Mismatched VPN falls back cleanly to a 2-cycle lookup.
+    d.i_spec_valid.value = 1
+    d.i_spec_vpn.value = 0x201
+    await b.tick()
+    d.i_spec_valid.value = 0
+    entry, hit_cycles, walked = await b.request(0x202)
+    assert not walked and hit_cycles == 2 and entry.ppn == 0x80202
+
+    # 4) An intervening idle cycle invalidates the speculative pre-read.
+    d.i_spec_valid.value = 1
+    d.i_spec_vpn.value = 0x201
+    await b.tick()
+    d.i_spec_valid.value = 0
+    await b.tick()
+    entry, hit_cycles, walked = await b.request(0x201)
+    assert not walked and hit_cycles == 2 and entry.ppn == 0x80201
 
 
 @cocotb.test()

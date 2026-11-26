@@ -1924,7 +1924,7 @@ jobs:
             pytest_filter: >-
               (load_queue_ and not load_queue_amo and not
               (coherence_ or coherent_ or _twin)) or test_lq_port1_amo_mutations
-            timeout_minutes: 150
+            timeout_minutes: 170
           # The load queue's helper blocks, its AMO datapath and the range
           # holds at its address-update port.
           - shard: Load queue blocks

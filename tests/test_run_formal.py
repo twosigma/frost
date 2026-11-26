@@ -83,7 +83,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_home_engine_twin", "home_engine_twin32"): 240,
     ("coherence_home_engine_twin", "home_engine_twin64"): 240,
     ("coherence_home_engine_twin", "home_engine_twin40"): 240,
-    ("dmmu_twin", "dmmu_twin"): 240,
+    ("dmmu_twin", "dmmu_twin"): 600,
     ("coherence_l1d_twin", "l1d_twin_single"): 600,
     ("coherence_l1d_twin", "l1d_twin_multi"): 600,
     ("coherence_l1d_twin", "l1d_twin_stream"): 600,
@@ -1744,6 +1744,7 @@ FORMAL_TARGETS = [
         tasks=(
             "bmc",
             "cover",
+            "bmc_age_order",
             "prove_pre_match",
             "prove_port1_amo",
             "cover_port1_amo",
@@ -4047,6 +4048,10 @@ SBY_TASKS = [
     (
         "cover_probe_launch",
         "Load queue reachability of each verdict on a read launched during the probe",
+    ),
+    (
+        "bmc_age_order",
+        "Load queue registered-age order and oldest-eligible issue selection",
     ),
     ("prove_alignment", "Unbounded mixed-width tracker and physical FU alignment"),
     ("prove_alignment_direct", "Unbounded direct multiply completion alignment"),
@@ -6882,17 +6887,17 @@ TWIN_COMPARISONS = {
     ),
     ("dmmu_twin", "dmmu_twin"): TwinComparison(
         primitive_points=600,
-        all_points=11870,
+        all_points=28926,
         top="dmmu",
         gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv dtlb.sv dmmu.sv",),
         gate_inputs=(
             "read_verilog -formal +/xilinx/cells_sim.v",
             "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv dtlb.sv dmmu.sv",
         ),
-        registers=195,
+        registers=463,
         clock="i_clk",
-        gold_only_free=171,
-        gate_only_free=171,
+        gold_only_free=220,
+        gate_only_free=220,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
     ),
     ("fp_engine_twin", "fp_engine_twin"): TwinComparison(
