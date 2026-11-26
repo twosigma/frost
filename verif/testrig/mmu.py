@@ -16,7 +16,8 @@
 
 Sail walks memory on every translated access and treats SFENCE.VMA as a
 privilege check, whereas FROST caches translations across its L1 ITLB, L1 DTLB,
-512-entry L2 TLB, 32-entry superpage side array, and upper-level walk cache.
+256-entry S1 4 KiB data cache, 2,048-entry L2 TLB, 32-entry superpage side
+array, and upper-level walk cache.
 The two agree whenever each non-zero ASID names one page-table hierarchy and
 every modification of an already-valid PTE is paired with a matching
 SFENCE.VMA, while invalid-to-valid upgrades need no fence under Svvptc.
@@ -25,7 +26,7 @@ Each test builds two Sv39 hierarchies in cached DDR with 4 KiB leaves, 2 MiB
 megapages, 1 GiB gigapages, global leaves, non-leaf global pointers, upper-half
 negative canonical virtual addresses, mapped device pages, and faulting PTEs.
 Self-contained `.noshrink` strands exercise ASID-only and root-changing satp
-writes, ASIDLEN WARL probes, all four SFENCE.VMA forms, L1-to-L2 TLB spills,
+writes, ASIDLEN WARL probes, all four SFENCE.VMA forms, L1-to-S1 cache spills,
 superpage side-array replacement, M/S/U privilege and delegation combinations,
 and explicit reads of mtval/stval, mepc/sepc, and mcause/scause after traps.
 """
@@ -884,7 +885,7 @@ class Generator:
         )
 
     def _asid_and_l2_strand(self) -> Strand:
-        """Exercise ASID-only satp writes, WARL probes, and multi-ASID L2 TLB hits."""
+        """Exercise ASID-only satp writes, WARL probes, and multi-ASID S1/L2 hits."""
         rng = self.rng
         satp_a1 = make_satp(self.asid_a1, ROOT_A)
         insns = self._enter_mode("S", CODE_ENTRY, satp_a1)
@@ -898,8 +899,9 @@ class Generator:
         insns += load_u64(TMP_A, make_satp(0x1234, ROOT_B, mode=bad_mode))
         insns += [csrw("satp", TMP_A), csrr(self._res(), "satp")]
 
-        # Spill the 16-entry L1 DTLB into the 512-entry L2 TLB across 18 pages,
-        # touching the seeded marker pages first so they evict from L1 into L2.
+        # Spill the 16-entry L1 DTLB into the 256-entry S1 4 KiB cache across 18
+        # pages, touching the seeded marker pages first so they evict from L1
+        # into the S1 cache (and remain resident in the 2,048-entry L2 TLB).
         seeded = list(range(SEEDED_POOL_PAGES))
         rng.shuffle(seeded)
         tail = list(range(SEEDED_POOL_PAGES, POOL_PAGES))
@@ -933,7 +935,8 @@ class Generator:
             va = VA_POOL_BASE + idx * 0x1000
             insns += load_u64(TMP_A, va) + [load("ld", self._res(), TMP_A, 0)]
 
-        # Switch back to (asid_a1, ROOT_A) via satp and re-read L2-resident pages.
+        # Switch back to (asid_a1, ROOT_A) via satp and re-read S1-cache and
+        # L2-resident pages.
         insns += load_u64(TMP_A, satp_a1) + [csrw("satp", TMP_A)]
         for idx in pages[:6]:
             va = VA_POOL_BASE + idx * 0x1000
@@ -1114,8 +1117,9 @@ class Generator:
         if kind == "data4k":
             insns += load_u64(TMP_A, VA_MUT_DATA)
             insns.append(load("ld", self._res(), TMP_A, 0))
-            # Half the time, spill 18 pool pages so VA_MUT_DATA moves to the L2 TLB
-            # before the selective SFENCE.VMA runs.
+            # Half the time, spill 18 pool pages so VA_MUT_DATA evicts from the
+            # L1 DTLB into the S1 4 KiB cache (and L2 TLB) before the selective
+            # SFENCE.VMA runs.
             if rng.random() < 0.5:
                 for idx in range(18):
                     insns += load_u64(TMP_A, VA_POOL_BASE + idx * 0x1000)

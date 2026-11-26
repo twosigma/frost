@@ -82,14 +82,16 @@
 #define RANGE_X 0x81130000ul
 #define FILL_FRAME 0x81140000ul
 /* VA 0x400000: l1[2] -> l0. l0 slots 0..15 range A, 16..31 range U (U pages),
- * 32..47 range X (executable), 48..71 plain fill pages, 80.. reserved N. */
+ * 32..47 range X (executable), 80.. reserved N, 128..143 and 256..271 plain
+ * fill pages aliasing sets 0..15 of the 2-way 128-set DMMU S1 cache. */
 #define VA_L0 0x00400000ul
 #define VA_PAGE(slot) (VA_L0 + ((unsigned long) (slot) << 12))
 #define SLOT_A 0
 #define SLOT_U 16
 #define SLOT_X 32
-#define SLOT_FILL 48
-#define FILLS 24
+#define SLOT_FILL0 128
+#define SLOT_FILL1 256
+#define FILLS 16
 #define SLOT_BAD 80
 #define SLOT_D0 96
 #define SLOT_A0 97
@@ -106,10 +108,11 @@ static volatile unsigned long g_tval;
 static volatile unsigned long g_l2_counts[2];
 static volatile unsigned long g_remap_pte;
 
-/* Fill sixteen NAPOT pages, evict their DTLB entries, then read them again.
- * No privilege or translation-control write separates the three passes.
- * Unrolled accesses keep loop-exit speculation out of the counters. The
- * first measured address depends on the counter read. */
+/* Fill sixteen NAPOT pages, evict both the 16-entry DTLB and both ways of
+ * sets 0..15 in the 128-set S1 cache, then read the NAPOT pages again so
+ * all sixteen hit in the L2 TLB. No privilege or translation-control write
+ * separates the passes. Unrolled accesses keep loop-exit speculation out of
+ * the counters. The first measured address depends on the counter read. */
 __attribute__((naked, aligned(4))) static void napot_l2_body(void)
 {
     __asm__ volatile("li t4, 0x400200\n"
@@ -118,8 +121,13 @@ __attribute__((naked, aligned(4))) static void napot_l2_body(void)
                      "ld a0, 0(t4)\n"
                      "add t4, t4, t6\n"
                      ".endr\n"
-                     "li t4, 0x430000\n"
-                     ".rept 24\n"
+                     "li t4, 0x480000\n"
+                     ".rept 16\n"
+                     "ld a0, 0(t4)\n"
+                     "add t4, t4, t6\n"
+                     ".endr\n"
+                     "li t4, 0x500000\n"
+                     ".rept 16\n"
                      "ld a0, 0(t4)\n"
                      "add t4, t4, t6\n"
                      ".endr\n"
@@ -330,8 +338,10 @@ static void build_tables(void)
     map_range(SLOT_A, RANGE_A, RWAD);
     map_range(SLOT_U, RANGE_U, RWAD | PTE_U);
     map_range(SLOT_X, RANGE_X, RWAD | PTE_X);
-    for (int i = 0; i < FILLS; i++)
-        l0[SLOT_FILL + i] = PTE_PPN(FILL_FRAME + ((unsigned long) i << 12)) | RWAD;
+    for (int i = 0; i < FILLS; i++) {
+        l0[SLOT_FILL0 + i] = PTE_PPN(FILL_FRAME + ((unsigned long) i << 12)) | RWAD;
+        l0[SLOT_FILL1 + i] = PTE_PPN(FILL_FRAME + ((unsigned long) i << 12)) | RWAD;
+    }
     /* Every PPN[3:0] value except 1000 is reserved with N set. */
     for (int i = 0; i < 16; i++)
         if (i != 8)

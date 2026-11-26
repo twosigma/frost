@@ -22,7 +22,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | `if_stage/` | Fetch PC control, branch prediction, instruction alignment |
 | `pd_stage/` | Slot-1 instruction from the native word or its predecoded RVC expansion, early source fields, the PD branch redirect |
 | `id_stage/` | Decode for both slots |
-| `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), 512-entry second-level TLB with a 32-entry superpage side array, shared page-table walker |
+| `mmu/` | Instruction MMU (16-entry ITLB), data MMU (16-entry DTLB), 2,048-entry second-level TLB with a 32-entry superpage side array, shared page-table walker |
 | `misaligned/` | Misaligned-access engine (`ma_engine`) and its checks (`ma_pkg`) |
 | `csr/` | CSR file; CSR instructions execute at commit |
 | `control/trap_unit.sv` | Traps, delegation, interrupts, Debug Mode entry, and the no-CSR take that starts the misaligned-access engine |
@@ -593,7 +593,20 @@ between a held VA and that sum in one LUT per bit after the full sum, so
 neither enters the adder's operands.
 
 The 16-entry ITLB and the data side's 16-entry DTLB share one read-only
-page-table walker in `cpu_ooo`. `walk_request_select` picks the requester from
+page-table walker in `cpu_ooo`. Inside `dmmu.sv`, a 2-way, 128-set (256-entry,
+1 MiB) distributed-RAM S1 4 KiB translation cache sits alongside the DTLB on
+the S1 lookup stage: clean 4 KiB leaves returned by the walker fill the DTLB
+and register into the S1 cache one cycle later, so leaves evicted from the
+16-entry DTLB resolve in S1 without requesting the L2 TLB or walker while
+checking live permissions and Svpbmt/PMA attributes. Such a hit writes the
+leaf back into the DTLB on the next cycle, so the page's later accesses take
+the issue bypass again and its stores the early address lookups, which read
+only the DTLB. The refill takes the DTLB's install port for that cycle (a walk
+response arriving then is for an operation already killed and loses its
+DTLB install, not its S1 cache fill), and an invalidation, flush or ASID
+change in that cycle drops it. Selective page flushes
+clear the addressed set; ASID-only and full flushes clear the S1 cache valid
+bits in one cycle. `walk_request_select` picks the requester from
 registered state: the data side while its S1 holds an op without a walk, the
 instruction side otherwise. An instruction request that the data side turned
 away, in a cycle where the port was ready and the data op did not ask, goes
@@ -606,17 +619,22 @@ raises a page fault for software to handle. SFENCE.VMA, `satp` accesses, and
 flight and clear the walker's pointer cache; which TLB entries they remove
 is described under "Address-space IDs and SFENCE.VMA" below.
 
-A 4-way, 128-set second-level TLB (`l2tlb.sv`, 512 entries, 2 MiB of 4 KiB
-pages, block RAM) sits between the two MMUs and the walker. An L1 TLB miss
-that hits there is answered two cycles after the request fires, in place of
-a walk of one to three dependent line reads; a miss reaches the walker one
-cycle later than it would without the array. It stores the clean 4 KiB
-translations that the walker returns. Clean 2 MiB and 1 GiB leaves go to a
-32-entry fully associative superpage side array beside it (`SP_ENTRIES`):
-tags, ASIDs, global bits and levels in flops, compared level-masked in the
-same cycle as the block RAM ways, and PPNs and permissions in distributed RAM,
-read in the next cycle, so a superpage hit answers three cycles after the
-request fires for any page of its region. Neither array holds negative
+A 4-way, 512-set second-level TLB (`l2tlb.sv`, 2,048 entries, 8 MiB of 4 KiB
+pages, block RAM) sits between the two MMUs and the walker. While idle with no
+real walk request, `cpu_ooo` drives a speculative pre-read from the registered
+fetch PC. When the following cycle's walk request matches that
+pre-read's VPN and ASID, a hit answers one cycle after the request fires and a
+miss reaches the walker on the request cycle itself; otherwise a hit answers
+two cycles after the request fires and a miss reaches the walker one cycle
+later. The request port is ready again on the registered hit-response cycle so
+the next lookup or speculative pre-read starts without a bubble. It stores the
+clean 4 KiB translations that the walker returns. Clean 2 MiB and 1 GiB leaves
+go to a 32-entry fully associative superpage side array beside it
+(`SP_ENTRIES`): tags, ASIDs, global bits and levels in flops, compared
+level-masked in the same cycle as the block RAM ways, and PPNs and permissions
+in distributed RAM, read in the same compare cycle, so a superpage hit has the
+same latency as a 4 KiB hit for any page of its region. Neither array holds
+negative
 entries, so a PTE that changes from invalid to valid is seen without
 SFENCE.VMA (Svvptc). SUM and MXR stay out of the entries, so toggling them
 needs no flush. `cpu_ooo` takes `L2TLB_SETS` (0 removes both arrays; any
@@ -648,7 +666,7 @@ its own ASID, or a global entry under any ASID.
   at the head until they have arrived. The ROB exports the head's filter for
   the length of the SFENCE window.
 - In the second-level TLB, a page flush (with or without an ASID) reads one
-  set, an ASID flush without a page scans all 128 sets, and flush-all clears
+  set, an ASID flush without a page scans all 512 sets, and flush-all clears
   the valid bits in one cycle. The superpage
   side array applies the flush's filter to all its entries in the flush's
   first cycle; a page flush removes the superpage whose region holds the page.
@@ -719,8 +737,7 @@ Without the engine, misaligned NC/IO loads and stores trap before translation.
 
 The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
 (the level-0 table of a 2 MiB region) and 4 root pointers (the level-1 table
-of a 1 GiB region). A walk looks both up in two registered cycles (tag
-compare, then select) and starts
+of a 1 GiB region). A walk looks both up in one registered cycle and starts
 at level 0 or level 1 on a hit, so it makes one or two dependent line reads
 instead of three. Only a valid non-leaf PTE that a walk descends through fills
 it; an invalid or faulting PTE never does (Svvptc), and the walk invalidate

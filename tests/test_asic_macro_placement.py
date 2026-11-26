@@ -18,15 +18,19 @@ import json
 import re
 import shutil
 import subprocess
+from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import pytest
+
+import asic.openram as openram
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_nic_transmit_macro_fits_the_floorplan(tmp_path: Path) -> None:
-    """Every configured macro fits, without overlap, and preserves the logic band."""
+def _configured_inventory() -> list[tuple[str, str]]:
+    """Return (instance name, macro) for every macro of the configured design."""
     inventory: list[tuple[str, str]] = []
 
     def add(pattern: str, macro: str, count: int) -> None:
@@ -55,6 +59,17 @@ def test_nic_transmit_macro_fits_the_floorplan(tmp_path: Path) -> None:
                 f"sram_1w1r_8192x{bits}",
                 2,
             )
+    return inventory
+
+
+def _run_placement(
+    inventory: list[tuple[str, str]], tmp_path: Path
+) -> tuple[subprocess.CompletedProcess[str], list[tuple[int, int]]]:
+    """Run macro_placement.tcl on a stub block holding inventory's macros.
+
+    Each macro has the size of its committed LEF. Return Tcl's result and the
+    macros' (width, height) in database units, in inventory order.
+    """
     core_match = re.search(
         r"export CORE_AREA = ([0-9. ]+)", (ROOT / "asic/config.mk").read_text()
     )
@@ -117,14 +132,24 @@ lappend instances inst{index}
     result = subprocess.run(
         ["tclsh", str(harness)], capture_output=True, text=True, check=False
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    return result, sizes
+
+
+def _placed_boxes(
+    result: subprocess.CompletedProcess[str], sizes: list[tuple[int, int]]
+) -> list[tuple[int, int, int, int]]:
+    """Return each placed macro's (left, bottom, right, top) from Tcl's output."""
     boxes = []
     for line in result.stdout.splitlines():
         if line.startswith("LOCATION "):
             _, ident, x, y = line.split()
             width, height = sizes[int(ident)]
             boxes.append((int(x), int(y), int(x) + width, int(y) + height))
-    assert len(boxes) == len(inventory)
+    return boxes
+
+
+def _assert_disjoint(boxes: list[tuple[int, int, int, int]]) -> None:
+    """Fail if two macros overlap."""
     for index, (left, bottom, right, top) in enumerate(boxes):
         for other_left, other_bottom, other_right, other_top in boxes[index + 1 :]:
             assert (
@@ -133,6 +158,222 @@ lappend instances inst{index}
                 or top <= other_bottom
                 or other_top <= bottom
             )
+
+
+def test_configured_macros_fit_the_floorplan(tmp_path: Path) -> None:
+    """Every configured macro fits, without overlap, and preserves the logic band."""
+    inventory = _configured_inventory()
+    result, sizes = _run_placement(inventory, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    boxes = _placed_boxes(result, sizes)
+    assert len(boxes) == len(inventory)
+    _assert_disjoint(boxes)
+
+
+@pytest.mark.parametrize(
+    "group,pattern",
+    [
+        ("L1D tag", r"l1d\.array\.gen_(tag_block|hit_port)\."),
+        ("L2 data", r"home\.array\.gen_single\.data_array\."),
+        ("data memory", r"data_memory\."),
+        ("even instruction memory", r"instruction_memory\.u_even_"),
+    ],
+)
+def test_placement_names_the_group_that_has_no_macros(
+    tmp_path: Path, group: str, pattern: str
+) -> None:
+    """A group without macros stops the script with that group's name."""
+    full = _configured_inventory()
+    inventory = [entry for entry in full if not re.search(pattern, entry[0])]
+    assert len(inventory) < len(full)
+    result, _ = _run_placement(inventory, tmp_path)
+    assert result.returncode != 0
+    assert f"no {group} macros" in result.stdout + result.stderr
+
+
+def test_grid_sizing_names_an_empty_group() -> None:
+    """The grid procedures raise a named error for an empty group, not a bare getMaster."""
+    source = (ROOT / "asic/macro_placement.tcl").read_text()
+    for name in ("frost_grid_width", "frost_grid_height"):
+        body = source[source.index(f"proc {name} ") :].split("\n}\n", 1)[0]
+        assert f'error "{name}: no macros in the group"' in body
+
+
+# Memories of more than 4,096 bits that a RAM wrapper keeps as an array
+# because no macro has their shape: (instance pattern, rows, width). The BTB's
+# two payload images and its update memory have widths that no macro builds,
+# and the flow mocks them. A memory that gains a macro, or loses one, changes
+# this list.
+EXPECTED_WRAPPER_ARRAYS = [
+    (r"u_backing_btb\.gen_image\[0\]\.u_payload_ram\.", 512, 62),
+    (r"u_backing_btb\.gen_image\[1\]\.u_payload_ram\.", 512, 62),
+    (r"u_backing_btb\.u_update_ram\.", 512, 177),
+]
+
+
+def _wrapper_array(name: str, cell: dict[str, Any]) -> bool:
+    """Whether cell is the array of more than 4,096 bits that a wrapper builds without a macro."""
+    if cell["type"] not in ("$mem", "$mem_v2"):
+        return False
+    if not re.search(r"(^|\.)gen_array\.memory$", name):
+        return False
+    parameters = cell["parameters"]
+    return int(parameters["SIZE"], 2) * int(parameters["WIDTH"], 2) > 4096
+
+
+def _elaborate_platform_top(directory: Path) -> dict[str, list[Any]]:
+    """Elaborate platform_top as the ASIC flow's synthesis reads it.
+
+    Return its SRAM macro instances, as (hierarchical name, macro), and the
+    memories of more than 4,096 bits that the RAM wrappers keep as arrays, as
+    (name, rows, width), each in name order.
+    """
+    from test_run_yosys import YosysRunner
+
+    yosys = shutil.which("yosys")
+    if yosys is None or shutil.which("sv2v") is None:
+        pytest.skip("yosys or sv2v is missing")
+    runner = YosysRunner(memory_images=False)
+    sources = runner.parse_filelist(runner.filelist)
+    # The flow's defines, source list and top parameters (asic/config.mk;
+    # asic/orfs.py prepare): sv2v for the NIC and MAC, then Yosys's frontend.
+    defines = "-DSYNTHESIS -DFROST_SRAM_MACROS" + "".join(
+        f" -I{include}" for include in sorted(runner.include_dirs)
+    )
+    converted = runner.convert_nic_sources(sources, directory, "-DSYNTHESIS", 300)
+    converted += [
+        str(ROOT / "asic/sram/frost_sram_1w1r.sv"),
+        str(ROOT / "asic/sram/frost_sram_2rw.sv"),
+    ]
+    config = (ROOT / "asic/config.mk").read_text()
+    top_parameters = re.search(r"^export VERILOG_TOP_PARAMS = (.*)$", config, re.M)
+    assert top_parameters
+    words = top_parameters[1].split()
+    netlist = directory / "platform_top.json"
+    commands = [
+        f"read_liberty -lib {lib}"
+        for lib in sorted((ROOT / "asic/sram/macros").glob("*/*.lib"))
+    ]
+    # -defer: a module is elaborated with its instances' parameters, never
+    # with its defaults, as the flow reads it.
+    commands += [f"read_verilog -sv -defer {defines} {source}" for source in converted]
+    commands += [
+        f"chparam -set {name} {value} platform_top"
+        for name, value in zip(words[0::2], words[1::2], strict=True)
+    ]
+    commands += [
+        "hierarchy -check -top platform_top",
+        "proc",
+        "memory_collect",
+        f"write_json {netlist}",
+    ]
+    result = subprocess.run(
+        [yosys, "-Q", "-T", "-p", "; ".join(commands)],
+        capture_output=True,
+        text=True,
+        timeout=900,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-3000:]
+    modules = json.loads(netlist.read_text())["modules"]
+
+    # Whether a module has a macro, or a wrapper's array, at or below it.
+    below: dict[str, bool] = {}
+
+    def has_hits(module: str) -> bool:
+        if module not in below:
+            below[module] = any(
+                cell["type"].startswith("sram_")
+                or _wrapper_array(name, cell)
+                or (cell["type"] in modules and has_hits(cell["type"]))
+                for name, cell in modules[module]["cells"].items()
+            )
+        return below[module]
+
+    macros: list[tuple[str, str]] = []
+    arrays: list[tuple[str, int, int]] = []
+
+    def walk(module: str, prefix: str) -> None:
+        for name, cell in modules[module]["cells"].items():
+            kind = cell["type"]
+            if kind.startswith("sram_"):
+                macros.append((prefix + name, kind))
+            elif kind in modules:
+                if has_hits(kind):
+                    walk(kind, f"{prefix}{name}.")
+            elif _wrapper_array(name, cell):
+                parameters = cell["parameters"]
+                rows, width = int(parameters["SIZE"], 2), int(parameters["WIDTH"], 2)
+                arrays.append((prefix + name, rows, width))
+
+    top = next(
+        name for name, module in modules.items() if "top" in module["attributes"]
+    )
+    walk(top, "")
+    return {"macros": sorted(macros), "arrays": sorted(arrays)}
+
+
+@pytest.fixture(scope="module")
+def platform_top_rams(tmp_path_factory: pytest.TempPathFactory) -> dict[str, list[Any]]:
+    """Elaborate platform_top once for the tests that follow."""
+    return _elaborate_platform_top(tmp_path_factory.mktemp("platform_top"))
+
+
+def test_large_ram_wrapper_memories_are_sram_macros(
+    platform_top_rams: dict[str, list[Any]],
+) -> None:
+    """No wrapper memory of more than 4,096 bits falls back to an unlisted array."""
+    arrays = platform_top_rams["arrays"]
+    unexpected = [
+        f"{name} ({rows} x {width})"
+        for name, rows, width in arrays
+        if not any(
+            re.search(pattern, name) and (rows, width) == (want_rows, want_width)
+            for pattern, want_rows, want_width in EXPECTED_WRAPPER_ARRAYS
+        )
+    ]
+    assert not unexpected, (
+        "no SRAM macro builds these RAM wrapper memories of more than 4,096 "
+        "bits (select_macro in asic/sram/frost_sram_1w1r.sv, MACROS in "
+        "asic/openram.py): " + "; ".join(unexpected)
+    )
+    vanished = [
+        pattern
+        for pattern, rows, width in EXPECTED_WRAPPER_ARRAYS
+        if not any(
+            re.search(pattern, name) and (found_rows, found_width) == (rows, width)
+            for name, found_rows, found_width in arrays
+        )
+    ]
+    assert not vanished, f"listed array memories that are no longer arrays: {vanished}"
+
+
+def test_elaborated_macros_match_the_readme_table(
+    platform_top_rams: dict[str, list[Any]],
+) -> None:
+    """Each generated macro has the instance count that asic/README.md gives it."""
+    counted = Counter(kind for _, kind in platform_top_rams["macros"])
+    table = {}
+    for line in (ROOT / "asic/README.md").read_text().splitlines():
+        match = re.match(r"\| `(sram_\w+)` \|(?:[^|]*\|){5}\s*(\d+) \|", line)
+        if match:
+            table[match[1]] = int(match[2])
+    assert table
+    assert dict(counted) == table
+    assert set(counted) <= {macro.name for macro in openram.MACROS}
+
+
+def test_macro_placement_places_every_elaborated_macro(
+    platform_top_rams: dict[str, list[Any]], tmp_path: Path
+) -> None:
+    """macro_placement.tcl selects, places and fits the macros that platform_top has."""
+    macros = platform_top_rams["macros"]
+    result, sizes = _run_placement(macros, tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"Placed {len(macros)} SRAM macros" in result.stdout
+    boxes = _placed_boxes(result, sizes)
+    assert len(boxes) == len(macros)
+    _assert_disjoint(boxes)
 
 
 def test_home_array_sram_macro_names_match_floorplan(tmp_path: Path) -> None:

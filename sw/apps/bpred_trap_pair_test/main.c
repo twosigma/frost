@@ -208,8 +208,9 @@ static void put32(uint64_t page_pa, uint32_t off, uint32_t val)
 
 static void fill_nops(uint64_t page_pa, uint32_t start_off, uint32_t end_off)
 {
+    const uint32_t c_nop_pair = ((uint32_t) C_NOP << 16) | C_NOP;
     for (uint32_t w = start_off; w < end_off; w += 4u) {
-        *(volatile uint32_t *) (uintptr_t) (page_pa + w) = INSN_NOP;
+        *(volatile uint32_t *) (uintptr_t) (page_pa + w) = c_nop_pair;
     }
 }
 
@@ -247,6 +248,18 @@ static uint32_t write_btb_evictor(uint64_t page_pa, uint32_t branch_off)
 
 static void init_target_pages(void)
 {
+    static const uint64_t code_pages[] = {
+        PA_PROBE,
+        PA_TRAIN,
+        PA_TGT_A,
+        PA_TGT_B,
+        PA_UTEST,
+        PA_STATIC_TRAIN,
+    };
+    for (uint32_t i = 0; i < (uint32_t) (sizeof(code_pages) / sizeof(code_pages[0])); i++) {
+        fill_nops(code_pages[i], 0u, 0x1000u);
+    }
+
     put32(PA_PROBE, 0u, INSN_ECALL);
     put32(PA_PROBE, 0x040u, INSN_ECALL);
     put32(PA_TRAIN, 0u, INSN_ECALL);
@@ -271,7 +284,7 @@ build_address_space(uint64_t root_pa, uint64_t probe_pa, uint64_t utest_pa, uint
     volatile uint64_t *l1 = (volatile uint64_t *) (uintptr_t) (root_pa + 0x1000ul);
     volatile uint64_t *l0 = (volatile uint64_t *) (uintptr_t) (root_pa + 0x2000ul);
 
-    for (uint32_t i = 0; i < 16u; i++) {
+    for (uint32_t i = 0; i < 512u; i++) {
         r[i] = 0;
         l1[i] = 0;
         l0[i] = 0;
@@ -966,8 +979,8 @@ static void check_dynamic_branch_and_return_pairs(void)
 {
     fill_nops(PA_TRAIN, 0x2C0u, 0x320u);
     fill_nops(PA_PROBE, 0x2C0u, 0x320u);
-    fill_nops(PA_TRAIN, 0xE60u, 0xFE0u);
-    fill_nops(PA_PROBE, 0xE60u, 0xFE0u);
+    fill_nops(PA_TRAIN, 0xE60u, 0x1000u);
+    fill_nops(PA_PROBE, 0xE60u, 0x1000u);
     put32(PA_TRAIN, 0u, INSN_ECALL);
     put32(PA_PROBE, 0u, INSN_ECALL);
     put32(PA_TGT_A, 0u, INSN_ECALL);
