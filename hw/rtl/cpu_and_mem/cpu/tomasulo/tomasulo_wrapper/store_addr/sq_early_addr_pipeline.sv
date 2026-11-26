@@ -91,8 +91,11 @@ module sq_early_addr_pipeline (
     output logic o_sq_early_addr_capture_valid_2,
     // The store queue's copies of the two packets' address and MMIO flag,
     // from their own take terms: the packets' fields without translation,
-    // zero with it. The packets themselves feed the MMU and its delay line.
+    // zero with it. Two explicit address copies per slot serve the lower and
+    // upper halves of the store queue. The packets themselves feed the MMU
+    // and its delay line.
     output logic [1:0][riscv_pkg::XLEN-1:0] o_sq_early_sq_address,
+    output logic [1:0][riscv_pkg::XLEN-1:0] o_sq_early_sq_address_hi,
     output logic [1:0] o_sq_early_sq_is_mmio
 );
 
@@ -618,7 +621,8 @@ module sq_early_addr_pipeline (
     assign address_source_take[slot][0] = live_allowed && repair_conditions[slot][6];
     assign address_source_take[slot][1] = live_allowed && !repair_conditions[slot][6] &&
         repair_conditions[slot][7];
-    assign address_source_take[slot][2] = !(|address_source_take[slot][1:0]);
+    assign address_source_take[slot][2] = !(live_allowed &&
+        (repair_conditions[slot][6] || repair_conditions[slot][7]));
     // Decode source priority in parallel with each address sum and PMA
     // check. A flat masked reduction avoids cascading the late MMIO result
     // through the pair, half, captured, held and fresh muxes.
@@ -646,30 +650,44 @@ module sq_early_addr_pipeline (
         (repair_sums[slot][6] & {riscv_pkg::XLEN{address_source_take[slot][0]}}) |
         (repair_sums[slot][7] & {riscv_pkg::XLEN{address_source_take[slot][1]}}) |
         (address_nonlive[slot] & {riscv_pkg::XLEN{address_source_take[slot][2]}});
-    // The store queue's copy: the same select with translation folded into
-    // its own kept take terms, so the SQ's and the MMU's address nets are
-    // separate and the SQ needs no translation mux after the select.
-    (* keep = "true" *) logic [2:0] sq_take;
-    assign sq_take = address_source_take[slot] & {3{!i_translation_active}};
+    // The store queue's copies: two explicit take vectors per slot, one for
+    // each half of the store queue, formed directly from live_allowed and
+    // translation so neither half cascades through address_source_take and
+    // each half drives a separate address copy into the wrapper.
+    (* keep = "true", dont_touch = "true" *)logic [2:0] sq_take_lo;
+    (* keep = "true", dont_touch = "true" *)logic [2:0] sq_take_hi;
+    assign sq_take_lo[0] = live_allowed && repair_conditions[slot][6] && !i_translation_active;
+    assign sq_take_lo[1] = live_allowed && !repair_conditions[slot][6] &&
+        repair_conditions[slot][7] && !i_translation_active;
+    assign sq_take_lo[2] = !(live_allowed &&
+        (repair_conditions[slot][6] || repair_conditions[slot][7])) && !i_translation_active;
+    assign sq_take_hi[0] = live_allowed && repair_conditions[slot][6] && !i_translation_active;
+    assign sq_take_hi[1] = live_allowed && !repair_conditions[slot][6] &&
+        repair_conditions[slot][7] && !i_translation_active;
+    assign sq_take_hi[2] = !(live_allowed &&
+        (repair_conditions[slot][6] || repair_conditions[slot][7])) && !i_translation_active;
     assign o_sq_early_sq_is_mmio[slot] =
-        (repair_mmio_candidates[slot][6] && sq_take[0]) ||
-        (repair_mmio_candidates[slot][7] && sq_take[1]) || (mmio_nonlive[slot] && sq_take[2]);
-    // Each bit feeds every store-queue entry's write mux; cap the fan-out so
-    // synthesis replicates the select, one copy per eight entries.
-    (* keep = "true", max_fanout = 8 *) logic [riscv_pkg::XLEN-1:0] sq_address_copy;
-    assign sq_address_copy =
-        (repair_sums[slot][6] & {riscv_pkg::XLEN{sq_take[0]}}) |
-        (repair_sums[slot][7] & {riscv_pkg::XLEN{sq_take[1]}}) |
-        (address_nonlive[slot] & {riscv_pkg::XLEN{sq_take[2]}});
-    assign o_sq_early_sq_address[slot] = sq_address_copy;
+        (repair_mmio_candidates[slot][6] && sq_take_lo[0]) ||
+        (repair_mmio_candidates[slot][7] && sq_take_lo[1]) ||
+        (mmio_nonlive[slot] && sq_take_lo[2]);
+    assign o_sq_early_sq_address[slot] =
+        (repair_sums[slot][6] & {riscv_pkg::XLEN{sq_take_lo[0]}}) |
+        (repair_sums[slot][7] & {riscv_pkg::XLEN{sq_take_lo[1]}}) |
+        (address_nonlive[slot] & {riscv_pkg::XLEN{sq_take_lo[2]}});
+    assign o_sq_early_sq_address_hi[slot] =
+        (repair_sums[slot][6] & {riscv_pkg::XLEN{sq_take_hi[0]}}) |
+        (repair_sums[slot][7] & {riscv_pkg::XLEN{sq_take_hi[1]}}) |
+        (address_nonlive[slot] & {riscv_pkg::XLEN{sq_take_hi[2]}});
 `ifndef SYNTHESIS
     always_comb begin
       if (reset_seen_q && !$isunknown(
               {i_translation_active, address_final[slot], mmio_final[slot]}
           )) begin
         p_sq_copy_exact :
-        assert ({o_sq_early_sq_address[slot], o_sq_early_sq_is_mmio[slot]} ==
-            (i_translation_active ? '0 : {address_final[slot], mmio_final[slot]}));
+        assert ({o_sq_early_sq_address[slot], o_sq_early_sq_address_hi[slot],
+                 o_sq_early_sq_is_mmio[slot]} ==
+            (i_translation_active ? '0 : {address_final[slot], address_final[slot],
+                                          mmio_final[slot]}));
       end
     end
 `endif
@@ -687,7 +705,11 @@ module sq_early_addr_pipeline (
     always_comb begin
       assert ({o_sq_early_sq_address[slot], o_sq_early_sq_is_mmio[slot]} ==
           (i_translation_active ? '0 : {packet.address, packet.is_mmio}));
+      assert (o_sq_early_sq_address_hi[slot] == (i_translation_active ? '0 : packet.address));
       assert ((o_sq_early_sq_address[slot] |
+          (f_mmu_pa[slot] & {riscv_pkg::XLEN{i_translation_active}})) ==
+          (i_translation_active ? f_mmu_pa[slot] : packet.address));
+      assert ((o_sq_early_sq_address_hi[slot] |
           (f_mmu_pa[slot] & {riscv_pkg::XLEN{i_translation_active}})) ==
           (i_translation_active ? f_mmu_pa[slot] : packet.address));
       assert ((o_sq_early_sq_is_mmio[slot] | (f_mmu_is_mmio[slot] & i_translation_active)) ==

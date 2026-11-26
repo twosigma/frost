@@ -4469,8 +4469,10 @@ module tomasulo_wrapper #(
     sq_early_alloc_req_2.valid = sq_alloc_req_2.valid && !i_mmu_pm_mode[1];
   end
   // The store queue's copies of the packets' address and MMIO flag (zero
-  // under translation); see sq_early_addr_update_final.
+  // under translation); two address copies per slot serve the two halves of
+  // the store queue. See sq_early_addr_update_final.
   logic [1:0][riscv_pkg::XLEN-1:0] sq_early_sq_address;
+  logic [1:0][riscv_pkg::XLEN-1:0] sq_early_sq_address_hi;
   logic [1:0] sq_early_sq_is_mmio;
   sq_early_addr_pipeline sq_early_addr_pipeline_inst (
       .i_clk                          (i_clk),
@@ -4513,6 +4515,7 @@ module tomasulo_wrapper #(
       .o_sq_early_addr_capture_valid  (sq_early_addr_capture_valid),
       .o_sq_early_addr_capture_valid_2(sq_early_addr_capture_valid_2),
       .o_sq_early_sq_address          (sq_early_sq_address),
+      .o_sq_early_sq_address_hi       (sq_early_sq_address_hi),
       .o_sq_early_sq_is_mmio          (sq_early_sq_is_mmio)
   );
 
@@ -4652,6 +4655,7 @@ module tomasulo_wrapper #(
   // the delayed packet and PA only on a permitted, dirty, in-map hit. Drop
   // other results; issue re-translates every store and reports faults.
   riscv_pkg::sq_addr_update_t sq_early_addr_update_final, sq_early_addr_update_2_final;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_hi_final, sq_early_addr_hi_2_final;
   logic sq_early_addr_capture_valid_final, sq_early_addr_capture_valid_2_final;
   always_comb begin
     if (i_translation_active) begin
@@ -4674,14 +4678,17 @@ module tomasulo_wrapper #(
       sq_early_addr_capture_valid_2_final = sq_early_addr_capture_valid_2;
     end
     // Address and MMIO flag: the pipeline's SQ copies, zero under
-    // translation, OR the MMU's, masked off without it. The SQ's address
-    // net is then apart from the MMU's VA input, and the translation select
-    // joins the final AND-OR instead of following it.
+    // translation, OR the MMU's, masked off without it. Two separate address
+    // nets per slot feed the lower and upper halves of the store queue.
     sq_early_addr_update_final.address = sq_early_sq_address[0] |
+        (dmmu_early_pa & {riscv_pkg::XLEN{i_translation_active}});
+    sq_early_addr_hi_final = sq_early_sq_address_hi[0] |
         (dmmu_early_pa & {riscv_pkg::XLEN{i_translation_active}});
     sq_early_addr_update_final.is_mmio = sq_early_sq_is_mmio[0] |
         (dmmu_early_is_mmio & i_translation_active);
     sq_early_addr_update_2_final.address = sq_early_sq_address[1] |
+        (dmmu_early2_pa & {riscv_pkg::XLEN{i_translation_active}});
+    sq_early_addr_hi_2_final = sq_early_sq_address_hi[1] |
         (dmmu_early2_pa & {riscv_pkg::XLEN{i_translation_active}});
     sq_early_addr_update_2_final.is_mmio = sq_early_sq_is_mmio[1] |
         (dmmu_early2_is_mmio & i_translation_active);
@@ -4697,6 +4704,8 @@ module tomasulo_wrapper #(
         slot == 0 ? sq_early_addr_update_q2 : sq_early_addr_update_2_q2;
     wire riscv_pkg::sq_addr_update_t final_packet =
         slot == 0 ? sq_early_addr_update_final : sq_early_addr_update_2_final;
+    wire [riscv_pkg::XLEN-1:0] final_hi_addr =
+        slot == 0 ? sq_early_addr_hi_final : sq_early_addr_hi_2_final;
     wire [riscv_pkg::XLEN-1:0] pa = slot == 0 ? dmmu_early_pa : dmmu_early2_pa;
     wire mmio = slot == 0 ? dmmu_early_is_mmio : dmmu_early2_is_mmio;
     wire hit = slot == 0 ? dmmu_early_ok : dmmu_early2_ok;
@@ -4713,6 +4722,7 @@ module tomasulo_wrapper #(
         reference_packet.is_mmio = mmio;
       end
       assert (final_packet == reference_packet);
+      assert (final_hi_addr == reference_packet.address);
       assert (final_capture == (i_translation_active ? reference_packet.valid : raw_capture));
     end
   end
@@ -4957,6 +4967,8 @@ module tomasulo_wrapper #(
       // entries. Translation adds two cycles and requires a permitted MMU hit.
       .i_early_addr_update(sq_early_addr_update_final),
       .i_early_addr_update_2(sq_early_addr_update_2_final),
+      .i_early_addr_hi(sq_early_addr_hi_final),
+      .i_early_addr_hi_2(sq_early_addr_hi_2_final),
       .i_early_addr_capture_valid(sq_early_addr_capture_valid_final),
       .i_early_addr_capture_valid_2(sq_early_addr_capture_valid_2_final),
 

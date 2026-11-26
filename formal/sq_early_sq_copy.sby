@@ -42,8 +42,8 @@ opt
 prove_integrated: prep -top tomasulo_wrapper
 ~prove_integrated: prep -top sq_early_addr_pipeline
 ~cover: select -assert-none a:init
-~prove_integrated: select -assert-count 6 t:$check r:FLAVOR=assert %i
-prove_integrated: select -assert-count 10 t:$check r:FLAVOR=assert %i
+~prove_integrated: select -assert-count 10 t:$check r:FLAVOR=assert %i
+prove_integrated: select -assert-count 16 t:$check r:FLAVOR=assert %i
 cover: select -assert-count 14 t:$check r:FLAVOR=cover %i
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i

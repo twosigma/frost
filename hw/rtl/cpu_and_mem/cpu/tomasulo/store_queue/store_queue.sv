@@ -133,9 +133,13 @@ module store_queue #(
     // Early Address Update (from pipelined dispatch-time address computation)
     // =========================================================================
     // Each dispatch slot supplies an update. Their distinct ROB tags each match
-    // at most one SQ entry, so simultaneous writes cannot collide.
+    // at most one SQ entry, so simultaneous writes cannot collide. The packet
+    // address drives entries 0 .. DEPTH/2-1; i_early_addr_hi* carries an
+    // identical copy for entries DEPTH/2 .. DEPTH-1 to split fan-out.
     input riscv_pkg::sq_addr_update_t i_early_addr_update,
     input riscv_pkg::sq_addr_update_t i_early_addr_update_2,
+    input logic [riscv_pkg::XLEN-1:0] i_early_addr_hi,
+    input logic [riscv_pkg::XLEN-1:0] i_early_addr_hi_2,
     // Payload-only enables for persistent early-address repair. They may
     // refresh address/is_mmio while packet.valid is low; sq_addr_valid remains
     // the visibility control and is set only by packet.valid below.
@@ -2227,7 +2231,7 @@ endmodule
     if (i_early_addr_capture_valid) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_early_addr_update.rob_tag) begin
-          sq_address[i] <= i_early_addr_update.address;
+          sq_address[i] <= (i < (DEPTH / 2)) ? i_early_addr_update.address : i_early_addr_hi;
           sq_is_mmio[i] <= i_early_addr_update.is_mmio;
         end
       end
@@ -2238,7 +2242,7 @@ endmodule
       for (int i = 0; i < DEPTH; i++) begin
         if (sq_valid[i] && !sq_addr_valid[i] &&
             sq_rob_tag[i] == i_early_addr_update_2.rob_tag) begin
-          sq_address[i] <= i_early_addr_update_2.address;
+          sq_address[i] <= (i < (DEPTH / 2)) ? i_early_addr_update_2.address : i_early_addr_hi_2;
           sq_is_mmio[i] <= i_early_addr_update_2.is_mmio;
         end
       end

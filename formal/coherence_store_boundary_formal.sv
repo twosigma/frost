@@ -807,6 +807,8 @@ module coherence_store_boundary_formal #(
       .o_dispatch_full_for_2(sq_dispatch_full_for_2),
       .i_early_addr_update('0),
       .i_early_addr_update_2('0),
+      .i_early_addr_hi('0),
+      .i_early_addr_hi_2('0),
       .i_early_addr_capture_valid('0),
       .i_early_addr_capture_valid_2('0),
       .i_addr_update('0),

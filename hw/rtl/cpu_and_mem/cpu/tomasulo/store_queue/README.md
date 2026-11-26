@@ -84,7 +84,10 @@ the queue's state and the flush and tag inputs first; the SC discard and the
 write completion apply next, and the registered commit pulses last.
 
 Addresses arrive from the early-address pipeline or from MEM_RS issue, and
-data from MEM_RS issue, matched to entries by ROB tag. If both address sources
+data from MEM_RS issue, matched to entries by ROB tag. Each early-address slot
+supplies two identical address copies, one for the lower half of the queue
+(`i_early_addr_update*.address`) and one for the upper half
+(`i_early_addr_hi*`). If both address sources
 update an entry in the same cycle, the MEM_RS update wins. With translation on,
 an early address is captured only together with a successful translation.
 
