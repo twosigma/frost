@@ -1446,13 +1446,13 @@ module load_queue #(
 `endif  // F_LQ_RAM_PAYLOAD_PROOF
 `endif
 
-  // Register ROB-head matching for timing. Head priority prevents starvation
-  // behind a staged load waiting on a younger store (load queue README,
-  // "Age-ordered replacement and ROB-head priority"). A new head gains
-  // priority one cycle later. A stale
-  // match can name only a freed or flushed entry, masked by lq_valid, because
-  // a load frees its LQ entry before retiring. sq_check_entry_issueable checks
-  // the live ROB head for MMIO, LR, and AMO.
+  // Register ROB-head matching. Age-ordered selection and the dedicated head
+  // path ensure the ROB head evicts a younger staged load waiting on an
+  // uncommitted store (load queue README, "Age-ordered replacement and
+  // ROB-head priority"). A new head matches one cycle later. A stale match
+  // can name only a freed or flushed entry, masked by lq_valid, because a load
+  // frees its LQ entry before retiring. sq_check_entry_issueable checks the
+  // live ROB head for MMIO, LR, and AMO.
   logic [DEPTH-1:0] rob_head_match_q;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
@@ -6164,12 +6164,14 @@ module load_queue #(
     end
   end
 
-  // Permanent age-order and oldest-eligible selection proofs. Every mature
-  // valid entry's registered age equals (lq_rob_tag - dep_head_q), mature
-  // pairs compare identically under lq_entry_age_q and is_younger, no entry is
-  // eligible on its first valid cycle, and Phase A/B pick the oldest eligible
-  // entry (including live i_rob_head_tag order whenever the head stays within
-  // the mature ROB window).
+`ifdef F_LQ_AGE_ORDER_PROOF
+  // Permanent age-order and oldest-eligible selection proofs (checked by the
+  // dedicated load_queue:bmc_age_order task so the main BMCs stay within their
+  // solver budgets). Every mature valid entry's registered age equals
+  // (lq_rob_tag - dep_head_q), mature pairs compare identically under
+  // lq_entry_age_q and is_younger, no entry is eligible on its first valid
+  // cycle, and Phase A/B pick the oldest eligible entry (including live
+  // i_rob_head_tag order whenever the head stays within the mature ROB window).
   logic [DEPTH-1:0] f_age_mature;
   logic [DEPTH-1:0] f_age_in_flight;
   logic [DEPTH-1:0] f_age_mem_stored_elig;
@@ -6184,7 +6186,6 @@ module load_queue #(
   logic f_age_pair_order_live;
   logic f_age_mem_oldest_ok;
   logic f_age_cdb_oldest_ok;
-  logic f_age_younger_lower_slot_elig;
   always_comb begin
     f_age_mature = lq_valid & dep_identity_valid_q;
     f_age_in_flight = sq_check_in_flight_mask | coherent_parked_q;
@@ -6231,7 +6232,6 @@ module load_queue #(
     end
 
     f_age_mem_oldest_ok = (issue_mem_found == (|f_age_mem_elig));
-    f_age_younger_lower_slot_elig = 1'b0;
     if (issue_mem_found) begin
       if (!f_age_mem_elig[issue_mem_idx] ||
           (issue_mem_onehot != (DEPTH'(1) << issue_mem_idx)) ||
@@ -6248,9 +6248,6 @@ module load_queue #(
           if (f_age_live_head_ok && !rob_head_match_q[issue_mem_idx] &&
               is_younger(lq_rob_tag[issue_mem_idx], lq_rob_tag[j], i_rob_head_tag))
             f_age_mem_oldest_ok = 1'b0;
-          if ((IdxWidth'(j) < issue_mem_idx) &&
-              is_younger(lq_rob_tag[j], lq_rob_tag[issue_mem_idx], dep_head_q))
-            f_age_younger_lower_slot_elig = 1'b1;
         end
       end
     end
@@ -6273,14 +6270,15 @@ module load_queue #(
 
   always_comb begin
     if (f_past_valid && i_rst_n && f_rst_n_q) begin
-      p_no_first_cycle_eligible : assert (!f_age_first_cycle_elig);
-      p_mature_age_matches_dep_head : assert (f_age_matches_dep_head);
-      p_mature_pair_age_order_dep : assert (f_age_pair_order_dep);
-      p_mature_pair_age_order_live : assert (f_age_pair_order_live);
-      p_issue_mem_oldest_eligible : assert (f_age_mem_oldest_ok);
-      p_issue_cdb_oldest_eligible : assert (f_age_cdb_oldest_ok);
+      p_age_no_first_cycle_eligible : assert (!f_age_first_cycle_elig);
+      p_age_mature_matches_dep_head : assert (f_age_matches_dep_head);
+      p_age_mature_pair_order_dep : assert (f_age_pair_order_dep);
+      p_age_mature_pair_order_live : assert (f_age_pair_order_live);
+      p_age_issue_mem_oldest_eligible : assert (f_age_mem_oldest_ok);
+      p_age_issue_cdb_oldest_eligible : assert (f_age_cdb_oldest_ok);
     end
   end
+`endif  // F_LQ_AGE_ORDER_PROOF
 
   // o_count matches an independent popcount of lq_valid
   logic [CountWidth-1:0] f_valid_count;
@@ -6758,6 +6756,45 @@ module load_queue #(
   // -------------------------------------------------------------------------
   // Cover properties
   // -------------------------------------------------------------------------
+  logic f_cov_live_head_ok;
+  logic f_cov_mem_younger_lower_slot;
+  logic f_cov_cdb_younger_lower_slot;
+  always_comb begin
+    logic [ReorderBufferTagWidth-1:0] cov_head_adv;
+    logic [DEPTH-1:0] cov_in_flight;
+    cov_head_adv = i_rob_head_tag - dep_head_q;
+    cov_in_flight = sq_check_in_flight_mask | coherent_parked_q;
+    f_cov_live_head_ok = 1'b1;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (lq_valid[i] && dep_identity_valid_q[i] &&
+          (cov_head_adv > ReorderBufferTagWidth'(lq_rob_tag[i] - dep_head_q)))
+        f_cov_live_head_ok = 1'b0;
+    end
+    f_cov_mem_younger_lower_slot = 1'b0;
+    if (issue_mem_found) begin
+      for (int unsigned j = 0; j < DEPTH; j++) begin
+        if (lq_valid[j] &&
+            (lq_addr_valid[j] || (i_addr_update.valid && addr_update_pre_match_q[j])) &&
+            !lq_issued[j] && !lq_data_valid[j] && !cov_in_flight[j] && !issue_block_q[j] &&
+            (!lq_is_mmio[j] ||
+             (i_addr_update.valid && addr_update_pre_match_q[j]) || rob_head_match_q[j]) &&
+            (!(lq_is_lr[j] || lq_is_amo[j]) || (rob_head_match_q[j] && i_sq_committed_empty)) &&
+            (IdxWidth'(j) < issue_mem_idx) && (lq_rob_tag[j] != lq_rob_tag[issue_mem_idx]) &&
+            is_younger(lq_rob_tag[j], lq_rob_tag[issue_mem_idx], dep_head_q))
+          f_cov_mem_younger_lower_slot = 1'b1;
+      end
+    end
+    f_cov_cdb_younger_lower_slot = 1'b0;
+    if (issue_cdb_found) begin
+      for (int unsigned j = 0; j < DEPTH; j++) begin
+        if (lq_valid[j] && lq_data_valid[j] &&
+            (IdxWidth'(j) < issue_cdb_idx) && (lq_rob_tag[j] != lq_rob_tag[issue_cdb_idx]) &&
+            is_younger(lq_rob_tag[j], lq_rob_tag[issue_cdb_idx], dep_head_q))
+          f_cov_cdb_younger_lower_slot = 1'b1;
+      end
+    end
+  end
+
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       cover_alloc : cover (i_alloc.valid && !full);
@@ -6799,11 +6836,16 @@ module load_queue #(
       cover_amo_minmax_stall :
       cover ((amo_state == AMO_WRITE_ACTIVE) && amo_is_minmax_q && !i_amo_mem_write_done);
 
-      // Cover oldest-eligible selection beating a younger lower-index slot,
-      // and a non-head older load evicting a younger staged load.
+      // Cover non-head oldest-eligible memory selection and oldest CDB
+      // selection beating a younger lower-index slot, plus a non-head older
+      // load evicting a younger staged load.
       cover_oldest_higher_slot_selected :
-      cover (f_past_valid && f_rst_n_q && f_age_live_head_ok &&
-             issue_mem_found && f_age_younger_lower_slot_elig);
+      cover (f_past_valid && f_rst_n_q && f_cov_live_head_ok &&
+             issue_mem_found && !rob_head_match_q[issue_mem_idx] &&
+             f_cov_mem_younger_lower_slot);
+      cover_cdb_oldest_higher_slot_selected :
+      cover (f_past_valid && f_rst_n_q && f_cov_live_head_ok &&
+             issue_cdb_found && f_cov_cdb_younger_lower_slot);
       cover_nonhead_load_evicts_staged_load :
       cover (f_past_valid && f_rst_n_q && sq_check_replace &&
              !(head_mem_stored_found || (i_addr_update.valid && head_mem_update_found)));
@@ -7088,8 +7130,11 @@ module load_queue #(
   cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       sq_check_replace &&
       !(head_mem_stored_found || (i_addr_update.valid && head_mem_update_found)));
-  // An older eligible load at a higher physical index beats a younger lower-index load.
+  // An older non-head eligible load at a higher physical index beats a younger
+  // lower-index load in memory issue, and Phase A picks an older data-ready
+  // load at a higher physical index over a younger lower-index one.
   logic cov_younger_lower_slot_elig;
+  logic cov_cdb_younger_lower_slot_elig;
   always_comb begin
     cov_younger_lower_slot_elig = 1'b0;
     if (issue_mem_found) begin
@@ -7106,10 +7151,21 @@ module load_queue #(
           cov_younger_lower_slot_elig = 1'b1;
       end
     end
+    cov_cdb_younger_lower_slot_elig = 1'b0;
+    if (issue_cdb_found) begin
+      for (int unsigned j = 0; j < DEPTH; j++) begin
+        if (lq_valid[j] && lq_data_valid[j] && (IdxWidth'(j) < issue_cdb_idx) &&
+            is_younger(lq_rob_tag[j], lq_rob_tag[issue_cdb_idx], i_rob_head_tag))
+          cov_cdb_younger_lower_slot_elig = 1'b1;
+      end
+    end
   end
   cover_oldest_higher_slot_selected :
   cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
-      issue_mem_found && cov_younger_lower_slot_elig);
+      issue_mem_found && !rob_head_match_q[issue_mem_idx] && cov_younger_lower_slot_elig);
+  cover_cdb_oldest_higher_slot_selected :
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
+      issue_cdb_found && cov_cdb_younger_lower_slot_elig);
   // A staged load gives up the staging register to an older AMO that has not written.
   cover_staged_load_yields_to_amo :
   cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)

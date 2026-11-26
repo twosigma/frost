@@ -2163,7 +2163,8 @@ all of them.
 | `load_queue` | `cover_dma_write_hits_load_in_flight` | A DMA write to the line of a cached load in flight, whose data then does not fill the L0 |
 | `load_queue` | `cover_head_load_evicts_staged_load` | The ROB-head load takes the staging register from a younger staged load |
 | `load_queue` | `cover_nonhead_load_evicts_staged_load` | An older non-head load takes the staging register from a younger staged load |
-| `load_queue` | `cover_oldest_higher_slot_selected` | An older eligible load at a higher physical index beats a younger lower-index load |
+| `load_queue` | `cover_oldest_higher_slot_selected` | An older non-head eligible load at a higher physical index beats a younger lower-index load |
+| `load_queue` | `cover_cdb_oldest_higher_slot_selected` | An older data-ready load at a higher physical index beats a younger lower-index load for CDB issue |
 | `load_queue` | `cover_staged_load_yields_to_amo` | A staged load gives up the staging register to an older AMO that has not written |
 | `load_queue` | `cover_load_waits_for_unforwardable_store` | A load overlaps an older store that cannot forward to it, so it waits |
 | `load_queue` | `cover_cached_load_slots_full` | Every cached-load slot is busy, so no load launches |

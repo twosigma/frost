@@ -229,18 +229,19 @@ module lq_issue_selector #(
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
       // A staged load may wait on a store younger than the ROB head. That
-      // store cannot commit until the head retires. The head must therefore
-      // take priority and replace the staged load, including for MMIO and LR
-      // (load queue README, "Age-ordered replacement and ROB-head priority").
-      // Only committed,
-      // draining stores can block the head. Downstream issue gates preserve
-      // MMIO/LR head ordering, and the router drains stores before device
-      // reads. AMOs require an empty committed SQ because their LQ write
-      // path is invisible to SQ disambiguation. LRs require it so that no
-      // store older than the LR writes after the LR sets its reservation
-      // (load queue README, "LR and SC"). The per-entry block applies here
-      // too: no older AMO is pending at the head, but a retired vector memory
-      // instruction can still be accessing memory.
+      // store cannot commit until the head retires, so the head must be able
+      // to replace the staged load, including for MMIO, LR, and AMO (load
+      // queue README, "Age-ordered replacement and ROB-head priority"). Age
+      // order selects the head at age 0; this dedicated head path selects the
+      // same head-matched entry directly. Only committed, draining stores can
+      // block the head. Downstream issue gates preserve MMIO/LR head ordering,
+      // and the router drains stores before device reads. AMOs require an
+      // empty committed SQ because their LQ write path is invisible to SQ
+      // disambiguation. LRs require it so that no store older than the LR
+      // writes after the LR sets its reservation (load queue README, "LR and
+      // SC"). The per-entry block applies here too: no older AMO is pending
+      // at the head, but a retired vector memory instruction can still be
+      // accessing memory.
       head_mem_stored_onehot[i] =
           lq_valid[i] &&
           rob_head_match_q[i] &&

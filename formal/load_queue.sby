@@ -5,6 +5,7 @@ bmc_no_prepare_busy queue no_prepare_busy
 cover_no_prepare_busy queue no_prepare_busy
 bmc_probe_launch queue probe_launch
 cover_probe_launch queue probe_launch
+bmc_age_order age_order
 prove_pre_match
 prove_port1_amo port1_amo
 cover_port1_amo port1_amo
@@ -15,6 +16,7 @@ cover_port1_amo port1_amo
 bmc: timeout 1800
 bmc_no_prepare_busy: timeout 1800
 bmc_probe_launch: timeout 1800
+bmc_age_order: timeout 1200
 cover: timeout 600
 cover_no_prepare_busy: timeout 600
 cover_probe_launch: timeout 600
@@ -35,6 +37,8 @@ bmc_probe_launch: mode bmc
 bmc_probe_launch: depth 10
 cover_probe_launch: mode cover
 cover_probe_launch: depth 20
+bmc_age_order: mode bmc
+bmc_age_order: depth 10
 prove_pre_match: mode prove
 prove_pre_match: depth 3
 prove_port1_amo: mode prove
@@ -57,6 +61,10 @@ queue: read -sv coherent_lq_issue_selector.sv
 queue: read -sv coherent_lq_candidate_select.sv
 queue: read -formal -sv coherent_lq_address_store.sv
 queue: read -formal -sv load_queue.sv
+age_order: read -sv coherent_lq_issue_selector.sv
+age_order: read -sv coherent_lq_candidate_select.sv
+age_order: read -formal -sv coherent_lq_address_store.sv
+age_order: read -formal -DF_LQ_AGE_ORDER_PROOF -sv load_queue.sv
 prove_pre_match: read -sv coherent_lq_issue_selector.sv
 prove_pre_match: read -sv coherent_lq_candidate_select.sv
 prove_pre_match: read -formal -sv coherent_lq_address_store.sv
@@ -72,6 +80,8 @@ hierarchy -top load_queue
 script free_undefined.ys
 ~port1_amo: prep -top load_queue
 port1_amo: prep -flatten -top load_queue
+age_order: select -assert-count 6 t:$check r:FLAVOR=assert %i load_queue/p_age_* %i
+age_order: chformal -remove -assert t:$check r:FLAVOR=assert %i load_queue/p_age_* %d
 prove_pre_match: select -assert-none t:$assume
 port1_amo: select -assert-count 5 t:$check r:FLAVOR=assert %i load_queue/p_amo_port1_* %i
 port1_amo: select -assert-count 3 t:$check r:FLAVOR=cover %i load_queue/cover_amo_port1_* %i

@@ -1738,6 +1738,7 @@ FORMAL_TARGETS = [
         tasks=(
             "bmc",
             "cover",
+            "bmc_age_order",
             "prove_pre_match",
             "prove_port1_amo",
             "cover_port1_amo",
@@ -4029,6 +4030,10 @@ SBY_TASKS = [
     (
         "cover_probe_launch",
         "Load queue reachability of each verdict on a read launched during the probe",
+    ),
+    (
+        "bmc_age_order",
+        "Load queue registered-age order and oldest-eligible issue selection",
     ),
     ("prove_alignment", "Unbounded mixed-width tracker and physical FU alignment"),
     ("prove_alignment_direct", "Unbounded direct multiply completion alignment"),
