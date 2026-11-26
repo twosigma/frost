@@ -589,7 +589,7 @@ async def check_sc_samples_after_capture(dut: Any) -> None:
 
 @cocotb.test()
 async def continuous_probes_allow_read_acquisition(dut: Any) -> None:
-    """Reserve a read turn within four completed probes and apply its grant."""
+    """Reserve a read turn within three completed probes and apply its grant."""
     b = Private(dut)
     await b.reset()
     address = 0x80000000

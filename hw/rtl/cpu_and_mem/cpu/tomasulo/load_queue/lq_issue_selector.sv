@@ -230,8 +230,9 @@ module lq_issue_selector #(
     for (int unsigned i = 0; i < DEPTH; i++) begin
       // A staged load may wait on a store younger than the ROB head. That
       // store cannot commit until the head retires. The head must therefore
-      // bypass ring order and replace the staged load, including for MMIO
-      // and LR (load queue README, "ROB-head priority"). Only committed,
+      // take priority and replace the staged load, including for MMIO and LR
+      // (load queue README, "Age-ordered replacement and ROB-head priority").
+      // Only committed,
       // draining stores can block the head. Downstream issue gates preserve
       // MMIO/LR head ordering, and the router drains stores before device
       // reads. AMOs require an empty committed SQ because their LQ write

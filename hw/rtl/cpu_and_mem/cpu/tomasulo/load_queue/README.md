@@ -143,7 +143,7 @@ ROB-head entries precede the age-order scan. The coherent scan index and ROB
 tag decode from the selected age-order mask. Head matches use the head
 selector's index and tag. The pre-issue selector registers a one-hot mask
 alongside the candidate matches. Staging capture uses candidate presence
-independently of ring ordering. A helper prepares capture and clear outcomes
+independently of age ordering. A helper prepares capture and clear outcomes
 for launch hold, an unheld miss and an unheld hit. These outcomes include the
 staged head match, SQ drain and forwarding permissions, memory-busy and
 L0-hit permission, phase and cut hold. Held implies miss, and miss implies
@@ -192,7 +192,7 @@ atomic flag in one final term. The captured Normal-memory class supplies
 L0-hit eligibility.
 Staging captures misalignment with the address and size. Fault checks apply
 the live trap setting to that captured result. The first candidate mask determines which
-address source wins ring order. Candidate presence is independent of
+address source wins age order. Candidate presence is independent of
 that ordering and the selected payload.
 The coherent L0 computes lookup permission from validity, memory type and
 invalidation independently of the tag comparison. A hit requires both.
@@ -213,9 +213,17 @@ orders eligible entries by their registered ROB-head-relative age
 (for example, waiting on an unresolved older store S) and any older ready load O
 becomes eligible, O wins the age-ordered scan even if a younger load Z reused a
 lower physical slot, so `sq_check_replace` evicts Y for O without waiting for O
-to reach the ROB head. The ROB-head load H also gets explicit priority and
-evicts any younger staged load; this guarantees forward progress for head
-device loads, LRs, and AMOs once the committed-store queue is empty.
+to reach the ROB head.
+
+The ROB-head load H still needs explicit priority to evict a younger staged
+load; without it the queue can deadlock. Suppose a younger load Y holds the
+staging register while it waits on an older store S that overlaps it but cannot
+forward (S covers only part of Y, say), and H is a stored device load, LR, or
+AMO that is excluded from the normal scan. If S has not committed, it is
+younger than H, so it cannot commit or drain until H retires, and Y never
+leaves. Priority for H is always safe: every store older than H has committed
+and drains on its own. A head AMO or LR takes priority only once the
+committed-store queue is empty.
 
 ### Staging and the SQ check
 

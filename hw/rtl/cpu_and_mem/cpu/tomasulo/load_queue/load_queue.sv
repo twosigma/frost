@@ -356,7 +356,7 @@ module load_queue #(
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
-  localparam int unsigned PtrWidth = IdxWidth + 1;  // MSB unused; see head_ptr
+  localparam int unsigned PtrWidth = IdxWidth + 1;
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
   // Keep this literal for Yosys, which does not parse $bits(package::enum)
   // reliably. mem_size_e is logic [1:0].
@@ -1448,7 +1448,8 @@ module load_queue #(
 
   // Register ROB-head matching for timing. Head priority prevents starvation
   // behind a staged load waiting on a younger store (load queue README,
-  // "ROB-head priority"). A new head gains priority one cycle later. A stale
+  // "Age-ordered replacement and ROB-head priority"). A new head gains
+  // priority one cycle later. A stale
   // match can name only a freed or flushed entry, masked by lq_valid, because
   // a load frees its LQ entry before retiring. sq_check_entry_issueable checks
   // the live ROB head for MMIO, LR, and AMO.
@@ -1776,20 +1777,20 @@ module load_queue #(
 `endif
   assign update_scan_wins = i_addr_update.valid && update_scan_older_than_stored_scan;
 
-  wire [DEPTH-1:0] coherent_ring_mask =
+  wire [DEPTH-1:0] coherent_age_mask =
       i_addr_update.valid ? merged_scan_onehot : stored_scan_onehot;
-  logic [IdxWidth-1:0] coherent_ring_idx;
-  logic [ReorderBufferTagWidth-1:0] coherent_ring_tag;
+  logic [IdxWidth-1:0] coherent_age_idx;
+  logic [ReorderBufferTagWidth-1:0] coherent_age_tag;
   always_comb begin
-    coherent_ring_idx = '0;
-    coherent_ring_tag = '0;
+    coherent_age_idx = '0;
+    coherent_age_tag = '0;
     for (int entry = 0; entry < DEPTH; entry++) begin
-      coherent_ring_idx |= {IdxWidth{coherent_ring_mask[entry]}} & IdxWidth'(entry);
-      coherent_ring_tag |= {ReorderBufferTagWidth{coherent_ring_mask[entry]}} & lq_rob_tag[entry];
+      coherent_age_idx |= {IdxWidth{coherent_age_mask[entry]}} & IdxWidth'(entry);
+      coherent_age_tag |= {ReorderBufferTagWidth{coherent_age_mask[entry]}} & lq_rob_tag[entry];
     end
   end
 
-  // Phase B: prefer an eligible ROB-head load, then ring order. Select stored
+  // Phase B: prefer an eligible ROB-head load, then age order. Select stored
   // and arriving-address candidates separately for address RAM timing.
   always_comb begin
     stored_issue_idx      = head_mem_stored_found ? head_mem_stored_idx : stored_scan_idx;
@@ -1835,10 +1836,10 @@ module load_queue #(
           (i_addr_update.valid && head_mem_update_found) ? head_mem_update_onehot :
           i_addr_update.valid ? merged_scan_onehot : stored_scan_onehot;
       issue_mem_idx = head_mem_stored_found ? head_mem_stored_idx :
-          (i_addr_update.valid && head_mem_update_found) ? head_mem_update_idx : coherent_ring_idx;
+          (i_addr_update.valid && head_mem_update_found) ? head_mem_update_idx : coherent_age_idx;
       issue_mem_rob_tag = head_mem_stored_found ? head_mem_stored_rob_tag :
           (i_addr_update.valid && head_mem_update_found) ?
-              head_mem_update_rob_tag : coherent_ring_tag;
+              head_mem_update_rob_tag : coherent_age_tag;
     end
   end
 
@@ -5239,6 +5240,120 @@ module load_queue #(
       assert (issue_cdb_found == sim_issue_cdb_found_ref && issue_cdb_idx == sim_issue_cdb_idx_ref);
     end
   end
+
+  // Permanent age-order and oldest-eligible selection checks. Every mature
+  // valid entry's registered age must match (lq_rob_tag - dep_head_q) and
+  // order mature pairs identically to is_younger; no entry may be eligible in
+  // its first valid cycle; and Phase A/B must pick the oldest eligible entry.
+  logic [DEPTH-1:0] sim_age_mature;
+  logic [DEPTH-1:0] sim_age_in_flight;
+  logic [DEPTH-1:0] sim_age_mem_stored_elig;
+  logic [DEPTH-1:0] sim_age_mem_update_elig;
+  logic [DEPTH-1:0] sim_age_mem_elig;
+  logic [DEPTH-1:0] sim_age_cdb_elig;
+  logic [ReorderBufferTagWidth-1:0] sim_age_head_adv;
+  logic sim_age_first_cycle_elig;
+  logic sim_age_matches_dep_head;
+  logic sim_age_pair_order_dep;
+  logic sim_age_live_head_ok;
+  logic sim_age_pair_order_live;
+  logic sim_age_mem_oldest_ok;
+  logic sim_age_cdb_oldest_ok;
+  always_comb begin
+    sim_age_mature = lq_valid & dep_identity_valid_q;
+    sim_age_in_flight = sq_check_in_flight_mask | coherent_parked_q;
+    sim_age_head_adv = i_rob_head_tag - dep_head_q;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      sim_age_mem_stored_elig[i] =
+          lq_valid[i] && lq_addr_valid[i] && !lq_issued[i] && !lq_data_valid[i] &&
+          !sim_age_in_flight[i] && !issue_block_q[i] &&
+          (!lq_is_mmio[i] || rob_head_match_q[i]) &&
+          (!(lq_is_lr[i] || lq_is_amo[i]) || (rob_head_match_q[i] && i_sq_committed_empty));
+      sim_age_mem_update_elig[i] =
+          i_addr_update.valid && lq_valid[i] && addr_update_pre_match_q[i] &&
+          !lq_issued[i] && !lq_data_valid[i] && !sim_age_in_flight[i] && !issue_block_q[i] &&
+          (!(lq_is_lr[i] || lq_is_amo[i]) || (rob_head_match_q[i] && i_sq_committed_empty));
+      sim_age_cdb_elig[i] = lq_valid[i] && lq_data_valid[i];
+    end
+    sim_age_mem_elig = sim_age_mem_stored_elig | sim_age_mem_update_elig;
+    sim_age_first_cycle_elig = |((sim_age_mem_elig | sim_age_cdb_elig) & dep_replaced_oh);
+
+    sim_age_matches_dep_head = 1'b1;
+    sim_age_live_head_ok = 1'b1;
+    sim_age_pair_order_dep = 1'b1;
+    sim_age_pair_order_live = 1'b1;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (sim_age_mature[i]) begin
+        if (lq_entry_age_q[i] != ReorderBufferTagWidth'(lq_rob_tag[i] - dep_head_q))
+          sim_age_matches_dep_head = 1'b0;
+        if (sim_age_head_adv > ReorderBufferTagWidth'(lq_rob_tag[i] - dep_head_q))
+          sim_age_live_head_ok = 1'b0;
+      end
+    end
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      for (int unsigned j = i + 1; j < DEPTH; j++) begin
+        if (sim_age_mature[i] && sim_age_mature[j] && (lq_rob_tag[i] != lq_rob_tag[j])) begin
+          if ((lq_entry_age_q[i] < lq_entry_age_q[j]) !=
+              is_younger(lq_rob_tag[j], lq_rob_tag[i], dep_head_q))
+            sim_age_pair_order_dep = 1'b0;
+          if (sim_age_live_head_ok &&
+              ((lq_entry_age_q[i] < lq_entry_age_q[j]) !=
+               is_younger(lq_rob_tag[j], lq_rob_tag[i], i_rob_head_tag)))
+            sim_age_pair_order_live = 1'b0;
+        end
+      end
+    end
+
+    sim_age_mem_oldest_ok = (issue_mem_found == (|sim_age_mem_elig));
+    if (issue_mem_found) begin
+      if (!sim_age_mem_elig[issue_mem_idx] ||
+          (issue_mem_onehot != (DEPTH'(1) << issue_mem_idx)) ||
+          (issue_mem_rob_tag != lq_rob_tag[issue_mem_idx]))
+        sim_age_mem_oldest_ok = 1'b0;
+      for (int unsigned j = 0; j < DEPTH; j++) begin
+        if (sim_age_mem_elig[j] && (IdxWidth'(j) != issue_mem_idx) &&
+            (lq_rob_tag[j] != lq_rob_tag[issue_mem_idx])) begin
+          if (rob_head_match_q[j] && !rob_head_match_q[issue_mem_idx])
+            sim_age_mem_oldest_ok = 1'b0;
+          if (!rob_head_match_q[issue_mem_idx] &&
+              is_younger(lq_rob_tag[issue_mem_idx], lq_rob_tag[j], dep_head_q))
+            sim_age_mem_oldest_ok = 1'b0;
+          if (sim_age_live_head_ok && !rob_head_match_q[issue_mem_idx] &&
+              is_younger(lq_rob_tag[issue_mem_idx], lq_rob_tag[j], i_rob_head_tag))
+            sim_age_mem_oldest_ok = 1'b0;
+        end
+      end
+    end
+
+    sim_age_cdb_oldest_ok = (issue_cdb_found == (|sim_age_cdb_elig));
+    if (issue_cdb_found) begin
+      if (!sim_age_cdb_elig[issue_cdb_idx]) sim_age_cdb_oldest_ok = 1'b0;
+      for (int unsigned j = 0; j < DEPTH; j++) begin
+        if (sim_age_cdb_elig[j] && (IdxWidth'(j) != issue_cdb_idx) &&
+            (lq_rob_tag[j] != lq_rob_tag[issue_cdb_idx])) begin
+          if (is_younger(lq_rob_tag[issue_cdb_idx], lq_rob_tag[j], dep_head_q))
+            sim_age_cdb_oldest_ok = 1'b0;
+          if (sim_age_live_head_ok &&
+              is_younger(lq_rob_tag[issue_cdb_idx], lq_rob_tag[j], i_rob_head_tag))
+            sim_age_cdb_oldest_ok = 1'b0;
+        end
+      end
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && i_rst_n &&
+        !$isunknown({lq_valid, dep_identity_valid_q, lq_addr_valid, lq_issued, lq_data_valid,
+                     addr_update_pre_match_q, rob_head_match_q, issue_block_q,
+                     sq_check_in_flight_mask, coherent_parked_q, i_addr_update.valid,
+                     i_sq_committed_empty, dep_head_q, i_rob_head_tag, lq_entry_age_q})) begin
+      p_sim_no_first_cycle_eligible : assert (!sim_age_first_cycle_elig);
+      p_sim_mature_age_matches_dep_head : assert (sim_age_matches_dep_head);
+      p_sim_mature_pair_age_order_dep : assert (sim_age_pair_order_dep);
+      p_sim_mature_pair_age_order_live : assert (sim_age_pair_order_live);
+      p_sim_issue_mem_oldest_eligible : assert (sim_age_mem_oldest_ok);
+      p_sim_issue_cdb_oldest_eligible : assert (sim_age_cdb_oldest_ok);
+    end
+  end
 `endif
 `endif
 
@@ -6049,6 +6164,124 @@ module load_queue #(
     end
   end
 
+  // Permanent age-order and oldest-eligible selection proofs. Every mature
+  // valid entry's registered age equals (lq_rob_tag - dep_head_q), mature
+  // pairs compare identically under lq_entry_age_q and is_younger, no entry is
+  // eligible on its first valid cycle, and Phase A/B pick the oldest eligible
+  // entry (including live i_rob_head_tag order whenever the head stays within
+  // the mature ROB window).
+  logic [DEPTH-1:0] f_age_mature;
+  logic [DEPTH-1:0] f_age_in_flight;
+  logic [DEPTH-1:0] f_age_mem_stored_elig;
+  logic [DEPTH-1:0] f_age_mem_update_elig;
+  logic [DEPTH-1:0] f_age_mem_elig;
+  logic [DEPTH-1:0] f_age_cdb_elig;
+  logic [ReorderBufferTagWidth-1:0] f_age_head_adv;
+  logic f_age_first_cycle_elig;
+  logic f_age_matches_dep_head;
+  logic f_age_live_head_ok;
+  logic f_age_pair_order_dep;
+  logic f_age_pair_order_live;
+  logic f_age_mem_oldest_ok;
+  logic f_age_cdb_oldest_ok;
+  logic f_age_younger_lower_slot_elig;
+  always_comb begin
+    f_age_mature = lq_valid & dep_identity_valid_q;
+    f_age_in_flight = sq_check_in_flight_mask | coherent_parked_q;
+    f_age_head_adv = i_rob_head_tag - dep_head_q;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      f_age_mem_stored_elig[i] =
+          lq_valid[i] && lq_addr_valid[i] && !lq_issued[i] && !lq_data_valid[i] &&
+          !f_age_in_flight[i] && !issue_block_q[i] &&
+          (!lq_is_mmio[i] || rob_head_match_q[i]) &&
+          (!(lq_is_lr[i] || lq_is_amo[i]) || (rob_head_match_q[i] && i_sq_committed_empty));
+      f_age_mem_update_elig[i] =
+          i_addr_update.valid && lq_valid[i] && addr_update_pre_match_q[i] &&
+          !lq_issued[i] && !lq_data_valid[i] && !f_age_in_flight[i] && !issue_block_q[i] &&
+          (!(lq_is_lr[i] || lq_is_amo[i]) || (rob_head_match_q[i] && i_sq_committed_empty));
+      f_age_cdb_elig[i] = lq_valid[i] && lq_data_valid[i];
+    end
+    f_age_mem_elig = f_age_mem_stored_elig | f_age_mem_update_elig;
+    f_age_first_cycle_elig = |((f_age_mem_elig | f_age_cdb_elig) & dep_replaced_oh);
+
+    f_age_matches_dep_head = 1'b1;
+    f_age_live_head_ok = 1'b1;
+    f_age_pair_order_dep = 1'b1;
+    f_age_pair_order_live = 1'b1;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (f_age_mature[i]) begin
+        if (lq_entry_age_q[i] != ReorderBufferTagWidth'(lq_rob_tag[i] - dep_head_q))
+          f_age_matches_dep_head = 1'b0;
+        if (f_age_head_adv > ReorderBufferTagWidth'(lq_rob_tag[i] - dep_head_q))
+          f_age_live_head_ok = 1'b0;
+      end
+    end
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      for (int unsigned j = i + 1; j < DEPTH; j++) begin
+        if (f_age_mature[i] && f_age_mature[j] && (lq_rob_tag[i] != lq_rob_tag[j])) begin
+          if ((lq_entry_age_q[i] < lq_entry_age_q[j]) !=
+              is_younger(lq_rob_tag[j], lq_rob_tag[i], dep_head_q))
+            f_age_pair_order_dep = 1'b0;
+          if (f_age_live_head_ok &&
+              ((lq_entry_age_q[i] < lq_entry_age_q[j]) !=
+               is_younger(lq_rob_tag[j], lq_rob_tag[i], i_rob_head_tag)))
+            f_age_pair_order_live = 1'b0;
+        end
+      end
+    end
+
+    f_age_mem_oldest_ok = (issue_mem_found == (|f_age_mem_elig));
+    f_age_younger_lower_slot_elig = 1'b0;
+    if (issue_mem_found) begin
+      if (!f_age_mem_elig[issue_mem_idx] ||
+          (issue_mem_onehot != (DEPTH'(1) << issue_mem_idx)) ||
+          (issue_mem_rob_tag != lq_rob_tag[issue_mem_idx]))
+        f_age_mem_oldest_ok = 1'b0;
+      for (int unsigned j = 0; j < DEPTH; j++) begin
+        if (f_age_mem_elig[j] && (IdxWidth'(j) != issue_mem_idx) &&
+            (lq_rob_tag[j] != lq_rob_tag[issue_mem_idx])) begin
+          if (rob_head_match_q[j] && !rob_head_match_q[issue_mem_idx])
+            f_age_mem_oldest_ok = 1'b0;
+          if (!rob_head_match_q[issue_mem_idx] &&
+              is_younger(lq_rob_tag[issue_mem_idx], lq_rob_tag[j], dep_head_q))
+            f_age_mem_oldest_ok = 1'b0;
+          if (f_age_live_head_ok && !rob_head_match_q[issue_mem_idx] &&
+              is_younger(lq_rob_tag[issue_mem_idx], lq_rob_tag[j], i_rob_head_tag))
+            f_age_mem_oldest_ok = 1'b0;
+          if ((IdxWidth'(j) < issue_mem_idx) &&
+              is_younger(lq_rob_tag[j], lq_rob_tag[issue_mem_idx], dep_head_q))
+            f_age_younger_lower_slot_elig = 1'b1;
+        end
+      end
+    end
+
+    f_age_cdb_oldest_ok = (issue_cdb_found == (|f_age_cdb_elig));
+    if (issue_cdb_found) begin
+      if (!f_age_cdb_elig[issue_cdb_idx]) f_age_cdb_oldest_ok = 1'b0;
+      for (int unsigned j = 0; j < DEPTH; j++) begin
+        if (f_age_cdb_elig[j] && (IdxWidth'(j) != issue_cdb_idx) &&
+            (lq_rob_tag[j] != lq_rob_tag[issue_cdb_idx])) begin
+          if (is_younger(lq_rob_tag[issue_cdb_idx], lq_rob_tag[j], dep_head_q))
+            f_age_cdb_oldest_ok = 1'b0;
+          if (f_age_live_head_ok &&
+              is_younger(lq_rob_tag[issue_cdb_idx], lq_rob_tag[j], i_rob_head_tag))
+            f_age_cdb_oldest_ok = 1'b0;
+        end
+      end
+    end
+  end
+
+  always_comb begin
+    if (f_past_valid && i_rst_n && f_rst_n_q) begin
+      p_no_first_cycle_eligible : assert (!f_age_first_cycle_elig);
+      p_mature_age_matches_dep_head : assert (f_age_matches_dep_head);
+      p_mature_pair_age_order_dep : assert (f_age_pair_order_dep);
+      p_mature_pair_age_order_live : assert (f_age_pair_order_live);
+      p_issue_mem_oldest_eligible : assert (f_age_mem_oldest_ok);
+      p_issue_cdb_oldest_eligible : assert (f_age_cdb_oldest_ok);
+    end
+  end
+
   // o_count matches an independent popcount of lq_valid
   logic [CountWidth-1:0] f_valid_count;
   always_comb begin
@@ -6565,6 +6798,15 @@ module load_queue #(
              amo_response_minmax_relation_d[1]);
       cover_amo_minmax_stall :
       cover ((amo_state == AMO_WRITE_ACTIVE) && amo_is_minmax_q && !i_amo_mem_write_done);
+
+      // Cover oldest-eligible selection beating a younger lower-index slot,
+      // and a non-head older load evicting a younger staged load.
+      cover_oldest_higher_slot_selected :
+      cover (f_past_valid && f_rst_n_q && f_age_live_head_ok &&
+             issue_mem_found && f_age_younger_lower_slot_elig);
+      cover_nonhead_load_evicts_staged_load :
+      cover (f_past_valid && f_rst_n_q && sq_check_replace &&
+             !(head_mem_stored_found || (i_addr_update.valid && head_mem_update_found)));
     end
   end
 
@@ -6841,6 +7083,33 @@ module load_queue #(
   cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
       sq_check_replace &&
       (head_mem_stored_found || (i_addr_update.valid && head_mem_update_found)));
+  // An older non-head load takes the staging register from a younger staged load.
+  cover_nonhead_load_evicts_staged_load :
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
+      sq_check_replace &&
+      !(head_mem_stored_found || (i_addr_update.valid && head_mem_update_found)));
+  // An older eligible load at a higher physical index beats a younger lower-index load.
+  logic cov_younger_lower_slot_elig;
+  always_comb begin
+    cov_younger_lower_slot_elig = 1'b0;
+    if (issue_mem_found) begin
+      for (int unsigned j = 0; j < DEPTH; j++) begin
+        if (lq_valid[j] &&
+            (lq_addr_valid[j] || (i_addr_update.valid && addr_update_pre_match_q[j])) &&
+            !lq_issued[j] && !lq_data_valid[j] &&
+            !sq_check_in_flight_mask[j] && !coherent_parked_q[j] && !issue_block_q[j] &&
+            (!lq_is_mmio[j] ||
+             (i_addr_update.valid && addr_update_pre_match_q[j]) || rob_head_match_q[j]) &&
+            (!(lq_is_lr[j] || lq_is_amo[j]) || (rob_head_match_q[j] && i_sq_committed_empty)) &&
+            (IdxWidth'(j) < issue_mem_idx) &&
+            is_younger(lq_rob_tag[j], lq_rob_tag[issue_mem_idx], i_rob_head_tag))
+          cov_younger_lower_slot_elig = 1'b1;
+      end
+    end
+  end
+  cover_oldest_higher_slot_selected :
+  cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
+      issue_mem_found && cov_younger_lower_slot_elig);
   // A staged load gives up the staging register to an older AMO that has not written.
   cover_staged_load_yields_to_amo :
   cover property (@(posedge i_clk) disable iff (!reset_seen_q || !i_rst_n)
