@@ -3855,6 +3855,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector engine at VLEN 128: integer instructions against a model of their semantics",
         verilator_extra_args=("-GVLEN=128",),
     ),
+    **{
+        f"vec_engine_split_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_engine_split",
+            hdl_toplevel_module="vec_engine",
+            description=(
+                f"Vector engine split-issue back-to-back hazards and o_grp_ready at VLEN {vlen}"
+            ),
+            verilator_extra_args=("--assert", f"-GVLEN={vlen}", "-GSPLIT_ISSUE=1"),
+        )
+        for vlen in (128, 256, 512)
+    },
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",
