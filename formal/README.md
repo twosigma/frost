@@ -302,11 +302,11 @@ choices for each of four bounded schedules, plus four covers, within
 coherent-array equivalence jobs run
 the `coherence_array_equiv` tasks: the five four-way tasks in a 150-minute
 job and the other eight in a 133-minute job. The Coherence job
-runs the other coherence tasks, including the hart maintenance covers
-and the reset-state lemma induction, with a 230-minute limit. The
-Coherence harts and CPU job runs the `coherent_hart_cache`, `coherent_cpu`,
-`coherence_dma_ingress` and `coherence_home_completions` tasks with a
-210-minute limit. The home
+runs the other coherence tasks with a 230-minute limit. The
+Coherence harts and CPU job runs the `coherent_hart_cache` tasks (including
+the hart maintenance covers and the reset-state lemma induction) and the
+`coherent_cpu`, `coherence_dma_ingress` and `coherence_home_completions`
+tasks with a 210-minute limit. The home
 tasks run in two jobs: the default home tasks in a 355-minute job and
 the `FAST_TAG_LAUNCH=1` home tasks in a 165-minute job.
 Ten jobs split the rest: Vector (the vector CSR

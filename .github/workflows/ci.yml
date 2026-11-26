@@ -1813,7 +1813,7 @@ jobs:
           # The same-sector flow BMC has a 110-minute allowance. The
           # different-sector assertions split into the flow BMC (115 minutes), the
           # C2b write-busy BMC (90 minutes) with the home grant-state BMC (10
-          # minutes), and the home completion-identity BMC (240 minutes).
+          # minutes), and the home completion-identity BMC (230 minutes).
           - shard: Store boundary AMO same
             pytest_filter: >-
               coherence_store_boundary and bmc_amo_same and not (fatal or owner)
