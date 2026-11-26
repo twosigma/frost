@@ -4475,12 +4475,17 @@ module cpu_ooo #(
     assign o_mmio_uart_rx_ready_pulse = router_mmio_uart_rx_ready_pulse || vec_mmio_uart_rx_pulse_q;
 
 `ifndef SYNTHESIS
+    logic vec_unc_port_grant_prev_q = 1'b0;
     always @(posedge i_clk) begin
+      if (i_rst) vec_unc_port_grant_prev_q <= 1'b0;
+      else vec_unc_port_grant_prev_q <= vec_unc_port_grant_q;
       if (reset_seen_q && !i_rst && vec_unc_bus_hold) begin
         assert (!lq_mem_read_en)
         else $error("cpu_ooo: scalar load launched while vec_unc_bus_hold asserted");
       end
       if (reset_seen_q && !i_rst && vec_unc_launch) begin
+        assert (vec_unc_port_grant_prev_q)
+        else $error("cpu_ooo: vector uncached beat launched without prior registered grant");
         assert (vec_head_shield)
         else $error("cpu_ooo: vector uncached beat launched without vec_head_shield");
         assert (!sq_mem_write_en && !amo_mem_write_en && !lq_mem_read_en && !lq_mem_request_valid)
@@ -4494,8 +4499,9 @@ module cpu_ooo #(
           else $error("cpu_ooo: vector uncached read launched while port not ready");
         end
         if (vec_unc_write_launch) begin
-          assert (!VARIABLE_UNCACHED || !i_uncached_write_inflight)
-          else $error("cpu_ooo: vector uncached write launched while uncached write inflight");
+          assert (!VARIABLE_UNCACHED ||
+                  (i_uncached_read_request_ready && !i_uncached_write_inflight))
+          else $error("cpu_ooo: vector uncached write launched while uncached port busy");
         end
       end
     end

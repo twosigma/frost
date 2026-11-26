@@ -46,6 +46,29 @@
 #define BRAM_IDX_PA 0x00029400ul
 #define BRAM_DUMP_PA 0x00029600ul
 #define DDR_MA_PA 0x83204000ul
+#define PT_ROOT 0x83210000ul
+#define PT_L1 0x83211000ul
+#define PT_L0 0x83212000ul
+#define DDR_NC_PA 0x83220000ul
+#define DDR_CACHED_PA 0x83221000ul
+#define VA_NC 0x00400000ul
+#define VA_CACHED 0x00401000ul
+#define VA_BRAM 0x00402000ul
+#define VA_FIFO 0x00403000ul
+
+#define PTE_V (1ul << 0)
+#define PTE_R (1ul << 1)
+#define PTE_W (1ul << 2)
+#define PTE_A (1ul << 6)
+#define PTE_D (1ul << 7)
+#define PTE_PBMT_NC (1ul << 61)
+#define PTE_PBMT_IO (2ul << 61)
+#define PTE_PPN(pa) ((((unsigned long) (pa)) >> 12) << 10)
+#define SATP_SV39 (8ul << 60)
+#define MENVCFG_PBMTE (1ul << 62)
+#define MSTATUS_MPRV (1ul << 17)
+#define MSTATUS_MPP_MASK (3ul << 11)
+#define MSTATUS_MPP_S (1ul << 11)
 
 #define MSTATUS_VS (3ul << 9)
 #define VS_INITIAL (1ul << 9)
@@ -500,6 +523,189 @@ static void test_vec_retire_before_scalar_misaligned(void)
     }
 }
 
+static void test_wrong_path_uncached_read_before_vec(void)
+{
+    /* Set up Sv39 + Svpbmt so VA_NC maps to DDR with PBMT=NC (long-latency
+     * uncached read through cpu_uncached_adapter), VA_BRAM maps to low BRAM,
+     * and VA_FIFO maps to MMIO (PBMT=IO). Train a branch strongly not-taken
+     * whose fall-through issues a speculative scalar uncached read to VA_NC;
+     * when the branch finally mispredicts taken, the squashed scalar read
+     * remains in flight in cpu_uncached_adapter (holding i_uncached_read_ready
+     * low) while the right-path uncached vector load or store arms at the ROB
+     * head, requiring vec_head_mmu to wait for the registered port grant. */
+    volatile uint64_t *root = (volatile uint64_t *) PT_ROOT;
+    volatile uint64_t *l1 = (volatile uint64_t *) PT_L1;
+    volatile uint64_t *l0 = (volatile uint64_t *) PT_L0;
+    for (unsigned i = 0; i < 512u; i++) {
+        root[i] = 0ul;
+        l1[i] = 0ul;
+        l0[i] = 0ul;
+    }
+    root[0] = PTE_PPN(PT_L1) | PTE_V;
+    l1[2] = PTE_PPN(PT_L0) | PTE_V; /* VA 0x400000..0x5FFFFF */
+    l0[0] = PTE_PPN(DDR_NC_PA) | PTE_PBMT_NC | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    l0[1] = PTE_PPN(DDR_CACHED_PA) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    l0[2] = PTE_PPN(BRAM_A_PA) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    l0[3] = PTE_PPN(0x40000000ul) | PTE_PBMT_IO | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+
+    *(volatile uint64_t *) DDR_NC_PA = 0x13579BDF2468ACE0ull;
+    for (unsigned i = 0; i < 4u; i++) {
+        bram_a32[i] = 0xC1000000u + i;
+        bram_b32[i] = 0u;
+    }
+
+    csr_set(0x30A, MENVCFG_PBMTE);
+    __asm__ volatile("fence rw, rw\n csrw satp, %0\n sfence.vma"
+                     :
+                     : "r"(SATP_SV39 | (PT_ROOT >> 12))
+                     : "memory");
+
+    /* Enable MPRV with MPP=S so data accesses use Sv39 while code stays M-mode. */
+    csr_clear(mstatus, MSTATUS_MPP_MASK);
+    csr_set(mstatus, MSTATUS_MPP_S | MSTATUS_MPRV);
+
+    /* Warm DTLB entries for VA_NC, VA_BRAM, and VA_FIFO. */
+    uint64_t warm_nc = 0ul;
+    uint32_t warm_bram = 0u;
+    __asm__ volatile("ld %0, 0(%2)\n"
+                     "lw %1, 0(%3)\n"
+                     : "=r"(warm_nc), "=r"(warm_bram)
+                     : "r"(VA_NC), "r"(VA_BRAM)
+                     : "memory");
+
+    setvl(4, VT_VTYPE(VT_E32, VT_M1));
+
+    /* 4a. Wrong-path speculative Svpbmt NC read in flight -> right-path vle32.v on low BRAM. */
+    for (unsigned iter = 0; iter < 16u; iter++) {
+        unsigned long take = (iter == 15u) ? 1ul : 0ul;
+        unsigned long delay = 0x123456789ABCDEF1ul;
+        __asm__ volatile("mul t0, %1, %1\n"
+                         "mul t0, t0, %1\n"
+                         "mul t0, t0, %1\n"
+                         "mul t0, t0, %1\n"
+                         "and t0, t0, zero\n"
+                         "or  t0, t0, %0\n"
+                         "bnez t0, 1f\n"
+                         "ld  t1, 0(%2)\n"
+                         "j   2f\n"
+                         "1:\n"
+                         ".insn r 0x07, 6, 0x01, x8, %3, x0\n"
+                         "2:\n"
+                         :
+                         : "r"(take), "r"(delay), "r"(VA_NC), "r"(VA_BRAM)
+                         : "t0", "t1", "memory");
+    }
+    /* Clear MPRV before reading bare globals and checking results. */
+    csr_clear(mstatus, MSTATUS_MPRV);
+    check(warm_nc == 0x13579BDF2468ACE0ull && warm_bram == 0xC1000000u,
+          "Svpbmt NC warm check",
+          0,
+          warm_bram,
+          0xC1000000u);
+    store_v8_e32(bram_dump32);
+    for (unsigned i = 0; i < 4u; i++)
+        check(bram_dump32[i] == 0xC1000000u + i,
+              "wrong-path NC ld -> vle32 BRAM",
+              i,
+              bram_dump32[i],
+              0xC1000000u + i);
+
+    /* 4b. Wrong-path speculative Svpbmt NC read in flight -> right-path vse32.v on low BRAM. */
+    for (unsigned i = 0; i < 4u; i++)
+        bram_dump32[i] = 0xD2000000u + i;
+    load_v8_e32(bram_dump32);
+    csr_clear(mstatus, MSTATUS_MPP_MASK);
+    csr_set(mstatus, MSTATUS_MPP_S | MSTATUS_MPRV);
+    for (unsigned iter = 0; iter < 16u; iter++) {
+        unsigned long take = (iter == 15u) ? 1ul : 0ul;
+        unsigned long delay = 0xFEDCBA9876543211ul;
+        __asm__ volatile("mul t0, %1, %1\n"
+                         "mul t0, t0, %1\n"
+                         "mul t0, t0, %1\n"
+                         "mul t0, t0, %1\n"
+                         "and t0, t0, zero\n"
+                         "or  t0, t0, %0\n"
+                         "bnez t0, 1f\n"
+                         "ld  t1, 0(%2)\n"
+                         "j   2f\n"
+                         "1:\n"
+                         ".insn r 0x27, 6, 0x01, x8, %3, x0\n"
+                         "2:\n"
+                         :
+                         : "r"(take), "r"(delay), "r"(VA_NC), "r"(VA_BRAM + 0x200ul)
+                         : "t0", "t1", "memory");
+    }
+    csr_clear(mstatus, MSTATUS_MPRV);
+    for (unsigned i = 0; i < 4u; i++)
+        check(bram_b32[i] == 0xD2000000u + i,
+              "wrong-path NC ld -> vse32 BRAM",
+              i,
+              bram_b32[i],
+              0xD2000000u + i);
+
+    /* 4c. Wrong-path speculative Svpbmt NC read in flight -> right-path vlse32.v on FIFO0. */
+    drain_fifos();
+    for (unsigned i = 0; i < 5u; i++)
+        FIFO0 = 0xE3000000u + i;
+    csr_clear(mstatus, MSTATUS_MPP_MASK);
+    csr_set(mstatus, MSTATUS_MPP_S | MSTATUS_MPRV);
+    uint64_t zero_stride = 0ul;
+    for (unsigned iter = 0; iter < 16u; iter++) {
+        unsigned long take = (iter == 15u) ? 1ul : 0ul;
+        unsigned long delay = 0x1122334455667789ul;
+        __asm__ volatile("mul t0, %1, %1\n"
+                         "mul t0, t0, %1\n"
+                         "mul t0, t0, %1\n"
+                         "mul t0, t0, %1\n"
+                         "and t0, t0, zero\n"
+                         "or  t0, t0, %0\n"
+                         "bnez t0, 1f\n"
+                         "ld  t1, 0(%2)\n"
+                         "j   2f\n"
+                         "1:\n"
+                         ".insn r 0x07, 6, 0x05, x8, %3, %4\n"
+                         "2:\n"
+                         :
+                         : "r"(take), "r"(delay), "r"(VA_NC), "r"(VA_FIFO + 8ul), "r"(zero_stride)
+                         : "t0", "t1", "memory");
+    }
+    csr_clear(mstatus, MSTATUS_MPRV);
+    store_v8_e32(bram_dump32);
+    uint32_t sent = FIFO0;
+    for (unsigned i = 0; i < 4u; i++)
+        check(bram_dump32[i] == 0xE3000000u + i,
+              "wrong-path NC ld -> vlse32 FIFO0",
+              i,
+              bram_dump32[i],
+              0xE3000000u + i);
+    check(sent == 0xE3000004u && FIFO0 == 0u,
+          "wrong-path NC ld -> vlse32 FIFO0 zero dup pops",
+          0,
+          sent,
+          0xE3000004u);
+
+    /* 4d. Mixed cached Page 1 (DDR) -> uncached Page 2 (low BRAM) segment load
+     *     (vlseg2e32.v at VA_CACHED + 0xFFC): field 0 runs cached with
+     *     unc_bus_hold_q=0 and transitions directly to HM_RUN_UNC_PRE for
+     *     field 1, where vec_unc_port_grant_q is guaranteed 0 on entry and
+     *     vec_head_mmu must wait one cycle for the registered grant. */
+    *(volatile uint32_t *) (DDR_CACHED_PA + 0xFFCu) = 0xF1000000u;
+    bram_a32[0] = 0xF2000001u;
+    setvl(1, VT_VTYPE(VT_E32, VT_M1));
+    csr_clear(mstatus, MSTATUS_MPP_MASK);
+    csr_set(mstatus, MSTATUS_MPP_S | MSTATUS_MPRV);
+    __asm__ volatile(".insn r 0x07, 6, 0x11, x8, %0, x0" : : "r"(VA_CACHED + 0xFFCul) : "memory");
+    csr_clear(mstatus, MSTATUS_MPRV);
+    __asm__ volatile("csrw satp, zero\n sfence.vma" : : : "memory");
+    store_v8_e32(bram_dump32);
+    store_v9_e32(bram_dump32 + 4);
+    check(bram_dump32[0] == 0xF1000000u && bram_dump32[4] == 0xF2000001u,
+          "cached->BRAM vlseg2e32 registered grant wait",
+          bram_dump32[0],
+          bram_dump32[4],
+          0xF2000001u);
+}
+
 int main(void)
 {
     set_trap_handler(trap_entry);
@@ -512,6 +718,7 @@ int main(void)
     test_scalar_store_before_vec_store();
     test_scalar_store_before_other_forms_and_widths();
     test_vec_retire_before_scalar_misaligned();
+    test_wrong_path_uncached_read_before_vec();
 
     uart_printf("vec_uncached_grant_test checks=%d %s\n", g_checks, g_ok ? "<<PASS>>" : "<<FAIL>>");
     for (;;) {
