@@ -3929,7 +3929,7 @@ SBY_TASKS = [
     ("index_cover", "Indexed head run reachability: retirement, mid-run fault."),
     (
         "uncached_bmc",
-        "Uncached head run: order, settled shield, bus errors, FoF trim, IRQ stop, 40 frames.",
+        "Uncached head run: order, settled shield, registered grant, bus errors, FoF trim, IRQ stop, 44 frames.",
     ),
     (
         "uncached_cover",

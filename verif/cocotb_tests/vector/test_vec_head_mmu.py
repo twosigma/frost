@@ -898,6 +898,7 @@ async def _uncached_case(
     vrf_writes: list[dict[str, int]] = []
     vrf_pending = 0
     shield_prev = False
+    bus_hold_prev = False
     walk_resp_at: tuple[int, int] | None = None
     vmu_done_at: int | None = None
     unc_resp_at: tuple[int, int, int] | None = None
@@ -927,7 +928,9 @@ async def _uncached_case(
             and irq_boundary_seen is not None
             and cycle == irq_boundary_seen + 2
         )
-        port_rdy = int(unc_resp_at is None and (cycle % port_ready_mod == 0))
+        port_rdy = int(
+            bus_hold_prev and unc_resp_at is None and (cycle % port_ready_mod == 0)
+        )
         put(
             dut,
             walk_resp_valid=0,
@@ -996,9 +999,11 @@ async def _uncached_case(
         if int(dut.o_vmem_vs_dirty.value):
             dirty += 1
         shield = bool(int(dut.o_vmem_head_shield.value))
+        bus_hold = bool(int(dut.o_unc_bus_hold.value))
 
         if int(dut.o_desc_valid.value):
             assert shield, "cached desc without shield"
+            assert not bus_hold, "uncached bus hold asserted during cached desc"
             assert cycle >= 20, "cached desc before SQ drain"
             cached_descs.append(
                 {
@@ -1013,6 +1018,7 @@ async def _uncached_case(
 
         if int(dut.o_unc_req_valid.value):
             assert shield and shield_prev, "uncached beat lacked settled head shield"
+            assert bus_hold and bus_hold_prev, "uncached beat lacked prior bus hold"
             assert cycle >= 20, "uncached beat bypassed SQ drain"
             assert unc_resp_at is None, "overlapping uncached beat"
             assert not int(dut.o_desc_valid.value), "uncached beat overlapped VMU desc"
@@ -1080,6 +1086,7 @@ async def _uncached_case(
         if completion is not None and cycle == completion + 8:
             break
         shield_prev = shield
+        bus_hold_prev = bus_hold
         await edge(dut)
     else:
         raise AssertionError("uncached case did not complete")

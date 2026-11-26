@@ -1212,7 +1212,7 @@ module cpu_ooo #(
   logic [255:0] vec_lc_req_data;
   logic [31:0] vec_lc_req_mask;
   logic [3:0] vec_lc_req_id;
-  logic vec_unc_port_ready, vec_unc_bus_busy;
+  logic vec_unc_port_ready, vec_unc_bus_hold, vec_unc_bus_busy;
   logic vec_unc_req_valid, vec_unc_req_write;
   logic [riscv_pkg::PhysAddrBits-1:0] vec_unc_req_addr;
   riscv_pkg::mem_size_e vec_unc_req_size;
@@ -4359,6 +4359,7 @@ module cpu_ooo #(
     logic vec_unc_is_dev, vec_unc_is_mem;
     logic vec_unc_read_active_q, vec_unc_write_active_q;
     logic vec_unc_fast_read_q, vec_unc_fast_write_done_q;
+    logic vec_unc_port_grant_q;
     logic vec_mmio_fifo0_pulse_q, vec_mmio_fifo1_pulse_q, vec_mmio_uart_rx_pulse_q;
     logic vec_l0_inval_valid_q;
     logic [XLEN-1:0] vec_l0_inval_addr_q;
@@ -4370,12 +4371,19 @@ module cpu_ooo #(
     assign vec_unc_is_dev = riscv_pkg::pma_device_quadrant(vec_unc_addr_xlen);
     assign vec_unc_is_mem = riscv_pkg::pma_memory_ok(vec_unc_addr_xlen);
 
+    // Hold scalar load launches from load_queue while vec_head_mmu requests or
+    // owns the shared uncached data port (all inputs are registered flops).
+    assign vec_unc_bus_busy = vec_unc_bus_hold || vec_unc_launch ||
+        vec_unc_read_active_q || vec_unc_write_active_q ||
+        vec_unc_fast_read_q || vec_unc_fast_write_done_q;
+
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         vec_unc_read_active_q     <= 1'b0;
         vec_unc_write_active_q    <= 1'b0;
         vec_unc_fast_read_q       <= 1'b0;
         vec_unc_fast_write_done_q <= 1'b0;
+        vec_unc_port_grant_q      <= 1'b0;
         vec_mmio_fifo0_pulse_q    <= 1'b0;
         vec_mmio_fifo1_pulse_q    <= 1'b0;
         vec_mmio_uart_rx_pulse_q  <= 1'b0;
@@ -4390,6 +4398,20 @@ module cpu_ooo #(
         end
         vec_unc_fast_read_q <= !VARIABLE_UNCACHED && vec_unc_read_launch;
         vec_unc_fast_write_done_q <= !VARIABLE_UNCACHED && vec_unc_write_launch;
+        // Registered one-cycle grant for head-executed uncached vector beats.
+        // vec_unc_bus_hold already drives i_mem_bus_busy high in load_queue,
+        // so lq_mem_read_en is forced zero without reading the combinational
+        // L0 lookup / load launch path here.
+        vec_unc_port_grant_q <= vec_unc_bus_hold && !i_fatal_stop &&
+            !vec_unc_launch &&
+            !vec_unc_read_active_q && !vec_unc_write_active_q &&
+            !vec_unc_fast_read_q && !vec_unc_fast_write_done_q &&
+            !sq_mem_write_en && !amo_mem_write_en &&
+            !lq_mem_request_valid &&
+            (VARIABLE_UNCACHED ?
+                (i_uncached_read_request_ready && !i_uncached_write_inflight &&
+                 !i_uncached_read_valid && !i_uncached_write_done) :
+                router_cached_read_ready);
         vec_mmio_fifo0_pulse_q    <= !VARIABLE_UNCACHED && vec_unc_read_launch && vec_unc_is_dev &&
                                      (vec_unc_addr_xlen == VecFifo0MmioAddr);
         vec_mmio_fifo1_pulse_q    <= !VARIABLE_UNCACHED && vec_unc_read_launch && vec_unc_is_dev &&
@@ -4404,17 +4426,7 @@ module cpu_ooo #(
     assign vec_l0_inval_valid = vec_l0_inval_valid_q;
     assign vec_l0_inval_addr = vec_l0_inval_addr_q;
 
-    assign vec_unc_bus_busy = vec_unc_launch || vec_unc_read_active_q || vec_unc_write_active_q ||
-        vec_unc_fast_read_q || vec_unc_fast_write_done_q;
-    assign vec_unc_port_ready = !i_fatal_stop &&
-        !vec_unc_read_active_q && !vec_unc_write_active_q &&
-        !vec_unc_fast_read_q && !vec_unc_fast_write_done_q &&
-        !sq_mem_write_en && !amo_mem_write_en &&
-        !lq_mem_read_en && !lq_mem_request_valid &&
-        (VARIABLE_UNCACHED ?
-            (i_uncached_read_request_ready && !i_uncached_write_inflight &&
-             !i_uncached_read_valid && !i_uncached_write_done) :
-            (router_cached_read_ready && !router_data_mem_read_enable));
+    assign vec_unc_port_ready = vec_unc_port_grant_q;
 
     assign router_i_uncached_read_valid = i_uncached_read_valid && !vec_unc_read_active_q;
     assign router_i_uncached_write_done = i_uncached_write_done && !vec_unc_write_active_q;
@@ -4464,6 +4476,10 @@ module cpu_ooo #(
 
 `ifndef SYNTHESIS
     always @(posedge i_clk) begin
+      if (reset_seen_q && !i_rst && vec_unc_bus_hold) begin
+        assert (!lq_mem_read_en)
+        else $error("cpu_ooo: scalar load launched while vec_unc_bus_hold asserted");
+      end
       if (reset_seen_q && !i_rst && vec_unc_launch) begin
         assert (vec_head_shield)
         else $error("cpu_ooo: vector uncached beat launched without vec_head_shield");
@@ -6558,6 +6574,7 @@ module cpu_ooo #(
         .i_lc_resp_data(i_ma_line_resp_data),
         .i_lc_resp_error(i_ma_line_resp_error),
         .i_unc_port_ready(vec_unc_port_ready),
+        .o_unc_bus_hold(vec_unc_bus_hold),
         .o_unc_req_valid(vec_unc_req_valid),
         .o_unc_req_write(vec_unc_req_write),
         .o_unc_req_addr(vec_unc_req_addr),
@@ -6736,6 +6753,7 @@ module cpu_ooo #(
     assign vec_lc_req_data = '0;
     assign vec_lc_req_mask = '0;
     assign vec_lc_req_id = '0;
+    assign vec_unc_bus_hold = 1'b0;
     assign vec_unc_req_valid = 1'b0;
     assign vec_unc_req_write = 1'b0;
     assign vec_unc_req_addr = '0;

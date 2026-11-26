@@ -124,6 +124,7 @@ module vec_unit #(
     input  logic                                                 i_lc_resp_error,
     // Head-executed uncached element load/store port
     input  logic                                                 i_unc_port_ready = 1'b1,
+    output logic                                                 o_unc_bus_hold,
     output logic                                                 o_unc_req_valid,
     output logic                                                 o_unc_req_write,
     output logic                    [          PhysAddrBits-1:0] o_unc_req_addr,
@@ -588,6 +589,7 @@ module vec_unit #(
       .i_vmu_done               (vmu_done),
       .i_vmu_fatal              (o_vmu_fatal),
       .i_unc_port_ready         (i_unc_port_ready),
+      .o_unc_bus_hold           (o_unc_bus_hold),
       .o_unc_req_valid          (o_unc_req_valid),
       .o_unc_req_write          (o_unc_req_write),
       .o_unc_req_addr           (o_unc_req_addr),
