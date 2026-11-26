@@ -213,6 +213,7 @@ module if_stage #(
 
   typedef struct packed {
     logic [XLEN-1:0] pc;
+    logic [riscv_pkg::BpDirIdxBits-3:0] even_dir_idx;
     logic span_veto;
     logic span_tail;
     logic btb_taken;
@@ -370,7 +371,7 @@ module if_stage #(
   // for four cycles so pre-flush in-flight training writes cannot reinstall
   // stale entries after FENCE.I, SFENCE.VMA, satp, or Debug Mode transitions.
   logic btb_update_q;
-  logic [XLEN-1:0] btb_update_pc_q;
+  (* max_fanout = 64 *) logic [XLEN-1:0] btb_update_pc_q;
   logic [XLEN-1:0] btb_update_target_q;
   logic btb_update_taken_q;
   logic btb_update_compressed_q;
@@ -586,10 +587,13 @@ module if_stage #(
   // ===========================================================================
   // F0: Decoupled PC Controller (instance name kept for RVFI/testbench probes)
   // ===========================================================================
+  logic [riscv_pkg::BpDirIdxBits-3:0] f1_resteer_even_dir_idx;
+
   fetch_pc_decoupled #(
       .XLEN(XLEN),
       .BTB_INDEX_BITS(BtbIndexBits),
-      .BIM_BITS(riscv_pkg::BpDirIdxBits)
+      .BIM_BITS(riscv_pkg::BpDirIdxBits),
+      .PRECOMPUTED_RESTEER_DIR(1'b1)
   ) pc_controller_inst (
       .i_clk,
       .i_boot_addr,
@@ -606,6 +610,7 @@ module if_stage #(
       .i_any_redirect(any_redirect),
       .i_f1_resteer(f1_resteer_raw),
       .i_f1_resteer_target(f1_resteer_target),
+      .i_f1_resteer_even_dir_idx(f1_resteer_even_dir_idx),
       .i_f0_launch(f0_launch_raw),
       .i_f1_collapsed_accept(f1_collapsed_accept_raw),
       .i_span_btb_fire(f1_collapsed_accept_raw ? f1_collapsed_span_fire_raw : f0_span_btb_fire),
@@ -762,12 +767,34 @@ module if_stage #(
     end
   end
 
-  logic ras_restore_nonempty_comb;
-  assign ras_restore_nonempty_comb =
-      (ras_restore_push_comb && !ras_restore_pop_comb) ? 1'b1 :
-      (ras_restore_pop_comb && !ras_restore_push_comb) ?
-          (ras_restore_cnt_comb > (RasPtrBits + 1)'(1)) :
-          (ras_restore_cnt_comb != '0);
+  // Precompute per-source post-restore emptiness and link selection before the
+  // EX/PD/F1 mux so late EX checkpoint counts cross only one 3:1 LUT.
+  logic ex_ras_nonempty;
+  logic pd_ras_nonempty;
+  logic f1_ras_nonempty;
+  logic ex_ras_uses_link;
+  logic pd_ras_uses_link;
+  logic ras_restore_nonempty_next;
+  logic ras_restore_uses_link_next;
+  assign ex_ras_nonempty =
+      (i_from_ex_comb.ras_push_after_restore && !i_from_ex_comb.ras_pop_after_restore) ? 1'b1 :
+      (i_from_ex_comb.ras_pop_after_restore && !i_from_ex_comb.ras_push_after_restore) ?
+          (i_from_ex_comb.ras_restore_valid_count > (RasPtrBits + 1)'(1)) :
+          (i_from_ex_comb.ras_restore_valid_count != '0);
+  assign pd_ras_nonempty =
+      (i_pd_redirect_ras_push && !i_pd_redirect_ras_pop) ? 1'b1 :
+      (i_pd_redirect_ras_pop && !i_pd_redirect_ras_push) ?
+          (pd_ras_ckpt_cnt_q > (RasPtrBits + 1)'(1)) :
+          (pd_ras_ckpt_cnt_q != '0);
+  assign f1_ras_nonempty = (f1_eff_ras_ckpt_cnt != '0);
+  assign ex_ras_uses_link = i_from_ex_comb.ras_push_after_restore &&
+      (!i_from_ex_comb.ras_pop_after_restore || (i_from_ex_comb.ras_restore_valid_count != '0));
+  assign pd_ras_uses_link = i_pd_redirect_ras_push &&
+      (!i_pd_redirect_ras_pop || (pd_ras_ckpt_cnt_q != '0));
+  assign ras_restore_nonempty_next = i_from_ex_comb.ras_misprediction ? ex_ras_nonempty :
+      (pd_ras_restore ? pd_ras_nonempty : (f1_ras_restore_comb && f1_ras_nonempty));
+  assign ras_restore_uses_link_next = i_from_ex_comb.ras_misprediction ? ex_ras_uses_link :
+      (pd_ras_restore ? pd_ras_uses_link : 1'b0);
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
@@ -776,11 +803,10 @@ module if_stage #(
       ras_restore_nonempty_q  <= 1'b0;
       ras_restore_uses_link_q <= 1'b0;
     end else begin
-      ras_restore_q <= ras_restore_comb;
-      ras_restore_pure_pop_q <= ras_restore_comb && ras_restore_pop_comb && !ras_restore_push_comb;
-      ras_restore_nonempty_q <= ras_restore_comb && ras_restore_nonempty_comb;
-      ras_restore_uses_link_q <= ras_restore_comb && ras_restore_push_comb &&
-          (!ras_restore_pop_comb || (ras_restore_cnt_comb != '0));
+      ras_restore_q           <= ras_restore_comb;
+      ras_restore_pure_pop_q  <= ras_restore_comb && ras_restore_pop_comb && !ras_restore_push_comb;
+      ras_restore_nonempty_q  <= ras_restore_nonempty_next;
+      ras_restore_uses_link_q <= ras_restore_uses_link_next;
     end
   end
 
@@ -1306,6 +1332,10 @@ module if_stage #(
   assign f1_resteer = !any_redirect && f1_resteer_raw;
   assign f1_resteer_target = f1_tag_resteer_raw ?
       f1_req_q.pc : {f1_req_q.pc[XLEN-1:2] + (XLEN - 2)'(2), 2'b00};
+  logic [riscv_pkg::BpDirIdxBits-3:0] f1_resteer_even_dir_p1;
+  assign f1_resteer_even_dir_p1 = f1_req_q.even_dir_idx + (riscv_pkg::BpDirIdxBits - 2)'(1);
+  assign f1_resteer_even_dir_idx = f1_tag_resteer_raw ?
+      f1_req_q.even_dir_idx : f1_resteer_even_dir_p1;
 
   // F0 launches a new fetch when memory is valid, translation is ready, the
   // parcel queue has headroom, and no redirect, resteer, or collapsed accept
@@ -1623,6 +1653,7 @@ module if_stage #(
   always_ff @(posedge i_clk) begin
     if (f1_req_data_we) begin
       f1_req_q.pc               <= pc;
+      f1_req_q.even_dir_idx     <= pc_even_dir_idx;
       f1_req_q.btb_pos          <= btb_taken_pos;
       f1_req_q.btb_comp         <= btb_compressed;
       f1_req_q.btb_target       <= f0_btb_eff_target;
@@ -2416,6 +2447,16 @@ module if_stage #(
         p_if_ras_top_below_cached_exact :
         assert ((ras_top_cached_q == ras_cached_q[ras_cached_tos_q]) &&
                 (ras_below_cached_q == ras_cached_q[ras_sh_below_tos]));
+      end
+      if (f1_req_valid_q && !$isunknown(
+              {f1_req_q.pc, f1_req_q.even_dir_idx, f1_resteer_target, f1_resteer_even_dir_idx}
+          )) begin
+        p_if_f1_resteer_even_dir_exact :
+        assert ((f1_req_q.even_dir_idx == (f1_req_q.pc[riscv_pkg::BpDirIdxBits:3] +
+                                           (riscv_pkg::BpDirIdxBits - 2)'(f1_req_q.pc[2]))) &&
+                (f1_resteer_even_dir_idx ==
+                 (f1_resteer_target[riscv_pkg::BpDirIdxBits:3] +
+                  (riscv_pkg::BpDirIdxBits - 2)'(f1_resteer_target[2]))));
       end
       if (f1_pred_fresh_q && !$isunknown(
               {f1_req_q.pc, sim_prev_pc_q, sim_prev_pred_capture_q}

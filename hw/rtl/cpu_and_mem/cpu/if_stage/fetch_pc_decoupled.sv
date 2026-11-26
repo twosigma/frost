@@ -38,7 +38,8 @@
 module fetch_pc_decoupled #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned BTB_INDEX_BITS = 8,
-    parameter int unsigned BIM_BITS = riscv_pkg::BpDirIdxBits
+    parameter int unsigned BIM_BITS = riscv_pkg::BpDirIdxBits,
+    parameter bit PRECOMPUTED_RESTEER_DIR = 1'b0
 ) (
     input logic i_clk,
     input logic [XLEN-1:0] i_boot_addr = '0,
@@ -62,8 +63,9 @@ module fetch_pc_decoupled #(
     input logic i_any_redirect,
 
     // Redirect-free F1 resteer and F0/collapsed launch qualifiers
-    input logic            i_f1_resteer,
-    input logic [XLEN-1:0] i_f1_resteer_target,
+    input logic                i_f1_resteer,
+    input logic [    XLEN-1:0] i_f1_resteer_target,
+    input logic [BIM_BITS-3:0] i_f1_resteer_even_dir_idx = '0,
 
     input logic i_f0_launch,
     input logic i_f1_collapsed_accept,
@@ -109,9 +111,10 @@ module fetch_pc_decoupled #(
   localparam int unsigned EvenDirBits = BIM_BITS - 2;
 
   logic [XLEN-1:0] pc_q;
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 32 *)
   logic [riscv_pkg::TageLookupHiBit:2] pc_tage_lookup_q;
   (* keep = "true", max_fanout = 48 *) logic [EvenBtbBits-1:0] pc_even_btb_idx_q;
-  logic [EvenDirBits-1:0] pc_even_dir_idx_q;
+  (* max_fanout = 32 *) logic [EvenDirBits-1:0] pc_even_dir_idx_q;
 
   logic [XLEN-1:0] seq_next_pc;
   assign seq_next_pc = {pc_q[XLEN-1:2] + (XLEN - 2)'(2), 2'b00};
@@ -179,10 +182,12 @@ module fetch_pc_decoupled #(
   logic [EvenDirBits-1:0] arm4_dir;
   logic [EvenDirBits-1:0] arm5_dir;
   logic [EvenDirBits-1:0] arm13_dir;
-  assign arm1_dir  = calc_even_dir(i_trap_target);
-  assign arm2_dir  = calc_even_dir(i_fence_i_target);
-  assign arm3_dir  = calc_even_dir(i_branch_target);
-  assign arm5_dir  = calc_even_dir(i_f1_resteer_target);
+  assign arm1_dir = calc_even_dir(i_trap_target);
+  assign arm2_dir = calc_even_dir(i_fence_i_target);
+  assign arm3_dir = calc_even_dir(i_branch_target);
+  assign arm5_dir = PRECOMPUTED_RESTEER_DIR ? i_f1_resteer_even_dir_idx : calc_even_dir(
+      i_f1_resteer_target
+  );
   // seq_next_pc adds 8 bytes (bit 3 += 1, bit 2 unchanged).
   assign arm13_dir = pc_even_dir_idx_q + EvenDirBits'(1);
 
