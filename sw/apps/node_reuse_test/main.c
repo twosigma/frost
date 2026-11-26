@@ -216,7 +216,9 @@ static void op_cbo_zero(uint32_t n)
         if (!((pick >> b) & 1))
             continue;
         CBO_ZERO((uint64_t) node(n) + 64 * b);
-        CBO_ZERO((uint64_t) shadow(n) + 64 * b);
+        volatile uint64_t *sb = shadow(n) + 8 * b;
+        for (uint32_t w = 0; w < 8; w++)
+            sb[w] = 0;
     }
     for (uint32_t i = 0; i < (uint32_t) (rnd() % 4); i++) {
         uint32_t w = (uint32_t) (rnd() % (NODE_BYTES / 8));

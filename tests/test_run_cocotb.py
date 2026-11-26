@@ -599,8 +599,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="node_reuse_test",
         nic_mac_clocks=False,
         description=(
-            "node_reuse_test in the VCU118 shape: 4 MiB L2, CPU clock twice the "
-            "SoC clock and asynchronous to it, DDR latency jitter and reordering"
+            "node_reuse_test with 4 MiB L2, asynchronous CPU/SoC clocks, "
+            "wide DDR, DDR latency jitter and reordering"
         ),
         include_in_pytest=False,
         extra_env=(

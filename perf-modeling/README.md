@@ -470,20 +470,20 @@ The board data set predates the L1D hit path. Its configuration explicitly disab
 
 | Benchmark | Board | Model | Residual | Role |
 |---|---:|---:|---:|---|
-| Sequential 8-byte read | 132.2 MB/s | 156.5 MB/s | +18.4% | prediction |
-| Strided read, 16 B | 209.4 MB/s | 272.6 MB/s | +30.2% | prediction |
+| Sequential 8-byte read | 132.2 MB/s | 129.7 MB/s | -1.9% | prediction |
+| Strided read, 16 B | 209.4 MB/s | 249.9 MB/s | +19.3% | prediction |
 | Strided read, 32 B | 327.5 MB/s | 464.4 MB/s | +41.8% | prediction |
 | Strided read, 64 B | 518.1 MB/s | 524.2 MB/s | +1.2% | prediction |
 | Strided read, 128 B | 1108.0 MB/s | 868.2 MB/s | -21.6% | prediction |
 | Sequential 8-byte write | 97.7 MB/s | 104.0 MB/s | +6.4% | prediction |
-| memcpy (int-copy body) | 172.3 MB/s | 149.6 MB/s | -13.2% | prediction |
+| memcpy (int-copy body) | 172.3 MB/s | 93.8 MB/s | -45.6% | prediction |
 | memset (int-write body) | 97.6 MB/s | 104.0 MB/s | +6.5% | prediction |
 | Dependent DRAM chase | 818.6 ns | 820.2 ns | +0.2% | fit |
 | 256 KiB dependent chain | 181.9 ns | 182.0 ns | +0.1% | fit |
 
-In this historical configuration, the L1D's one-at-a-time controller sets the rate of the sector-adjacent streams: a sequential sector takes a missing lookup, three loads that attach to its endpoint and look up again after the installation, the installation and look-ahead lookups. With a lookup every cycle instead, the model reads 249 MB/s sequentially and 397 MB/s at a 16-byte stride. For the same reason, two more look-ahead endpoints add 4% to sequential reads with the home's prefetcher on and 21% with it off (with `l1d_lookahead_hints` set), and an LQ of 16 adds nothing without a wider ROB.
+In this historical configuration, the L1D's one-at-a-time controller sets the rate of the sector-adjacent streams: a sequential sector takes a missing lookup, three loads that attach to its endpoint and look up again after the installation, and the installation (plus look-ahead lookups when `l1d_lookahead_hints` is set). With a lookup every cycle instead, the model reads 249 MB/s sequentially and 397 MB/s at a 16-byte stride. For the same reason, two more look-ahead endpoints add 4% to sequential reads with the home's prefetcher on and 21% with it off (with `l1d_lookahead_hints` set), and an LQ of 16 adds nothing without a wider ROB.
 
-With the home's prefetcher on and no look-ahead hints, the model's sequential 8-byte reads are within 2% of the board, and its 16- and 32-byte strided reads are 19% and 42% faster. With `l1d_lookahead_hints` set, which does not match the RTL, the three are 18%, 30% and 42% faster. With the prefetcher off, the model reads 16% to 30% slower. The model's prefetcher follows the RTL's agent, so the board's hides less latency for a reason the model omits. Candidates are the home's lookup bandwidth (one service engine at half the CPU clock takes demand requests, prefetch lookups, writebacks and completions in turn, while the model's L2 takes a lookup every CPU cycle), the prefetch pause beside the board's Ethernet DMA, the identity's GrantAck, C and U round trip across the clock boundary, the registered room flag, and the DDR4 controller's bank, refresh and turnaround timing. Strided reads at 128 bytes, which neither mechanism covers, depend on the endpoints' lifetime; a DDR latency near 105 cycles matches them and leaves the chase short by about 90 cycles for each page walk, but makes the store streams 30% to 37% faster than the board, a second open item.
+With the home's prefetcher on and no look-ahead hints (the default recorded above), the model's sequential 8-byte reads are within 2% of the board, and its 16- and 32-byte strided reads are 19% and 42% faster. With `--set l1d_lookahead_hints=true`, which does not match the RTL, the three are 18%, 30% and 42% faster (156.5, 272.6 and 464.4 MB/s, and 149.6 MB/s on memcpy). With the prefetcher off, the model reads 16% to 30% slower. The model's prefetcher follows the RTL's agent, so the board's hides less latency for a reason the model omits. Candidates are the home's lookup bandwidth (one service engine at half the CPU clock takes demand requests, prefetch lookups, writebacks and completions in turn, while the model's L2 takes a lookup every CPU cycle), the prefetch pause beside the board's Ethernet DMA, the identity's GrantAck, C and U round trip across the clock boundary, the registered room flag, and the DDR4 controller's bank, refresh and turnaround timing. Strided reads at 128 bytes, which neither mechanism covers, depend on the endpoints' lifetime; a DDR latency near 105 cycles matches them and leaves the chase short by about 90 cycles for each page walk, but makes the store streams 30% to 37% faster than the board, a second open item.
 
 ### Open items
 
