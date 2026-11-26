@@ -4487,6 +4487,16 @@ module cpu_ooo #(
         else $error("cpu_ooo: vector uncached beat overlapped scalar memory request");
         assert (!(vec_unc_read_active_q || vec_unc_write_active_q))
         else $error("cpu_ooo: vector uncached beat overlapped active vector beat");
+        if (vec_unc_read_launch) begin
+          assert (VARIABLE_UNCACHED ?
+                  (i_uncached_read_request_ready && !i_uncached_write_inflight) :
+                  router_cached_read_ready)
+          else $error("cpu_ooo: vector uncached read launched while port not ready");
+        end
+        if (vec_unc_write_launch) begin
+          assert (!VARIABLE_UNCACHED || !i_uncached_write_inflight)
+          else $error("cpu_ooo: vector uncached write launched while uncached write inflight");
+        end
       end
     end
 `endif
@@ -5254,8 +5264,20 @@ module cpu_ooo #(
     assign ma_shield = ma_busy || ma_fault_pending_q;
 `ifndef SYNTHESIS
     logic ma_reset_seen_q = 1'b0;
+    logic ma_shield_masked_comb;
+    logic ma_shield_masked_q = 1'b0;
+    assign ma_shield_masked_comb = coherent_exception_valid && !ma_fault_pending_q &&
+        !rob_head_mem_atomic && !csr_debug_mode &&
+        ((rob_trap_cause == riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]) ||
+         (rob_trap_cause == riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0])) &&
+        vec_head_shield && !vec_vmem_fault_vstart_valid;
     always_ff @(posedge i_clk) begin
-      if (i_rst) ma_reset_seen_q <= 1'b1;
+      if (i_rst) begin
+        ma_reset_seen_q <= 1'b1;
+        ma_shield_masked_q <= 1'b0;
+      end else begin
+        ma_shield_masked_q <= ma_shield_masked_comb;
+      end
       if (ma_reset_seen_q && !i_rst) begin
         // The engine starts only from an idle state with an empty ROB behind
         // the flush, and its register read follows every commit write.
@@ -5266,6 +5288,20 @@ module cpu_ooo #(
         if (ma_hold_q)
           p_ma_no_alloc : assert (!rob_alloc_req.alloc_valid && !rob_alloc_req_2.alloc_valid);
         if (ma_hold) p_ma_hold_registered : assert (ma_hold_q);
+        // Guard the 2-cycle vec_vmem_quiet assumption behind !vec_head_shield
+        // on ma_exception_assist: if a non-faulting stale vec_head_shield
+        // masks a scalar misaligned exception at ROB head, trap_unit must not
+        // take a trap on that cycle or the next (while exception_assist_q holds
+        // the masked 0), and no architectural misaligned trap may fire for a
+        // non-vector instruction when the hardware assist is built.
+        if (ma_shield_masked_comb)
+          p_ma_shield_mask_not_quiet : assert (!vec_vmem_quiet && !trap_taken);
+        if (ma_shield_masked_q) p_ma_shield_mask_holds_next : assert (!trap_taken);
+        if (trap_taken && !ma_assist_start && !ma_fault_pending_q &&
+            !rob_head_mem_atomic && !csr_debug_mode && !trap_to_d && !trap_no_csr &&
+            ((trap_cause_internal == riscv_pkg::ExcLoadAddrMisalign) ||
+             (trap_cause_internal == riscv_pkg::ExcStoreAddrMisalign)))
+          p_ma_arch_misalign_is_vec : assert (vec_head_shield && vec_vmem_fault_vstart_valid);
       end
     end
 `endif

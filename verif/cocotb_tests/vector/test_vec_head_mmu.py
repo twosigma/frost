@@ -899,6 +899,17 @@ async def _uncached_case(
     vrf_pending = 0
     shield_prev = False
     bus_hold_prev = False
+    port_rdy_prev = False
+    mop = (insn >> 26) & 0x3
+    umop = (insn >> 20) & 0x1F
+    is_whole_or_mask = mop == 0 and umop in (0x08, 0x0B)
+    nf = 1 if is_whole_or_mask else (((insn >> 29) & 0x7) + 1)
+    mask_bits = ((1 << vlen) - 1) if mask is None else mask
+    active_elems = [
+        elem
+        for elem in range(vstart, vl)
+        if ((insn >> 25) & 1) or ((mask_bits >> elem) & 1)
+    ]
     walk_resp_at: tuple[int, int] | None = None
     vmu_done_at: int | None = None
     unc_resp_at: tuple[int, int, int] | None = None
@@ -1019,6 +1030,7 @@ async def _uncached_case(
         if int(dut.o_unc_req_valid.value):
             assert shield and shield_prev, "uncached beat lacked settled head shield"
             assert bus_hold and bus_hold_prev, "uncached beat lacked prior bus hold"
+            assert port_rdy_prev, "uncached beat launched without prior port_ready"
             assert cycle >= 20, "uncached beat bypassed SQ drain"
             assert unc_resp_at is None, "overlapping uncached beat"
             assert not int(dut.o_desc_valid.value), "uncached beat overlapped VMU desc"
@@ -1072,7 +1084,13 @@ async def _uncached_case(
             and len(unc_beats) >= irq_at_beat
             and not shield
         ):
+            assert len(unc_beats) % nf == 0, (len(unc_beats), nf)
+            last_beat_elem = active_elems[(len(unc_beats) // nf) - 1]
             assert int(dut.o_vmem_fault_vstart_valid.value) == 1
+            assert int(dut.o_vmem_fault_vstart.value) == last_beat_elem + 1, (
+                int(dut.o_vmem_fault_vstart.value),
+                last_beat_elem + 1,
+            )
             irq_boundary_seen = cycle
         if (
             irq_flushed
@@ -1087,6 +1105,7 @@ async def _uncached_case(
             break
         shield_prev = shield
         bus_hold_prev = bus_hold
+        port_rdy_prev = bool(port_rdy)
         await edge(dut)
     else:
         raise AssertionError("uncached case did not complete")
@@ -1139,6 +1158,7 @@ async def test_uncached_all_forms_and_widths(dut: Any) -> None:
             vl=3,
             eew_log2=eew_log2,
             store=1,
+            port_ready_mod=3,
             store_vregs={8: pat},
         )
         assert res_s["exc"] is None and res_s["freed"] and res_s["dirty"] == 0
@@ -1341,12 +1361,33 @@ async def test_uncached_faults_svpbmt_and_irq(dut: Any) -> None:
     assert res_fof["exc"] is None and res_fof["vl_trim"] == 2
     assert len(res_fof["unc_beats"]) == 3 and len(res_fof["vrf_writes"]) == 2
 
-    # 6. Mid-run interrupt on uncached unit-stride (span fallback): flush and withdraw.
+    # 6. Mid-run interrupt on uncached unit-stride (span fallback) and segment:
+    #    flush and withdraw, checking exact vstart == last_beat_elem + 1.
     res_irq_stop = await _uncached_case(
-        dut, insn=vle32, base=0x40000008, vl=4, eew_log2=2, store=0, irq_at_beat=2
+        dut,
+        insn=vle32,
+        base=0x40000008,
+        vl=4,
+        eew_log2=2,
+        store=0,
+        port_ready_mod=3,
+        irq_at_beat=2,
     )
     assert res_irq_stop["irq_boundary_seen"] is not None
     assert len(res_irq_stop["unc_beats"]) == 2 and len(res_irq_stop["vrf_writes"]) == 2
+    vlseg2 = (1 << 29) | (1 << 25) | (10 << 15) | (6 << 12) | (8 << 7) | 0x07
+    res_irq_seg = await _uncached_case(
+        dut,
+        insn=vlseg2,
+        base=0x40000008,
+        vl=3,
+        eew_log2=2,
+        store=0,
+        port_ready_mod=3,
+        irq_at_beat=1,
+    )
+    assert res_irq_seg["irq_boundary_seen"] is not None
+    assert len(res_irq_seg["unc_beats"]) == 2 and len(res_irq_seg["vrf_writes"]) == 2
     res_irq_res = await _uncached_case(
         dut,
         insn=vle32,

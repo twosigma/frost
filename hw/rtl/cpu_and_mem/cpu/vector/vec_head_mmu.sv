@@ -1756,6 +1756,12 @@ module vec_head_mmu #(
       assert (!(o_unc_req_valid && o_desc_valid));
       assert (!o_vrf_write_en || (!is_store_q && shield_q));
       assert (!(eval_from_walk && (walk_class == WK_CACHED)));
+      // A started run must never take the mid-run !head_matches_q abandon path;
+      // only a full flush (flush_q) or fatal stop (fatal_q) may tear down a
+      // started run once elements have executed.
+      assert (!(!flush_q && !fatal_q && !head_matches_q && run_started_q &&
+                ((state_q == HM_RUN_SETTLE) || (state_q == HM_RUN_UNC_RD) ||
+                 (state_q == HM_RUN_UNC_PRE) || (state_q == HM_RUN_TRIM_SETTLE))));
     end
   end
 `endif
@@ -1916,6 +1922,12 @@ module vec_head_mmu #(
   // covers it, while the indexed task covers mid-run interrupt arming,
   // flush to idle, and withdrawal-and-resume.
   always_comb assume (f_indexed && f_pm == riscv_pkg::EnvcfgPmmOff);
+`ifdef VEC_HEAD_MMU_INDEX_NOIRQ_PROOF
+  always_comb assume (f_irq_mode == 2'd0);
+`endif
+`ifdef VEC_HEAD_MMU_INDEX_IRQ_PROOF
+  always_comb assume (f_irq_mode != 2'd0);
+`endif
 `else
   // Mid-run interrupt arming/flush/withdraw is the same FSM logic for both
   // forms and is proved by the indexed task; the strided task still proves
@@ -2162,12 +2174,14 @@ module vec_head_mmu #(
   logic f_drained = 1'b0;
   logic f_unc_busy = 1'b0;
   logic f_unc_grant_q = 1'b0;
+  logic f_withheld_grant_q = 1'b0;
   logic [2:0] f_unc_launches = '0;
   logic [2:0] f_unc_dones = '0;
   logic [2:0] f_vrf_writes = '0;
   logic [1:0] f_irq_wait_q = '0;
   logic f_sq_wait_q = 1'b0;
   logic f_irq_flushed_q = 1'b0;
+  (* anyseq *) logic f_grant_allow;
   (* anyconst *) logic f_store;
   (* anyconst *) logic [1:0] f_form;
   (* anyconst *) logic f_misalign;
@@ -2175,6 +2189,13 @@ module vec_head_mmu #(
   (* anyconst *) logic f_irq_stop;
   (* anyconst *) logic f_mmio;  // 0: low BRAM 0x18000, 1: MMIO 0x40000008
   (* anyconst *) logic f_drain_delay;  // 0..1 cycles of SQ drain wait in HM_RUN_ARM
+
+`ifdef VEC_HEAD_MMU_UNCACHED_ELEM_PROOF
+  always_comb assume (f_form != 2'd3);
+`endif
+`ifdef VEC_HEAD_MMU_UNCACHED_SEG_PROOF
+  always_comb assume (f_form == 2'd3);
+`endif
 
   logic [2:0] f_fields_per_elem;
   logic [2:0] f_total_beats;
@@ -2231,9 +2252,10 @@ module vec_head_mmu #(
     assume (!i_translate && !i_eff_priv_u && !i_sum && !i_mxr && !i_tlb_invalidate &&
             i_pm_mode == riscv_pkg::EnvcfgPmmOff);
     assume (!i_vmu_done && !i_walk_resp_valid && i_walk_req_ready);
-    // Model cpu_ooo's registered one-cycle uncached-port grant: grant asserts
-    // one cycle after o_unc_bus_hold is high on an idle, unflushed cycle.
-    assume (i_unc_port_ready == f_unc_grant_q);
+    // Model cpu_ooo's registered one-cycle uncached-port grant, allowing the
+    // environment to withhold the grant on arbitrary cycles (for example,
+    // while an older buffered scalar uncached store is still in flight).
+    assume (i_unc_port_ready == (f_unc_grant_q && f_grant_allow));
     assume (i_unc_resp_valid == f_unc_busy);
     assume (i_unc_resp_data == 64'h11223344_55667788);
     // Inject bus error on the first beat of element 1 when f_bus_err is set.
@@ -2249,6 +2271,7 @@ module vec_head_mmu #(
       f_drained <= 1'b0;
       f_unc_busy <= 1'b0;
       f_unc_grant_q <= 1'b0;
+      f_withheld_grant_q <= 1'b0;
       f_unc_launches <= '0;
       f_unc_dones <= '0;
       f_vrf_writes <= '0;
@@ -2257,6 +2280,8 @@ module vec_head_mmu #(
       f_irq_flushed_q <= 1'b0;
     end else begin
       f_unc_grant_q <= o_unc_bus_hold && !f_unc_busy && !o_unc_req_valid && !i_flush_all;
+      if ((state_q == HM_RUN_UNC_PRE) && f_unc_grant_q && !i_unc_port_ready)
+        f_withheld_grant_q <= 1'b1;
       if (f_irq_flush_now) f_irq_flushed_q <= 1'b1;
       if (!f_drained && (state_q == HM_RUN_ARM)) f_sq_wait_q <= 1'b1;
       if (f_irq_stop && (f_unc_dones == f_fields_per_elem) && (state_q == HM_RUN_ARM)) begin
@@ -2345,6 +2370,7 @@ module vec_head_mmu #(
       c_unc_bus_err : cover (f_bus_err && f_form != 2'd2 && o_cdb_done);
       c_unc_fof_bus_trim : cover (f_bus_err && f_form == 2'd2 && i_commit_valid);
       c_unc_irq_stop : cover (f_irq_stop && f_irq_flushed_q && (state_q == HM_IDLE));
+      c_unc_withheld_grant : cover (o_unc_req_valid && f_withheld_grant_q);
     end
   end
 `endif
