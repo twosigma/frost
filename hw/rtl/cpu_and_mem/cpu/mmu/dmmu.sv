@@ -21,9 +21,12 @@
  * are accompanied by a full flush.
  *
  * Translation uses two registered stages. S1 holds the operation
- * until its DTLB lookup, checks, and any walk complete. S2 registers the
- * result and drives every consumer pulse. Hits sustain one operation per
- * cycle. Clean hits on uniform DTLB leaves enter S2 directly from issue.
+ * until its DTLB lookup, S1 4 KiB cache lookup, checks, and any walk complete.
+ * S2 registers the result and drives every consumer pulse. Hits sustain one
+ * operation per cycle. Clean hits on uniform DTLB leaves enter S2 directly
+ * from issue; clean 4 KiB leaves that age out of the 16-entry DTLB remain in
+ * a 2-way, 128-set (256-entry) distributed-RAM S1 cache that resolves in S1
+ * without a walk and writes the leaf back into the DTLB on the next cycle.
  * Faults carry the VA for xtval instead of a PA; the wrapper routes
  * them to the LQ for loads/LR/AMOs or the store fault strobe for stores/SC.
  *
@@ -131,6 +134,25 @@ module dmmu (
 
   localparam int unsigned Entries = 16;
   localparam int unsigned PpnBits = riscv_pkg::PhysAddrBits - 12;
+  localparam int unsigned S1cSets = 128;
+  localparam int unsigned S1cIdxBits = $clog2(S1cSets);
+  localparam int unsigned S1cTagBits = riscv_pkg::Sv39VpnBits - S1cIdxBits;
+  localparam int unsigned S1cWays = 2;
+
+  typedef struct packed {
+    logic g;
+    logic [riscv_pkg::AsidBits-1:0] asid;
+    logic [S1cTagBits-1:0] tag;
+    logic [PpnBits-1:0] ppn;
+    logic hi_nonzero;
+    logic [1:0] pbmt;
+    logic r;
+    logic w;
+    logic x;
+    logic u;
+    logic d;
+  } s1c_entry_t;
+  localparam int unsigned S1cEntryBits = 1 + riscv_pkg::AsidBits + S1cTagBits + PpnBits + 1 + 2 + 5;
 
   // Partial-flush age test used throughout the back end: entry_tag is younger
   // than flush_tag, both measured from the ROB head.
@@ -230,8 +252,81 @@ module dmmu (
   logic walk_resp_for_s1;
   assign walk_resp_for_s1 = i_walk_resp_valid && s1_valid_q && (i_walk_resp.vpn == s1_q.va[38:12]);
 
-  // Resolve TLB and walk leaves in parallel, for timing. A TLB hit wins over
-  // a simultaneous walk response.
+  // ---------------------------------------------------------------------------
+  // 2-way, 128-set S1 4 KiB translation cache (distributed RAM)
+  // ---------------------------------------------------------------------------
+  // Holds clean level-0 leaves indexed by VPN[6:0], tagged with VPN[26:7] and
+  // ASID/global. Consulted in S1 in parallel with DTLB port 0 (the DTLB has
+  // priority). Hits resolve in S1 without requesting the L2 TLB or walker.
+  logic [S1cWays-1:0][S1cSets-1:0] s1c_valid_q;
+  logic [S1cSets-1:0] s1c_repl_q;
+  (* ram_style = "distributed" *) logic [S1cEntryBits-1:0] s1c_ram0[S1cSets];
+  (* ram_style = "distributed" *) logic [S1cEntryBits-1:0] s1c_ram1[S1cSets];
+`ifndef SYNTHESIS
+`ifdef FROST_RANDOM_START
+  initial begin
+    for (int row = 0; row < S1cSets; row++) begin
+      s1c_ram0[row] = '0;
+      s1c_ram1[row] = '0;
+      for (int chunk = 0; chunk < (S1cEntryBits + 31) / 32; chunk++) begin
+        s1c_ram0[row] = (s1c_ram0[row] << 32) | S1cEntryBits'($urandom);
+        s1c_ram1[row] = (s1c_ram1[row] << 32) | S1cEntryBits'($urandom);
+      end
+    end
+  end
+`else
+  initial begin
+    for (int i = 0; i < S1cSets; i++) begin
+      s1c_ram0[i] = '0;
+      s1c_ram1[i] = '0;
+    end
+  end
+`endif
+`endif
+
+  logic [S1cIdxBits-1:0] s1c_ridx;
+  logic [S1cTagBits-1:0] s1c_rtag;
+  assign s1c_ridx = s1_q.va[12+S1cIdxBits-1:12];
+  assign s1c_rtag = s1_q.va[38:12+S1cIdxBits];
+
+  logic [S1cEntryBits-1:0] s1c_raw0, s1c_raw1;
+  assign s1c_raw0 = s1c_ram0[s1c_ridx];
+  assign s1c_raw1 = s1c_ram1[s1c_ridx];
+
+  s1c_entry_t s1c_rd0, s1c_rd1;
+  assign s1c_rd0 = s1c_raw0;
+  assign s1c_rd1 = s1c_raw1;
+
+  // Compare each way's 20-bit tag and 9-bit ASID in 3-bit kept chunks in
+  // parallel with per-way PMA and permission checks, so neither way lookup
+  // nor walk-request generation serializes through a way payload mux.
+  (* keep = "true" *) logic [S1cWays-1:0][9:0] s1c_cmp_chunk;
+  (* keep = "true" *) logic [S1cWays-1:0] s1c_tag_lo_eq;
+  (* keep = "true" *) logic [S1cWays-1:0] s1c_hi_asid_ok;
+  logic [S1cWays-1:0] s1c_way_hit;
+  logic s1c_hit;
+  for (genvar w = 0; w < S1cWays; w++) begin : gen_s1c_cmp
+    s1c_entry_t w_rd;
+    assign w_rd = (w == 0) ? s1c_rd0 : s1c_rd1;
+    for (genvar c = 0; c < 6; c++) begin : gen_tag_chunk
+      assign s1c_cmp_chunk[w][c] = w_rd.tag[3*c+:3] == s1c_rtag[3*c+:3];
+    end
+    assign s1c_cmp_chunk[w][6] = w_rd.tag[19:18] == s1c_rtag[19:18];
+    for (genvar c = 0; c < 3; c++) begin : gen_asid_chunk
+      assign s1c_cmp_chunk[w][7+c] = w_rd.asid[3*c+:3] == i_asid[3*c+:3];
+    end
+    assign s1c_tag_lo_eq[w] = &s1c_cmp_chunk[w][5:0];
+    assign s1c_hi_asid_ok[w] = s1c_valid_q[w][s1c_ridx] && s1c_cmp_chunk[w][6] &&
+        (w_rd.g || (&s1c_cmp_chunk[w][9:7]));
+    assign s1c_way_hit[w] = s1c_tag_lo_eq[w] && s1c_hi_asid_ok[w];
+  end
+  assign s1c_hit = |s1c_way_hit;
+
+  (* keep = "true" *) logic [PpnBits-1:0] s1c_ppn;
+  assign s1c_ppn = s1c_way_hit[0] ? s1c_rd0.ppn : s1c_rd1.ppn;
+
+  // Resolve TLB, S1 cache, and walk leaves in parallel, for timing. A DTLB
+  // hit wins over the S1 cache, which wins over a simultaneous walk response.
   logic [PpnBits-1:0] walk_ppn;
   always_comb begin
     unique case (i_walk_resp.level)
@@ -250,11 +345,56 @@ module dmmu (
     else leaf_perm_ok = priv_ok && (r || (i_mxr && x));
   endfunction
 
-  logic [riscv_pkg::XLEN-1:0] tlb_pa, walk_pa;
+  logic [riscv_pkg::XLEN-1:0] tlb_pa, s1c_pa, walk_pa;
   assign tlb_pa  = riscv_pkg::XLEN'({tlb_ppn[0], s1_q.va[11:0]});
+  assign s1c_pa  = riscv_pkg::XLEN'({s1c_ppn, s1_q.va[11:0]});
   assign walk_pa = riscv_pkg::XLEN'({walk_ppn, s1_q.va[11:0]});
-  // A walk leaf's device and atomic page checks, with the Svpbmt field: NC or
-  // IO over memory without an alias (low BRAM) is a device page without AMOs.
+
+  // PMA permits BRAM and cached DDR for all access types, plus device windows
+  // for non-atomic loads and stores. DTLB hits use per-entry checks; S1 cache
+  // hits check both ways in parallel with tag comparison; walk responses are
+  // checked here.
+  function automatic logic leaf_pma_ok(input logic atomic_page, input logic device_page);
+    leaf_pma_ok = atomic_page || (device_page && !s1_q.atomic);
+  endfunction
+
+  logic [S1cWays-1:0] s1c_way_unc;
+  logic [S1cWays-1:0] s1c_way_device;
+  logic [S1cWays-1:0] s1c_way_atomic;
+  logic [S1cWays-1:0] s1c_way_perm_ok;
+  (* keep = "true" *) logic [S1cWays-1:0] s1c_way_clean;
+  (* keep = "true" *) logic [S1cWays-1:0] s1c_way_mmio;
+  (* keep = "true" *) logic [S1cWays-1:0][1:0] s1c_way_fault;
+  for (genvar w = 0; w < S1cWays; w++) begin : gen_s1c_verdict
+    s1c_entry_t w_rd;
+    assign w_rd = (w == 0) ? s1c_rd0 : s1c_rd1;
+    logic [riscv_pkg::XLEN-1:0] w_pa;
+    assign w_pa = riscv_pkg::XLEN'({w_rd.ppn, 12'h000});
+    assign s1c_way_unc[w] = w_rd.pbmt != riscv_pkg::PbmtPma;
+    assign s1c_way_device[w] = riscv_pkg::pma_device_ok(
+        w_pa
+    ) || (s1c_way_unc[w] && (riscv_pkg::pma_atomic_ok(
+        w_pa
+    ) || riscv_pkg::pma_pbmt_alias_ok(
+        w_pa
+    )));
+    assign s1c_way_atomic[w] = !s1c_way_unc[w] && riscv_pkg::pma_atomic_ok(w_pa);
+    assign s1c_way_perm_ok[w] = leaf_perm_ok(w_rd.r, w_rd.w, w_rd.x, w_rd.u, w_rd.d);
+    assign s1c_way_clean[w] = s1c_way_perm_ok[w] && !w_rd.hi_nonzero && leaf_pma_ok(
+        s1c_way_atomic[w], s1c_way_device[w]
+    );
+    assign s1c_way_mmio[w] = s1c_way_perm_ok[w] && !w_rd.hi_nonzero && !s1_q.atomic &&
+        s1c_way_device[w];
+    assign s1c_way_fault[w] = !s1c_way_perm_ok[w] ? riscv_pkg::DFAULT_PAGE :
+        ((w_rd.hi_nonzero || !leaf_pma_ok(
+        s1c_way_atomic[w], s1c_way_device[w]
+    )) ? riscv_pkg::DFAULT_ACCESS : riscv_pkg::DFAULT_NONE);
+  end
+
+  logic s1c_unc, s1c_clean;
+  assign s1c_unc   = s1c_way_hit[0] ? s1c_way_unc[0] : s1c_way_unc[1];
+  assign s1c_clean = s1c_way_hit[0] ? s1c_way_clean[0] : s1c_way_clean[1];
+
   logic walk_unc, walk_device_page, walk_atomic_page;
   assign walk_unc = i_walk_resp.pbmt != riscv_pkg::PbmtPma;
   assign walk_device_page = riscv_pkg::pma_device_ok(
@@ -266,14 +406,10 @@ module dmmu (
   )));
   assign walk_atomic_page = !walk_unc && riscv_pkg::pma_atomic_ok(walk_pa);
 
-  // PMA permits BRAM and cached DDR for all access types, plus device windows
-  // for non-atomic loads and stores. DTLB hits use per-entry checks; walk
-  // responses are checked here.
-  function automatic logic leaf_pma_ok(input logic atomic_page, input logic device_page);
-    leaf_pma_ok = atomic_page || (device_page && !s1_q.atomic);
-  endfunction
-
-  riscv_pkg::data_fault_kind_e tlb_fault, walk_fault;
+  riscv_pkg::data_fault_kind_e tlb_fault, s1c_fault, walk_fault;
+  assign s1c_fault = riscv_pkg::data_fault_kind_e'(
+      s1c_way_hit[0] ? s1c_way_fault[0] : s1c_way_fault[1]
+  );
   always_comb begin
     tlb_fault = riscv_pkg::DFAULT_NONE;
     if (!tlb_perm_ok[0]) begin
@@ -303,14 +439,17 @@ module dmmu (
     end
   end
 
-  logic [riscv_pkg::XLEN-1:0] tlb_resolve_addr, walk_resolve_addr;
+  logic [riscv_pkg::XLEN-1:0] tlb_resolve_addr, s1c_resolve_addr, walk_resolve_addr;
   assign tlb_resolve_addr  = (tlb_fault == riscv_pkg::DFAULT_NONE) ? tlb_pa : s1_q.va;
+  assign s1c_resolve_addr  = (s1c_fault == riscv_pkg::DFAULT_NONE) ? s1c_pa : s1_q.va;
   assign walk_resolve_addr = (walk_fault == riscv_pkg::DFAULT_NONE) ? walk_pa : s1_q.va;
 
   // MMIO requires a fault-free device-page leaf and a non-atomic operation.
-  // Compute each candidate before selecting TLB or walk response, for timing.
+  // Compute each candidate before selecting TLB, S1 cache, or walk response.
   (* keep = "true" *) logic tlb_is_mmio, walk_is_mmio;
+  logic s1c_is_mmio;
   assign tlb_is_mmio = tlb_perm_ok[0] && !tlb_hi_nonzero[0] && !s1_q.atomic && tlb_device_page[0];
+  assign s1c_is_mmio = s1c_way_hit[0] ? s1c_way_mmio[0] : s1c_way_mmio[1];
   assign walk_is_mmio = (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && leaf_perm_ok(
       i_walk_resp.perm_r,
       i_walk_resp.perm_w,
@@ -325,18 +464,19 @@ module dmmu (
   //      before translation, so an access that traps as misaligned never
   //      walks.
   //   2. A non-canonical VA: page fault, no walk.
-  //   3. A DTLB hit: the permission check with the current SUM, MXR, and
-  //      effective privilege, then the PMA check on the PA, where a leaf
-  //      outside the map is an access fault, and so is an AMO, LR, or SC
-  //      onto the device quadrant. Loads need R, or X with MXR.
-  //      Stores, SC, and AMOs need W and D (Svade: a store to a D=0 page is a
-  //      page fault). A U page accessed from S needs SUM, and an S page
-  //      accessed from U faults.
+  //   3. A DTLB hit (or an S1 4 KiB cache hit on a DTLB miss): the permission
+  //      check with the current SUM, MXR, and effective privilege, then the
+  //      PMA check on the PA, where a leaf outside the map is an access fault,
+  //      and so is an AMO, LR, or SC onto the device quadrant. Loads need R,
+  //      or X with MXR. Stores, SC, and AMOs need W and D (Svade: a store to
+  //      a D=0 page is a page fault). A U page accessed from S needs SUM, and
+  //      an S page accessed from U faults.
   //   4. A walk response for S1's VPN, matched by the VPN echo because the op
   //      that asked may have been flushed and replaced. A leaf goes
-  //      through the same checks; a fault-free walk installs in the DTLB.
-  //      A no-alias NC/IO leaf checks permissions before its PMA refusal.
-  //      Other refused walks resolve as their faults.
+  //      through the same checks; a fault-free walk installs in the DTLB (and
+  //      level-0 leaves also install in the S1 cache). A no-alias NC/IO leaf
+  //      checks permissions before its PMA refusal. Other refused walks
+  //      resolve as their faults.
   // Otherwise the op waits in S1 and asks for a walk (o_walk_req_valid).
   logic resolve_now;
   riscv_pkg::data_fault_kind_e resolve_fault;
@@ -360,6 +500,11 @@ module dmmu (
         resolve_fault = tlb_fault;
         resolve_addr = tlb_resolve_addr;
         resolve_is_mmio = tlb_is_mmio;
+      end else if (s1c_hit) begin
+        resolve_now = 1'b1;
+        resolve_fault = s1c_fault;
+        resolve_addr = s1c_resolve_addr;
+        resolve_is_mmio = s1c_is_mmio;
       end else if (walk_resp_for_s1) begin
         resolve_now = 1'b1;
         resolve_fault = walk_fault;
@@ -369,27 +514,43 @@ module dmmu (
     end
   end
 
-  // Return PA only for a fault-free TLB or walk result; otherwise retain VA
-  // for xtval. Store VA, PPN, and the select separately in S2, for timing.
+  // Return PA only for a fault-free TLB, S1 cache, or walk result; otherwise
+  // retain VA for xtval. Store VA, PPN, and the select separately in S2, for
+  // timing.
   logic resolve_pa;
   logic [PpnBits-1:0] resolve_ppn;
   assign resolve_pa = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical &&
       (tlb_hit[0] ? (tlb_fault == riscv_pkg::DFAULT_NONE) :
+       s1c_hit    ? s1c_clean :
                     (walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE)));
-  assign resolve_ppn = tlb_hit[0] ? tlb_ppn[0] : walk_ppn;
+  assign resolve_ppn = tlb_hit[0] ? tlb_ppn[0] : (s1c_hit ? s1c_ppn : walk_ppn);
 
   // ---------------------------------------------------------------------------
   // Pipe advance
   // ---------------------------------------------------------------------------
   // While S1 holds an unresolved op, one more op may issue into the S0 skid
   // behind it. On a run of hits S1 hands its op to S2 every cycle and new ops
-  // load S1 directly, with the skid empty.
+  // load S1 directly, with the skid empty. Combine the four level-2 S1 cache
+  // match terms directly in the final gate for s1_move and s1_can_load.
+  (* keep = "true" *)logic s1_live;
+  (* keep = "true" *)logic s1_move_no_s1c;
+  (* keep = "true" *)logic s1_can_load_early;
+  assign s1_live = s1_valid_q && !s1_killed;
+  assign s1_move_no_s1c = s1_live && ((i_trap_misaligned && s1_misaligned) ||
+      s1_noncanonical || tlb_hit[0] || walk_resp_for_s1);
+  assign s1_can_load_early = !s1_live || (i_trap_misaligned && s1_misaligned) ||
+      s1_noncanonical || walk_resp_for_s1;
+
   logic s1_resolved, s1_move;
   assign s1_resolved = s1_valid_q && resolve_now;
-  assign s1_move = s1_resolved && !s1_killed;
+  assign s1_move = s1_move_no_s1c || (s1_live &&
+      ((s1c_tag_lo_eq[0] && s1c_hi_asid_ok[0]) ||
+       (s1c_tag_lo_eq[1] && s1c_hi_asid_ok[1])));
 
   logic s1_can_load;
-  assign s1_can_load = !s1_valid_q || s1_move || s1_killed;
+  assign s1_can_load = s1_can_load_early || tlb_hit[0] ||
+      (s1c_tag_lo_eq[0] && s1c_hi_asid_ok[0]) ||
+      (s1c_tag_lo_eq[1] && s1c_hi_asid_ok[1]);
 
   // ---------------------------------------------------------------------------
   // Match the issue operands against the resident DTLB entries.
@@ -400,6 +561,9 @@ module dmmu (
   logic [Entries-1:0][1:0] entry_level;
   logic [Entries-1:0][PpnBits-1:0] entry_ppn;
   logic tlb_install;
+  // An S1 cache hit queued to refill the DTLB this cycle (see the refill
+  // below the S1 cache fill).
+  logic s1c_refill_valid_q;
 
   // Live incoming op qualification for bypass
   logic iss_misaligned;
@@ -415,63 +579,115 @@ module dmmu (
   logic iss_noncanonical;
   assign iss_noncanonical = !riscv_pkg::sv39_va_canonical(iss_in.va);
 
-  // For an expected sum bit T, its carry-in must be A ^ B ^ T. Its carry-out
-  // must then be (A & B) | ((A ^ B) & ~T). Compare adjacent carries in
-  // parallel. Only the carry into each nine-bit VPN field comes from the
-  // lower address. Compute those three carries once for all entries.
+  // For an expected sum bit T, its carry-in must be A ^ B ^ T and its
+  // carry-out is (A & B) | ((A ^ B) & ~T). Compare adjacent carries in
+  // parallel for bits 8:1 of each nine-bit VPN field, and check bit 0 directly
+  // against the base-plus-offset sum bit iss_in.va[Bit].
   logic [38:0] issue_propagate, issue_generate;
   assign issue_propagate = i_iss_base[38:0] ^ i_iss_offset[38:0];
   assign issue_generate  = i_iss_base[38:0] & i_iss_offset[38:0];
-  logic [2:0] vpn_carry;
-  logic carry_gen_1, carry_gen_2, carry_prop_1, carry_prop_2;
-  assign vpn_carry[0] = i_iss_base[11:0] > ~i_iss_offset[11:0];
-  assign carry_gen_1 = i_iss_base[20:12] > ~i_iss_offset[20:12];
-  assign carry_gen_2 = i_iss_base[29:21] > ~i_iss_offset[29:21];
-  assign carry_prop_1 = &issue_propagate[20:12];
-  assign carry_prop_2 = &issue_propagate[29:21];
-  assign vpn_carry[1] = carry_gen_1 || (carry_prop_1 && vpn_carry[0]);
-  assign vpn_carry[2] = carry_gen_2 || (carry_prop_2 && carry_gen_1) ||
-      (carry_prop_2 && carry_prop_1 && vpn_carry[0]);
 
-  logic [Entries-1:0] issue_match, issue_winner, entry_clean, mega_or_giga, giga;
+  logic [Entries-1:0] issue_match, entry_clean, mega_or_giga, giga;
+  logic [Entries-1:0][PpnBits-1:0] entry_eff_ppn;
   for (genvar e = 0; e < Entries; e++) begin : gen_issue_match
     logic [2:0] field_eq;
     for (genvar f = 0; f < 3; f++) begin : gen_field
       localparam int unsigned Bit = 12 + 9 * f;
       wire [8:0] tag = entry_vpn[e][9*f+:9];
-      wire [8:0] carry_in = issue_propagate[Bit+:9] ^ tag;
-      wire [7:0] carry_out = issue_generate[Bit+:8] | (issue_propagate[Bit+:8] & ~tag[7:0]);
-      assign field_eq[f] = carry_in == {carry_out, vpn_carry[f]};
+      wire [7:0] carry_in_hi = issue_propagate[Bit+1+:8] ^ tag[8:1];
+      wire [7:0] carry_out_lo = issue_generate[Bit+:8] | (issue_propagate[Bit+:8] & ~tag[7:0]);
+      assign field_eq[f] = (carry_in_hi == carry_out_lo) && (iss_in.va[Bit] == tag[0]);
     end
     assign giga[e] = entry_level[e] == 2'd2;
     assign mega_or_giga[e] = giga[e] || entry_level[e] == 2'd1;
     assign issue_match[e] = entry_valid[e] && field_eq[2] &&
         (giga[e] || field_eq[1]) && (mega_or_giga[e] || field_eq[0]);
-    // A lower-index mixed or faulting leaf still owns an overlapping hit.
-    assign issue_winner[e] = issue_match[e] && !(|(issue_match & ((Entries'(1) << e) - 1'b1)));
     assign entry_clean[e] = entry_whole[e] && !entry_high[e] &&
         (iss_in.store_perms ? entry_store_ok[e] : entry_load_ok[e]) &&
         (entry_atomic[e] || (entry_device[e] && !iss_in.atomic));
+    assign entry_eff_ppn[e] = {
+      entry_ppn[e][PpnBits-1:18],
+      giga[e] ? iss_in.va[29:21] : entry_ppn[e][17:9],
+      mega_or_giga[e] ? iss_in.va[20:12] : entry_ppn[e][8:0]
+    };
   end
-  logic [PpnBits-1:0] selected_ppn, bypass_ppn;
-  always_comb begin
-    selected_ppn = '0;
-    for (int e = 0; e < Entries; e++) selected_ppn |= {PpnBits{issue_winner[e]}} & entry_ppn[e];
+  // Select the lowest-index matching entry's clean, device, and PPN outputs
+  // directly from issue_match via an explicit 3-level priority tree (pairs ->
+  // 3-pair groups -> top) so synthesis never builds a long linear chain.
+  (* keep = "true" *) logic iss_bypass_clean_hit;
+  (* keep = "true" *) logic iss_bypass_device_hit;
+  (* keep = "true" *) logic [PpnBits-1:0] bypass_ppn;
+  if (Entries == 16) begin : gen_bypass_tree_16
+    (* keep = "true" *) logic [7:0] p_any;
+    (* keep = "true" *) logic [7:0] p_clean;
+    (* keep = "true" *) logic [7:0] p_dev;
+    (* keep = "true" *) logic [8*PpnBits-1:0] p_ppn;
+    for (genvar p = 0; p < 8; p++) begin : gen_pair
+      assign p_any[p] = issue_match[2*p] || issue_match[2*p+1];
+      assign p_clean[p] = issue_match[2*p] ? entry_clean[2*p] :
+          (issue_match[2*p+1] && entry_clean[2*p+1]);
+      assign p_dev[p] = issue_match[2*p] ? entry_device[2*p] :
+          (issue_match[2*p+1] && entry_device[2*p+1]);
+      assign p_ppn[p*PpnBits+:PpnBits] =
+          issue_match[2*p] ? entry_eff_ppn[2*p] : entry_eff_ppn[2*p+1];
+    end
+    (* keep = "true" *) logic [1:0] grp_any;
+    (* keep = "true" *) logic [2:0] grp_clean;
+    (* keep = "true" *) logic [2:0] grp_dev;
+    (* keep = "true" *) logic [3*PpnBits-1:0] grp_ppn;
+    assign grp_any[0] = |issue_match[5:0];
+    assign grp_any[1] = |issue_match[11:6];
+    assign grp_clean[0] = p_any[0] ? p_clean[0] : (p_any[1] ? p_clean[1] : p_clean[2]);
+    assign grp_clean[1] = p_any[3] ? p_clean[3] : (p_any[4] ? p_clean[4] : p_clean[5]);
+    assign grp_clean[2] = p_any[6] ? p_clean[6] : p_clean[7];
+    assign grp_dev[0] = p_any[0] ? p_dev[0] : (p_any[1] ? p_dev[1] : p_dev[2]);
+    assign grp_dev[1] = p_any[3] ? p_dev[3] : (p_any[4] ? p_dev[4] : p_dev[5]);
+    assign grp_dev[2] = p_any[6] ? p_dev[6] : p_dev[7];
+    assign grp_ppn[0*PpnBits+:PpnBits] = p_any[0] ? p_ppn[0*PpnBits+:PpnBits] :
+        (p_any[1] ? p_ppn[1*PpnBits+:PpnBits] : p_ppn[2*PpnBits+:PpnBits]);
+    assign grp_ppn[1*PpnBits+:PpnBits] = p_any[3] ? p_ppn[3*PpnBits+:PpnBits] :
+        (p_any[4] ? p_ppn[4*PpnBits+:PpnBits] : p_ppn[5*PpnBits+:PpnBits]);
+    assign grp_ppn[2*PpnBits+:PpnBits] =
+        p_any[6] ? p_ppn[6*PpnBits+:PpnBits] : p_ppn[7*PpnBits+:PpnBits];
+    assign iss_bypass_clean_hit = grp_any[0] ? grp_clean[0] :
+        (grp_any[1] ? grp_clean[1] : grp_clean[2]);
+    assign iss_bypass_device_hit = grp_any[0] ? grp_dev[0] : (grp_any[1] ? grp_dev[1] : grp_dev[2]);
+    assign bypass_ppn = grp_any[0] ? grp_ppn[0*PpnBits+:PpnBits] :
+        (grp_any[1] ? grp_ppn[1*PpnBits+:PpnBits] : grp_ppn[2*PpnBits+:PpnBits]);
+  end else begin : gen_bypass_tree_generic
+    logic [Entries-1:0] issue_winner;
+    logic [PpnBits-1:0] selected_ppn;
+    for (genvar e = 0; e < Entries; e++) begin : gen_winner
+      // A lower-index mixed or faulting leaf still owns an overlapping hit.
+      assign issue_winner[e] = issue_match[e] && !(|(issue_match & ((Entries'(1) << e) - 1'b1)));
+    end
+    always_comb begin
+      selected_ppn = '0;
+      for (int e = 0; e < Entries; e++)
+      selected_ppn |= {PpnBits{issue_winner[e]}} & entry_eff_ppn[e];
+    end
+    assign bypass_ppn = selected_ppn;
+    assign iss_bypass_clean_hit = |(issue_winner & entry_clean);
+    assign iss_bypass_device_hit = |(issue_winner & entry_device);
   end
-  assign bypass_ppn = {
-    selected_ppn[PpnBits-1:18],
-    (|(issue_winner & giga)) ? iss_in.va[29:21] : selected_ppn[17:9],
-    (|(issue_winner & mega_or_giga)) ? iss_in.va[20:12] : selected_ppn[8:0]
-  };
-  logic bypass_mmio, iss_can_bypass;
-  assign bypass_mmio = !iss_in.atomic && (|(issue_winner & entry_device));
-  // A fill may evict the winner or install a higher-priority overlapping
-  // leaf. Issue goes through S1 on that edge and sees the installed state.
-  assign iss_can_bypass = i_iss_valid && i_active && !i_flush_all && !iss_killed &&
-      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install &&
+  (* keep = "true" *) logic iss_bypass_qual;
+  // A fill, from a walk or an S1 cache refill, may evict the winner or
+  // install a higher-priority overlapping leaf. Issue goes through S1 on that
+  // edge and sees the installed state.
+  assign iss_bypass_qual = i_iss_valid && i_active && !i_flush_all && !iss_killed &&
+      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install && !s1c_refill_valid_q &&
       !s0_valid_q && (!s1_valid_q || s1_killed) &&
-      !(i_trap_misaligned && iss_misaligned) && !iss_noncanonical &&
-      (|(issue_winner & entry_clean));
+      !(i_trap_misaligned && iss_misaligned) && !iss_noncanonical;
+  logic bypass_mmio, iss_can_bypass;
+  assign bypass_mmio = !iss_in.atomic && iss_bypass_device_hit;
+  assign iss_can_bypass = iss_bypass_qual && iss_bypass_clean_hit;
+
+  // Compute S1's next valid bit without bypass separately so the late
+  // bypass-clean verdict clears s1_valid_q in one final gate.
+  (* keep = "true" *) logic s1_valid_no_bypass;
+  assign s1_valid_no_bypass = s1_can_load ?
+      ((s0_valid_q && !s0_killed) ? 1'b1 : (i_iss_valid && i_active && !iss_killed)) :
+      (s1_valid_q && !s1_killed);
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
@@ -479,22 +695,11 @@ module dmmu (
       s1_valid_q <= 1'b0;
       s1_walk_asked_q <= 1'b0;
     end else begin
+      s1_valid_q <= s1_valid_no_bypass && !(iss_bypass_qual && iss_bypass_clean_hit);
       // S1 loads from the skid first, else from a live issue fire.
       if (s1_can_load) begin
-        if (s0_valid_q && !s0_killed) begin
-          s1_valid_q <= 1'b1;
-          s0_valid_q <= 1'b0;
-          s1_walk_asked_q <= 1'b0;
-        end else if (iss_can_bypass) begin
-          // Bypassed directly to S2: S1 stays empty.
-          s1_valid_q <= 1'b0;
-          s0_valid_q <= 1'b0;
-          s1_walk_asked_q <= 1'b0;
-        end else begin
-          s1_valid_q <= i_iss_valid && i_active && !iss_killed;
-          s0_valid_q <= 1'b0;
-          s1_walk_asked_q <= 1'b0;
-        end
+        s0_valid_q <= 1'b0;
+        s1_walk_asked_q <= 1'b0;
       end else begin
         // S1 held (unresolved): one op may slip in behind it. s0_q already
         // holds it (see below).
@@ -504,7 +709,6 @@ module dmmu (
           s0_valid_q <= 1'b0;
         end
         if (s1_killed) begin
-          s1_valid_q <= 1'b0;
           s1_walk_asked_q <= 1'b0;
         end else if (o_walk_req_valid && i_walk_req_ready) begin
           s1_walk_asked_q <= 1'b1;
@@ -590,7 +794,7 @@ module dmmu (
   // Compute S2's next MMIO bit for both tlb_is_mmio values and select last,
   // for timing. Hold the bit when no operation resolves.
   (* keep = "true" *) logic [1:0] s2_mmio_cases;
-  logic s2_mmio_next;
+  (* keep = "true" *) logic s2_mmio_next;
   for (genvar mmio = 0; mmio < 2; mmio++) begin : gen_s2_mmio_cases
     logic resolved_mmio;
     always_comb begin
@@ -599,6 +803,7 @@ module dmmu (
         if (i_trap_misaligned && s1_misaligned) resolved_mmio = 1'b0;
         else if (s1_noncanonical) resolved_mmio = 1'b0;
         else if (tlb_hit[0]) resolved_mmio = (mmio != 0);
+        else if (s1c_hit) resolved_mmio = s1c_is_mmio;
         else if (walk_resp_for_s1) resolved_mmio = walk_is_mmio;
       end
     end
@@ -620,6 +825,7 @@ module dmmu (
     if (s1_valid_q) begin
       if (i_trap_misaligned && s1_misaligned) s2_fault_without_leaf = riscv_pkg::DFAULT_MISALIGN;
       else if (s1_noncanonical) s2_fault_without_leaf = riscv_pkg::DFAULT_PAGE;
+      else if (s1c_hit) s2_fault_without_leaf = s1c_fault;
       else if (walk_resp_for_s1) s2_fault_without_leaf = walk_fault;
     end
     s2_leaf_fault = riscv_pkg::DFAULT_NONE;
@@ -630,17 +836,20 @@ module dmmu (
   assign s2_leaf_applies = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical;
   assign s2_fault_next   = s2_leaf_applies && tlb_hit[0] ? s2_leaf_fault : s2_fault_without_leaf;
 
-  // The DTLB selects the clean data-access verdict with the matching entry.
-  // Select that verdict directly instead of rebuilding its permission and
-  // page-attribute checks after selection.
-  (* keep = "true" *) wire s2_pa_leaf_selected;
+  // The DTLB and S1 cache each compute clean data-access verdicts in parallel
+  // with VPN matching. Select the pre-evaluated verdict directly instead of
+  // rebuilding permission and PMA checks after selection.
+  (* keep = "true" *) logic s2_pa_leaf_selected;
   assign s2_pa_leaf_selected = s2_leaf_applies && !s1_killed && tlb_hit[0];
-  // verilog_format: off
-  (* keep = "true" *) wire s2_pa_without_leaf;
+  (* keep = "true" *) logic s2_pa_walk_ok;
+  assign s2_pa_walk_ok = s1_killed || !s1_valid_q ||
+      (!(i_trap_misaligned && s1_misaligned) && !s1_noncanonical &&
+       (!walk_resp_for_s1 || (walk_fault == riscv_pkg::DFAULT_NONE)));
+  (* keep = "true" *) logic s2_pa_without_leaf;
   assign s2_pa_without_leaf =
-      s1_killed || (s2_fault_without_leaf == riscv_pkg::DFAULT_NONE);
-  // verilog_format: on
-  wire s2_pa_next = s2_pa_leaf_selected ? tlb_clean_hit[0] : s2_pa_without_leaf;
+      (s2_leaf_applies && !s1_killed && s1c_hit) ? s1c_clean : s2_pa_walk_ok;
+  logic s2_pa_next;
+  assign s2_pa_next = s2_pa_leaf_selected ? tlb_clean_hit[0] : s2_pa_without_leaf;
 
   // S2's VA takes S1's VA when S1 advances, else the issue address, which is
   // the base-plus-offset sum. s1_move settles after
@@ -763,7 +972,7 @@ module dmmu (
   assign s1_walk_eligible = s1_valid_q && !(i_trap_misaligned && s1_misaligned) &&
       !s1_noncanonical && !walk_resp_for_s1 && !s1_walk_asked_q &&
       !s1_killed && !i_tlb_invalidate;
-  assign o_walk_req_valid = s1_walk_eligible && !tlb_hit[0];
+  assign o_walk_req_valid = s1_walk_eligible && !tlb_hit[0] && !s1c_hit;
   assign o_walk_vpn = s1_q.va[38:12];
   assign o_walk_hold = s1_valid_q && !s1_walk_asked_q;
 
@@ -835,10 +1044,167 @@ module dmmu (
   assign o_early2_is_mmio = early_mmio_q[1];
 
   // ---------------------------------------------------------------------------
-  // DTLB
+  // DTLB and S1 4 KiB cache updates
   // ---------------------------------------------------------------------------
   assign tlb_install = i_walk_resp_valid &&
       (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate;
+
+  // Pipeline S1 cache fills by one cycle so walk-response valid drives only a
+  // local capture register instead of the distributed RAM write enables and
+  // valid array. A flush or invalidation before the write edge cancels the
+  // queued fill; the leaf is already in the 16-entry DTLB.
+  logic s1c_fill_cap;
+  assign s1c_fill_cap = i_active && i_walk_resp_valid &&
+      (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && !i_tlb_invalidate &&
+      !i_tlb_flush.en && (i_walk_resp.level == 2'd0);
+  s1c_entry_t s1c_cap_data;
+  always_comb begin
+    s1c_cap_data.g = i_walk_resp.perm_g;
+    s1c_cap_data.asid = i_asid;
+    s1c_cap_data.tag = i_walk_resp.vpn[riscv_pkg::Sv39VpnBits-1:S1cIdxBits];
+    s1c_cap_data.ppn = i_walk_resp.ppn[PpnBits-1:0];
+    s1c_cap_data.hi_nonzero = |i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:PpnBits];
+    s1c_cap_data.pbmt = i_walk_resp.pbmt;
+    s1c_cap_data.r = i_walk_resp.perm_r;
+    s1c_cap_data.w = i_walk_resp.perm_w;
+    s1c_cap_data.x = i_walk_resp.perm_x;
+    s1c_cap_data.u = i_walk_resp.perm_u;
+    s1c_cap_data.d = i_walk_resp.perm_d;
+  end
+
+  logic s1c_fill_valid_q;
+  logic [S1cIdxBits-1:0] s1c_fill_widx_q;
+  logic s1c_fill_way_q;
+  s1c_entry_t s1c_fill_wdata_q;
+  logic s1c_fill_fire;
+  assign s1c_fill_fire = s1c_fill_valid_q && !i_tlb_flush.en;
+
+  // Choose the replacement way on the capture cycle (forwarding a same-set
+  // write retiring this edge) so the write cycle drives the distributed RAM
+  // write enables directly from registers rather than three 128:1 muxes.
+  logic [S1cIdxBits-1:0] s1c_cap_idx;
+  logic s1c_cap_same_set, s1c_cap_v0, s1c_cap_v1, s1c_cap_repl, s1c_cap_way;
+  assign s1c_cap_idx = i_walk_resp.vpn[S1cIdxBits-1:0];
+  assign s1c_cap_same_set = s1c_fill_fire && (s1c_fill_widx_q == s1c_cap_idx);
+  assign s1c_cap_v0 = s1c_valid_q[0][s1c_cap_idx] || (s1c_cap_same_set && !s1c_fill_way_q);
+  assign s1c_cap_v1 = s1c_valid_q[1][s1c_cap_idx] || (s1c_cap_same_set && s1c_fill_way_q);
+  assign s1c_cap_repl = s1c_cap_same_set ? !s1c_fill_way_q : s1c_repl_q[s1c_cap_idx];
+  assign s1c_cap_way = !s1c_cap_v0 ? 1'b0 : (!s1c_cap_v1 ? 1'b1 : s1c_cap_repl);
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_tlb_flush.en) begin
+      s1c_fill_valid_q <= 1'b0;
+    end else begin
+      s1c_fill_valid_q <= s1c_fill_cap;
+    end
+    s1c_fill_widx_q  <= s1c_cap_idx;
+    s1c_fill_way_q   <= s1c_cap_way;
+    s1c_fill_wdata_q <= s1c_cap_data;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      s1c_valid_q <= '0;
+      s1c_repl_q  <= '0;
+    end else if (i_tlb_flush.en) begin
+      if (i_tlb_flush.use_va) begin
+        s1c_valid_q[0][i_tlb_flush.vpn[S1cIdxBits-1:0]] <= 1'b0;
+        s1c_valid_q[1][i_tlb_flush.vpn[S1cIdxBits-1:0]] <= 1'b0;
+      end else begin
+        s1c_valid_q <= '0;
+      end
+    end else if (s1c_fill_fire) begin
+      if (s1c_fill_way_q) s1c_valid_q[1][s1c_fill_widx_q] <= 1'b1;
+      else s1c_valid_q[0][s1c_fill_widx_q] <= 1'b1;
+      s1c_repl_q[s1c_fill_widx_q] <= !s1c_fill_way_q;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (s1c_fill_fire && !s1c_fill_way_q) s1c_ram0[s1c_fill_widx_q] <= s1c_fill_wdata_q;
+    if (s1c_fill_fire && s1c_fill_way_q) s1c_ram1[s1c_fill_widx_q] <= s1c_fill_wdata_q;
+  end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (reset_seen_q && i_rst_n && s1c_fill_fire) begin
+      p_s1c_fill_way_exact :
+      assert (s1c_fill_way_q ==
+              (!s1c_valid_q[0][s1c_fill_widx_q] ? 1'b0 :
+               (!s1c_valid_q[1][s1c_fill_widx_q] ? 1'b1 : s1c_repl_q[s1c_fill_widx_q])));
+    end
+  end
+`endif
+
+  // A DTLB miss that resolves from the S1 cache writes its leaf back into the
+  // DTLB on the next cycle, so a 4 KiB page that other installs pushed out of
+  // the 16-entry DTLB returns after one access. Left out, such a page would
+  // resolve in S1 on every access, a cycle after the issue bypass, and its
+  // stores would miss the early address lookups, which read only the DTLB, so
+  // younger loads would wait for those stores to issue. The capture registers
+  // both ways' leaves and the hitting way, so no tag compare reaches the
+  // payload registers; an S1 hit on the page already queued is not queued
+  // again. In the refill cycle the refill owns the install port, under the
+  // ASID of its lookup. A walk response in that cycle belongs to an operation
+  // already killed, since an operation waiting for its walk holds S1, and
+  // only loses its install. An invalidation, a flush or an ASID change drops
+  // the refill.
+  logic s1c_refill_cap, s1c_refill_fire, s1c_refill_way_q;
+  logic [riscv_pkg::Sv39VpnBits-1:0] s1c_refill_vpn_q;
+  logic [riscv_pkg::AsidBits-1:0] s1c_refill_asid_q;
+  s1c_entry_t s1c_refill_rd0_q, s1c_refill_rd1_q, s1c_refill_rd;
+  assign s1c_refill_cap = i_active && s2_leaf_applies && !s1_killed && !tlb_hit[0] && s1c_hit &&
+      !i_tlb_invalidate && !i_tlb_flush.en &&
+      !(s1c_refill_valid_q && (s1c_refill_vpn_q == s1_q.va[38:12]));
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_tlb_invalidate || i_tlb_flush.en) begin
+      s1c_refill_valid_q <= 1'b0;
+    end else begin
+      s1c_refill_valid_q <= s1c_refill_cap;
+    end
+    s1c_refill_vpn_q  <= s1_q.va[38:12];
+    s1c_refill_asid_q <= i_asid;
+    s1c_refill_way_q  <= !s1c_way_hit[0];
+    s1c_refill_rd0_q  <= s1c_rd0;
+    s1c_refill_rd1_q  <= s1c_rd1;
+  end
+  assign s1c_refill_rd = s1c_refill_way_q ? s1c_refill_rd1_q : s1c_refill_rd0_q;
+  assign s1c_refill_fire = s1c_refill_valid_q && i_active && !i_tlb_invalidate &&
+      !i_tlb_flush.en && (s1c_refill_asid_q == i_asid);
+
+  riscv_pkg::ptw_resp_t s1c_refill_leaf;
+  always_comb begin
+    s1c_refill_leaf = '0;
+    s1c_refill_leaf.fault_kind = riscv_pkg::DFAULT_NONE;
+    s1c_refill_leaf.vpn = s1c_refill_vpn_q;
+    s1c_refill_leaf.ppn = {
+      {(riscv_pkg::PtePpnBits - PpnBits - 1) {1'b0}}, s1c_refill_rd.hi_nonzero, s1c_refill_rd.ppn
+    };
+    s1c_refill_leaf.level = 2'd0;
+    s1c_refill_leaf.pbmt = s1c_refill_rd.pbmt;
+    s1c_refill_leaf.perm_r = s1c_refill_rd.r;
+    s1c_refill_leaf.perm_w = s1c_refill_rd.w;
+    s1c_refill_leaf.perm_x = s1c_refill_rd.x;
+    s1c_refill_leaf.perm_u = s1c_refill_rd.u;
+    s1c_refill_leaf.perm_d = s1c_refill_rd.d;
+    s1c_refill_leaf.perm_g = s1c_refill_rd.g;
+  end
+  logic dtlb_install_valid;
+  riscv_pkg::ptw_resp_t dtlb_install;
+  assign dtlb_install_valid = s1c_refill_valid_q ? s1c_refill_fire : tlb_install;
+  assign dtlb_install = s1c_refill_valid_q ? s1c_refill_leaf : i_walk_resp;
+
+`ifndef SYNTHESIS
+  // The refill copies the leaf the S1 op resolved with: its VPN, and the PPN,
+  // high-PPN flag and PBMT field the S1 cache answered.
+  logic [PpnBits-1:0] ref_refill_ppn_q;
+  always_ff @(posedge i_clk) begin
+    ref_refill_ppn_q <= s1c_ppn;
+    if (reset_seen_q && i_rst_n && s1c_refill_valid_q) begin
+      p_s1c_refill_leaf_exact : assert (s1c_refill_rd.ppn == ref_refill_ppn_q && !s1_walk_asked_q);
+    end
+  end
+`endif
 
   dtlb #(
       .NUM_ENTRIES(Entries),
@@ -848,8 +1214,8 @@ module dmmu (
       .i_rst_n(i_rst_n),
       .i_flush(i_tlb_flush),
       .i_asid(i_asid),
-      .i_install_valid(tlb_install),
-      .i_install(i_walk_resp),
+      .i_install_valid(dtlb_install_valid),
+      .i_install(dtlb_install),
       .i_lookup_vpn(tlb_vpn),
       .o_hit(tlb_hit),
       .o_ppn(tlb_ppn),
@@ -918,10 +1284,13 @@ module dmmu (
           riscv_pkg::pma_atomic_ok(riscv_pkg::XLEN'({tlb_ppn[p], 12'h000}));
     end
   end
-  // The PBMT field of the leaf that resolves S1: the DTLB hit's, else the walk's.
+  // The PBMT field of the leaf that resolves S1: the DTLB hit's, else the S1
+  // cache's, else the walk's.
   logic f_resolve_unc;
   assign f_resolve_unc = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical &&
-      (tlb_hit[0] ? (tlb_pbmt[0] != 2'd0) : (walk_resp_for_s1 && (i_walk_resp.pbmt != 2'd0)));
+      (tlb_hit[0] ? (tlb_pbmt[0] != 2'd0) :
+       s1c_hit    ? s1c_unc :
+                    (walk_resp_for_s1 && (i_walk_resp.pbmt != 2'd0)));
   always_comb begin
     logic [riscv_pkg::XLEN-1:0] f_resolve_addr_ref;
     f_resolve_addr_ref = s1_q.va;
@@ -1002,7 +1371,7 @@ module dmmu (
   end
   assign f_pa = riscv_pkg::XLEN'({f_ppn, f_va[11:0]});
   assign f_take = i_iss_valid && i_active && !iss_killed && !i_flush_all &&
-      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install &&
+      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install && !s1c_refill_valid_q &&
       !s0_valid_q && (!s1_valid_q || s1_killed) &&
       riscv_pkg::sv39_va_canonical(
       f_va
@@ -1107,7 +1476,7 @@ module dmmu (
         p_lq_lookahead_valid : assert (f_pre_needs_lq_q);
         p_lq_lookahead_tag : assert (o_iss_out_rob_tag == f_pre_tag_q);
       end
-      if (i_tlb_invalidate || i_tlb_flush.en || tlb_install || i_flush_all)
+      if (i_tlb_invalidate || i_tlb_flush.en || tlb_install || s1c_refill_valid_q || i_flush_all)
         p_no_bypass_on_update : assert (!iss_can_bypass);
       c_lq_lookahead_without_capture :
       cover (f_pre_needs_lq_q && !s2_valid_q && s1_valid_q && $past(

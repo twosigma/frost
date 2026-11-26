@@ -38,7 +38,7 @@
     strided, indexed and segment operations over an eight-ID coherent hart line
     client shared with the misaligned-access engine. Sv39 uses a 16-entry ITLB
     in IF, a 16-entry DTLB ahead of the eight-entry load and store queues, a
-    shared 512-entry four-way L2 TLB with a 32-entry superpage side array, and
+    shared 2,048-entry four-way L2 TLB with a 32-entry superpage side array, and
     one shared page-table walker with a pointer walk cache. The load queue
     contains a direct-mapped 512-entry, eight-byte-granule L0 cache and
     receives store forwarding. Matching I, D and V badges connect the CPU to
@@ -81,7 +81,7 @@
         LQ/SQ forwarding and VMT ordering hookup.
       hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/: BTB, backing BTB,
         bimodal, 4-table TAGE, 3-table ITTAGE, RAS.
-      hw/rtl/cpu_and_mem/cpu/mmu/{immu,dmmu,l2tlb,ptw}.sv: ITLB, DTLB, 512-entry
+      hw/rtl/cpu_and_mem/cpu/mmu/{immu,dmmu,l2tlb,ptw}.sv: ITLB, DTLB, 2,048-entry
         L2 TLB with 32-entry superpage side array, shared PTW with walk cache.
       hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv: L0 geometry.
       hw/rtl/cpu_and_mem/cpu/misaligned/ma_engine.sv: misaligned-access engine.

@@ -671,6 +671,17 @@ invalidations, walks, coherent reads, and L0 events as JSONL. Allocation identit
 distinguish reused ROB tags. Fetch events identify page transitions. Set the
 variable inside the container invocation.
 
+`mmu_resident` is a manual benchmark too. Each of its loops warms a 4 KiB
+working set that fits the DTLB, optionally loads once from 16 superpages,
+which install in the DTLB and push the set out of it, and then times a
+32 KiB DCPerf-style pointer chase or a 1,024-line scan through a superpage
+that stores each word it reads to a 4 KiB stack page. Because an S1 cache hit
+refills the DTLB, the sweep costs a few cycles; without the refill, every
+access to the pushed-out pages would resolve in S1 and the stack page's
+stores would lose their early address. It checks the chase's final index and
+the scan's counters, reports cycles through UART, and marks each timed window
+in `sscratch` as `mmu_reach` does.
+
 `FROST_PTW_COHERENCE_TRACE` captures PTE addresses and responses, accepted
 ReadOncePTW requests, and home probe data as JSONL without application markers.
 
