@@ -29,6 +29,7 @@ module coherence_home_engine #(
     input logic [5:0] i_tid,
     input logic i_work_error,
     output logic o_idle,
+    output logic o_lookup_pending,
     output logic o_lookup_valid,
     input logic i_lookup_ready,
     // The lookup's address: the work's on its dispatch cycle, then o_addr.
@@ -178,9 +179,12 @@ module coherence_home_engine #(
 `endif
   // A dispatched request offers its lookup on its work's cycle. A selecting
   // arbiter holds the offer from its next cycle, when the engine is in
-  // Lookup with the same address.
+  // Lookup with the same address. o_lookup_pending exposes the already-in-Lookup
+  // offer separately from dispatch_lookup so direct-launch gating does not pass
+  // through i_work_valid.
   wire dispatch_lookup = phase_q == Free && i_work_valid && !i_work_error;
-  assign o_lookup_valid = run && ((phase_q == Lookup && !lookup_sent_q) || dispatch_lookup);
+  assign o_lookup_pending = phase_q == Lookup && !lookup_sent_q;
+  assign o_lookup_valid = run && (o_lookup_pending || dispatch_lookup);
   assign o_lookup_addr = phase_q == Free ? work_in.addr : request_q.addr;
   assign o_addr = request_q.addr;
   assign o_tid = tid_q;
@@ -277,6 +281,18 @@ module coherence_home_engine #(
       end
     endcase
   end
+  // Keep the next state of read_sent_q without a row-read acceptance in one
+  // node so i_read_ready enters in one LUT.
+  (* keep = "true" *) logic read_sent_hold;
+  assign read_sent_hold =
+      (run && deciding && i_decision_valid && i_decision_resident) ?
+      (!needs_data || i_decision_spec) :
+      (run && deciding && i_decision_valid && !i_decision_resident && prefetch) ? 1'b1 :
+      (run && i_work_valid) ? 1'b0 : read_sent_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) read_sent_q <= 1'b0;
+    else read_sent_q <= read_sent_hold || (o_read_valid && i_read_ready);
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       phase_q <= Free;
@@ -287,7 +303,6 @@ module coherence_home_engine #(
       tid_q <= '0;
       way_q <= '0;
       state_q <= '0;
-      read_sent_q <= 1'b0;
       read_done_q <= 1'b0;
       dirty_q <= 1'b0;
       failed_q <= 1'b0;
@@ -301,7 +316,6 @@ module coherence_home_engine #(
         error_q <= i_work_error;
         failed_q <= 1'b0;
         dirty_q <= 1'b0;
-        read_sent_q <= 1'b0;
         read_done_q <= 1'b0;
         lookup_sent_q <= 1'b0;
         absent_q <= 1'b0;
@@ -312,7 +326,6 @@ module coherence_home_engine #(
         if (!i_decision_resident && prefetch) begin
           // A prefetch looks its line up once. Whether or not the decision
           // allocated a fill, it completes with GrantAck.
-          read_sent_q <= 1'b1;
           read_done_q <= 1'b1;
           probe_phase_q <= ProbeDone;
           absent_q <= 1'b1;
@@ -321,7 +334,6 @@ module coherence_home_engine #(
         else begin
           way_q <= i_decision_way;
           state_q <= i_decision_state;
-          read_sent_q <= !needs_data || i_decision_spec;
           read_done_q <= !needs_data;
           probe_phase_q <= needs_probe ? ProbeOffer : ProbeDone;
           probe_q <= '0;
@@ -341,7 +353,6 @@ module coherence_home_engine #(
           phase_q <= Service;
         end
       end
-      if (o_read_valid && i_read_ready) read_sent_q <= 1'b1;
       if (i_data_valid) begin
         read_done_q <= 1'b1;
         for (int sector = 0; sector < LINE_BYTES / 32; sector++)

@@ -414,6 +414,44 @@ module coherence_home_completions #(
   if (FAST_TAG_LAUNCH) begin : gen_work_meta
     logic [ADDR_WIDTH-1:0] work_addr_q;
     logic work_error_q, work_prefetch_q, work_cmo_q, work_no_spec_q;
+    // Decode each work position's flags beside the selector and select them
+    // with one-hot work_position_selected rather than decoding work_pick.
+    (* keep = "true" *) logic [WorkPositions-1:0] pos_cmo, pos_no_spec;
+    logic [WorkPositions-1:0] pos_error, pos_prefetch;
+    logic [ADDR_WIDTH-1:0] prefetch_pos_addr;
+    logic [ADDR_WIDTH-1:0] pick_work_addr;
+    logic pick_work_error, pick_work_prefetch, pick_work_cmo, pick_work_no_spec;
+    if (PREFETCH_SLOTS != 0) begin : gen_prefetch_pos_addr
+      assign prefetch_pos_addr = work_address[prefetch_work_slot_q];
+    end else begin : gen_no_prefetch_pos_addr
+      assign prefetch_pos_addr = '0;
+    end
+    for (genvar pos = 0; pos < WorkPositions; pos++) begin : gen_work_pos_meta
+      if (PREFETCH_SLOTS != 0 && pos == MainSlots) begin : gen_prefetch_pos
+        assign pos_error[pos] = wake_error_q[prefetch_work_slot_q];
+        assign pos_prefetch[pos] = slot_prefetch[prefetch_work_slot_q];
+        assign pos_cmo[pos] = coherence_pkg::is_cmo(request_opcode(work[prefetch_work_slot_q]));
+        assign pos_no_spec[pos] = no_spec_opcode(request_opcode(work[prefetch_work_slot_q]));
+      end else begin : gen_main_pos
+        assign pos_error[pos] = wake_error_q[pos];
+        assign pos_prefetch[pos] = slot_prefetch[pos];
+        assign pos_cmo[pos] = coherence_pkg::is_cmo(request_opcode(work[pos]));
+        assign pos_no_spec[pos] = no_spec_opcode(request_opcode(work[pos]));
+      end
+    end
+    always_comb begin
+      pick_work_addr = work_found ? '0 : incoming.addr;
+      for (int pos = 0; pos < WorkPositions; pos++)
+      pick_work_addr |= {ADDR_WIDTH{work_position_selected[pos]}} &
+          ((PREFETCH_SLOTS != 0 && pos == int'(MainSlots)) ? prefetch_pos_addr :
+           work_address[pos < int'(MainSlots) ? pos : 0]);
+      pick_work_error = |(work_position_selected & pos_error);
+      pick_work_prefetch = |(work_position_selected & pos_prefetch);
+      pick_work_cmo = |(work_position_selected & pos_cmo) ||
+          (!work_found && coherence_pkg::is_cmo(incoming.opcode));
+      pick_work_no_spec = |(work_position_selected & pos_no_spec) ||
+          (!work_found && no_spec_opcode(incoming.opcode));
+    end
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         work_addr_q <= '0;
@@ -422,19 +460,11 @@ module coherence_home_completions #(
         work_cmo_q <= 1'b0;
         work_no_spec_q <= 1'b0;
       end else if (!work_selected_q) begin
-        work_addr_q <= work_found ? work_address[work_pick] : incoming.addr;
-        work_error_q <= work_found ? wake_error_q[work_pick] : 1'b0;
-        work_prefetch_q <= work_found ? slot_prefetch[work_pick] : 1'b0;
-        work_cmo_q <= work_found ? coherence_pkg::is_cmo(
-            request_opcode(work[work_pick])
-        ) : coherence_pkg::is_cmo(
-            incoming.opcode
-        );
-        work_no_spec_q <= work_found ? no_spec_opcode(
-            request_opcode(work[work_pick])
-        ) : no_spec_opcode(
-            incoming.opcode
-        );
+        work_addr_q <= pick_work_addr;
+        work_error_q <= pick_work_error;
+        work_prefetch_q <= pick_work_prefetch;
+        work_cmo_q <= pick_work_cmo;
+        work_no_spec_q <= pick_work_no_spec;
       end
     end
     assign o_work_error = work_error_q;
@@ -840,8 +870,11 @@ module coherence_home_completions #(
   end
 
   if (FAST_TAG_LAUNCH) begin : gen_fast_work_selected_slots
-    wire direct_d_select = accept_request && !work_selected_q && !work_found && free_buffer &&
-        !incoming_prefetch && accepted_clear_if_hold;
+    (* keep = "true" *)logic direct_d_slots_pre;
+    logic direct_d_select;
+    assign direct_d_slots_pre = !work_selected_q && !work_found && free_buffer && i_d_valid &&
+        !incoming_prefetch;
+    assign direct_d_select = direct_d_slots_pre && o_d_ready && accepted_clear_if_hold;
     wire [SLOTS-1:0] direct_d_slots = direct_d_select ? (SLOTS'(1) << free_slot_index) : '0;
     always_ff @(posedge i_clk) begin
       if (i_rst) work_selected_slots_q <= '0;
@@ -887,8 +920,15 @@ module coherence_home_completions #(
   end
 
   if (FAST_TAG_LAUNCH) begin : gen_fast_state
-    wire direct_d_select = accept_request && !work_selected_q && !work_found && free_buffer &&
-        !incoming_prefetch && accepted_clear_if_hold;
+    // Factor the non-incoming terms of work_selected_q so o_d_ready and
+    // accepted_clear_if_hold enter in one LUT.
+    (* keep = "true" *) logic work_selected_stay, work_selected_from_table, direct_d_ready_pre;
+    logic direct_d_select;
+    assign work_selected_stay = work_selected_q && !parked_q[work_slot_q] && !accept_work;
+    assign work_selected_from_table = !work_selected_q && work_found && free_buffer;
+    assign direct_d_ready_pre = !work_selected_q && !work_found && free_buffer && i_d_valid &&
+        !incoming_prefetch;
+    assign direct_d_select = direct_d_ready_pre && o_d_ready && accepted_clear_if_hold;
 
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
@@ -916,14 +956,13 @@ module coherence_home_completions #(
         for (int index = 0; index < Buffers; index++) buffer_q[index] <= '0;
       end else begin
         parked_q <= parked_next;
-        if (!work_selected_q && (work_found || direct_d_select) && free_buffer) begin
-          work_selected_q <= 1'b1;
-          work_slot_q <= work_found ? work_pick : free_slot_index;
+        work_selected_q <= work_selected_stay || work_selected_from_table ||
+            (direct_d_ready_pre && o_d_ready && accepted_clear_if_hold);
+        if (work_selected_from_table || direct_d_select) begin
+          work_slot_q   <= work_found ? work_pick : free_slot_index;
           work_buffer_q <= free_buffer_index;
         end
-        if (work_selected_q && parked_q[work_slot_q]) work_selected_q <= 1'b0;
         if (accept_work) begin
-          work_selected_q <= 1'b0;
           work_next_q <= work_position == SlotBits'(WorkPositions - 1) ? '0 : work_position + 1'b1;
           for (int position = 0; position < WorkPositions; position++)
           work_later_q[position] <= work_position == SlotBits'(WorkPositions - 1) ||

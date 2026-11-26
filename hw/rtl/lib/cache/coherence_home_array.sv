@@ -392,9 +392,15 @@ module coherence_home_array #(
       end
     end
   end
-  // The parallel read's cycle holds the read port.
-  assign o_read_ready = o_init_done && !read_hazard && !(row_contended && !read_turn_q) &&
-      !spec_cycle;
+  // Factor row-read hazards ahead of the parallel-read hold so o_read_ready
+  // combines read_ready_no_spec with the request and claim terms in one kept
+  // six-input node when SpecRead is active.
+  (* keep = "true" *) logic read_ready_no_spec, read_ready_node;
+  assign read_ready_no_spec = o_init_done && !read_hazard && !(row_contended && !read_turn_q);
+  assign read_ready_node = read_ready_no_spec &&
+      !(SpecRead && i_req_valid && i_req_spec && req_ready_unclaimed &&
+        !(i_resp_claim && req_claim_conflict));
+  assign o_read_ready = read_ready_node;
   assign read_fire = i_read_valid && o_read_ready;
   assign o_read_token = read_token_q[DATA_READ_LATENCY];
   assign o_updated = write_valid_q[DATA_WRITE_LATENCY];
