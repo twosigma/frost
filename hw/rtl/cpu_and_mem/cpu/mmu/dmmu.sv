@@ -300,6 +300,13 @@ module dmmu (
   // Compare each way's 20-bit tag and 9-bit ASID in 3-bit kept chunks in
   // parallel with per-way PMA and permission checks, so neither way lookup
   // nor walk-request generation serializes through a way payload mux.
+  // The ASID chunks below cover exactly 9 bits. Simulation-only elaboration
+  // check, so the synthesized logic is unchanged.
+`ifndef SYNTHESIS
+  if (riscv_pkg::AsidBits != 9) begin : gen_s1c_asid_width_check
+    initial $fatal(1, "dmmu: the S1 cache ASID compare is chunked for 9-bit ASIDs");
+  end
+`endif
   (* keep = "true" *) logic [S1cWays-1:0][9:0] s1c_cmp_chunk;
   (* keep = "true" *) logic [S1cWays-1:0] s1c_tag_lo_eq;
   (* keep = "true" *) logic [S1cWays-1:0] s1c_hi_asid_ok;
