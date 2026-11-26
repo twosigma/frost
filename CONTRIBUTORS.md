@@ -136,3 +136,4 @@
 - Added front-end redirect checks and a seeded control-flow test suite.
 - Added early recovery of mispredicted indirect jumps and a misprediction cost probe.
 - Isolated each IP synthesis run in its own Tcl Store user area and bounded the VCU118 NIC pause-event mailbox payload.
+- Grew the store queue to 16 entries with a fixed-priority ring-order forwarding pick, a fan-out cap on the early store-address copy, and updated forwarding and twin formal proofs.
