@@ -694,7 +694,7 @@ of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256`, `vec_vstart_irq_test_v256`, `vec_uncached_test_v256`, `vec_crypto_irq_test_v256` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256`, `vec_vstart_irq_test_v256`, `vec_uncached_test_v256`, `vec_uncached_grant_test_v256`, `vec_crypto_irq_test_v256` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `opensbi_reset_cold`, `opensbi_reset_warm` | Each bench issues its own S-mode reset and stops at the first retired boot instruction |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
@@ -1152,10 +1152,17 @@ for negative tests; the program still checks all three architectural results.
 The `vec_vmu_v*` and `vec_head_mmu_v*` unit benches check sector byte masks,
 response reordering, backpressure, fatal errors, two-page translation, and
 partial-fault descriptors, including an enabled suffix whose first element
-straddles the faulting page, and strided, indexed and segment element runs
-(one descriptor per element, or per field of a segment, in order, index reads,
-precise faults with the faulting element's `vstart` and address, pointer
-masking and the VS-dirty report). `vec_debug_partial` runs in the Vector programs,
+straddles the faulting page, strided, indexed and segment element runs (one
+descriptor per cached element or segment field in order, index reads, precise
+faults with the faulting element's `vstart` and address, pointer masking and
+the VS-dirty report), and uncached element runs
+(`test_uncached_all_forms_and_widths` and
+`test_uncached_faults_svpbmt_and_irq`: unit-stride, whole-register, mask,
+strided, indexed and mixed cached/uncached segment beats across widths,
+requiring `i_unc_port_ready` in the cycle before every beat, alignment/PMA/Svpbmt
+NC/IO and bus-error faults with exact `xtval` and `vstart`, fault-only-first
+trimming, and mid-run interrupt boundaries checking `vstart == last_beat_elem +
+1`). `vec_debug_partial` runs in the Vector programs,
 memory and strides CI shard in both BRAM and DDR tiers. It checks that partial unit-stride and
 strided vector loads in Debug Mode write the completed elements before a page
 fault re-parks the hart and leave `mstatus.VS` Dirty.
@@ -1230,7 +1237,12 @@ segment, and fault-only-first) against low BRAM, side-effecting MMIO devices
 order, zero duplicate or speculative device pops, program order with scalar
 MMIO, low-BRAM L0 coherence and LR/SC invalidation, alignment/PMA/permission
 faults with `vstart`, mixed cached/uncached crossings, and mid-run timer
-interrupts during uncached runs.
+interrupts during uncached runs. The `vec_uncached_grant_test_v128`,
+`vec_uncached_grant_test_v256`, and `vec_uncached_grant_test_v512` programs
+place buffered scalar low-BRAM stores immediately before uncached vector loads
+and stores across forms and widths (so the registered uncached-port grant must
+wait for in-flight buffered writes) and place scalar misaligned cached-DDR
+accesses directly behind retiring vector memory operations.
 
 ### `test_riscv_vector_tests.py`
 

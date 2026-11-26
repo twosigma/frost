@@ -1313,8 +1313,10 @@ FORMAL_TARGETS = [
             "stride_bmc",
             "stride_cover",
             "index_bmc",
+            "index_irq_bmc",
             "index_cover",
             "uncached_bmc",
+            "uncached_seg_bmc",
             "uncached_cover",
         ),
     ),
@@ -3924,16 +3926,24 @@ SBY_TASKS = [
     ("stride_cover", "Strided head run reachability: retirement, mid-run fault, tag."),
     (
         "index_bmc",
-        "Indexed head run: index reads, order, translation first, precise faults, 60 frames.",
+        "Indexed head run (uninterrupted): index reads, order, translation first, precise faults, 60 frames.",
+    ),
+    (
+        "index_irq_bmc",
+        "Indexed head run (mid-run interrupts): pause, flush to idle, withdraw and resume, 60 frames.",
     ),
     ("index_cover", "Indexed head run reachability: retirement, mid-run fault."),
     (
         "uncached_bmc",
-        "Uncached head run: order, settled shield, registered grant, bus errors, FoF trim, IRQ stop, 44 frames.",
+        "Uncached unit-stride, strided and FoF runs: order, shield, withheld grant, faults, IRQ stop, 36 frames.",
+    ),
+    (
+        "uncached_seg_bmc",
+        "Uncached 2-field segment runs: order, shield, withheld grant, faults, IRQ stop, 44 frames.",
     ),
     (
         "uncached_cover",
-        "Uncached head run reachability: retirement, alignment/bus faults, FoF trim, IRQ stop.",
+        "Uncached head run reachability: retirement, alignment/bus faults, FoF trim, IRQ stop, withheld grant.",
     ),
     ("bmc", "Check assertions up to the configured depth"),
     ("bmc_cdb", "Compare the first valid CDB packet across wrapper copies."),

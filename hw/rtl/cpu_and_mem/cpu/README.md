@@ -1113,17 +1113,19 @@ Vector loads and stores reach every region a scalar load or store of the same
 width and kind can (cached DDR, low BRAM, the device windows, and Svpbmt NC/IO
 pages), with scalar PMA, Sv39 permission, and alignment rules. Unit-stride,
 whole-register, and mask accesses whose translated span stays in cached DDR
-(`PBMT = PMA`) use `vec_vmu`; if either span page maps outside cached DDR, or
-when an element of a strided, indexed, segment, or fault-only-first run targets
-an uncached region, `vec_head_mmu` executes each uncached beat one at a time at
-the ROB head over the shared uncached data port after draining committed stores
-and settling the head interrupt shield. Uncached device reads never speculate
-or replay, and low-BRAM vector stores invalidate the scalar L0 read cache and
-any overlapping LR/SC reservation. In the bare-metal DDR layout, a program
-built with the vector extension places its stack in cached DDR for cached
-throughput and hardware misaligned stack accesses; in the BRAM layout, its
-static data and stack are in low BRAM, where naturally aligned vector accesses
-execute (see the
+(`PBMT = PMA`) use `vec_vmu`; if either span page maps to an uncached region,
+or when an element of a strided, indexed, segment, or fault-only-first run
+targets an uncached region, `vec_head_mmu` executes each uncached beat one at a
+time at the ROB head over the shared uncached data port after draining committed
+stores and settling the head interrupt shield. Uncached device reads never
+speculate, and single-element device reads never replay (a bus error on segment
+field `k > 0` or a fault-only-first segment trim may re-read fields `0..k-1` if
+software restarts the segment instruction, as the RVV specification permits);
+low-BRAM vector stores invalidate the scalar L0 read cache and any overlapping
+LR/SC reservation. In the bare-metal DDR layout, a program built with the vector
+extension places its stack in cached DDR for cached throughput and hardware
+misaligned stack accesses; in the BRAM layout, its static data and stack are in
+low BRAM, where naturally aligned vector accesses execute (see the
 [software memory configuration](../../../../sw/README.md#memory-configuration)).
 
 Strided and indexed loads and stores run their active elements in order at
@@ -1132,24 +1134,27 @@ port after `rs1` and forms element `i`'s address as `rs1 + i * rs2` by a running
 sum; an indexed form reads element `i` of the index group `vs2` through the VRF
 read port and adds it, zero-extended, to `rs1`. For each element the unit
 applies pointer masking, translates the one or two pages of the element's
-bytes, and then gives `vec_vmu` a descriptor for that element alone, waiting for
-its completion before the next element, so the ordered and unordered indexed
-forms both run in element order. A strided form's legality is that of the
-unit-stride form. An indexed form's data has EEW SEW and EMUL LMUL and its index
-group the width field's EEW and the matching EMUL, which must lie in
-`[1/8, 8]`; both groups must be aligned, and a load's destination may overlap
-the index group only with equal EEWs, at the index group's lowest register when
-the destination EEW is smaller, or at the destination group's highest register
-when it is larger and the index EMUL is at least 1. A masked load's destination
-group may not contain `v0`. The mask is a source with EEW 1, so a masked store
-cannot use `v0` as data and a masked indexed load or store cannot use it as an
-index. An indexed store may read overlapping data and index groups only when
-SEW equals the index EEW. The head raises an illegal-instruction exception for
-these reserved encodings before accessing memory. A segment form has 2 to 8
-fields and treats each segment as one element. For a unit-stride segment the
-stride is NF * EEW. Its fields lie
-one after another from the segment's address, the segment's one or two pages are
-translated first, and each field then gets its own descriptor, for register
+bytes, and then either gives `vec_vmu` a descriptor for that element alone (for
+cached DDR) or issues a single-beat request on the head uncached data port (for
+low BRAM, device windows, and Svpbmt NC/IO pages), waiting for its completion
+before the next element, so the ordered and unordered indexed forms both run in
+element order. A strided form's legality is that of the unit-stride form. An
+indexed form's data has EEW SEW and EMUL LMUL and its index group the width
+field's EEW and the matching EMUL, which must lie in `[1/8, 8]`; both groups
+must be aligned, and a load's destination may overlap the index group only with
+equal EEWs, at the index group's lowest register when the destination EEW is
+smaller, or at the destination group's highest register when it is larger and
+the index EMUL is at least 1. A masked load's destination group may not contain
+`v0`. The mask is a source with EEW 1, so a masked store cannot use `v0` as data
+and a masked indexed load or store cannot use it as an index. An indexed store
+may read overlapping data and index groups only when SEW equals the index EEW.
+The head raises an illegal-instruction exception for these reserved encodings
+before accessing memory. A segment form has 2 to 8 fields and treats each
+segment as one element. For a unit-stride segment the stride is NF * EEW. Its
+fields lie one after another from the segment's address, the segment's one or
+two pages are translated first, and each field then either gets its own
+`vec_vmu` descriptor (when cached) or executes as a single uncached beat on the
+head uncached data port (when uncached), for register
 group `vd + f * EMUL` (EMUL at least one register), so a fault on a segment is
 reported before any of its fields is accessed. NF * EMUL may not exceed 8, the
 last field group may not pass `v31`, and an indexed segment load's field groups
