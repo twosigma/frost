@@ -88,8 +88,8 @@
   UINH (60); VSINH, VUINH and the WPRI bits 57:56 read zero (no H
   extension). An xINH bit stops counting while the event's privilege is x.
   Retirement events (3 branches, 4 mispredictions, 10 instructions) take the
-  privilege the instruction retired in; the others (5 L1 ITLB misses, 6 L1
-  DTLB misses, 7 L1D misses, 8 SQ-full cycles, 9 cycles, and the refill events
+  privilege the instruction retired in; the others (5 L1 ITLB misses, 6 DMMU
+  walk requests, 7 L1D misses, 8 SQ-full cycles, 9 cycles, and the refill events
   19, 20 and 21) take the hart's privilege when csr_file samples the event.
   A refill passes through the cache's observer and cpu_ooo's register before
   this sample, so a privilege transition can attribute it to the later mode.
@@ -157,7 +157,9 @@ module csr_file #(
     input logic [1:0] i_branch_retired_count = '0,
     input logic [1:0] i_branch_mispredict_count = '0,
     // L1 TLB misses: a walk request accepted by the second-level TLB, whether
-    // that array answers it or the walker does.
+    // that array answers it or the walker does. For the data side these are
+    // DMMU walk requests, so L1 DTLB misses answered by the DMMU's S1 4 KiB
+    // cache are not counted.
     input logic       i_itlb_miss = '0,
     input logic       i_dtlb_miss = '0,
     input logic       i_l1d_miss = '0,
@@ -1305,7 +1307,8 @@ module csr_file #(
   // Hardware Performance Counters (mhpmcounter3..10, Sscofpmf)
   // ==========================================================================
   // Event inputs by counter number: 3 retired branches, 4 retired
-  // mispredictions, 5 L1 ITLB misses, 6 L1 DTLB misses, 7 L1D misses, 8 SQ-full
+  // mispredictions, 5 L1 ITLB misses, 6 DMMU walk requests (L1 DTLB misses the S1
+  // cache did not answer), 7 L1D misses, 8 SQ-full
   // stall cycles, 9 cycles, 10 retired instructions (the minstret count).
   // Counters 4, 7 and 8 switch to their translation event and counters 3, 5
   // and 6 to their cache refill event when hpm_alt is set.
