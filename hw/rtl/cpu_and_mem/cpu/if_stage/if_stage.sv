@@ -2310,11 +2310,14 @@ module if_stage #(
   logic [XLEN-1:0] sim_prev_pc_q;
   logic sim_prev_pred_capture_q;
   logic sim_pred_capture_comb;
+  logic sim_pred_retain_comb;
 
-  assign sim_pred_capture_comb =
-      (i_instr_valid && fetch_pa_valid && !f0_stop_fetch && !f1_resteer_raw &&
-       !f1_collapsed_accept_raw) ||
-      (!f1_req_valid_q && !i_instr_valid && fetch_pa_valid && !f0_stop_fetch);
+  assign sim_pred_capture_comb = !any_redirect && !f1_resteer_raw && !(|npc_sel[5:1]) &&
+      ((i_instr_valid && fetch_pa_valid && !f0_stop_fetch && !f1_collapsed_accept_raw) ||
+       (!f1_req_valid_q && !i_instr_valid && fetch_pa_valid && !f0_stop_fetch));
+  assign sim_pred_retain_comb = sim_prev_pred_capture_q && !any_redirect && !f1_resteer_raw &&
+      !(|npc_sel[5:1]) && !pc_update_en && !f1_req_valid_q && collapsed_armed_q &&
+      !i_instr_valid && (!fetch_pa_valid || f0_stop_fetch) && (pc == f1_req_q.pc);
 
   always_comb begin
     sim_redir_has_target = 1'b0;
@@ -2638,7 +2641,7 @@ module if_stage #(
         sim_m_cnt_q <= 4'(sim_m_avail - {2'b0, sim_m_pop});
       end
       sim_prev_pc_q           <= pc;
-      sim_prev_pred_capture_q <= sim_pred_capture_comb;
+      sim_prev_pred_capture_q <= sim_pred_capture_comb || sim_pred_retain_comb;
     end
   end
 `endif

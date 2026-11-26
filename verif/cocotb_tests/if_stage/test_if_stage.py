@@ -2898,3 +2898,129 @@ async def test_tag_resteer_preserves_carry_hi_for_spanning_instruction(
     assert s1["effective_instr"] == ADD_INSTR_B
     assert s2["sel_nop"] is False and s2["program_counter"] == BASE_PC + 10
     assert s2["effective_instr"] == COMPRESSED_ADDIW_EXPANDED
+
+
+@cocotb.test()
+async def test_collapsed_fetch_trap_hold_pause_preserves_fresh_prediction(
+    dut: Any,
+) -> None:
+    """Holding i_fetch_trap_hold across a collapsed-fetch pause preserves fresh prediction state."""
+    mem = _SimpleFetchMem(
+        {
+            BASE_PC: ADD_INSTR_A,
+            BASE_PC + 4: ADD_INSTR_B,
+            BASE_PC + 8: ADD_INSTR_C,
+            BASE_PC + 12: ADD_INSTR_D,
+        }
+    )
+    await _reset_dut(dut, boot_addr=BASE_PC, enable_bp=True)
+
+    # Wait out backing_btb's 512-set reset sweep, then train backing entries at
+    # BASE_PC and BASE_PC + 8 and invalidate the fast BTB so only backing_btb hits.
+    for _ in range(520):
+        await _step(dut)
+    await _train_btb(
+        dut,
+        pc=BASE_PC,
+        target=BRANCH_TARGET,
+        taken=True,
+        jump=True,
+        repeats=2,
+    )
+    await _train_btb(
+        dut,
+        pc=BASE_PC + 8,
+        target=BRANCH_TARGET + 0x40,
+        taken=True,
+        jump=True,
+        repeats=2,
+    )
+    _drive_from_ex(dut, {})
+    for _ in range(4):
+        await _step(dut)
+    dut.i_btb_invalidate.value = 1
+    await _step(dut)
+    dut.i_btb_invalidate.value = 0
+    for _ in range(4):
+        await _step(dut)
+
+    await _redirect_fence(dut, BASE_PC)
+    assert int(dut.f1_req_valid_q.value) == 0
+    assert int(dut.collapsed_armed_q.value) == 0
+    assert int(dut.f1_pred_fresh_q.value) == 0
+
+    # 1) With no outstanding F1 request, i_instr_valid=0, fetch_pa_valid=1, and no
+    #    stop, clock once -> collapsed_armed_q=1 and f1_pred_fresh_q=1.
+    _drive_window(dut, word0=NOP_INSTR, word1=NOP_INSTR, served_pc=BASE_PC, valid=0)
+    await _settle()
+    mem.capture_request(dut)
+    await _step(dut)
+    assert int(dut.f1_req_valid_q.value) == 0
+    assert int(dut.collapsed_armed_q.value) == 1
+    assert int(dut.f1_pred_fresh_q.value) == 1
+    assert int(dut.o_pc.value) == BASE_PC
+
+    # 2) Hold i_fetch_trap_hold=1 with i_instr_valid=0 for three clocks:
+    #    f1_pred_fresh_q stays asserted while PC and predictors remain on BASE_PC.
+    dut.i_fetch_trap_hold.value = 1
+    for _ in range(3):
+        await _step(dut)
+        assert int(dut.collapsed_armed_q.value) == 1
+        assert int(dut.f1_pred_fresh_q.value) == 1
+        assert int(dut.o_pc.value) == BASE_PC
+        assert _read_packet(dut, slot2=False)["sel_nop"] is True
+
+    # Release i_fetch_trap_hold and present BASE_PC: collapsed accept emits the
+    # window with its fresh backing-BTB hit intact and advances PC to BASE_PC + 8.
+    dut.i_fetch_trap_hold.value = 0
+    mem.present(dut, valid=1)
+    await _settle()
+    s1 = _read_packet(dut, slot2=False)
+    s2 = _read_packet(dut, slot2=True)
+    assert s1["sel_nop"] is False and s1["program_counter"] == BASE_PC
+    assert s1["effective_instr"] == ADD_INSTR_A
+    assert s2["sel_nop"] is False and s2["program_counter"] == BASE_PC + 4
+    assert s2["effective_instr"] == ADD_INSTR_B
+    assert int(dut.o_backing_hit.value) & 0b01 == 0b01
+    await _step(dut)
+    assert int(dut.o_pc.value) == BASE_PC + 8
+
+    # 3) Arm collapsed at BASE_PC + 8, pause with i_fetch_trap_hold=1 for two
+    #    clocks, then present i_instr_valid=1 while still paused (drops
+    #    f1_pred_fresh_q and retains f1_pred_hold_q), hold one more bubble cycle,
+    #    then release and verify the held backing-BTB hit is still delivered.
+    _drive_window(dut, word0=NOP_INSTR, word1=NOP_INSTR, served_pc=BASE_PC + 8, valid=0)
+    await _settle()
+    mem.capture_request(dut)
+    await _step(dut)
+    assert int(dut.collapsed_armed_q.value) == 1
+    assert int(dut.f1_pred_fresh_q.value) == 1
+
+    dut.i_fetch_trap_hold.value = 1
+    await _step(dut)
+    await _step(dut)
+    assert int(dut.collapsed_armed_q.value) == 1
+    assert int(dut.f1_pred_fresh_q.value) == 1
+
+    mem.present(dut, valid=1)
+    await _step(dut)
+    assert int(dut.collapsed_armed_q.value) == 1
+    assert int(dut.f1_pred_fresh_q.value) == 0
+
+    _drive_window(dut, word0=NOP_INSTR, word1=NOP_INSTR, served_pc=BASE_PC + 8, valid=0)
+    await _step(dut)
+    assert int(dut.collapsed_armed_q.value) == 1
+    assert int(dut.f1_pred_fresh_q.value) == 0
+
+    dut.i_fetch_trap_hold.value = 0
+    mem.present(dut, valid=1)
+    await _settle()
+    s1 = _read_packet(dut, slot2=False)
+    s2 = _read_packet(dut, slot2=True)
+    assert s1["sel_nop"] is False and s1["program_counter"] == BASE_PC + 8
+    assert s1["effective_instr"] == ADD_INSTR_C
+    assert s2["sel_nop"] is False and s2["program_counter"] == BASE_PC + 12
+    assert s2["effective_instr"] == ADD_INSTR_D
+    assert int(dut.o_backing_hit.value) & 0b01 == 0b01
+    await _step(dut)
+    assert int(dut.o_pc.value) == BASE_PC + 16
