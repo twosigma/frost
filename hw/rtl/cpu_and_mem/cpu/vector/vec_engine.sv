@@ -205,7 +205,7 @@ module vec_engine #(
   // --------------------------------------------------------------------------
   // Pipelined group-ALU sequencer (Stage R): pre-decoded on seq_accept
   // --------------------------------------------------------------------------
-  logic seq_valid_q, seq_started_q;
+  logic seq_valid_q, seq_started_q, seq_on_last_q;
   logic seq_ok_q, seq_no_body_q, seq_mask_dest_q, seq_unary_q;
   logic seq_use_scalar_q, seq_masked_q, seq_need_vs2_q, seq_need_vs1_q, seq_need_v0_q;
   vec_pkg::int_op_e seq_op_q;
@@ -366,6 +366,7 @@ module vec_engine #(
   logic [3:0] d_groups, d_eff_last_g;
   logic [2:0] d_epr_shift;
   logic [15:0] d_first_g_raw, d_last_g_raw;
+  logic [4:0] d_vs2_init, r_vs2_next;
   logic d_no_body;
   assign d_groups = i_vlmul[2] ? 4'd1 : (4'd1 << i_vlmul[1:0]);
   assign d_epr_shift = 3'(ByteBits) - {1'b0, i_vsew[1:0]};
@@ -373,18 +374,24 @@ module vec_engine #(
   assign d_last_g_raw = (i_vl - 16'd1) >> d_epr_shift;
   assign d_no_body = (i_vl == 16'd0) || (i_vstart >= i_vl) || (d_first_g_raw >= {12'd0, d_groups});
   assign d_eff_last_g = (d_last_g_raw >= {12'd0, d_groups}) ? (d_groups - 4'd1) : d_last_g_raw[3:0];
+  assign d_vs2_init = d_vs2 + 5'(d_first_g_raw[3:0]);
+  assign r_vs2_next = r_vs2_addr_q + 5'd1;
 
-  // In-flight register write mask across stages E0, E1, E2, W and compare MWR.
-  // Because vec_vrf reads return pre-edge data, a register stays hazardous
-  // through stage W (until the edge that commits its write completes).
-  logic [31:0] pipe_wr_mask;
+  // Registered write mask of pipeline tail stages (E1, E2, W and compare MWR),
+  // updated each cycle from the previous stages' flops so RAW hazard checks
+  // only combine this registered mask with stage E0. Because vec_vrf reads
+  // return pre-edge data, a register stays hazardous through stage W.
+  logic [31:0] pipe_tail_wr_mask_d, pipe_tail_wr_mask_q, pipe_wr_mask;
   always_comb begin
-    pipe_wr_mask = 32'd0;
+    pipe_tail_wr_mask_d = 32'd0;
+    if (e0_valid_q && !e0_mask_dest_q) pipe_tail_wr_mask_d[e0_vd_reg_q] = 1'b1;
+    if (e1_valid_q && !e1_mask_dest_q) pipe_tail_wr_mask_d[e1_vd_reg_q] = 1'b1;
+    if (e2_valid_q && !e2_mask_dest_q) pipe_tail_wr_mask_d[e2_vd_reg_q] = 1'b1;
+    if (w_valid_q && w_mask_dest_q && w_last_q) pipe_tail_wr_mask_d[w_vd_reg_q] = 1'b1;
+  end
+  always_comb begin
+    pipe_wr_mask = pipe_tail_wr_mask_q;
     if (e0_valid_q && !e0_mask_dest_q) pipe_wr_mask[e0_vd_reg_q] = 1'b1;
-    if (e1_valid_q && !e1_mask_dest_q) pipe_wr_mask[e1_vd_reg_q] = 1'b1;
-    if (e2_valid_q && !e2_mask_dest_q) pipe_wr_mask[e2_vd_reg_q] = 1'b1;
-    if (w_valid_q && !w_mask_dest_q) pipe_wr_mask[w_vd_reg_q] = 1'b1;
-    if (mwr_pending_q) pipe_wr_mask[mwr_vd_q] = 1'b1;
   end
 
   // Exported write mask includes in-flight compares (whose stages are excluded
@@ -417,8 +424,8 @@ module vec_engine #(
   assign int_raddr[2] = seq_vd_q;
   assign int_raddr[3] = 5'd0;
 
-  // Direct 5-bit RAW hazard checks against the five in-flight pipeline stages
-  // (avoids routing through the 32-bit exported pipe_wr_mask).
+  // RAW hazard checks combine the registered tail write mask (E1..MWR) with
+  // a direct 5-bit tag compare against stage E0.
   function automatic logic stage_raw_hit(input logic v, input logic [4:0] vd, input logic need_vs2,
                                          input logic [4:0] vs2, input logic need_vs1,
                                          input logic [4:0] vs1, input logic need_v0,
@@ -429,49 +436,12 @@ module vec_engine #(
   endfunction
 
   logic raw_hazard;
-  assign raw_hazard = stage_raw_hit(
+  assign raw_hazard = (seq_need_vs2_q && pipe_tail_wr_mask_q[r_vs2_addr_q]) ||
+      (seq_need_vs1_q && pipe_tail_wr_mask_q[r_vs1_addr_q]) ||
+      (seq_need_v0_q && pipe_tail_wr_mask_q[0]) ||
+      (seq_mask_dest_q && pipe_tail_wr_mask_q[seq_vd_q]) || stage_raw_hit(
       e0_valid_q && !e0_mask_dest_q,
       e0_vd_reg_q,
-      seq_need_vs2_q,
-      r_vs2_addr_q,
-      seq_need_vs1_q,
-      r_vs1_addr_q,
-      seq_need_v0_q,
-      seq_mask_dest_q,
-      seq_vd_q
-  ) || stage_raw_hit(
-      e1_valid_q && !e1_mask_dest_q,
-      e1_vd_reg_q,
-      seq_need_vs2_q,
-      r_vs2_addr_q,
-      seq_need_vs1_q,
-      r_vs1_addr_q,
-      seq_need_v0_q,
-      seq_mask_dest_q,
-      seq_vd_q
-  ) || stage_raw_hit(
-      e2_valid_q && !e2_mask_dest_q,
-      e2_vd_reg_q,
-      seq_need_vs2_q,
-      r_vs2_addr_q,
-      seq_need_vs1_q,
-      r_vs1_addr_q,
-      seq_need_v0_q,
-      seq_mask_dest_q,
-      seq_vd_q
-  ) || stage_raw_hit(
-      w_valid_q && !w_mask_dest_q,
-      w_vd_reg_q,
-      seq_need_vs2_q,
-      r_vs2_addr_q,
-      seq_need_vs1_q,
-      r_vs1_addr_q,
-      seq_need_v0_q,
-      seq_mask_dest_q,
-      seq_vd_q
-  ) || stage_raw_hit(
-      mwr_pending_q,
-      mwr_vd_q,
       seq_need_vs2_q,
       r_vs2_addr_q,
       seq_need_vs1_q,
@@ -488,7 +458,7 @@ module vec_engine #(
       (w_valid_q && w_mask_dest_q) || mwr_pending_q;
   logic seq_last_fire;
   assign seq_issue_fire = seq_valid_q && seq_ok_q && !seq_no_body_q && !raw_hazard;
-  assign seq_last_fire = seq_issue_fire && !seq_mask_dest_q && (seq_g_q == seq_last_g_q);
+  assign seq_last_fire = seq_issue_fire && !seq_mask_dest_q && seq_on_last_q;
   assign seq_finishing = seq_valid_q && (!seq_ok_q || seq_no_body_q || seq_last_fire);
 
   assign o_idle = !seq_valid_q && !grp_pipe_busy && aux_idle && fp_idle && crypto_idle;
@@ -571,16 +541,18 @@ module vec_engine #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      seq_valid_q   <= 1'b0;
-      seq_started_q <= 1'b0;
-      e0_valid_q    <= 1'b0;
-      e1_valid_q    <= 1'b0;
-      e2_valid_q    <= 1'b0;
-      w_valid_q     <= 1'b0;
-      mwr_pending_q <= 1'b0;
-      o_unsupported <= 1'b0;
+      seq_valid_q         <= 1'b0;
+      seq_started_q       <= 1'b0;
+      e0_valid_q          <= 1'b0;
+      e1_valid_q          <= 1'b0;
+      e2_valid_q          <= 1'b0;
+      w_valid_q           <= 1'b0;
+      mwr_pending_q       <= 1'b0;
+      pipe_tail_wr_mask_q <= 32'd0;
+      o_unsupported       <= 1'b0;
     end else begin
-      o_unsupported <= seq_valid_q && !seq_ok_q;
+      o_unsupported       <= seq_valid_q && !seq_ok_q;
+      pipe_tail_wr_mask_q <= pipe_tail_wr_mask_d;
 
       // Sequencer control (Stage R)
       if (seq_accept) begin
@@ -591,7 +563,7 @@ module vec_engine #(
           seq_valid_q   <= 1'b0;
           seq_started_q <= 1'b0;
         end else if (seq_issue_fire) begin
-          if (seq_g_q == seq_last_g_q) begin
+          if (seq_on_last_q) begin
             seq_valid_q   <= 1'b0;
             seq_started_q <= 1'b0;
           end else begin
@@ -609,7 +581,7 @@ module vec_engine #(
         e0_masked_q     <= seq_masked_q;
         e0_use_scalar_q <= seq_use_scalar_q;
         e0_first_q      <= !seq_started_q;
-        e0_last_q       <= (seq_g_q == seq_last_g_q);
+        e0_last_q       <= seq_on_last_q;
         e0_vd_reg_q     <= seq_mask_dest_q ? seq_vd_q : (seq_vd_q + 5'(seq_g_q));
         e0_gbase_q      <= {12'd0, seq_g_q} << seq_epr_shift_q;
         e0_vl_q         <= seq_vl_q;
@@ -689,11 +661,13 @@ module vec_engine #(
       seq_scalar_q     <= d_scalar_rep;
       seq_wr_mask_q    <= d_wr_mask;
       seq_g_q          <= d_first_g_raw[3:0];
-      r_vs2_addr_q     <= d_vs2 + 5'(d_first_g_raw[3:0]);
+      seq_on_last_q    <= (d_first_g_raw[3:0] == d_eff_last_g);
+      r_vs2_addr_q     <= (d_op == vec_pkg::VI_MV) ? d_vs2 : d_vs2_init;
       r_vs1_addr_q     <= d_unary ? d_vs2 : (d_vs1 + 5'(d_first_g_raw[3:0]));
     end else if (seq_issue_fire) begin
-      seq_g_q      <= seq_g_q + 4'd1;
-      r_vs2_addr_q <= r_vs2_addr_q + 5'd1;
+      seq_g_q       <= seq_g_q + 4'd1;
+      seq_on_last_q <= ((seq_g_q + 4'd1) == seq_last_g_q);
+      if (seq_need_vs2_q) r_vs2_addr_q <= r_vs2_next;
       if (!seq_unary_q) r_vs1_addr_q <= r_vs1_addr_q + 5'd1;
     end
   end
@@ -718,6 +692,14 @@ module vec_engine #(
 `ifndef FORMAL
   // Register file port 0 and the read ports belong to whichever executor is
   // busy, so at most one may be.
+  logic [31:0] exp_tail_wr_mask;
+  always_comb begin
+    exp_tail_wr_mask = 32'd0;
+    if (e1_valid_q && !e1_mask_dest_q) exp_tail_wr_mask[e1_vd_reg_q] = 1'b1;
+    if (e2_valid_q && !e2_mask_dest_q) exp_tail_wr_mask[e2_vd_reg_q] = 1'b1;
+    if (w_valid_q && !w_mask_dest_q) exp_tail_wr_mask[w_vd_reg_q] = 1'b1;
+    if (mwr_pending_q) exp_tail_wr_mask[mwr_vd_q] = 1'b1;
+  end
   logic eng_reset_seen_q = 1'b0;
   always @(posedge i_clk) begin
     if (i_rst) eng_reset_seen_q <= 1'b1;
@@ -735,6 +717,22 @@ module vec_engine #(
       else $error("vec_engine: stage W valid %0b != lane o_valid %0b", w_valid_q, lane_ovalid[0]);
       assert (!(mwr_pending_q && w_valid_q))
       else $error("vec_engine: compare MWR collided with Stage W");
+      assert (pipe_tail_wr_mask_q == exp_tail_wr_mask)
+      else
+        $error(
+            "vec_engine: pipe_tail_wr_mask_q %08x != expected %08x",
+            pipe_tail_wr_mask_q,
+            exp_tail_wr_mask
+        );
+      assert (!seq_valid_q || !seq_ok_q || seq_no_body_q ||
+              (seq_on_last_q == (seq_g_q == seq_last_g_q)))
+      else
+        $error(
+            "vec_engine: seq_on_last_q %0b disagreed with seq_g_q %0d / seq_last_g_q %0d",
+            seq_on_last_q,
+            seq_g_q,
+            seq_last_g_q
+        );
     end
   end
 `endif

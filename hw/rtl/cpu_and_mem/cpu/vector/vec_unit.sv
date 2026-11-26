@@ -485,7 +485,7 @@ module vec_unit #(
   localparam int unsigned EntryW = 32 + 64 + 16 + 9 + 16 + 2 + 3;
   logic [EntryW-1:0] viq_q[Depth];
   logic [2:0] viq_class_q[Depth];
-  logic [31:0] viq_rd_mask_q[Depth], viq_wr_mask_q[Depth];
+  logic [31:0] viq_rw_mask_q[Depth], viq_wr_mask_q[Depth];
   logic [Depth-1:0] viq_valid_q;
   logic [$clog2(Depth)-1:0] head_q, tail_q;
   logic [$clog2(Depth):0] count_q;
@@ -495,11 +495,11 @@ module vec_unit #(
   logic eng_idle, eng_grp_ready;
   logic [31:0] eng_wr_mask;
 
-  // Active VMU state and register write/read masks (registered on launch,
-  // cleared on vmu_done) for engine-alongside-VMU overlap without
-  // combinational paths from u_vmu into u_engine issue logic.
-  logic vmu_busy_q;
-  logic [31:0] vmu_wr_mask_q, vmu_rd_mask_q;
+  // Active VMU state and register masks (registered on launch, cleared on
+  // vmu_done) for engine-alongside-VMU overlap without combinational paths
+  // from u_vmu into u_engine issue logic.
+  logic vmu_busy_q, vmu_is_store_q;
+  logic [31:0] vmu_wr_mask_q, vmu_mask_q;
 
   logic [31:0] e_insn;
   logic [63:0] e_scalar;
@@ -509,16 +509,16 @@ module vec_unit #(
   logic [2:0] e_frm;
   logic [2:0] e_class;
   logic e_is_extra, e_is_fp, e_is_crypto, e_is_grp_alu;
-  logic [31:0] e_rd_mask, e_wr_mask;
+  logic [31:0] e_rw_mask, e_wr_mask;
   assign {e_insn, e_scalar, e_vl, e_vtype, e_vstart, e_vxrm, e_frm} = viq_q[head_q];
   assign e_class = viq_class_q[head_q];
   assign {e_is_crypto, e_is_fp, e_is_extra} = e_class;
   assign e_is_grp_alu = (e_class == 3'b000);
-  assign e_rd_mask = viq_rd_mask_q[head_q];
+  assign e_rw_mask = viq_rw_mask_q[head_q];
   assign e_wr_mask = viq_wr_mask_q[head_q];
 
   logic vmu_hazard;
-  assign vmu_hazard = |((e_rd_mask | e_wr_mask) & vmu_wr_mask_q) || |(e_wr_mask & vmu_rd_mask_q);
+  assign vmu_hazard = |((vmu_is_store_q ? e_wr_mask : e_rw_mask) & vmu_mask_q);
 
   logic [4:0] push_vs2, push_vs1;
   logic [2:0] push_class;
@@ -554,7 +554,7 @@ module vec_unit #(
         insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart, i_vxrm, i_frm
       };
       viq_class_q[tail_q] <= push_class;
-      viq_rd_mask_q[tail_q] <= push_rd_mask;
+      viq_rw_mask_q[tail_q] <= push_rd_mask | push_wr_mask;
       viq_wr_mask_q[tail_q] <= push_wr_mask;
     end
     if (pop_non_grp) non_grp_wr_mask_q <= e_wr_mask;
@@ -1062,18 +1062,19 @@ module vec_unit #(
     if (i_rst) begin
       vmem_desc_valid_q <= 1'b0;
       vmu_busy_q        <= 1'b0;
+      vmu_is_store_q    <= 1'b0;
       vmu_wr_mask_q     <= 32'd0;
-      vmu_rd_mask_q     <= 32'd0;
+      vmu_mask_q        <= 32'd0;
     end else if (i_fatal_stop || o_vmu_fatal) begin
       vmem_desc_valid_q <= 1'b0;
       vmu_busy_q        <= 1'b0;
       vmu_wr_mask_q     <= 32'd0;
-      vmu_rd_mask_q     <= 32'd0;
+      vmu_mask_q        <= 32'd0;
     end else begin
       if (vmu_done) begin
         vmu_busy_q    <= 1'b0;
         vmu_wr_mask_q <= 32'd0;
-        vmu_rd_mask_q <= 32'd0;
+        vmu_mask_q    <= 32'd0;
       end
       if (desc_launch_valid) begin
         vmem_desc_valid_q       <= 1'b1;
@@ -1093,8 +1094,9 @@ module vec_unit #(
       end else if (vmu_cmd_valid) begin
         vmem_desc_valid_q <= 1'b0;
         vmu_busy_q        <= 1'b1;
+        vmu_is_store_q    <= vmem_desc_is_store_q;
         vmu_wr_mask_q     <= vmem_desc_is_store_q ? 32'd0 : vmu_launch_mask;
-        vmu_rd_mask_q     <= vmem_desc_is_store_q ? vmu_launch_mask : 32'd0;
+        vmu_mask_q        <= vmu_launch_mask;
       end
     end
   end
@@ -1208,8 +1210,8 @@ module vec_unit #(
       else $error("vec_unit: VMU active with vmu_busy_q clear");
       assert ($onehot0({pop_grp, pop_int_exec, pop_fp_exec, pop_crypto_exec}))
       else $error("vec_unit: multiple engine issue pulses active at once");
-      assert (vmu_idle || (|vmu_wr_mask_q) || (|vmu_rd_mask_q) || o_vmu_fatal)
-      else $error("vec_unit: VMU active with empty registered VMU register masks");
+      assert (vmu_idle || (|vmu_mask_q) || o_vmu_fatal)
+      else $error("vec_unit: VMU active with empty registered VMU register mask");
       assert (backend_push_d1_q || backend_vload_d1_q ||
               ((backend_wr_mask_live & ~backend_wr_mask_q) == 32'd0))
       else
