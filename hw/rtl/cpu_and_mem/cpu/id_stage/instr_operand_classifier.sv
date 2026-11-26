@@ -218,7 +218,7 @@ module instr_operand_classifier #(
         raw_class.uses_int_rs2 = i_instr.funct7 == 7'b1000000;
         raw_class.rs_type = riscv_pkg::RS_MUL;
       end else if (i_instr.funct3 == 3'b010 && i_instr.funct7[6:1] == 6'b010000) begin
-        // vmv.x.s, vcpop.m, vfirst.m: rd only, completed at the ROB head
+        // vmv.x.s, vcpop.m, vfirst.m: rd only, completed off the ROB head
         raw_class.has_int_dest = 1'b1;
         raw_class.rs_type = riscv_pkg::RS_NONE;
       end else if (VECTOR && (i_instr.funct3 == 1 || i_instr.funct3 == 5)) begin

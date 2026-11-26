@@ -1014,10 +1014,10 @@ file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`,
 `vfirst.m` and `vfmv.f.s` execute off the ROB head once older vector writes to
 their source registers (and older `vl` updates for `vcpop.m` and `vfirst.m`)
 have drained, returning their registered result on CDB slot 6 without waiting
-for the rest of the vector backend to empty; they retire alone in slot 1 so
-`vstart` clears and `vtype` checks stay in program order. Only `vcpop.m` and
-`vfirst.m` take extra cycles to mask, count or scan and combine the 64-bit
-blocks.
+for the rest of the vector backend to empty; they retire alone in slot 1
+because `vec_unit` observes only the slot-1 commit bus for `o_vtox_commit`
+(`vtype` legality is checked at dispatch). Only `vcpop.m` and `vfirst.m` take
+extra cycles to mask, count or scan and combine the 64-bit blocks.
 Scalar integer programs, including CoreMark, do not enter these states.
 Retiring these scalar-result instructions clears
 `vstart`, dirtying VS only if that changes it. Saturation from active,
@@ -1176,9 +1176,10 @@ before element `i` without an exception, and the instruction completes and
 retires with `vl` set to `i`. The CSR file installs it on the edge of the load's
 registered commit, one edge after the reorder buffer passes the load. Later
 instructions read the architectural `vl` after that edge (arithmetic at its own
-registered commit, memory and vector-to-scalar instructions at the head,
-`vsetvli x0, x0` at its commit); a vector arithmetic instruction right behind the
-load reads it on the next edge, with no cycle to spare.
+registered commit, memory instructions at the head, `vcpop.m` and `vfirst.m`
+off the head once the load retires, and `vsetvli x0, x0` at its commit); a
+vector arithmetic instruction right behind the load reads it on the next edge,
+with no cycle to spare.
 
 The X3 configuration and the opt-in VCU118 `--vector` build use `VECTOR=1`,
 `VLEN=256` and `VECTOR_ADVERTISE=1`, so `misa.V` reads one. Their device trees
@@ -1276,8 +1277,9 @@ multiply-accumulate across all `VLEN / 64` multiply lanes in parallel (skipping
 groups outside `vstart..vl`), streams integer and widening-sum reductions one
 64-bit lane per cycle through the pipelined reduction tree, and executes one
 element at a time for divide, carry and borrow, widening and narrowing add and
-shift, extension, fixed point, masks and permutations. `vec_fixed_lane` separates arithmetic, shifts,
-rounding and saturation into registered stages; `vec_div_lane` uses 64
+shift, extension, fixed point, masks and permutations. `vec_fixed_lane`
+separates arithmetic, shifts, rounding and saturation into registered stages;
+`vec_div_lane` uses 64
 restoring steps. The multiply, mask and reduction units supply their
 respective results. Gathers and slides read the selected source element in a
 separate registered step. Compress visits every source element, including
@@ -1300,12 +1302,12 @@ flags. The FP16 arithmetic, estimate and FP16/integer conversion instances
 exist only with `riscv_pkg::VectorZvfh`, which also makes SEW=16 FP arithmetic
 legal; the FP16/FP32 conversions of Zvfhmin are always present.
 
-Single-width ALU instructions stream through the `vec_engine` pipeline back to
-back (stalling on RAW hazards or in-flight mask-destination compares), and
-register-independent arithmetic pops from the VIQ and runs in `vec_engine`
-concurrently with an active `vec_vmu` transfer; multi-cycle `vec_int_exec`,
-`vec_fp_exec` and `vec_crypto_exec` instructions execute in order without
-overlapping other engine operations. Only active body bytes are
+Single-width group-ALU instructions stream through the `vec_engine` pipeline
+back to back (stalling on RAW hazards or in-flight mask-destination compares),
+and register-independent group-ALU instructions pop from the VIQ and run in
+`vec_engine` concurrently with an active `vec_vmu` transfer; multi-cycle
+`vec_int_exec`, `vec_fp_exec` and `vec_crypto_exec` instructions wait for
+`vmu_busy_q` and execute in order without overlapping other engine operations. Only active body bytes are
 written, preserving tails and inactive elements. Mask results merge one bit
 into the previous destination byte. Widening and narrowing operations permit
 the overlaps specified by their source and destination EEWs; reductions read

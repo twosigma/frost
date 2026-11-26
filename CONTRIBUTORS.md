@@ -136,3 +136,4 @@
 - Added front-end redirect checks and a seeded control-flow test suite.
 - Added early recovery of mispredicted indirect jumps and a misprediction cost probe.
 - Isolated each IP synthesis run in its own Tcl Store user area and bounded the VCU118 NIC pause-event mailbox payload.
+- Measured the vector unit with RVV microbenchmarks and handshake tracing, which guided the engine-side vector performance work (group skipping beyond `vl`, group-wide multiply/MAC and pipelined reductions, group-ALU pipelining with VMU overlap, and off-head vector-to-scalar execution).

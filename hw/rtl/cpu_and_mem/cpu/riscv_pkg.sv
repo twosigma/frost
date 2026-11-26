@@ -1089,8 +1089,8 @@ package riscv_pkg;
                                 // executes it after commit, INT_RS only completes it
     VARITH_X,                   // V: vector arithmetic with rs1 as its scalar operand, which
                                 // INT_RS passes to the ROB for the engine
-    VTOX,                       // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
-                                // once the engine is idle; no reservation station
+    VTOX,                       // V: vmv.x.s, vcpop.m, vfirst.m: executed off the ROB head
+                                // once source writes drain; no reservation station
     // RV64I and B-extension word shifts/ops (pinned at 8'd170 for projected_shift_controls)
     ADDIW            = 8'd170,  // Add immediate word (sext32 result)
     SLLIW,                      // Shift left logical immediate word
@@ -1151,7 +1151,8 @@ package riscv_pkg;
     MOP,
     VARITH_F,                   // V: vector FP arithmetic with an f-register scalar operand,
                                 // read at the ROB head; the engine executes it after commit
-    VTOF,                       // V: vfmv.f.s, executed at the ROB head; no reservation station
+    VTOF,                       // V: vfmv.f.s, executed off the ROB head once source writes
+                                // drain; no reservation station
     VARITH_C,                   // Cryptographic element groups
     FLI_H                       // Zfa with Zvfh: load one of 32 half-precision constants
   } instr_op_e;
@@ -1717,12 +1718,12 @@ package riscv_pkg;
   // Device windows use whole 4 KiB pages. Keep them aligned with the register
   // decode in soc_top.sv (hw/rtl/README.md, "Memory Map"). Its startup
   // checks validate the layout used by the store-issue and DTLB page decodes.
-  localparam logic [19:0] MmioFirstPage  = 20'h4_0000;
-  localparam logic [19:0] MmioLastPage   = 20'h4_0030;
+  localparam logic [19:0] MmioFirstPage = 20'h4_0000;
+  localparam logic [19:0] MmioLastPage = 20'h4_0030;
   localparam logic [19:0] AplicFirstPage = 20'h4_4000;
-  localparam logic [19:0] AplicLastPage  = 20'h4_43FF;
+  localparam logic [19:0] AplicLastPage = 20'h4_43FF;
   localparam logic [19:0] ImsicFirstPage = 20'h4_8000;
-  localparam logic [19:0] ImsicLastPage  = 20'h4_81FF;
+  localparam logic [19:0] ImsicLastPage = 20'h4_81FF;
 
   // Eligible private Normal memory for the optional read-cache/write-through
   // profile. Debug data bypasses L0 to observe transport updates immediately.
@@ -1965,7 +1966,7 @@ package riscv_pkg;
 
   // Offer each PMLEN only when every configured physical region lies below
   // 2**(XLEN-PMLEN-2), as required by the equivalence argument above.
-  localparam bit SsnpmPmlen7  = PmaAddressLimit <= (64'(1) << (XLEN - 7 - 2));
+  localparam bit SsnpmPmlen7 = PmaAddressLimit <= (64'(1) << (XLEN - 7 - 2));
   localparam bit SsnpmPmlen16 = PmaAddressLimit <= (64'(1) << (XLEN - 16 - 2));
 
   // senvcfg.PMM write legalization: an unsupported value keeps the old one.
@@ -3266,7 +3267,7 @@ package riscv_pkg;
   // older than anything in the ROB; until its range is known an entry overlaps
   // everything. A range is up to two segments (one per page): a physical page
   // number and the first and last 32-byte sector index in that page.
-  localparam int unsigned VmtDepth   = 4;
+  localparam int unsigned VmtDepth = 4;
   localparam int unsigned VmtPpnBits = PhysAddrBits - 12;
   typedef struct packed {
     logic                  valid;
