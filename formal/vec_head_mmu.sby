@@ -25,7 +25,7 @@ uncached_bmc: mode bmc
 uncached_bmc: depth 44
 uncached_cover: mode cover
 uncached_cover: depth 44
-bmc: timeout 180
+bmc: timeout 360
 cover: timeout 180
 stride_bmc: timeout 900
 stride_cover: timeout 900

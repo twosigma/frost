@@ -269,7 +269,10 @@ module vec_head_mmu #(
     HM_RUN_UNC_RD,
     HM_RUN_UNC_PRE,
     HM_RUN_UNC_WAIT,
-    HM_RUN_UNC_WB
+    HM_RUN_UNC_WB,
+    // Registered evaluation of non-cached Sv39 walk responses
+    HM_WALK_EVAL_P0,
+    HM_WALK_EVAL_P1
   } hm_state_e;
 
   hm_state_e state_q;
@@ -326,9 +329,17 @@ module vec_head_mmu #(
   logic [XLEN-1:0] va_first_q, va_last_end_q, va_first_p1_q, va_last_p0_only_end_q;
   logic [XLEN-1:0] p1_tval_q;
 
+  typedef enum logic [1:0] {
+    WE_PAGE_FAULT,
+    WE_ACCESS_FAULT,
+    WE_PBMT_NON_PMA,
+    WE_PMA_CHECK
+  } walk_eval_kind_e;
+
   // Walk & verdict registers
   logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn_q;
   logic walk_reissue_q;
+  walk_eval_kind_e walk_eval_kind_q;
   logic [riscv_pkg::VmtPpnBits-1:0] ppn0_q, ppn1_q;
   logic p0_cached_q, p1_cached_q;
   riscv_pkg::vmt_seg_t seg0_q, seg1_q;
@@ -697,21 +708,27 @@ module vec_head_mmu #(
     WK_ACCESS_FAULT
   } walk_class_e;
 
-  logic checking_p1;
+  logic checking_p1, eval_from_walk;
   logic [XLEN-1:0] cur_check_va, walk_pa, check_pa;
   logic cur_va_canonical, pa_is_cached, pa_is_data, pa_is_pbmt_alias;
   logic bare_cached_ok, bare_uncached_ok, walk_resp_match;
+  logic walk_oor, walk_cached_fast;
   logic elem_misaligned;
   walk_class_e walk_class;
   riscv_pkg::exc_cause_t page_fault_cause, access_fault_cause, misalign_fault_cause;
 
   assign checking_p1 = (state_q == HM_CHECK_P1) || (state_q == HM_WALK_REQ_P1) ||
-                       (state_q == HM_WALK_WAIT_P1);
+                       (state_q == HM_WALK_WAIT_P1) || (state_q == HM_WALK_EVAL_P1);
+  assign eval_from_walk = (state_q == HM_WALK_EVAL_P0) || (state_q == HM_WALK_EVAL_P1);
   assign cur_check_va = checking_p1 ? {va_last_end_q[XLEN-1:12], 12'h000} : va_first_q;
   assign cur_va_canonical = riscv_pkg::sv39_va_canonical(cur_check_va);
   assign walk_resp_match = i_walk_resp_valid && (i_walk_resp.vpn == walk_vpn_q);
   assign walk_pa = ma_pkg::leaf_pa(i_walk_resp.ppn, i_walk_resp.level, cur_check_va);
-  assign check_pa = translate_q ? walk_pa : cur_check_va;
+  // Bare checks and registered non-cached walk evaluations share one local
+  // PMA classifier; live walk responses only test walk_cached_fast. Whenever
+  // !walk_oor (WE_PBMT_NON_PMA / WE_PMA_CHECK), ppn0_q/ppn1_q carry all
+  // nonzero PPN bits of walk_pa.
+  assign check_pa = eval_from_walk ? XLEN'({checking_p1 ? ppn1_q : ppn0_q, 12'h000}) : cur_check_va;
   assign pa_is_cached = CACHED_TIER_EN && riscv_pkg::pma_cached_ok(check_pa);
   assign pa_is_data = riscv_pkg::pma_data_ok(check_pa);
   assign pa_is_pbmt_alias = riscv_pkg::pma_pbmt_alias_ok(check_pa);
@@ -749,35 +766,48 @@ module vec_head_mmu #(
       sum_q,
       mxr_q
   );
+  assign walk_oor = ma_pkg::leaf_ppn_out_of_range(i_walk_resp.ppn);
+  // Fast cached Sv39 check evaluated directly on i_walk_resp (zero added
+  // cycles on cached translations); uncached pages and faults step into
+  // HM_WALK_EVAL_P0/P1 to run multi-window PMA checks from registers.
+  assign walk_cached_fast =
+      (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) &&
+      walk_perm_ok && !walk_oor &&
+      (i_walk_resp.pbmt == riscv_pkg::PbmtPma) &&
+      CACHED_TIER_EN && riscv_pkg::pma_cached_ok(
+      walk_pa
+  );
 
+  // Pre-classify non-PMA walk outcomes (2 bits) on live i_walk_resp without
+  // touching multi-window PMA comparators.
+  walk_eval_kind_e walk_eval_kind_d;
   always_comb begin
     unique case (i_walk_resp.fault_kind)
-      riscv_pkg::DFAULT_PAGE: walk_class = WK_PAGE_FAULT;
+      riscv_pkg::DFAULT_PAGE: walk_eval_kind_d = WE_PAGE_FAULT;
       riscv_pkg::DFAULT_ACCESS: begin
         // A no-alias Svpbmt leaf carries permissions; its page fault wins.
-        walk_class = ((i_walk_resp.pbmt != riscv_pkg::PbmtPma) && !walk_perm_ok) ?
-            WK_PAGE_FAULT : WK_ACCESS_FAULT;
+        walk_eval_kind_d = ((i_walk_resp.pbmt != riscv_pkg::PbmtPma) && !walk_perm_ok) ?
+            WE_PAGE_FAULT : WE_ACCESS_FAULT;
       end
       default: begin
-        if (!walk_perm_ok) begin
-          walk_class = WK_PAGE_FAULT;
-        end else if (ma_pkg::leaf_ppn_out_of_range(i_walk_resp.ppn)) begin
-          walk_class = WK_ACCESS_FAULT;
-        end else if (i_walk_resp.pbmt != riscv_pkg::PbmtPma) begin
-          if (pa_is_pbmt_alias) begin
-            walk_class = WK_UNCACHED_ALIAS;
-          end else if (pa_is_data) begin
-            walk_class = WK_UNCACHED;
-          end else begin
-            walk_class = WK_ACCESS_FAULT;
-          end
-        end else if (pa_is_cached) begin
-          walk_class = WK_CACHED;
-        end else if (pa_is_data) begin
-          walk_class = WK_UNCACHED;
-        end else begin
-          walk_class = WK_ACCESS_FAULT;
-        end
+        if (!walk_perm_ok) walk_eval_kind_d = WE_PAGE_FAULT;
+        else if (walk_oor) walk_eval_kind_d = WE_ACCESS_FAULT;
+        else if (i_walk_resp.pbmt != riscv_pkg::PbmtPma) walk_eval_kind_d = WE_PBMT_NON_PMA;
+        else walk_eval_kind_d = WE_PMA_CHECK;
+      end
+    endcase
+  end
+
+  always_comb begin
+    unique case (walk_eval_kind_q)
+      WE_PAGE_FAULT:   walk_class = WK_PAGE_FAULT;
+      WE_ACCESS_FAULT: walk_class = WK_ACCESS_FAULT;
+      WE_PBMT_NON_PMA: begin
+        walk_class = pa_is_pbmt_alias ? WK_UNCACHED_ALIAS :
+                     pa_is_data ? WK_UNCACHED : WK_ACCESS_FAULT;
+      end
+      default: begin
+        walk_class = pa_is_cached ? WK_CACHED : pa_is_data ? WK_UNCACHED : WK_ACCESS_FAULT;
       end
     endcase
   end
@@ -865,6 +895,7 @@ module vec_head_mmu #(
       state_q               <= HM_IDLE;
       wait_q                <= 1'b0;
       walk_reissue_q        <= 1'b0;
+      walk_eval_kind_q      <= WE_PAGE_FAULT;
       shield_q              <= 1'b0;
       run_started_q         <= 1'b0;
       fault_vstart_en_q     <= 1'b0;
@@ -905,8 +936,10 @@ module vec_head_mmu #(
         unc_bus_hold_q    <= 1'b0;
         unc_req_q         <= 1'b0;
       end else begin
-        if (i_tlb_invalidate && ((state_q == HM_WALK_REQ_P0) || (state_q == HM_WALK_WAIT_P0) ||
-                                 (state_q == HM_WALK_REQ_P1) || (state_q == HM_WALK_WAIT_P1))) begin
+        if (i_tlb_invalidate &&
+            ((state_q == HM_WALK_REQ_P0) || (state_q == HM_WALK_WAIT_P0) ||
+             (state_q == HM_WALK_EVAL_P0) || (state_q == HM_WALK_REQ_P1) ||
+             (state_q == HM_WALK_WAIT_P1) || (state_q == HM_WALK_EVAL_P1))) begin
           walk_reissue_q <= 1'b1;
         end
 
@@ -1078,12 +1111,10 @@ module vec_head_mmu #(
 
           HM_CHECK_P0: begin
             // The element this page check reports as vstart if it faults;
-            // it is read only with fault_vstart_en_q. Load ppn0_q
-            // unconditionally here so its enable does not carry the PMA/fault
-            // decode cone (it is read only after a successful translation).
+            // it is read only with fault_vstart_en_q.
             fault_vstart_q <= first_p0_elem_q;
-            ppn0_q         <= cur_check_va[12+:riscv_pkg::VmtPpnBits];
             if (!translate_q) begin
+              ppn0_q <= cur_check_va[12+:riscv_pkg::VmtPpnBits];
               if (bare_cached_ok) begin
                 p0_cached_q <= 1'b1;
                 state_q     <= has_p1_q ? HM_CHECK_P1 : translated_next;
@@ -1133,38 +1164,49 @@ module vec_head_mmu #(
               walk_reissue_q <= 1'b0;
               state_q        <= HM_WALK_REQ_P0;
             end else if (walk_resp_match) begin
-              ppn0_q <= walk_pa[12+:riscv_pkg::VmtPpnBits];
-              if (walk_class == WK_CACHED) begin
+              ppn0_q           <= walk_pa[12+:riscv_pkg::VmtPpnBits];
+              walk_eval_kind_q <= walk_eval_kind_d;
+              if (walk_cached_fast) begin
                 p0_cached_q <= 1'b1;
                 state_q     <= has_p1_q ? HM_CHECK_P1 : translated_next;
-              end else if ((walk_class == WK_UNCACHED) || (walk_class == WK_UNCACHED_ALIAS)) begin
-                if (!run_q) begin
-                  run_q   <= 1'b1;
-                  state_q <= HM_RUN_SEEK;
-                end else if (elem_misaligned) begin
-                  fault_cause_q     <= (walk_class == WK_UNCACHED_ALIAS) ?
-                                       access_fault_cause : misalign_fault_cause;
-                  fault_tval_q <= va_first_q;
-                  fault_vstart_en_q <= 1'b1;
-                  state_q <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
-                end else begin
-                  p0_cached_q <= 1'b0;
-                  state_q     <= has_p1_q ? HM_CHECK_P1 : HM_RUN_ARM;
-                end
               end else begin
-                fault_cause_q     <= (walk_class == WK_PAGE_FAULT) ?
-                                     page_fault_cause : access_fault_cause;
+                state_q <= HM_WALK_EVAL_P0;
+              end
+            end
+          end
+
+          HM_WALK_EVAL_P0: begin
+            fault_vstart_q <= first_p0_elem_q;
+            if (walk_reissue_q || i_tlb_invalidate) begin
+              walk_reissue_q <= 1'b0;
+              state_q        <= HM_WALK_REQ_P0;
+            end else if ((walk_class == WK_UNCACHED) || (walk_class == WK_UNCACHED_ALIAS)) begin
+              if (!run_q) begin
+                run_q   <= 1'b1;
+                state_q <= HM_RUN_SEEK;
+              end else if (elem_misaligned) begin
+                fault_cause_q     <= (walk_class == WK_UNCACHED_ALIAS) ?
+                                     access_fault_cause : misalign_fault_cause;
                 fault_tval_q <= va_first_q;
                 fault_vstart_en_q <= 1'b1;
                 state_q <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
+              end else begin
+                p0_cached_q <= 1'b0;
+                state_q     <= has_p1_q ? HM_CHECK_P1 : HM_RUN_ARM;
               end
+            end else begin
+              fault_cause_q     <= (walk_class == WK_PAGE_FAULT) ?
+                                   page_fault_cause : access_fault_cause;
+              fault_tval_q <= va_first_q;
+              fault_vstart_en_q <= 1'b1;
+              state_q <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
             end
           end
 
           HM_CHECK_P1: begin
             fault_vstart_q <= first_p1_elem_q;
-            ppn1_q         <= cur_check_va[12+:riscv_pkg::VmtPpnBits];
             if (!translate_q) begin
+              ppn1_q <= cur_check_va[12+:riscv_pkg::VmtPpnBits];
               if (bare_cached_ok) begin
                 p1_cached_q <= 1'b1;
                 state_q     <= translated_next;
@@ -1216,32 +1258,43 @@ module vec_head_mmu #(
               walk_reissue_q <= 1'b0;
               state_q        <= HM_WALK_REQ_P1;
             end else if (walk_resp_match) begin
-              ppn1_q <= walk_pa[12+:riscv_pkg::VmtPpnBits];
-              if (walk_class == WK_CACHED) begin
+              ppn1_q           <= walk_pa[12+:riscv_pkg::VmtPpnBits];
+              walk_eval_kind_q <= walk_eval_kind_d;
+              if (walk_cached_fast) begin
                 p1_cached_q <= 1'b1;
                 state_q     <= translated_next;
-              end else if ((walk_class == WK_UNCACHED) || (walk_class == WK_UNCACHED_ALIAS)) begin
-                if (!run_q) begin
-                  run_q   <= 1'b1;
-                  state_q <= HM_RUN_SEEK;
-                end else if (elem_misaligned) begin
-                  fault_cause_q     <= (walk_class == WK_UNCACHED_ALIAS) ?
-                                       access_fault_cause : misalign_fault_cause;
-                  fault_tval_q <= (walk_class == WK_UNCACHED_ALIAS) ? p1_tval_q : va_first_q;
-                  fault_vstart_en_q <= 1'b1;
-                  state_q <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
-                end else begin
-                  p1_cached_q <= 1'b0;
-                  state_q     <= HM_RUN_ARM;
-                end
               end else begin
-                fault_cause_q     <= (walk_class == WK_PAGE_FAULT) ?
-                                     page_fault_cause : access_fault_cause;
-                fault_tval_q <= p1_tval_q;
-                fault_vstart_en_q <= 1'b1;
-                state_q <= ff_trim ? HM_RUN_TRIM :
-                         has_p0_only_elems_q ? HM_PARTIAL_ARM : HM_FAULT_ARM;
+                state_q <= HM_WALK_EVAL_P1;
               end
+            end
+          end
+
+          HM_WALK_EVAL_P1: begin
+            fault_vstart_q <= first_p1_elem_q;
+            if (walk_reissue_q || i_tlb_invalidate) begin
+              walk_reissue_q <= 1'b0;
+              state_q        <= HM_WALK_REQ_P1;
+            end else if ((walk_class == WK_UNCACHED) || (walk_class == WK_UNCACHED_ALIAS)) begin
+              if (!run_q) begin
+                run_q   <= 1'b1;
+                state_q <= HM_RUN_SEEK;
+              end else if (elem_misaligned) begin
+                fault_cause_q     <= (walk_class == WK_UNCACHED_ALIAS) ?
+                                     access_fault_cause : misalign_fault_cause;
+                fault_tval_q <= (walk_class == WK_UNCACHED_ALIAS) ? p1_tval_q : va_first_q;
+                fault_vstart_en_q <= 1'b1;
+                state_q <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
+              end else begin
+                p1_cached_q <= 1'b0;
+                state_q     <= HM_RUN_ARM;
+              end
+            end else begin
+              fault_cause_q     <= (walk_class == WK_PAGE_FAULT) ?
+                                   page_fault_cause : access_fault_cause;
+              fault_tval_q <= p1_tval_q;
+              fault_vstart_en_q <= 1'b1;
+              state_q <= ff_trim ? HM_RUN_TRIM :
+                       has_p0_only_elems_q ? HM_PARTIAL_ARM : HM_FAULT_ARM;
             end
           end
 
@@ -1702,6 +1755,7 @@ module vec_head_mmu #(
                                    active_mask_q[run_elem_q[ElemIdxW-1:0]]));
       assert (!(o_unc_req_valid && o_desc_valid));
       assert (!o_vrf_write_en || (!is_store_q && shield_q));
+      assert (!(eval_from_walk && (walk_class == WK_CACHED)));
     end
   end
 `endif
