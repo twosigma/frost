@@ -182,6 +182,11 @@ python3 fpga/load_software/load_software.py vcu118 --vector linux_boot
 ./fpga/hw_regression.py --board vcu118 --vector
 ```
 
+`build.py vcu118 --vector --vlen 128` (or `512`) builds the vector unit at
+another register length. Pass the same `--vlen` to `load_software.py` for
+vector-width applications and for `linux_boot`, whose device tree then names
+Zvl32b up to Zvl<VLEN>b.
+
 `--build-dir` selects an external build directory. Pass its generated
 `.bit` file with the programmer's `--bitstream` option. Target selection and
 hardware-server options are described in the [FPGA guide](../../fpga/README.md).

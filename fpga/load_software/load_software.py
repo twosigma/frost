@@ -772,6 +772,7 @@ def compile_app_for_board(
     ddr_bytes: int | None = None,
     board: str = "x3",
     vector: bool = False,
+    vlen: int | None = None,
 ) -> bool:
     """Compile an app with board settings and optional Make overrides.
 
@@ -779,7 +780,9 @@ def compile_app_for_board(
     linux_boot advertises that size or a smaller FROST_LINUX_MEM_SIZE override.
     Cache-geometry programs use the board's L1I and L2 capacities unless
     explicitly overridden by L1I_TEST_BYTES or FROST_L2_CACHE_BYTES for a
-    custom cache configuration.
+    custom cache configuration. vlen, for linux_boot on a VCU118 vector build,
+    is the build's vector length (build.py --vlen), which the device tree's
+    Zvl*b names follow.
     """
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
@@ -794,6 +797,10 @@ def compile_app_for_board(
             env["FROST_LINUX_VECTOR"] = "1" if vector else "0"
         else:
             env.pop("FROST_LINUX_VECTOR", None)
+        if board == "vcu118" and vector and vlen is not None:
+            env["FROST_LINUX_VLEN"] = str(vlen)
+        else:
+            env.pop("FROST_LINUX_VLEN", None)
     if ddr_bytes is not None:
         if not (1 << 30 <= ddr_bytes <= 1 << 37) or ddr_bytes & (ddr_bytes - 1):
             print("Error: board DDR capacity must be a power of two from 1 to 128 GiB")
@@ -1307,7 +1314,8 @@ def main() -> None:
         metavar="BITS",
         help=(
             "Vector length in bits (128, 256, or 512; or 0 for scalar "
-            "vec_state_test) for vector-width applications "
+            "vec_state_test) for vector-width applications, and for linux_boot "
+            "on a vcu118 --vector build made with build.py --vlen "
             "(default: match the selected board's RTL)"
         ),
     )
@@ -1440,18 +1448,30 @@ def main() -> None:
             f"CoreMark-PRO hardware flow: {coremark_pro_error}."
         )
 
+    # linux_boot takes --vlen only to name the vector build's Zvl*b in its device tree.
+    linux_vlen: int | None = None
+    if args.software_app == "linux_boot" and args.vlen is not None:
+        if not vcu118_vector:
+            parser.error("--vlen with linux_boot needs a vcu118 --vector build")
+        if args.vlen not in SUPPORTED_VECTOR_VLENS:
+            parser.error(
+                "--vlen with linux_boot must be one of "
+                + ", ".join(str(v) for v in SUPPORTED_VECTOR_VLENS)
+            )
+        linux_vlen = args.vlen
+    app_vlen = None if args.software_app == "linux_boot" else args.vlen
     try:
         vector_config = resolve_vector_app_config(
             args.software_app,
             args.board,
-            vlen=args.vlen,
+            vlen=app_vlen,
             vec_advertise=args.vec_advertise,
             vector=vcu118_vector,
         )
         vector_make_vars = vector_app_make_vars(
             args.software_app,
             args.board,
-            vlen=args.vlen,
+            vlen=app_vlen,
             vec_advertise=args.vec_advertise,
             vector=vcu118_vector,
         )
@@ -1554,6 +1574,7 @@ def main() -> None:
         if vector_config[1] is not None:
             print(f"  Vector advertisement (VEC_ADVERTISE): {int(vector_config[1])}")
     compile_vector: dict[str, bool] = {"vector": True} if vcu118_vector else {}
+    compile_vlen: dict[str, int] = {} if linux_vlen is None else {"vlen": linux_vlen}
     if not args.skip_build and not compile_app_for_board(
         args.software_app,
         app_dir,
@@ -1565,6 +1586,7 @@ def main() -> None:
         **board_memory,
         board=args.board,
         **compile_vector,
+        **compile_vlen,
     ):
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)
         sys.exit(1)

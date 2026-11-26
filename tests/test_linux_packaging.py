@@ -871,6 +871,57 @@ def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:
             else:
                 assert expected_flag in result.stdout
 
+    # 4. The Makefile forwards FROST_LINUX_VLEN (build.py --vlen) as the packer's --vlen.
+    for vlen_setting, expected_vlen in (
+        (None, None),
+        ("128", "--vlen 128"),
+        ("512", "--vlen 512"),
+        ("64", "ERROR"),
+    ):
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("FROST_LINUX_VECTOR", "FROST_LINUX_BOARD", "FROST_LINUX_VLEN")
+        }
+        env["FROST_LINUX_BOARD"] = "vcu118"
+        env["FROST_LINUX_VECTOR"] = "1"
+        if vlen_setting is not None:
+            env["FROST_LINUX_VLEN"] = vlen_setting
+        result = subprocess.run(
+            [
+                "make",
+                "-s",
+                "-n",
+                "-B",
+                "-o",
+                str(fake_image),
+                "-o",
+                str(fake_initrd),
+                "-o",
+                str(fake_fw),
+                "-f",
+                str(APPS / "linux_boot" / "Makefile"),
+                f"FROST_LINUX_KERNEL={fake_image}",
+                f"FROST_LINUX_INITRD={fake_initrd}",
+                f"FW_JUMP={fake_fw}",
+                "sw_ddr.mem",
+            ],
+            cwd=APPS / "linux_boot",
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if expected_vlen == "ERROR":
+            assert result.returncode != 0
+            assert "FROST_LINUX_VLEN must be 128, 256 or 512" in result.stderr
+        else:
+            assert result.returncode == 0, result.stderr
+            if expected_vlen is None:
+                assert "--vlen" not in result.stdout
+            else:
+                assert expected_vlen in result.stdout
+
 
 def test_advertised_isa_lists_agree() -> None:
     """Board DTs agree with the packer, and docs match the advertised ISAs.

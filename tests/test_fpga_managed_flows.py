@@ -2786,6 +2786,47 @@ def test_vcu118_vector_loader_options_and_clocks(
             162_500_000 if vector_flag else 200_000_000
         )
 
+    # A --vlen vector build exports FROST_LINUX_VLEN; scalar builds and the default clear it.
+    for vector_flag, vlen, expected_vlen_env in (
+        (True, 128, "128"),
+        (True, None, None),
+        (False, 128, None),
+    ):
+        captured_envs = []
+        monkeypatch.setenv("FROST_LINUX_VLEN", "512")
+        assert loader.compile_app_for_board(
+            "linux_boot",
+            ROOT / "sw/apps/linux_boot",
+            162_500_000 if vector_flag else 200_000_000,
+            10800,
+            ddr_bytes=1 << 31,
+            board="vcu118",
+            vector=vector_flag,
+            vlen=vlen,
+        )
+        assert captured_envs[-1].get("FROST_LINUX_VLEN") == expected_vlen_env
+    monkeypatch.delenv("FROST_LINUX_VLEN", raising=False)
+
+    # The CLI passes linux_boot's --vlen through only on a vcu118 vector build.
+    seen_vlen: list[int | None] = []
+
+    def capture_vlen(*args: Any, **kwargs: Any) -> bool:
+        seen_vlen.append(kwargs.get("vlen"))
+        return True
+
+    with monkeypatch.context() as mp:
+        mp.setattr(loader, "compile_app_for_board", capture_vlen)
+        for argv, expected in (
+            (
+                ["vcu118", "linux_boot", "--vector", "--vlen", "128", "--build-only"],
+                128,
+            ),
+            (["vcu118", "linux_boot", "--vector", "--build-only"], None),
+        ):
+            mp.setattr(sys, "argv", ["load_software.py", *argv])
+            loader.main()
+            assert seen_vlen[-1] == expected
+
     # Error paths: x3 --no-vector, scalar vcu118 + vector app, --list-targets --vector.
     for bad_argv, expected_err in (
         (
@@ -2794,6 +2835,14 @@ def test_vcu118_vector_loader_options_and_clocks(
         ),
         (["vcu118", "vec_arith_test"], "vec_arith_test is not supported on vcu118"),
         (["vcu118", "--list-targets", "--vector"], "cannot be combined"),
+        (
+            ["vcu118", "linux_boot", "--vlen", "128", "--build-only"],
+            "--vlen with linux_boot needs a vcu118 --vector build",
+        ),
+        (
+            ["vcu118", "linux_boot", "--vector", "--vlen", "0", "--build-only"],
+            "--vlen with linux_boot must be one of 128, 256, 512",
+        ),
     ):
         monkeypatch.setattr(sys, "argv", ["load_software.py", *bad_argv])
         with pytest.raises(SystemExit) as stopped:

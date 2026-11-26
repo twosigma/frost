@@ -80,7 +80,7 @@ the CPU starts when the board's image-reset timer expires (see the
 | `--build-only` | Build and validate the images without touching the cable |
 | `--skip-build` | Load the existing build after checking its images and build settings |
 | `--expected-build-config-sha256 HASH` | With `--skip-build`, require the configuration hash reported by `--build-only` |
-| `--vlen BITS` | Override `VEC_VLEN` for vector-width applications (`128`, `256`, or `512`; `vec_state_test` also accepts `0` for scalar) |
+| `--vlen BITS` | Override `VEC_VLEN` for vector-width applications (`128`, `256`, or `512`; `vec_state_test` also accepts `0` for scalar). With `linux_boot` on a VCU118 `--vector` image built with `build.py --vlen`, names Zvl32b up to Zvl<BITS>b in the device tree |
 | `--vec-advertise` / `--no-vec-advertise` | Override `VEC_ADVERTISE` (`1` or `0`) for `vec_state_test` |
 | `--vector` / `--no-vector` | Target an opt-in VCU118 vector image: selects its CPU clock, enables vector-unit applications, defaults `VEC_VLEN=256` and `VEC_ADVERTISE=1`, and advertises V and the implemented Zv extensions in the `linux_boot` device tree (default: on for X3, off for VCU118) |
 
