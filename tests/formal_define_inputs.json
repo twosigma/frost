@@ -790,6 +790,7 @@
   "line_size_adapter:bmc": [],
   "line_size_adapter:cover": [],
   "load_queue:bmc": [],
+  "load_queue:bmc_age_order": ["design 0 read 11: read -formal -DF_LQ_AGE_ORDER_PROOF -sv load_queue.sv"],
   "load_queue:bmc_no_prepare_busy": [],
   "load_queue:bmc_probe_launch": [],
   "load_queue:cover": [],
