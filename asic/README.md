@@ -13,8 +13,8 @@ The memories behind the RAM wrappers in
 [`hw/rtl/lib/ram`](../hw/rtl/lib/ram) are dual-port SRAM macros that
 [OpenRAM](https://github.com/VLSIDA/OpenRAM) generates for FreePDK45: the
 caches' data, the L1D's and the L2's tags, the data memory, the instruction
-memory, the NIC's packet FIFOs and MAC frame and packet buffers, and the BTB's
-slot-2 payload tables ([SRAM macros](#sram-macros)). The L2 holds 256 KiB,
+memory, and the NIC's packet FIFOs and MAC frame and packet buffers
+([SRAM macros](#sram-macros)). The L2 holds 256 KiB,
 where the X3's holds 2 MiB, which keeps the die and the memory that the
 flow's stages need smaller ([The whole flow](#the-whole-flow)).
 Arrays of 4,096 bits or less, such as the L1I's tags and the caches'
@@ -163,7 +163,6 @@ these modules.
 | `sram_1w1r_1024x20` | 1,024 x 20 | | 274.5 x 261.3 | 0.310 to 0.377 | 1.40 | 8 | L1D tags and the hit path's copy of them, one each for each way |
 | `sram_1w1r_1024x18` | 1,024 x 18 | | 253.5 x 260.7 | 0.302 to 0.369 | 1.37 | 4 | L2 tags, 1 row of 4 ways |
 | `sram_1w1r_512x68` | 512 x 68 | | 436.7 x 245.7 | 0.384 to 0.451 | 1.67 | 17 | The NIC's 8,192-word receive FIFO and 512-word transmit FIFO |
-| `sram_1w1r_256x36` | 256 x 36 | | 167.6 x 237.2 | 0.266 to 0.334 | 1.24 | 3 | The BTB's slot-2 payload tables |
 | `sram_1w1r_128x64_m8` | 128 x 64 | Bytes | 248.6 x 143.5 | 0.308 to 0.376 | 1.39 | 16 | L1I data, 1 row of 4 in each way's bank |
 | `sram_1w1r_8192x28` | 8,192 x 28 | | 665.7 x 877.4 | 0.466 to 0.533 | 1.97 | 4 | Instruction memory's cold banks, 2 rows in each parity's |
 | `sram_1w1r_8192x4` | 8,192 x 4 | | 173.1 x 871.8 | 0.268 to 0.335 | 1.24 | 8 | Instruction memory's frontend-hot and compressed banks, 2 rows in each |
@@ -180,8 +179,8 @@ differ from the block RAMs they replace in these cases:
 
 - A macro's read of the word that its write port writes in the same cycle
   returns undefined data, where a block RAM on one clock returns the old
-  word. For the memories that write whole words on one clock, the L1D tags
-  and the BTB's payload tables, `frost_sram_1w1r` keeps the block RAM's
+  word. For the memories that write whole words on one clock, the L1D tags,
+  `frost_sram_1w1r` keeps the block RAM's
   behavior: each write takes place one cycle after capture, and reads of
   that address use the registered value. The coherent array serializes
   tag and data reads with updates. The memories with write lanes, the caches'
@@ -332,7 +331,7 @@ parity's cold, frontend-hot, and compressed banks side by side, two macros a
 bank, the even parity at the left and the odd parity, in mirror order, at
 the right. The top band holds the L1D data in the middle, a row of four
 macros for each way; at its left the L1I data, arranged the same way, then
-eight rows of two receive FIFO tiles, the BTB's payload tables beside the transmit FIFO, and two rows
+eight rows of two receive FIFO tiles, the transmit FIFO, and two rows
 of four receive packet macros; and at its right the L1D tags, a row of four
 with the hit path's copy in a second row, the L2 tags, and the transmit frame
 macro. The 5.1 mm by 8.075 mm core retains an approximately 800 um logic band with

@@ -15,7 +15,7 @@
 # Places the SRAM macros (MACRO_PLACEMENT_TCL) in three bands across the
 # core, with the logic in a band between the top two:
 #
-#   top:    L1I, NIC RX FIFO, BTB, RX | L1D data | L1D, L2 tags, NIC TX
+#   top:    L1I, NIC RX FIFO, TX FIFO, RX | L1D data | L1D, L2 tags, NIC TX
 #   middle: the logic, with the pins on the core's left and right edges
 #   lower:  instruction memory, even parity | odd parity
 #   bottom: L2 data, slices 0-3 | data memory | L2 data, slices 4-7
@@ -178,9 +178,7 @@ set frost_l1i_data [frost_macros {l1i\.gen_data_banks\.}]
 set frost_nic [frost_macros {u_rx_fifo\.storage\.}]
 set frost_nic_rx [frost_macros {mac_rx\.g_memory_lane}]
 set frost_nic_tx [frost_macros {mac_tx\.u_frame_memory\.}]
-# The transmit FIFO fits beside the smaller payload macros.
-set frost_btb_tx [concat [frost_macros {btb_payload_ram}] \
-  [frost_macros {u_tx_fifo\.storage\.}]]
+set frost_nic_tx_fifo [frost_macros {u_tx_fifo\.storage\.}]
 # Each parity's instruction memory banks, two macros a bank: the cold bank's,
 # then the frontend-hot bank's, then the compressed bank's.
 proc frost_imem_parity { parity } {
@@ -204,7 +202,7 @@ foreach {frost_group_name frost_group_macros} [list \
   {data memory} $frost_data_memory {L1D data} $frost_l1d_data \
   {L1D tag} $frost_l1d_tags {L1I data} $frost_l1i_data \
   {NIC receive FIFO} $frost_nic {NIC receive packet} $frost_nic_rx \
-  {MAC transmit frame} $frost_nic_tx {BTB payload and NIC transmit FIFO} $frost_btb_tx \
+  {MAC transmit frame} $frost_nic_tx {NIC transmit FIFO} $frost_nic_tx_fifo \
   {even instruction memory} $frost_imem_even {odd instruction memory} $frost_imem_odd] {
   if { [llength $frost_group_macros] == 0 } {
     error "no $frost_group_name macros: the RAM wrapper's memory fell back to an array or its instance name changed; see asic/README.md (SRAM macros)"
@@ -245,7 +243,7 @@ set frost_bottom_top [expr { $frost_imem_y + max([frost_row_height $frost_imem_e
 
 # The top band: the L1D data in the middle, a row of four 64-bit slices for
 # each way's bank; at the left the L1I data, four banks of four slices, then the
-# NIC's receive FIFO, the BTB's payload tables beside the transmit FIFO, and the MAC's
+# NIC's receive FIFO, the transmit FIFO, and the MAC's
 # receive lanes; at the right the L1D tags, a row of four ways above a row of
 # their copy, the L2 tags and the MAC's transmit frame buffer.
 set frost_l1d_width [frost_grid_width $frost_l1d_data 4]
@@ -259,12 +257,12 @@ set frost_left_y [expr { $frost_core_height - $frost_edge - \
 frost_place_grid $frost_l1i_data $frost_edge $frost_left_y 4
 set frost_left_y [expr { $frost_left_y - $frost_gap - [frost_grid_height $frost_nic 2] }]
 frost_place_grid $frost_nic $frost_edge $frost_left_y 2
-set frost_left_y [expr { $frost_left_y - $frost_gap - [frost_row_height $frost_btb_tx] }]
-frost_place_row $frost_btb_tx $frost_edge $frost_left_y
+set frost_left_y [expr { $frost_left_y - $frost_gap - [frost_row_height $frost_nic_tx_fifo] }]
+frost_place_row $frost_nic_tx_fifo $frost_edge $frost_left_y
 set frost_left_y [expr { $frost_left_y - $frost_gap - [frost_grid_height $frost_nic_rx 4] }]
 frost_place_grid $frost_nic_rx $frost_edge $frost_left_y 4
 set frost_left_width [expr { max([frost_grid_width $frost_l1i_data 4], \
-  [frost_grid_width $frost_nic 2], [frost_row_width $frost_btb_tx], \
+  [frost_grid_width $frost_nic 2], [frost_row_width $frost_nic_tx_fifo], \
   [frost_grid_width $frost_nic_rx 4]) }]
 
 set frost_right_width [expr { max([frost_grid_width $frost_l1d_tags 4], \
