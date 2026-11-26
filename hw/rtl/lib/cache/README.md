@@ -629,7 +629,7 @@ endpoint 0 to be idle and excludes a selected grant. Grant processing and
 SC acceptance are mutually exclusive. Probe capture and service own local arbitration through R
 acceptance. Invalidation admission starts on P capture and keeps the captured
 address until the CPU accepts admission. Ready grants, writes and maintenance request one local selection
-edge after R acceptance. An eligible read requests a turn after four completed
+edge after R acceptance. An eligible read requests a turn after three completed
 probe replies. Grants and atomic writes take priority within that turn. A waiting data read
 can use the turn between hit-store installations. A selected local operation
 completes its array service before P is accepted. A local Modified atomic holds
@@ -1420,15 +1420,15 @@ open, Idle does not select a head that is the only record, unsealed, not a
 zero record and not a full upper sector; while the pair window is open, it
 does not select a full lower head whose upper record is the youngest,
 unsealed and not yet full. A store continuation stops before such a record,
-and look-ahead skips it while its upper record can still take writes (a record
-is free or the store queue claims a combining write), and skips the upper
+and look-ahead skips it throughout the pair window (even at four records while
+between store-queue combining claims), and skips the upper
 record of an unacquired full lower record. A hold needs a recent write into a record that can still grow,
 and it ends when the stream moves to another block, a record seals at 32
 contributors, or the writes stop. A hold of the head lasts only while at most
 two records exist, so store credit stays available; a continuation that stops
 before a growing next record holds with up to three, and look-ahead's pair
-wait can hold with four while the store queue claims a combining write, which
-the combining credit below serves.
+wait can hold with four while the pair window stays open for the combining
+credit below to serve the remaining writes of the upper sector.
 
 **Combining credit.** Two blocks fill all four records, so the second
 block's upper record could otherwise take only its first write. The SQ
