@@ -72,6 +72,11 @@ module fetch_btb_2w #(
     output logic                o_w0_hit,
     output logic                o_w1_hit,
     output logic                o_w0_taken,
+    output logic                o_w0_sel,
+    output logic [    XLEN-1:0] o_w1_target,
+    output logic [BIM_BITS-3:0] o_w1_even_dir_idx,
+    output logic                o_w1_is_call,
+    output logic                o_w1_is_return,
     output logic                o_w0_link_inc,
     output logic                o_w1_link_inc,
     output logic                o_w0_link_hw,
@@ -398,15 +403,20 @@ module fetch_btb_2w #(
   // W0 keeps strict priority even if W0 crosses tiers (w0_raw_taken blocks W1).
   assign w1_taken = !w0_raw_taken && w1_taken_cand;
 
-  // When o_taken is high, W0 wins iff w0_taken is high and W1 wins otherwise,
-  // so bank selection reduces to (w0_is_odd ? bank_w0_taken[1] : !bank_w0_taken[0])
-  // directly from bank_w0_taken without waiting for w0_raw_taken or w1_taken.
+  // When o_taken is high, W0 wins iff w0_raw_taken is high (a tier-failing W0
+  // blocks W1 via !w0_raw_taken), so bank selection needs only bank_w0_raw_taken
+  // and stays free of the late RAS tier check.
   (* keep = "true", max_fanout = 24 *) logic sel_bank1;
-  assign sel_bank1 = w0_is_odd ? bank_w0_taken[1] : !bank_w0_taken[0];
+  assign sel_bank1 = w0_is_odd ? bank_w0_raw_taken[1] : !bank_w0_raw_taken[0];
 
   assign o_w0_hit = w0_hit;
   assign o_w1_hit = w1_hit;
   assign o_w0_taken = w0_taken;
+  assign o_w0_sel = w0_raw_taken;
+  assign o_w1_target = w0_is_odd ? bank_eff_target[0] : bank_eff_target[1];
+  assign o_w1_even_dir_idx = w0_is_odd ? bank_eff_even_dir[0] : bank_eff_even_dir[1];
+  assign o_w1_is_call = w0_is_odd ? bank_is_call[0] : bank_is_call[1];
+  assign o_w1_is_return = w0_is_odd ? bank_is_ret[0] : bank_is_ret[1];
   assign o_w0_link_inc = w0_hw || !w0_comp;
   assign o_w1_link_inc = w1_hw || !w1_comp;
   assign o_w0_link_hw = w0_hw ^ w0_comp;
@@ -414,7 +424,7 @@ module fetch_btb_2w #(
   assign o_taken = (w0_is_odd ? bank_w0_taken[1] : bank_w0_taken[0]) || w1_taken;
   assign o_taken_steer         = (w0_is_odd ? bank_w0_taken[1] : bank_w0_taken[0]) ||
                                  (!w0_raw_taken && w1_steer_cand);
-  assign o_taken_pos = {!w0_taken, sel_bank1 ? bank_hw_lookup[1] : bank_hw_lookup[0]};
+  assign o_taken_pos = {!w0_raw_taken, sel_bank1 ? bank_hw_lookup[1] : bank_hw_lookup[0]};
   assign o_target = sel_bank1 ? bank_eff_target[1] : bank_eff_target[0];
   assign o_target_even_dir_idx = sel_bank1 ? bank_eff_even_dir[1] : bank_eff_even_dir[0];
   assign o_target_is_cached = sel_bank1 ? bank_eff_cached[1] : bank_eff_cached[0];

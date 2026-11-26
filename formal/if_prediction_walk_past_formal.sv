@@ -453,6 +453,11 @@ module fetch_btb_2w #(
     output logic                      o_w0_hit,
     output logic                      o_w1_hit,
     output logic                      o_w0_taken,
+    output logic                      o_w0_sel,
+    output logic [          XLEN-1:0] o_w1_target,
+    output logic [      BIM_BITS-3:0] o_w1_even_dir_idx,
+    output logic                      o_w1_is_call,
+    output logic                      o_w1_is_return,
     output logic                      o_w0_link_inc,
     output logic                      o_w1_link_inc,
     output logic                      o_w0_link_hw,
@@ -495,6 +500,11 @@ module fetch_btb_2w #(
   assign o_w0_hit              = f_w0;
   assign o_w1_hit              = f_w1;
   assign o_w0_taken            = o_taken && !f_pos[1];
+  assign o_w0_sel              = !f_pos[1];
+  assign o_w1_target           = eff_target;
+  assign o_w1_even_dir_idx     = eff_target[BIM_BITS:3] + (BIM_BITS - 2)'(eff_target[2]);
+  assign o_w1_is_call          = f_call;
+  assign o_w1_is_return        = f_ret;
   assign o_w0_link_inc         = f_pos[0] || !f_comp;
   assign o_w1_link_inc         = f_pos[0] || !f_comp;
   assign o_w0_link_hw          = f_pos[0] ^ f_comp;
@@ -557,7 +567,8 @@ module backing_btb #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned ENTRIES = riscv_pkg::BackingBtbEntries,
     parameter int unsigned WAYS = riscv_pkg::BackingBtbWays,
-    parameter int unsigned TARGET_BITS = riscv_pkg::PhysAddrBits
+    parameter int unsigned TARGET_BITS = riscv_pkg::PhysAddrBits,
+    parameter bit PRECOMPARE_WIN_PC = 1'b0
 ) (
     input  logic                                             i_clk,
     input  logic                                             i_reset,
@@ -571,6 +582,7 @@ module backing_btb #(
     output logic [                     1:0][TARGET_BITS-2:0] o_target,
     output logic [                     1:0]                  o_slot2_return_by_size,
     output logic [                     1:0][TARGET_BITS-2:0] o_slot2_target_by_size,
+    input  logic [                XLEN-1:0]                  i_lookup_pc = '0,
     input  logic [                XLEN-1:0]                  i_win_pc = '0,
     output logic [                     3:0]                  o_win_hit,
     output logic [                     3:0]                  o_win_compressed,

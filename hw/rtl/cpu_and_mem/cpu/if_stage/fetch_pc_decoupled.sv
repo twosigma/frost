@@ -240,7 +240,7 @@ module fetch_pc_decoupled #(
   assign early_next_pc  = early_next_pc_comb;
   assign early_even_dir = early_even_dir_comb;
 
-  (* keep = "true" *)logic f0_btb_qual;
+  logic f0_btb_qual;
   (* max_fanout = 24 *)logic use_pd_redir;
   (* max_fanout = 24 *)logic use_f0_btb;
   assign f0_btb_qual  = !i_any_redirect && !i_f1_resteer && !i_f1_collapsed_accept &&
