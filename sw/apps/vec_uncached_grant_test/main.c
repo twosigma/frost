@@ -564,12 +564,12 @@ static void test_wrong_path_uncached_read_before_vec(void)
     csr_clear(mstatus, MSTATUS_MPP_MASK);
     csr_set(mstatus, MSTATUS_MPP_S | MSTATUS_MPRV);
 
-    /* Warm DTLB entries for VA_NC, VA_BRAM, and VA_FIFO. */
+    /* Warm DTLB entries for VA_NC and VA_BRAM. */
     uint64_t warm_nc = 0ul;
     uint32_t warm_bram = 0u;
     __asm__ volatile("ld %0, 0(%2)\n"
                      "lw %1, 0(%3)\n"
-                     : "=r"(warm_nc), "=r"(warm_bram)
+                     : "=&r"(warm_nc), "=r"(warm_bram)
                      : "r"(VA_NC), "r"(VA_BRAM)
                      : "memory");
 
