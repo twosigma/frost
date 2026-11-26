@@ -151,11 +151,17 @@ proc frost_row_height { macros } {
 
 # The width and height of such a grid of equal macros.
 proc frost_grid_width { macros columns } {
+  if { [llength $macros] == 0 } {
+    error "frost_grid_width: no macros in the group"
+  }
   return [expr { $columns * [frost_width [lindex $macros 0]] + \
     ($columns - 1) * $::frost_side_gap }]
 }
 
 proc frost_grid_height { macros columns } {
+  if { [llength $macros] == 0 } {
+    error "frost_grid_height: no macros in the group"
+  }
   set rows [expr { ([llength $macros] + $columns - 1) / $columns }]
   return [expr { $rows * [frost_height [lindex $macros 0]] + ($rows - 1) * $::frost_gap }]
 }
@@ -189,6 +195,21 @@ set frost_imem_odd [frost_imem_parity odd]
 
 set frost_core_width [frost_um [$frost_core dx]]
 set frost_core_height [frost_um [$frost_core dy]]
+
+# Every group has macros. An empty one means that a memory fell back to an
+# array (no macro matched its shape) or that an instance name changed; say
+# which group here, rather than fail in the arithmetic below.
+foreach {frost_group_name frost_group_macros} [list \
+  {L2 data} $frost_l2_data {L2 tag} $frost_l2_tags \
+  {data memory} $frost_data_memory {L1D data} $frost_l1d_data \
+  {L1D tag} $frost_l1d_tags {L1I data} $frost_l1i_data \
+  {NIC receive FIFO} $frost_nic {NIC receive packet} $frost_nic_rx \
+  {MAC transmit frame} $frost_nic_tx {BTB payload and NIC transmit FIFO} $frost_btb_tx \
+  {even instruction memory} $frost_imem_even {odd instruction memory} $frost_imem_odd] {
+  if { [llength $frost_group_macros] == 0 } {
+    error "no $frost_group_name macros: the RAM wrapper's memory fell back to an array or its instance name changed; see asic/README.md (SRAM macros)"
+  }
+}
 
 # The bottom band: the L2 data's slices (gen_column) 0-3 and 4-7 in two
 # blocks of two by two, and the data memory's rows between them.
