@@ -257,6 +257,16 @@ TX, RX, and MAC/PCS integration cases with `FROST_SRAM_MACROS`, including
 stalls, wraparound, rotated frames, and reset. Their clocks exercise the
 macro models' falling-edge writes and delayed reads.
 
+`tests/test_asic_macro_placement.py`, which CI's fast Python job runs,
+elaborates `platform_top` as the flow does and checks, in about 90 seconds
+and before any flow step, that no RAM wrapper's memory of more than 4,096
+bits falls back to an array unless the test lists it (the BTB's two
+512-row payload images and its update memory, whose widths have no macro), that each macro has the instance count of the table above,
+and that `macro_placement.tcl` places what elaboration found. A memory that
+no macro matches, such as a tag that gains a bit, fails there by name.
+`macro_placement.tcl` itself stops with the name of a group that has no
+macros, such as "no L1D tag macros".
+
 [`openram.py`](openram.py) generates the macros:
 
 ```bash
