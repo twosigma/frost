@@ -1837,6 +1837,12 @@ FORMAL_TARGETS = [
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
+        "backing_btb_precompare_twin.sby",
+        "Backing BTB with F0 window tag pre-comparison matches post-compare "
+        "on all legacy outputs, RAM pins, shared state, and four-halfword window outputs",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
         "pd_history_twin.sby",
         "Both full decode packets, fetch redirects, return stack operations, history "
         "folds, training and FTQ RAM pins match the original PD and history stages together",
@@ -6823,6 +6829,12 @@ PREDICTOR_ASSERTION_TASKS = {
             "backing_btb_twin",
             ("backing_btb_twin.sv",),
             "3cacf9d4afa13311be049f7f63f15a2151e1ae01d7d51dc96f6020ffad85152e",
+            (5, 2, 5),
+        ),
+        (
+            "backing_btb_precompare_twin",
+            ("backing_btb_precompare_twin.sv",),
+            "777714c9bf56804cd01fe961492502723f4f20dccd7088c09451d50ca557b852",
             (5, 2, 5),
         ),
         (

@@ -409,8 +409,8 @@ or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
 `opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
 `prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). All 231 scripts in `formal/` open undefined values before optimization.
-214 scripts require the shared opening (`hierarchy -top` or
+each case). All 232 scripts in `formal/` open undefined values before optimization.
+215 scripts require the shared opening (`hierarchy -top` or
 `hierarchy -check -top` followed by `script free_undefined.ys`) across
 every task; `free_undefined.ys` lowers processes pass by pass, frees the
 undefined inputs of every multiplexer and the undefined bits of every
@@ -426,7 +426,7 @@ equivalence tasks declared in `TWIN_COMPARISONS`) open both forms with
 `twin_ports.json`, cut every register, pin their free-cell counts and
 point floors, and prove every point with unrestricted `equiv_simple` and
 `equiv_status -assert`. The fast check enforces the opening across all
-231 scripts; both `UNDEFINED_OPENING_PENDING` and
+232 scripts; both `UNDEFINED_OPENING_PENDING` and
 `UNDEFINED_OPENING_TWINS` in `tests/test_run_formal.py` are empty.
 
 Before the opening, a dump of every registered task's model
