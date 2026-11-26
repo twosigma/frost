@@ -621,7 +621,8 @@ and targeted microbenchmarks give these items:
    sends a load or store directly to DMMU stage S2. Faults, concurrent
    refills and mixed-attribute superpages go through S1.
    On a DTLB miss, a 256-entry S1 4 KiB translation cache answers resident
-   4 KiB leaves in S1 without asking the second-level TLB. On a miss in both
+   4 KiB leaves in S1 without asking the second-level TLB and refills the
+   DTLB on the next cycle. On a miss in both
    the DTLB and that cache, the shared 2,048-entry second-level TLB waits for
    S1 to report the miss; starting that lookup on the bypass miss whenever the
    port is idle would remove that wait while keeping instruction-TLB priority.

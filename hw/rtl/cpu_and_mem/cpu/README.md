@@ -598,7 +598,13 @@ page-table walker in `cpu_ooo`. Inside `dmmu.sv`, a 2-way, 128-set (256-entry,
 the S1 lookup stage: clean 4 KiB leaves returned by the walker fill the DTLB
 and register into the S1 cache one cycle later, so leaves evicted from the
 16-entry DTLB resolve in S1 without requesting the L2 TLB or walker while
-checking live permissions and Svpbmt/PMA attributes. Selective page flushes
+checking live permissions and Svpbmt/PMA attributes. Such a hit writes the
+leaf back into the DTLB on the next cycle, so the page's later accesses take
+the issue bypass again and its stores the early address lookups, which read
+only the DTLB. The refill takes the DTLB's install port for that cycle (a walk
+response arriving then is for an operation already killed and loses its
+DTLB install, not its S1 cache fill), and an invalidation, flush or ASID
+change in that cycle drops it. Selective page flushes
 clear the addressed set; ASID-only and full flushes clear the S1 cache valid
 bits in one cycle. `walk_request_select` picks the requester from
 registered state: the data side while its S1 holds an op without a walk, the

@@ -26,7 +26,7 @@
  * operation per cycle. Clean hits on uniform DTLB leaves enter S2 directly
  * from issue; clean 4 KiB leaves that age out of the 16-entry DTLB remain in
  * a 2-way, 128-set (256-entry) distributed-RAM S1 cache that resolves in S1
- * without a walk.
+ * without a walk and writes the leaf back into the DTLB on the next cycle.
  * Faults carry the VA for xtval instead of a PA; the wrapper routes
  * them to the LQ for loads/LR/AMOs or the store fault strobe for stores/SC.
  *
@@ -561,6 +561,9 @@ module dmmu (
   logic [Entries-1:0][1:0] entry_level;
   logic [Entries-1:0][PpnBits-1:0] entry_ppn;
   logic tlb_install;
+  // An S1 cache hit queued to refill the DTLB this cycle (see the refill
+  // below the S1 cache fill).
+  logic s1c_refill_valid_q;
 
   // Live incoming op qualification for bypass
   logic iss_misaligned;
@@ -668,10 +671,11 @@ module dmmu (
     assign iss_bypass_device_hit = |(issue_winner & entry_device);
   end
   (* keep = "true" *) logic iss_bypass_qual;
-  // A fill may evict the winner or install a higher-priority overlapping
-  // leaf. Issue goes through S1 on that edge and sees the installed state.
+  // A fill, from a walk or an S1 cache refill, may evict the winner or
+  // install a higher-priority overlapping leaf. Issue goes through S1 on that
+  // edge and sees the installed state.
   assign iss_bypass_qual = i_iss_valid && i_active && !i_flush_all && !iss_killed &&
-      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install &&
+      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install && !s1c_refill_valid_q &&
       !s0_valid_q && (!s1_valid_q || s1_killed) &&
       !(i_trap_misaligned && iss_misaligned) && !iss_noncanonical;
   logic bypass_mmio, iss_can_bypass;
@@ -1132,6 +1136,76 @@ module dmmu (
   end
 `endif
 
+  // A DTLB miss that resolves from the S1 cache writes its leaf back into the
+  // DTLB on the next cycle, so a 4 KiB page that other installs pushed out of
+  // the 16-entry DTLB returns after one access. Left out, such a page would
+  // resolve in S1 on every access, a cycle after the issue bypass, and its
+  // stores would miss the early address lookups, which read only the DTLB, so
+  // younger loads would wait for those stores to issue. The capture registers
+  // both ways' leaves and the hitting way, so no tag compare reaches the
+  // payload registers; an S1 hit on the page already queued is not queued
+  // again. In the refill cycle the refill owns the install port, under the
+  // ASID of its lookup. A walk response in that cycle belongs to an operation
+  // already killed, since an operation waiting for its walk holds S1, and
+  // only loses its install. An invalidation, a flush or an ASID change drops
+  // the refill.
+  logic s1c_refill_cap, s1c_refill_fire, s1c_refill_way_q;
+  logic [riscv_pkg::Sv39VpnBits-1:0] s1c_refill_vpn_q;
+  logic [riscv_pkg::AsidBits-1:0] s1c_refill_asid_q;
+  s1c_entry_t s1c_refill_rd0_q, s1c_refill_rd1_q, s1c_refill_rd;
+  assign s1c_refill_cap = i_active && s2_leaf_applies && !s1_killed && !tlb_hit[0] && s1c_hit &&
+      !i_tlb_invalidate && !i_tlb_flush.en &&
+      !(s1c_refill_valid_q && (s1c_refill_vpn_q == s1_q.va[38:12]));
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_tlb_invalidate || i_tlb_flush.en) begin
+      s1c_refill_valid_q <= 1'b0;
+    end else begin
+      s1c_refill_valid_q <= s1c_refill_cap;
+    end
+    s1c_refill_vpn_q  <= s1_q.va[38:12];
+    s1c_refill_asid_q <= i_asid;
+    s1c_refill_way_q  <= !s1c_way_hit[0];
+    s1c_refill_rd0_q  <= s1c_rd0;
+    s1c_refill_rd1_q  <= s1c_rd1;
+  end
+  assign s1c_refill_rd = s1c_refill_way_q ? s1c_refill_rd1_q : s1c_refill_rd0_q;
+  assign s1c_refill_fire = s1c_refill_valid_q && i_active && !i_tlb_invalidate &&
+      !i_tlb_flush.en && (s1c_refill_asid_q == i_asid);
+
+  riscv_pkg::ptw_resp_t s1c_refill_leaf;
+  always_comb begin
+    s1c_refill_leaf = '0;
+    s1c_refill_leaf.fault_kind = riscv_pkg::DFAULT_NONE;
+    s1c_refill_leaf.vpn = s1c_refill_vpn_q;
+    s1c_refill_leaf.ppn = {
+      {(riscv_pkg::PtePpnBits - PpnBits - 1) {1'b0}}, s1c_refill_rd.hi_nonzero, s1c_refill_rd.ppn
+    };
+    s1c_refill_leaf.level = 2'd0;
+    s1c_refill_leaf.pbmt = s1c_refill_rd.pbmt;
+    s1c_refill_leaf.perm_r = s1c_refill_rd.r;
+    s1c_refill_leaf.perm_w = s1c_refill_rd.w;
+    s1c_refill_leaf.perm_x = s1c_refill_rd.x;
+    s1c_refill_leaf.perm_u = s1c_refill_rd.u;
+    s1c_refill_leaf.perm_d = s1c_refill_rd.d;
+    s1c_refill_leaf.perm_g = s1c_refill_rd.g;
+  end
+  logic dtlb_install_valid;
+  riscv_pkg::ptw_resp_t dtlb_install;
+  assign dtlb_install_valid = s1c_refill_valid_q ? s1c_refill_fire : tlb_install;
+  assign dtlb_install = s1c_refill_valid_q ? s1c_refill_leaf : i_walk_resp;
+
+`ifndef SYNTHESIS
+  // The refill copies the leaf the S1 op resolved with: its VPN, and the PPN,
+  // high-PPN flag and PBMT field the S1 cache answered.
+  logic [PpnBits-1:0] ref_refill_ppn_q;
+  always_ff @(posedge i_clk) begin
+    ref_refill_ppn_q <= s1c_ppn;
+    if (reset_seen_q && i_rst_n && s1c_refill_valid_q) begin
+      p_s1c_refill_leaf_exact : assert (s1c_refill_rd.ppn == ref_refill_ppn_q && !s1_walk_asked_q);
+    end
+  end
+`endif
+
   dtlb #(
       .NUM_ENTRIES(Entries),
       .NUM_PORTS  (3)
@@ -1140,8 +1214,8 @@ module dmmu (
       .i_rst_n(i_rst_n),
       .i_flush(i_tlb_flush),
       .i_asid(i_asid),
-      .i_install_valid(tlb_install),
-      .i_install(i_walk_resp),
+      .i_install_valid(dtlb_install_valid),
+      .i_install(dtlb_install),
       .i_lookup_vpn(tlb_vpn),
       .o_hit(tlb_hit),
       .o_ppn(tlb_ppn),
@@ -1297,7 +1371,7 @@ module dmmu (
   end
   assign f_pa = riscv_pkg::XLEN'({f_ppn, f_va[11:0]});
   assign f_take = i_iss_valid && i_active && !iss_killed && !i_flush_all &&
-      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install &&
+      !i_tlb_invalidate && !i_tlb_flush.en && !tlb_install && !s1c_refill_valid_q &&
       !s0_valid_q && (!s1_valid_q || s1_killed) &&
       riscv_pkg::sv39_va_canonical(
       f_va
@@ -1402,7 +1476,7 @@ module dmmu (
         p_lq_lookahead_valid : assert (f_pre_needs_lq_q);
         p_lq_lookahead_tag : assert (o_iss_out_rob_tag == f_pre_tag_q);
       end
-      if (i_tlb_invalidate || i_tlb_flush.en || tlb_install || i_flush_all)
+      if (i_tlb_invalidate || i_tlb_flush.en || tlb_install || s1c_refill_valid_q || i_flush_all)
         p_no_bypass_on_update : assert (!iss_can_bypass);
       c_lq_lookahead_without_capture :
       cover (f_pre_needs_lq_q && !s2_valid_q && s1_valid_q && $past(
