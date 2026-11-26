@@ -390,7 +390,7 @@ The pending table is keyed by ROB tag because MEM_RS issues SCs out of order:
 a speculated LR/SC retry loop can issue several SCs before the oldest reaches
 the head. Each waits in the table until it is at the head, so a younger SC can
 never block the one that must complete first. The table has `SqDepth`
-(eight) entries. That is enough because every waiting SC also holds an SQ
+(sixteen) entries. That is enough because every waiting SC also holds an SQ
 entry, so at most `SqDepth` can wait at once. An SC that found the table full
 would never fire; a simulation assertion checks that every issuing SC finds a
 free entry. A partial flush clears only entries younger than the flush tag,

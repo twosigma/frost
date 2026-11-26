@@ -1,7 +1,7 @@
 # Store Queue
 
 The SQ holds stores from dispatch until they are written to memory. It has
-eight entries (`riscv_pkg::SqDepth`) and two allocation ports. Stores write
+sixteen entries (`riscv_pkg::SqDepth`) and two allocation ports. Stores write
 cached memory after commit, in program order. With `PRECISE_UNCACHED=1`
 (as in `cpu_top`), Device and strict uncached stores execute at the ROB head
 with the interrupt and debug shield armed, and retire only after the AXI B
@@ -42,6 +42,13 @@ Two ordering rules decide which stores count:
   order), not by ROB-tag age. A committed store can still be waiting to drain
   after its ROB tag has been reused, and tag age would then rank it newest and
   forward stale data.
+
+Ring position needs no age comparison: every entry below the ring head was
+allocated after every entry at or above it, and within each half a higher
+index is newer. The unit therefore takes the highest-index conflict below the
+head when there is one and the highest-index conflict at or above the head
+otherwise, two fixed-priority picks formed in parallel from the conflict mask
+and the registered head.
 
 MMIO stores and store-conditionals never forward. An SC can fail and write
 nothing, so a load behind it waits for the SC to drain and then reads memory.
@@ -252,7 +259,7 @@ Control fields are flip-flops, because the address CAM, the forwarding scan,
 and flushes read every entry at once. Store data lives in a LUTRAM read by the
 drain, plus a per-entry flip-flop copy read by the forwarding path. The LQ
 sends four identical copies of the check address (`i_sq_check_addr` and
-`_b`, `_c`, `_d`), each compared against two entries.
+`_b`, `_c`, `_d`), each compared against a quarter of the entries (four).
 
 ## Verification
 
@@ -260,9 +267,10 @@ The `store_queue` cocotb target covers two-wide allocation, updates,
 forwarding, pipelined drain, flushes, and SC discard. Inline formal properties
 check live-count consistency, write prerequisites, in-flight bounds,
 forwarding, and that committed stores survive a partial flush; `sq_forwarding_unit`
-proves the standalone forwarding unit unbounded at eight entries and checks
-`tree_equiv` between the synthesized balanced `fwd_node` reduction tree and
-the linear formal selector.
+proves the standalone forwarding unit unbounded at eight entries (at sixteen
+the base case does not finish within the task budget), covers it at sixteen,
+and checks `tree_equiv` between the synthesized fixed-priority newest pick and
+the linear formal selector at the core's `SqDepth`.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

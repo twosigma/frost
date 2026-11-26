@@ -4425,7 +4425,7 @@ SBY_TASKS = [
     ),
     (
         "tree_equiv",
-        "Store-queue forwarding balanced winner tree equals the linear formal selector.",
+        "Store-queue forwarding fixed-priority newest pick equals the linear formal selector.",
     ),
     (
         "int_prove",
@@ -6906,13 +6906,13 @@ TWIN_COMPARISONS = {
             "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
             "vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv",
         ),
-        registers=117,
+        registers=165,
         clock="i_clk",
-        gold_only_free=243,
-        gate_only_free=243,
+        gold_only_free=555,
+        gate_only_free=555,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
-        initialized_nets=16,
+        initialized_nets=32,
     ),
     ("store_queue_twin", "sq_twin_cpu"): TwinComparison(
         primitive_points=87,
@@ -6931,13 +6931,13 @@ TWIN_COMPARISONS = {
             "chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 "
             "-set CACHE_NORMAL_MEMORY 1 store_queue",
         ),
-        registers=121,
+        registers=169,
         clock="i_clk",
-        gold_only_free=246,
-        gate_only_free=246,
+        gold_only_free=558,
+        gate_only_free=558,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
-        initialized_nets=16,
+        initialized_nets=32,
     ),
     ("coherence_l1d_twin", "l1d_twin_single"): TwinComparison(
         primitive_points=9,

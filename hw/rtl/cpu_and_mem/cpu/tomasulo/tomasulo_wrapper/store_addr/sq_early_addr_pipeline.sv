@@ -654,10 +654,14 @@ module sq_early_addr_pipeline (
     assign o_sq_early_sq_is_mmio[slot] =
         (repair_mmio_candidates[slot][6] && sq_take[0]) ||
         (repair_mmio_candidates[slot][7] && sq_take[1]) || (mmio_nonlive[slot] && sq_take[2]);
-    assign o_sq_early_sq_address[slot] =
+    // Each bit feeds every store-queue entry's write mux; cap the fan-out so
+    // synthesis replicates the select, one copy per eight entries.
+    (* keep = "true", max_fanout = 8 *) logic [riscv_pkg::XLEN-1:0] sq_address_copy;
+    assign sq_address_copy =
         (repair_sums[slot][6] & {riscv_pkg::XLEN{sq_take[0]}}) |
         (repair_sums[slot][7] & {riscv_pkg::XLEN{sq_take[1]}}) |
         (address_nonlive[slot] & {riscv_pkg::XLEN{sq_take[2]}});
+    assign o_sq_early_sq_address[slot] = sq_address_copy;
 `ifndef SYNTHESIS
     always_comb begin
       if (reset_seen_q && !$isunknown(
