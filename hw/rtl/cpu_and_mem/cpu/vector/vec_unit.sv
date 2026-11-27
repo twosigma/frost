@@ -160,43 +160,84 @@ module vec_unit #(
     vec_grp_mask = m;
   endfunction
 
-  function automatic logic [31:0] vec_span_mask(input logic [4:0] base, input logic [2:0] last);
-    logic [31:0] m;
-    for (int r = 0; r < 32; r++) begin
-      logic [4:0] diff;
-      diff = 5'(r) - base;
-      m[r] = (diff[4:3] == 2'b00) && (diff[2:0] <= last);
-    end
-    vec_span_mask = m;
+  function automatic logic [31:0] vec_aligned_mask(input logic [4:0] base,
+                                                   input logic [1:0] log2_n);
+    unique case (log2_n)
+      2'd0: vec_aligned_mask = 32'h0000_0001 << base;
+      2'd1: vec_aligned_mask = 32'h0000_0003 << {base[4:1], 1'b0};
+      2'd2: vec_aligned_mask = 32'h0000_000F << {base[4:2], 2'b00};
+      default: vec_aligned_mask = 32'h0000_00FF << {base[4:3], 3'b000};
+    endcase
   endfunction
 
-  // Pre-decoded register-span and issue-class metadata for a dispatched vector
-  // arithmetic instruction under its tracked vtype:
+  function automatic logic reg_in_aligned_group(input logic [4:0] reg_idx, input logic [4:0] base,
+                                                input logic [1:0] log2_n);
+    unique case (log2_n)
+      2'd0: reg_in_aligned_group = (reg_idx == base);
+      2'd1: reg_in_aligned_group = (reg_idx[4:1] == base[4:1]);
+      2'd2: reg_in_aligned_group = (reg_idx[4:2] == base[4:2]);
+      default: reg_in_aligned_group = (reg_idx[4:3] == base[4:3]);
+    endcase
+  endfunction
+
+  // Pre-decoded register-span (2-bit log2 aligned group size) and issue-class
+  // metadata for a dispatched vector arithmetic instruction under its tracked
+  // vtype:
   //   {is_crypto, is_fp_exec, is_extra, rd_v0,
-  //    has_vs2, vs2_wlast[2:0], has_vs1, vs1_wlast[2:0], wr_wlast[2:0]}
-  function automatic logic [14:0] vec_arith_meta(input logic [31:0] insn, input logic [8:0] vtype);
+  //    has_vs2, vs2_log2[1:0], has_vs1, vs1_log2[1:0], wr_log2[1:0]}
+  function automatic logic [11:0] vec_arith_meta(input logic [31:0] insn, input logic [8:0] vtype);
     logic [6:0] opc;
     logic [5:0] f6;
     logic [2:0] f3, lmul;
+    logic [1:0] sew;
     logic [4:0] vs1;
     logic vm, is_opve, is_iv, is_mv, is_fp, is_whole, is_widen, is_awide, is_ei16;
+    logic is_ext, is_scalar_key;
     logic is_int_red, is_fp_red, is_mask_dest, is_smove, no_vs2, has_vs1, rd_v0;
     logic is_extra, is_fp_exec, is_crypto;
-    logic [3:0] n_base, n_wide;
-    logic [2:0] wr_wlast, vs2_wlast, vs1_wlast;
+    logic [1:0] p0, p1, p16, pext, pwhole;
+    logic [1:0] wr_log2, vs2_log2, vs1_log2;
     opc = insn[6:0];
     f6 = insn[31:26];
     vm = insn[25];
     vs1 = insn[19:15];
     f3 = insn[14:12];
+    sew = vtype[4:3];
     lmul = vtype[2:0];
-    n_base = lmul[2] ? 4'd1 : (4'd1 << lmul[1:0]);
-    n_wide = (n_base >= 4'd8) ? 4'd8 : (n_base << 1);
+    unique case (lmul)
+      3'b000:  {p0, p1} = {2'd0, 2'd1};
+      3'b001:  {p0, p1} = {2'd1, 2'd2};
+      3'b010:  {p0, p1} = {2'd2, 2'd3};
+      3'b011:  {p0, p1} = {2'd3, 2'd3};
+      default: {p0, p1} = {2'd0, 2'd0};
+    endcase
+    unique case (sew)
+      2'd0:    p16 = p1;
+      2'd1:    p16 = p0;
+      2'd2:    p16 = (lmul == 3'b010) ? 2'd1 : (lmul == 3'b011) ? 2'd2 : 2'd0;
+      default: p16 = (lmul == 3'b011) ? 2'd1 : 2'd0;
+    endcase
+    unique case ({
+      vs1[2:1], lmul
+    })
+      {2'd2, 3'b011} : pext = 2'd1;
+      {2'd3, 3'b010} : pext = 2'd1;
+      {2'd3, 3'b011} : pext = 2'd2;
+      default: pext = 2'd0;
+    endcase
+    unique case (vs1[2:0])
+      3'd1:    pwhole = 2'd1;
+      3'd3:    pwhole = 2'd2;
+      3'd7:    pwhole = 2'd3;
+      default: pwhole = 2'd0;
+    endcase
     is_opve = (opc == riscv_pkg::OPC_OP_VE);
     is_iv = !is_opve && ((f3 == 3'd0) || (f3 == 3'd3) || (f3 == 3'd4));
     is_mv = !is_opve && ((f3 == 3'd2) || (f3 == 3'd6));
     is_fp = !is_opve && ((f3 == 3'd1) || (f3 == 3'd5));
     is_whole = !is_opve && (f3 == 3'd3) && (f6 == 6'h27);
+    is_ext = !is_opve && (f3 == 3'd2) && (f6 == 6'h12) && (vs1[4:3] == 2'b00);
+    is_scalar_key = is_opve && (f6 == 6'h29);
     is_widen = (is_mv && (f6 >= 6'h30)) || (is_iv && (f6 == 6'h35)) ||
         (is_fp && ((f6 >= 6'h30) || (f6 == 6'h12 && vs1[4:3] == 2'd1)));
     is_awide = (is_iv && (f6 >= 6'h2c) && (f6 <= 6'h2f)) ||
@@ -222,21 +263,23 @@ module vec_unit #(
     is_crypto = riscv_pkg::vector_crypto_ok(insn);
     rd_v0 = !is_opve && !vm;
 
-    if (is_whole) wr_wlast = vs1[2:0];
-    else if (is_int_red || is_fp_red || is_mask_dest || is_smove) wr_wlast = 3'd0;
-    else if (is_widen) wr_wlast = 3'(n_wide - 4'd1);
-    else wr_wlast = 3'(n_base - 4'd1);
+    if (is_whole) wr_log2 = pwhole;
+    else if (is_int_red || is_fp_red || is_mask_dest || is_smove) wr_log2 = 2'd0;
+    else if (is_widen) wr_log2 = p1;
+    else wr_log2 = p0;
 
-    if (is_whole) vs2_wlast = vs1[2:0];
-    else if (is_awide) vs2_wlast = 3'(n_wide - 4'd1);
-    else vs2_wlast = 3'(n_base - 4'd1);
+    if (is_whole) vs2_log2 = pwhole;
+    else if (is_scalar_key) vs2_log2 = 2'd0;
+    else if (is_ext) vs2_log2 = pext;
+    else if (is_awide) vs2_log2 = p1;
+    else vs2_log2 = p0;
 
-    if (is_ei16) vs1_wlast = 3'(n_wide - 4'd1);
-    else if (is_int_red || is_fp_red) vs1_wlast = 3'd0;
-    else vs1_wlast = 3'(n_base - 4'd1);
+    if (is_ei16) vs1_log2 = p16;
+    else if (is_int_red || is_fp_red) vs1_log2 = 2'd0;
+    else vs1_log2 = p0;
 
     vec_arith_meta = {
-      is_crypto, is_fp_exec, is_extra, rd_v0, !no_vs2, vs2_wlast, has_vs1, vs1_wlast, wr_wlast
+      is_crypto, is_fp_exec, is_extra, rd_v0, !no_vs2, vs2_log2, has_vs1, vs1_log2, wr_log2
     };
   endfunction
 
@@ -257,17 +300,18 @@ module vec_unit #(
   //   {sew[1:0], vs2[4:0], is_fp_mv, is_mask_red, is_first, masked}
   logic [10:0] vtox_meta_q[RobDepth];
   logic [4:0] rob_vd_q[RobDepth];
-  logic [2:0] rob_wlast_q[RobDepth];
+  logic [1:0] rob_wlog2_q[RobDepth];
   // Packed commit-time VIQ metadata per ROB tag (single read port at i_commit_tag):
-  //   {vs2[4:0], vs1[4:0], class[2:0], rd_v0, has_vs2, vs2_wlast[2:0], has_vs1, vs1_wlast[2:0]}
-  logic [21:0] rob_meta_q[RobDepth];
+  //   {vs2[4:0], vs1[4:0], class[2:0], rd_v0, has_vs2, vs2_log2[1:0], has_vs1, vs1_log2[1:0]}
+  logic [19:0] rob_meta_q[RobDepth];
   logic [RobDepth-1:0] is_varith_q, head_xs_q, is_vmem_q;
   logic [RobDepth-1:0] vtox_retire_q, ov_pend_q;
   logic [RobDepth-1:0] rob_vwrite_q, rob_vload_q, rob_wr_v0_q, rob_vl_chg_q;
   logic vtox_done, ov_done, ov_accept;
   logic [TagW-1:0] vtox_tag_q, ov_tag_q, ov_pick_tag;
-  logic vhead_cdb_done;
-  logic [TagW-1:0] vhead_cdb_done_tag;
+  logic vhead_cdb_done, vhead_cdb_done_q;
+  logic [TagW-1:0] vhead_cdb_done_tag, vhead_cdb_done_tag_q;
+  logic vhead_port_claim_q;
 
   // Registered ROB head tag for off-head tracking and partial-flush table clears.
   logic [TagW-1:0] head_tag_q;
@@ -307,18 +351,33 @@ module vec_unit #(
     if (i_alloc_2) alloc_q_2_tag <= i_alloc_tag_2;
   end
 
-  logic [14:0] alloc_meta;
+  logic [11:0] alloc_meta;
   logic [ 2:0] alloc_class;
   logic alloc_rd_v0, alloc_has_vs2, alloc_has_vs1, alloc_wr_v0;
-  logic [2:0] alloc_vs2_wlast, alloc_vs1_wlast, alloc_wlast;
+  logic [1:0] alloc_vs2_log2, alloc_vs1_log2, alloc_wlog2;
   logic alloc_q_live;
   assign alloc_meta = vec_arith_meta(alloc_q_insn, alloc_q_vtype);
-  assign {alloc_class, alloc_rd_v0, alloc_has_vs2, alloc_vs2_wlast,
-          alloc_has_vs1, alloc_vs1_wlast, alloc_wlast} = alloc_meta;
-  assign alloc_wr_v0 = (5'd0 - alloc_q_insn[11:7]) <= {2'b00, alloc_wlast};
+  assign {alloc_class, alloc_rd_v0, alloc_has_vs2, alloc_vs2_log2,
+          alloc_has_vs1, alloc_vs1_log2, alloc_wlog2} = alloc_meta;
+  assign alloc_wr_v0 = (alloc_q_insn[11:7] == 5'd0);
   assign alloc_q_live = alloc_q_valid && !i_flush_spec && !(i_flush_en && is_younger(
       alloc_q_tag, i_flush_tag, i_head_tag
   ));
+
+  // Registered vhead CDB completion clear and port-4 claim so u_head_mmu
+  // state never feeds is_vmem_q, ov_state_q or u_vrf LVT selects directly.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      vhead_cdb_done_q   <= 1'b0;
+      vhead_port_claim_q <= 1'b0;
+    end else begin
+      vhead_cdb_done_q   <= vhead_cdb_done;
+      vhead_port_claim_q <= !i_rob_empty && is_vmem_q[i_head_tag];
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (vhead_cdb_done) vhead_cdb_done_tag_q <= vhead_cdb_done_tag;
+  end
 
   // Direct head-visible per-ROB-tag tables (unchanged from allocation cycle).
   always_ff @(posedge i_clk) begin
@@ -333,7 +392,7 @@ module vec_unit #(
       is_vmem_q <= '0;
     end else begin
       if (vtox_done) head_xs_q[vtox_tag_q] <= 1'b0;
-      if (vhead_cdb_done) is_vmem_q[vhead_cdb_done_tag] <= 1'b0;
+      if (vhead_cdb_done_q) is_vmem_q[vhead_cdb_done_tag_q] <= 1'b0;
       if (i_alloc) begin
         head_xs_q[i_alloc_tag] <= i_alloc_is_vfscalar ||
             (i_alloc_is_varith && (i_alloc_insn[6:0] == riscv_pkg::OPC_OP_VE));
@@ -362,16 +421,16 @@ module vec_unit #(
         alloc_vtox_is_mask_red && !alloc_q_insn[25]
       };
       rob_vd_q[alloc_q_tag] <= alloc_q_insn[11:7];
-      rob_wlast_q[alloc_q_tag] <= alloc_wlast;
+      rob_wlog2_q[alloc_q_tag] <= alloc_wlog2;
       rob_meta_q[alloc_q_tag] <= {
         alloc_q_insn[24:20],
         alloc_q_insn[19:15],
         alloc_class,
         alloc_rd_v0,
         alloc_has_vs2,
-        alloc_vs2_wlast,
+        alloc_vs2_log2,
         alloc_has_vs1,
-        alloc_vs1_wlast
+        alloc_vs1_log2
       };
     end
   end
@@ -520,25 +579,49 @@ module vec_unit #(
   logic vmu_hazard;
   assign vmu_hazard = |((vmu_is_store_q ? e_wr_mask : e_rw_mask) & vmu_mask_q);
 
+  // One-cycle commit staging register between the registered commit bus and
+  // the VIQ arrays so i_commit_tag never fans out across mask expansion and
+  // all eight VIQ entries in one cycle.
+  logic cpush_valid_q;
+  logic [EntryW-1:0] cpush_entry_q;
+  logic [4:0] cpush_vd_q;
+  logic [1:0] cpush_wlog2_q;
+  logic [19:0] cpush_meta_q;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) cpush_valid_q <= 1'b0;
+    else cpush_valid_q <= varith_commit_only;
+  end
+  always_ff @(posedge i_clk) begin
+    if (varith_commit_only) begin
+      cpush_entry_q <= {
+        insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart, i_vxrm, i_frm
+      };
+      cpush_vd_q    <= rob_vd_q[i_commit_tag];
+      cpush_wlog2_q <= rob_wlog2_q[i_commit_tag];
+      cpush_meta_q  <= rob_meta_q[i_commit_tag];
+    end
+  end
+
   logic [4:0] push_vs2, push_vs1;
   logic [2:0] push_class;
   logic push_rd_v0, push_has_vs2, push_has_vs1;
-  logic [2:0] push_vs2_wlast, push_vs1_wlast;
+  logic [1:0] push_vs2_log2, push_vs1_log2;
   logic [31:0] push_wr_mask, push_rd_mask;
   assign {push_vs2, push_vs1, push_class, push_rd_v0, push_has_vs2,
-          push_vs2_wlast, push_has_vs1, push_vs1_wlast} = rob_meta_q[i_commit_tag];
-  assign push_wr_mask = vec_span_mask(rob_vd_q[i_commit_tag], rob_wlast_q[i_commit_tag]);
-  assign push_rd_mask = (push_has_vs2 ? vec_span_mask(
-      push_vs2, push_vs2_wlast
-  ) : 32'd0) | (push_has_vs1 ? vec_span_mask(
-      push_vs1, push_vs1_wlast
+          push_vs2_log2, push_has_vs1, push_vs1_log2} = cpush_meta_q;
+  assign push_wr_mask = vec_aligned_mask(cpush_vd_q, cpush_wlog2_q);
+  assign push_rd_mask = (push_has_vs2 ? vec_aligned_mask(
+      push_vs2, push_vs2_log2
+  ) : 32'd0) | (push_has_vs1 ? vec_aligned_mask(
+      push_vs1, push_vs1_log2
   ) : 32'd0) | {31'd0, push_rd_v0};
 
   // Group-ALU instructions overlap active VMU transfers via per-register
   // masks; multi-cycle auxiliary executors wait on the registered vmu_busy_q
   // flag and receive pre-decoded per-executor issue pulses.
   logic pop_grp, pop_non_grp_base, pop_int_exec, pop_fp_exec, pop_crypto_exec, pop_non_grp;
-  assign push = varith_commit_only;
+  assign push = cpush_valid_q;
   assign pop_grp = (count_q != '0) && !vmem_desc_valid_q && !vmu_hazard && !issued_non_grp_q &&
       e_is_grp_alu && eng_grp_ready;
   assign pop_non_grp_base = (count_q != '0) && !vmem_desc_valid_q && !vmu_busy_q &&
@@ -550,10 +633,8 @@ module vec_unit #(
   assign pop = pop_grp || pop_non_grp;
   always_ff @(posedge i_clk) begin
     if (push) begin
-      viq_q[tail_q] <= {
-        insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart, i_vxrm, i_frm
-      };
-      viq_class_q[tail_q] <= push_class;
+      viq_q[tail_q]         <= cpush_entry_q;
+      viq_class_q[tail_q]   <= push_class;
       viq_rw_mask_q[tail_q] <= push_rd_mask | push_wr_mask;
       viq_wr_mask_q[tail_q] <= push_wr_mask;
     end
@@ -575,8 +656,9 @@ module vec_unit #(
       issued_non_grp_q <= pop_non_grp;
       if (pop_non_grp) non_grp_busy_q <= 1'b1;
       else if (!issued_non_grp_q && eng_idle) non_grp_busy_q <= 1'b0;
-      // Two spare entries cover the commit bus's registered delay.
-      o_commit_hold <= (count_q + ($clog2(Depth) + 1)'(push)) >= ($clog2(Depth) + 1)'(Depth - 2);
+      // Cover the registered commit bus plus the cpush_q staging register.
+      o_commit_hold <= (count_q + ($clog2(Depth) + 1)'(push) +
+          ($clog2(Depth) + 1)'(varith_commit_only)) >= ($clog2(Depth) + 1)'(Depth - 2);
     end
   end
 
@@ -645,11 +727,11 @@ module vec_unit #(
   logic desc_launch_is_store;
   logic vec_backend_idle, vec_backend_idle_q;
   logic vtox_backend_ready;
-  assign vec_backend_idle = eng_idle && (count_q == '0) && !issued_non_grp_q &&
+  assign vec_backend_idle = eng_idle && (count_q == '0) && !cpush_valid_q && !issued_non_grp_q &&
                             vmu_idle && !vmem_desc_valid_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) vec_backend_idle_q <= 1'b1;
-    else vec_backend_idle_q <= vec_backend_idle && !push && !desc_launch_valid;
+    else vec_backend_idle_q <= vec_backend_idle && !varith_commit_only && !desc_launch_valid;
   end
   assign vtox_backend_ready = vec_backend_idle_q && !o_vmem_head_shield && !i_csr_wb_pending;
 
@@ -657,32 +739,23 @@ module vec_unit #(
     if (i_rst) begin
       xs                   <= X_IDLE;
       fp_read_q            <= 1'b0;
-      fp_read_addr_q       <= '0;
       group_bounds_fault_q <= 1'b0;
     end else if (i_flush_all) begin
       xs                   <= X_IDLE;
       fp_read_q            <= 1'b0;
-      fp_read_addr_q       <= '0;
       group_bounds_fault_q <= 1'b0;
     end else begin
       unique case (xs)
         X_IDLE:
         if (!i_rob_empty && head_xs_q[i_head_tag] && i_head_safe && vtox_backend_ready) begin
-          vtox_tag_q     <= i_head_tag;
-          fp_read_q      <= insn_q[i_head_tag][14:12] == 3'b101;
-          fp_read_addr_q <= insn_q[i_head_tag][19:15];
-          xwait_q        <= '0;
-          xs             <= X_WAIT;
+          fp_read_q <= insn_q[i_head_tag][14:12] == 3'b101;
+          xs        <= X_WAIT;
         end
         X_WAIT: begin
-          xwait_q <= xwait_q + 2'd1;
-          // The last older instruction's queue push lands a cycle after it
-          // retires, so idleness is checked again before completing.
           if (xwait_q == 2'd1) begin
             group_bounds_fault_q <= riscv_pkg::vector_partial_group(
                 xi[6:0], i_vl[1:0], i_vstart[1:0]
             );
-            xres_q <= 64'(xi);
             if (vtox_backend_ready && !i_rob_empty && i_head_tag == vtox_tag_q && i_head_safe) begin
               // Element groups need only the architectural bounds at the head.
               xs <= (xi[6:0] == riscv_pkg::OPC_OP_VE) ? X_OUT : X_FP_RD;
@@ -692,10 +765,7 @@ module vec_unit #(
             end
           end
         end
-        X_FP_RD: begin
-          xres_q <= i_fp_read_data;
-          xs     <= X_OUT;
-        end
+        X_FP_RD: xs <= X_OUT;
         X_OUT:
         if (vtox_done) begin
           xs        <= X_IDLE;
@@ -706,8 +776,27 @@ module vec_unit #(
     end
   end
 
+  // Reset-free head-service datapath flops.
+  always_ff @(posedge i_clk) begin
+    unique case (xs)
+      X_IDLE:
+      if (!i_rob_empty && head_xs_q[i_head_tag] && i_head_safe && vtox_backend_ready) begin
+        vtox_tag_q     <= i_head_tag;
+        fp_read_addr_q <= insn_q[i_head_tag][19:15];
+        xwait_q        <= '0;
+      end
+      X_WAIT: begin
+        xwait_q <= xwait_q + 2'd1;
+        if (xwait_q == 2'd1) xres_q <= 64'(xi);
+      end
+      X_FP_RD: xres_q <= i_fp_read_data;
+      default: ;
+    endcase
+  end
+
   riscv_pkg::fu_complete_t vtox_only_complete, vhead_complete, ov_complete;
-  assign vtox_done = (xs == X_OUT) && i_grant && !vhead_complete.valid;
+  // Head-service OPFVF/OP-VE and head VMEM never occupy the ROB head together.
+  assign vtox_done = (xs == X_OUT) && i_grant;
   always_comb begin
     vtox_only_complete           = '0;
     vtox_only_complete.valid     = (xs == X_OUT);
@@ -767,7 +856,8 @@ module vec_unit #(
   assign ov_accept = (ov_state_q == OV_IDLE) && !i_rob_empty && !i_flush_spec &&
       !flush_spec_d1_q && !i_flush_en && (|ov_pend_q);
 
-  // Older-ROB hazard check for the selected tag (pure flop inputs).
+  // Older-ROB hazard check for the selected tag (pure flop inputs, aligned
+  // power-of-two register-group membership without subtractors).
   logic [TagW-1:0] ov_age;
   logic [RobDepth-1:0] ov_rob_blk;
   logic ov_older_rob_hazard;
@@ -776,13 +866,11 @@ module vec_unit #(
     for (int j = 0; j < RobDepth; j++) begin
       logic [TagW-1:0] j_age;
       logic j_older;
-      logic [4:0] vs2_diff;
       logic hit_vs2, hit_v0, hit_vl;
       j_age = TagW'(j) - head_tag_q;
       j_older = (j_age < ov_age);
-      vs2_diff = ov_vs2 - rob_vd_q[j];
       hit_vs2 = rob_vload_q[j] ||
-          (rob_vwrite_q[j] && (vs2_diff[4:3] == 2'b00) && (vs2_diff[2:0] <= rob_wlast_q[j]));
+          (rob_vwrite_q[j] && reg_in_aligned_group(ov_vs2, rob_vd_q[j], rob_wlog2_q[j]));
       hit_v0 = ov_masked && (rob_vload_q[j] || rob_wr_v0_q[j]);
       hit_vl = ov_is_mask_red && rob_vl_chg_q[j];
       ov_rob_blk[j] = j_older && (hit_vs2 || hit_v0 || hit_vl);
@@ -791,8 +879,8 @@ module vec_unit #(
   end
 
   // Registered committed-backend write mask (VIQ + engine + VMU); any new
-  // write entering on the previous or current cycle stalls via the 1-bit
-  // push/vload flags so backend_wr_mask_q never misses a live write.
+  // write entering on the commit, cpush_q or VIQ-push cycle stalls via the
+  // 1-bit flags so backend_wr_mask_q never misses a live write.
   logic [31:0] backend_wr_mask_live, backend_wr_mask_q;
   logic backend_vload_live, backend_push_d1_q, backend_vload_d1_q;
   assign backend_wr_mask_live = viq_all_wr_mask | eng_wr_mask |
@@ -812,8 +900,9 @@ module vec_unit #(
   end
 
   logic ov_backend_hazard, ov_vl_hazard, ov_hazard;
-  assign ov_backend_hazard = push || backend_push_d1_q || backend_vload_live ||
-      backend_vload_d1_q || backend_wr_mask_q[ov_vs2] || (ov_masked && backend_wr_mask_q[0]);
+  assign ov_backend_hazard = varith_commit_only || cpush_valid_q || backend_push_d1_q ||
+      backend_vload_live || backend_vload_d1_q || backend_wr_mask_q[ov_vs2] ||
+      (ov_masked && backend_wr_mask_q[0]);
   assign ov_vl_hazard = ov_is_mask_red &&
       (i_vcfg_commit_valid || o_vl_trim_valid || i_csr_wb_pending);
   assign ov_hazard = ov_older_rob_hazard || ov_backend_hazard || ov_vl_hazard;
@@ -822,11 +911,11 @@ module vec_unit #(
   assign ov_killed = (ov_state_q != OV_IDLE) && (i_flush_spec || (i_flush_en && is_younger(
       ov_tag_q, i_flush_tag, i_head_tag
   )));
-  assign ov_port4_busy = vmu_xr_en || vhead_vrf_read_en;
+  assign ov_port4_busy = vmu_busy_q || vhead_port_claim_q;
   assign ov_xr_en = !ov_port4_busy && !ov_killed &&
       (((ov_state_q == OV_CHK) && !ov_hazard) || (ov_state_q == OV_RD0));
-  assign xr_addr = vmu_xr_en         ? vmu_xr_addr :
-                   vhead_vrf_read_en ? vhead_vrf_read_addr :
+  assign xr_addr = vmu_busy_q         ? vmu_xr_addr :
+                   vhead_port_claim_q ? vhead_vrf_read_addr :
                    (ov_state_q == OV_RD0) ? 5'd0 : ov_vs2;
 
   assign ov_done = (ov_state_q == OV_OUT) && !ov_killed &&
@@ -1077,20 +1166,7 @@ module vec_unit #(
         vmu_mask_q    <= 32'd0;
       end
       if (desc_launch_valid) begin
-        vmem_desc_valid_q       <= 1'b1;
-        vmem_desc_ppn0_q        <= desc_launch_ppn0;
-        vmem_desc_ppn1_q        <= desc_launch_ppn1;
-        vmem_desc_page_offset_q <= desc_launch_page_offset;
-        vmem_desc_first_elem_q  <= desc_launch_first_elem;
-        vmem_desc_last_elem_q   <= desc_launch_last_elem;
-        vmem_desc_eew_log2_q    <= desc_launch_eew_log2;
-        vmem_desc_active_mask_q <= desc_launch_active_mask;
-        vmem_desc_is_store_q    <= desc_launch_is_store;
-        vmem_desc_vd_vs3_q      <= desc_launch_vd_vs3;
-        vmem_desc_vmt_idx_q     <= desc_launch_vmt_idx;
-        vmem_desc_free_vmt_q    <= desc_launch_free_vmt;
-        vmem_desc_seg0_q        <= desc_launch_seg0;
-        vmem_desc_seg1_q        <= desc_launch_seg1;
+        vmem_desc_valid_q <= 1'b1;
       end else if (vmu_cmd_valid) begin
         vmem_desc_valid_q <= 1'b0;
         vmu_busy_q        <= 1'b1;
@@ -1098,6 +1174,25 @@ module vec_unit #(
         vmu_wr_mask_q     <= vmem_desc_is_store_q ? 32'd0 : vmu_launch_mask;
         vmu_mask_q        <= vmu_launch_mask;
       end
+    end
+  end
+
+  // Reset-free VMU descriptor handoff payload.
+  always_ff @(posedge i_clk) begin
+    if (desc_launch_valid) begin
+      vmem_desc_ppn0_q        <= desc_launch_ppn0;
+      vmem_desc_ppn1_q        <= desc_launch_ppn1;
+      vmem_desc_page_offset_q <= desc_launch_page_offset;
+      vmem_desc_first_elem_q  <= desc_launch_first_elem;
+      vmem_desc_last_elem_q   <= desc_launch_last_elem;
+      vmem_desc_eew_log2_q    <= desc_launch_eew_log2;
+      vmem_desc_active_mask_q <= desc_launch_active_mask;
+      vmem_desc_is_store_q    <= desc_launch_is_store;
+      vmem_desc_vd_vs3_q      <= desc_launch_vd_vs3;
+      vmem_desc_vmt_idx_q     <= desc_launch_vmt_idx;
+      vmem_desc_free_vmt_q    <= desc_launch_free_vmt;
+      vmem_desc_seg0_q        <= desc_launch_seg0;
+      vmem_desc_seg1_q        <= desc_launch_seg1;
     end
   end
 
@@ -1173,7 +1268,7 @@ module vec_unit #(
   always @(posedge i_clk) begin
     if (i_rst) x_reset_seen_q <= 1'b1;
     if (x_reset_seen_q && !i_rst) begin
-      if (push && insn_q[i_commit_tag][6:0] == riscv_pkg::OPC_OP_VE) begin
+      if (varith_commit_only && insn_q[i_commit_tag][6:0] == riscv_pkg::OPC_OP_VE) begin
         assert (i_vl[1:0] == 2'b00 && i_vstart[1:0] == 2'b00)
         else
           $error(
@@ -1192,6 +1287,20 @@ module vec_unit #(
               x_group_vstart_q
           );
       end
+      assert (!(push && (count_q == ($clog2(Depth) + 1)'(Depth))))
+      else $error("vec_unit: VIQ overflow on cpush_q push");
+      assert (!alloc_q_live || !alloc_q_is_varith ||
+              ((alloc_q_insn[11:7] & ((5'd1 << alloc_wlog2) - 5'd1)) == 5'd0))
+      else
+        $error(
+            "vec_unit: misaligned varith vd %0d for wr_log2 %0d", alloc_q_insn[11:7], alloc_wlog2
+        );
+      assert (!vhead_vrf_read_en || vhead_port_claim_q)
+      else $error("vec_unit: vhead_vrf_read_en asserted without vhead_port_claim_q");
+      assert (!vmu_xr_en || vmu_busy_q)
+      else $error("vec_unit: vmu_xr_en asserted without vmu_busy_q");
+      assert (!(vmu_busy_q && vhead_vrf_read_en))
+      else $error("vec_unit: vmu_busy_q and vhead_vrf_read_en overlapped on port 4");
       assert (!(xs == X_OUT && (i_rob_empty || i_head_tag != vtox_tag_q)))
       else
         $error(
