@@ -127,6 +127,12 @@ The archived RTL results and model comparison below precede the hit-path extensi
 
 Trace extraction is fully automated and integrated into the FROST test infrastructure (`verif/cocotb_tests/calibration_trace.py`, called from the real-program bench in `verif/cocotb_tests/test_real_program.py`). The monitor activates exclusively during the timed region of the target benchmark and introduces zero simulation timing perturbation.
 
+`FROST_INSTRUCTION_TRACE_PATH` additionally captures a separate compressed
+instruction stream tied to the loaded binary. Its observer follows register
+writes before the window to resolve data addresses. The
+[instruction evidence contract](docs/instruction_capture.md) describes the
+fields, prediction tiers, integrity checks, and CI capture policy.
+
 ### Step 1: Execute Simulation with Trace Capture
 
 Run the benchmark using `./scripts/frost.py cocotb <benchmark>` with the calibration environment variables:
