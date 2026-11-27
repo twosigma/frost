@@ -212,6 +212,14 @@ class ModelConfig:
     # count. Endpoint 0 serves stores; the others serve load misses, and the
     # highest l1d_lookahead_slots of them may carry stream look-ahead GetS.
     l1d_lookahead_slots: int = 2  # PrefetchCount for eight endpoints
+    # Issue stream hints. The RTL ranks a hint below every read, and a read is
+    # ready on nearly every cycle of a sector-adjacent stream, so the board
+    # issues few hints (133 for 8192 sequential sectors in simulation); serial
+    # lookups, not missing look-ahead, bound the stream, and raising the hint's
+    # priority adds 0.3% to sequential reads and costs 14% to 22% at 16- and
+    # 32-byte strides in full-SoC simulation. The model's idle controller cycles would credit every
+    # sector with a hint, so hints are off unless a study asks for them.
+    l1d_lookahead_hints: bool = False
     l1d_lookahead_sectors: int = 8  # look-ahead window past the demand frontier
     l1d_store_records: int = 4  # ordered 32-byte store records
     l1d_store_lookahead: bool = True  # one load endpoint lent to a younger store
@@ -1770,6 +1778,7 @@ class CoherentL1d(CacheLevel):
         self.update_cycles = self.lookup_cycles + config.l1_write_cycles + 2
         endpoints = range(config.l1d_mshrs)
         self.load_endpoints = list(endpoints[1:] if config.l1d_mshrs > 1 else endpoints)
+        self.lookahead_hints = config.l1d_lookahead_hints
         self.lookahead_endpoints = list(
             endpoints[config.l1d_mshrs - config.l1d_lookahead_endpoints :]
             if config.l1d_lookahead_endpoints
@@ -2189,7 +2198,7 @@ class CoherentL1d(CacheLevel):
 
     # Stream look-ahead.
     def _start_hint(self) -> None:
-        if not self.lookahead_endpoints:
+        if not self.lookahead_hints or not self.lookahead_endpoints:
             return
         if self.hint is None:
             self.hint = self.stream.consume()
@@ -3828,7 +3837,7 @@ def rtl_audit() -> dict[str, Any]:
                 "source": "hw/rtl/lib/cache/coherence_l1d.sv:1218-1231, 1297-1315, 2233-2238, 2339-2351; hw/rtl/lib/cache/README.md:316, 350-355, 369-372 (ade0de67)",
             },
             {
-                "fact": "Stream look-ahead: three adjacent demand sector misses confirm a stream; the cursor stays within eight sectors past the frontier and within a 4 KiB page; hints use the highest PrefetchCount load endpoints (2 with four or more endpoints, 1 with three), demand may use every load endpoint, and a hint is the controller's lowest-priority selection.",
+                "fact": "Stream look-ahead: three adjacent demand sector misses confirm a stream; the cursor stays within eight sectors past the frontier and within a 4 KiB page; hints, off by default in the model because the RTL issues few, use the highest PrefetchCount load endpoints (2 with four or more endpoints, 1 with three), demand may use every load endpoint, and a hint is the controller's lowest-priority selection.",
                 "source": "hw/rtl/lib/cache/coherence_read_stream.sv:17-82; hw/rtl/lib/cache/coherence_l1d.sv:550-553, 611-638, 692-713, 2227-2231, 2304-2309 (ade0de67)",
             },
             {
