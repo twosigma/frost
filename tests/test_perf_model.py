@@ -384,8 +384,24 @@ def test_refresh_rewrites_the_figures_only_when_the_check_passes(
     assert baseline.read_text(encoding="utf-8") == before
 
 
-def test_the_stored_baseline_matches_the_model() -> None:
-    """The baseline's model figures are the model's, and its RTL within tolerance."""
+def test_coremark_calibration_cannot_substitute_a_precomputed_result(
+    tmp_path: Path,
+) -> None:
+    """The CI workload must replay its binary-bound capture, even during refresh."""
+    baseline = tmp_path / "baseline.json"
+    _baseline(baseline, 1.0)
+    data = json.loads(baseline.read_text())
+    data["model_workload"] = "coremark_bram"
+    baseline.write_text(json.dumps(data))
+    before = baseline.read_bytes()
+    result = _check(tmp_path, "--refresh")
+    assert result.returncode != 0
+    assert "requires --instructions and --manifest" in result.stderr
+    assert baseline.read_bytes() == before
+
+
+def test_the_stored_baseline_records_a_passing_measured_comparison() -> None:
+    """CI recaptures instructions; the stored figures retain their binary identity."""
     baseline = json.loads(
         (PERF_MODELING / "calibration" / "ci_baseline.json").read_text(encoding="utf-8")
     )
@@ -397,8 +413,20 @@ def test_the_stored_baseline_matches_the_model() -> None:
             config = dataclasses.replace(config, soc=soc)
         else:
             config = dataclasses.replace(config, **{name: value})
-    run = model.run_workload(config, baseline["model_workload"], baseline["model_seed"])
-    assert trace_contract.model_figures(run) == baseline["model"]
+    config.validate()
+    assert baseline["model_workload"] == "coremark_bram"
+    with pytest.raises(ValueError, match="instruction-trace"):
+        model.run_workload(config, "coremark_bram", baseline["model_seed"])
+    evidence = baseline["instruction_stream"]
+    assert evidence["schema"] == "frost-instructions-v1"
+    assert evidence["rtl_commit"] == baseline["rtl"]["commit"]
+    assert (
+        evidence["instructions"]
+        == baseline["model"]["retired_uops"]
+        == baseline["rtl"]["retired_uops"]
+    )
+    assert re.fullmatch(r"[0-9a-f]{64}", evidence["artifacts"]["sw.bin_sha256"])
     delta = baseline["model"]["ipc"] / baseline["rtl"]["ipc"] - 1
     assert delta == pytest.approx(baseline["ipc_delta"])
     assert abs(delta) <= baseline["ipc_tolerance"]
+    assert baseline["ipc_tolerance"] == 0.1

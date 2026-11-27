@@ -36,6 +36,11 @@ Traces are formatted as line-delimited JSON (JSONL). The first line is always a 
 
 All cycle stamps represent CPU-clock cycles (not wall time).
 
+CoreMark calibration also uses `frost-instructions-v1`, a separate compressed
+instruction stream. Its [contract](instruction_capture.md) contains dynamic
+PCs, binary bytes, architectural operands, resolved addresses and recorded
+prediction tiers. Aggregate events cannot substitute for these records.
+
 ---
 
 ## 3. How to Extract Traces from Verilator RTL
@@ -47,6 +52,7 @@ Trace extraction is integrated into the cocotb test harness (`verif/cocotb_tests
 FROST_CALIBRATION_TRACE_PATH=perf-modeling/results/coremark/coremark_timed.jsonl \
 FROST_CALIBRATION_COUNTERS_PATH=perf-modeling/results/coremark/pipeline_counters.json \
 FROST_CALIBRATION_MANIFEST_PATH=perf-modeling/results/coremark/manifest.json \
+FROST_INSTRUCTION_TRACE_PATH=perf-modeling/results/coremark/instructions.jsonl.gz \
 FROST_GIT_COMMIT=$(git rev-parse HEAD) \
 ./scripts/frost.py cocotb coremark
 ```
@@ -79,6 +85,13 @@ FROST_GIT_COMMIT=$(git rev-parse HEAD) \
 
 After capturing an RTL trace, run the validation tool to check contract compliance and calculate correlation metrics:
 
+For CI's current binary-bound BRAM comparison, use `--baseline`, `--manifest`,
+`--counters` and `--instructions` as shown in the
+[README](../README.md#12-model-tests-and-calibration-scope). It checks matching
+binary and window identity and equal retirement counts before comparing IPC.
+The `--model-run` example below is for historical or other workload evidence;
+it cannot replace the required instruction replay for `coremark_bram`.
+
 ```bash
 python3 perf-modeling/tools/run_calibration.py \
     --trace perf-modeling/results/coremark/coremark_timed.jsonl \
@@ -93,7 +106,12 @@ The script:
 3. Compares hardware pipeline counters against model output counters (IPC, retired uops, cycles).
 4. Emits a structured `calibration.json` report documenting discrepancies, correlation accuracy, and timing.
 
-With `--baseline perf-modeling/calibration/ci_baseline.json`, the script also runs the calibration check that CI applies to CoreMark (see the README's maintainer guide): without `--model-run`, it runs the baseline's model workload; it checks that the trace has the baseline's required event classes, that it agrees with the capture's pipeline counters (`--counters`) and comes from the baseline's program and memory tier (`--manifest`), and that the model's IPC is within the baseline's tolerance of the RTL's. It prints the figures and their deltas and exits with 1 if a check fails; with `--refresh`, a passing check rewrites the baseline's figures.
+With `--baseline perf-modeling/calibration/ci_baseline.json`, the script runs
+CoreMark from `--instructions` and requires the matching `--manifest`.
+It checks the aggregate event classes and pipeline counters and compares the
+current replay IPC with current RTL IPC. It prints the deltas and exits
+with 1 if a check fails; with `--refresh`, a passing check rewrites the
+baseline's figures and instruction/source identities. The tolerance stays 10%.
 
 ---
 
@@ -125,7 +143,7 @@ Board measurements form a data set in `results/` (README section 13): a manifest
 
 ## 7. Instruction replay inputs
 
-The capture is an event log, not an executable instruction trace. Dispatch includes speculative work. AXI traffic includes instruction fetches and writebacks as well as data requests. Cache hits need not produce AXI traffic. Aggregate events therefore cannot reconstruct instruction kinds, addresses before the caches, or register dependencies. Program replay requires those fields from an instruction trace or a workload generator.
+The aggregate capture is an event log, not an executable instruction trace. Dispatch includes speculative work. AXI traffic includes instruction fetches and writebacks as well as data requests. Cache hits need not produce AXI traffic. Aggregate events therefore cannot reconstruct instruction kinds, addresses before the caches, or register dependencies. Program replay requires those fields from the separate instruction capture or a workload generator.
 
 The replay loader rejects aggregate events. Instruction records require a fetch address and kind; loads and stores also require a data address. IDs are consecutive from zero, and dependencies name earlier instructions. Replay does not infer register dependencies or memory addresses from dispatch counts. A stored calibration with `model: null` validates observed events only and supplies no model IPC.
 

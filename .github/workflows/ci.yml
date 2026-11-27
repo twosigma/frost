@@ -398,6 +398,7 @@ jobs:
             export FROST_CALIBRATION_TRACE_PATH="tests/calibration/$CALIBRATION_TEST.jsonl"
             export FROST_CALIBRATION_COUNTERS_PATH="tests/calibration/${CALIBRATION_TEST}_counters.json"
             export FROST_CALIBRATION_MANIFEST_PATH="tests/calibration/${CALIBRATION_TEST}_manifest.json"
+            export FROST_INSTRUCTION_TRACE_PATH="tests/calibration/${CALIBRATION_TEST}_instructions.jsonl.gz"
             export FROST_GIT_COMMIT="$GITHUB_SHA"
           fi
           ./scripts/frost.py --image frost-dev:latest pytest \
@@ -416,9 +417,19 @@ jobs:
             --trace "tests/calibration/$CALIBRATION_TEST.jsonl" \
             --counters "tests/calibration/${CALIBRATION_TEST}_counters.json" \
             --manifest "tests/calibration/${CALIBRATION_TEST}_manifest.json" \
+            --instructions "tests/calibration/${CALIBRATION_TEST}_instructions.jsonl.gz" \
             --baseline perf-modeling/calibration/ci_baseline.json \
             --rtl-commit "$GITHUB_SHA" \
             --out "tests/calibration/${CALIBRATION_TEST}_calibration.json"
+
+      - name: Upload calibration evidence
+        if: ${{ !cancelled() && matrix.mem_config == 'bram' && matrix.shard.calibration_test }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: calibration-${{ github.sha }}
+          path: tests/calibration/
+          retention-days: 3
+          if-no-files-found: warn
 
       - name: Merge the job's coverage
         if: ${{ !cancelled() && contains(matrix.shard.coverage, matrix.mem_config) }}

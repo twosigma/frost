@@ -1,138 +1,138 @@
-# CoreMark front-end calibration gap
+# CoreMark front-end calibration
 
-The BRAM CoreMark calibration in CI run 46029156161, job 140659524095,
-fails its unchanged 10% IPC tolerance after the decoupled front end landed
-in #595. The capture was reproduced at
-`201e1911850c0185b96cd8f0fddce651666f08d0` (see the local manifest for the
-full capture identity). The current synthetic workload has no modeled fetch
-delay to remove, so adding the new RTL structures does not by itself explain
-the missing performance.
+BRAM CoreMark now replays the binary-bound instruction stream captured in the
+same RTL run as the aggregate calibration events. The initial measured
+comparison passes the unchanged **10% IPC tolerance**:
 
-The reproduction used the repository's Docker image, `make clean` in
-`tests/`, and the CoreMark shard's pytest selection and environment from
-`.github/workflows/ci.yml`: BRAM, startup sweep enabled, coverage disabled,
-one simulator thread, and `46029156161-test-verilator-0` for the startup,
-random-start and DDR seeds. The manifest records Verilator 5.054, cocotb
-2.1.0 and GCC 16.2.0. `FROST_CALIBRATION_TEST=coremark` restricts capture to
-the ordinary run; the profiling-enabled run has no IPC comparison.
+| Measurement | Cycles | Retired instructions | IPC | Replay / RTL IPC minus 1 |
+|---|---:|---:|---:|---:|
+| RTL after #595 | 201,392 | 226,801 | 1.1262 | — |
+| Former synthetic `coremark_bram` | 3,219 | 3,128 | 0.9717 | -13.71% |
+| Binary-bound replay | 190,905 | 226,801 | 1.1880 | +5.49% |
 
-| Measurement | Cycles | Retired micro-ops | IPC |
-|---|---:|---:|---:|
-| Reproduced RTL timed region | 201,392 | 226,801 | 1.1262 |
-| Existing `coremark_bram`, seed 11, CI configuration | 3,219 | 3,128 | 0.9717 |
-| Same workload with branch recovery set to zero | 3,219 | 3,128 | 0.9717 |
+The RTL was captured with the CoreMark shard's BRAM configuration, startup
+sweep, coverage disabled, one simulator thread, and
+`46029156161-test-verilator-0` as the startup, random-start and DDR seed.
+Both CoreMark and its profiling test passed, including startup checks.
+The image reports Verilator 5.054, cocotb 2.1.0 and GCC 16.2.0.
+The checked baseline records the full capture and binary identities.
 
-The model-to-RTL delta is **-13.71%**. Zero recovery is a diagnostic only;
-it changes neither the default configuration nor the baseline. The original
-run counts two recovery-stall cycles, no instruction-fetch stalls, 1,379
-load-queue dispatch stalls and 4,824 local-load backpressure attempts.
-The latter counts attempts by waiting loads, not distinct stalled cycles.
+## Why the synthetic feed could not explain #595
 
-`run_calibration.py` reruns the workload and compares its current IPC with
-the capture's IPC. Stored figures are historical comparisons, so merely
-refreshing them cannot make this check pass.
+The earlier investigation at `396b4b44b` reproduced CI run 46029156161,
+job 140659524095. The analytical workload had not changed since `a78866157`,
+yet its gap moved from -8.38% on `5455aacf6` to -13.71% after the RTL's
+decoupled front end landed. Its CoreMark instruction lines were all ready
+before execution. Setting branch recovery to zero changed neither its
+3,219 cycles nor its IPC. There was no modeled fetch delay to remove.
 
-## What the current model represents
+That workload was a pressure pattern, not the compiled program. Aggregate
+dispatch/retire/AXI records could not supply the missing architectural
+dependencies, instruction lengths, data addresses or prediction decisions.
+The replacement changes the workload evidence and represents front-end
+structure explicitly; it does not claim that #595 alone speeds up the old
+idealized feed. The synthetic DDR `coremark` remains a separate sweep workload.
 
-In `frost_perf_model.py`, `run_workload` marks every CoreMark instruction line
-ready before execution. `FrostPipeline._dispatch` then reads the next
-micro-op directly from the workload, subject to dispatch width and back-end
-resource limits. `_issue_fetches` looks ahead by
-`decoded_queue_bundles * dispatch_width`; there is no decoded-bundle storage
-or independent fetch/decode cursor. For this warm workload, that look-ahead
-has no work to do. `_drain_cdb` implements a misprediction as a fixed dispatch
-pause without squashing younger instructions.
+## Instruction evidence and CI cost
 
-Thus this is neither the old coupled RTL front end nor the new decoupled
-one. Its front-end supply is already idealized. Giving the parcel queue an
-IPC multiplier, increasing dispatch width, or reducing a memory latency to
-compensate would not implement #595.
+`verif/cocotb_tests/instruction_trace.py` observes production allocation and
+retirement, rather than substituting TestRIG's injected instruction platform.
+It associates decoded packets by ROB tag, checks bytes against executable ELF
+segments, follows architectural integer register writes before the window,
+and writes each retired instruction's PC, original bytes/length, sources,
+destination, resolved address/size and branch successor. Slot-2 addresses see
+slot-1 writeback. Wrong-path allocations are discarded by retirement.
 
-The workload itself is a 3,128-micro-op synthetic pressure pattern; the
-capture records 226,801 retired micro-ops from the real binary. `MicroOp` has no
-instruction length, opcode, predictor source or prediction target. The
-synthetic PCs can skip instructions without an intervening branch. Neither
-these fields nor architectural register dependencies and data addresses can
-be recovered from the aggregate dispatch, retirement and AXI event records
-that `run_calibration.py` consumes.
+Branch annotations record F0 predictions, PD direction/backing/ITTAGE
+redirects and execution correction, including early recovery. An allocation
+check requires PD's recorded final prediction to agree with the ID packet.
+The capture contains 4,835 PD redirects and 2,192 execution corrections;
+the aggregate commit-only misprediction counter is 35 and must not stand in
+for early recoveries.
 
-## RTL requirements for a future front-end implementation
+CI recaptures in the existing simulation instead of storing a full versioned
+stream. This follows compiler, layout and predictor changes without a
+second simulation. The stream is about 1.9 MiB compressed for 226,801
+instructions. CI retains it with the manifest, aggregate events, counters
+and comparison as a three-day artifact. ELF and image SHA-256 hashes bind
+the evidence to the binary; the manifest also hashes the compressed stream.
+The [separate instruction contract](instruction_capture.md) rejects
+truncation, discontinuous PCs, invalid operands, and identity mismatches.
 
-The source at the reproduced revision establishes these requirements:
+## Front-end structure
 
-- `if_stage/if_stage.sv` instantiates `fetch_parcel_queue` with **16 halfword
-  parcels**, **8 window metadata entries**, a parcel stop threshold of **8**
-  and a metadata stop threshold of **7**. The queue module's standalone
-  metadata threshold defaults to 6; the production instance overrides it.
-  Backpressure is registered and leaves room for arriving and in-flight
-  windows. Flush clears counts, pointers and the stop signal.
-- F0 uses its own PC and can run while decode stalls. It looks up the fast
-  BTB and direction tables alongside the backing BTB, TAGE, ITTAGE and
-  translation. The sequential window is eight bytes starting on a word
-  boundary; a halfword-offset entry has three useful parcels. Fast taken
-  predictions steer F0 before decode.
-- F1 holds the request and predictor metadata, checks the served-word tag,
-  validates the predicted instruction boundary and type, and pushes up to
-  four parcels with one metadata record. A false fast-BTB prediction or
-  served-tag mismatch can resteer fetch. A spanning 32-bit instruction and
-  spanning branch retain state across windows.
-- Drain has zero-cycle empty and partial bypass and consumes one or two
-  eligible instructions, up to four parcels, only when PD accepts. Pairing
-  can cross a window boundary; instruction size, slot eligibility, faults
-  and control flow constrain it. Capacity must be counted in parcels and
-  windows, not just micro-ops.
-- `fetch_pc_decoupled.sv` prioritizes trap/xRET, fence, execute recovery, PD
-  redirect, then F1 validation resteer before ordinary F0 progress. The
-  first four flush the parcel queue and F0/F1 state; F1 resteer has its own
-  validation and recovery behavior. Provider retarget pulses are registered.
-- A provider miss can overlap predictor lookup: `collapsed_armed_q` retains
-  a prediction while waiting and permits acceptance on the returning data
-  cycle. A refill must not unconditionally pay a second predictor stage.
-  `fetch_provider.sv` supplies the served-word tags and retarget handshake;
-  those stages and the provider's actual miss latency determine refill cost.
+`fetch_frontend.py` follows these production rules:
 
-These are front-end structures to model and test, not evidence for a
-numerical speedup over the current idealized CoreMark feed.
+- `if_stage.sv` and `fetch_parcel_queue.sv`: 16 halfword parcels, eight
+  metadata entries, registered stop at eight parcels or seven windows,
+  with space for the arriving window and one in flight. Metadata remains
+  owned until the last parcel of its window drains. Flush clears stop too.
+- F0 has its own cursor, independent of decode stall. Eight-byte windows
+  start on a word boundary; halfword-offset entry supplies three parcels.
+  Taken F0 predictions truncate the window and select the next target.
+  A spanning native instruction retains its first parcel across windows;
+  a spanning taken branch consumes its tail before taking its target.
+- F1 checks provider epoch and served-word identity. Data and synchronous
+  prediction lookup overlap. A miss retains the prediction and accepts
+  returning data on that cycle, without paying a second predictor stage.
+- Drain combines queued and arriving parcels, including zero-cycle empty
+  and partial bypass. It issues up to two instructions/four parcels;
+  control flow ends slot 1's bundle and serializing operations cannot start
+  slot 2. PD/ID feed an actual bounded decoded-bundle queue.
+- `fetch_pc_decoupled.sv` arms 1..5 prioritize trap/xRET, fence, execution,
+  PD, then F1 validation. Provider retarget is registered. The first four
+  clear fetch parcels/F1; PD preserves its branch and older decoded work.
+  F1 tag recovery retries the same window, preserving older parcels;
+  false-BTB recovery retains validated bytes and resteers younger fetch.
 
-## Evidence needed to resolve the calibration
+Recorded predictions supply decisions, not observed cycle durations.
+Branch recovery waits for the replayed dependency graph. Provider latency
+and pipeline stages determine refill delay. CoreMark's BRAM provider has
+one-cycle window service; the directed provider tests exercise longer fills.
 
-First supply an instruction stream tied to the compiled CoreMark binary:
-dynamic PCs, instruction bytes/lengths, architectural source and destination
-registers, resolved data addresses, and branch outcomes. Record or explicitly
-model which prediction tier redirects each branch. Keep that instruction
-evidence separate from the existing aggregate event contract.
+## Scalar execution needed by the real stream
 
-Then validate the front end on directed cases: run-ahead under decode
-backpressure, parcel and metadata saturation, empty/partial bypass,
-compressed and spanning instructions, predicted taken flow, each redirect
-class, stale provider replies, and refill with predictor overlap. Compare
-the same workload and memory configuration before and after the change.
-Refresh `ci_baseline.json` only from a passing measured comparison, retaining
-the 10% tolerance. The current investigation leaves its values unchanged.
+Using real dependencies exposed two shortcuts in the pressure generators.
+They had treated the L0 array's combinational lookup as a one-cycle dependent
+load and every arithmetic operation as one cycle. Replay uses the existing
+directed resident-chase measurement of three cycles per L0-dependent load.
+`reservation_station/README.md` and `reservation_station.sv` specify a
+registered stage between selection and functional-unit launch. With the
+registered CDB, a combinational ALU takes two selection-to-wakeup cycles.
+`multiplier.sv` has six launch-to-result stages; including RS stage 2 gives
+seven. `int_muldiv_shim.sv`'s word multiplier and `cl_multiplier.sv` have
+three stages, giving four from selection. These are source/measurement
+constraints, not an IPC multiplier or a fitted memory-latency reduction.
 
-CI currently configures only `coremark` as a `calibration_test` in
-`tests/ci_verilator.py`. The other archived calibration programs validate
-event traces; they have no CI IPC tolerance comparison.
+The calibration keeps its existing 512-entry L0 and measured ten-cycle
+local-BRAM read configuration. Synthetic workloads retain their established
+abstractions and result fixtures. Replay reports its distinct execution
+assumptions in the comparison record.
 
-## Local reproduction results
+## Validation and remaining limits
 
-Both selected cocotb tests (`coremark` and `coremark_profile`) passed,
-including the seeded startup checks. The subsequent calibration command
-failed with the exact CI delta and event counts: 140,047 dispatch records,
-128,705 retirement records, 11,665 AXI requests and 11,664 AXI responses.
-The capture's counters and manifest agreed with the trace; only the IPC
-comparison failed.
+`tests/test_perf_frontend.py` checks run-ahead under decode backpressure,
+parcel and metadata stop/capacity, empty and partial bypass, compressed and
+spanning instructions, predicted taken paths, all redirect classes and their
+priority, stale provider epochs and tags, false BTB validation, and refill
+overlapping prediction. It also checks scalar stage constants and the
+three-cycle dependent L0 chase. `tests/test_instruction_trace.py` checks
+binary/manifest/window binding, architectural renaming, same-cycle register
+writes, PD annotation ownership/flush, and malformed/truncated rejection.
 
-The full Fast Python Tests selection passed in the same image: **4,408
-passed, 3 skipped, 1,947 deselected**. This includes all **124** tests from
-`tests/test_perf*.py`, covering the architectural self-test, the tests under
-`perf-modeling/tests/`, stored result reproduction, exploration and sweeps,
-memory behavior, instruction replay and the calibration comparator.
+Only the architectural path has instruction semantics. Incorrect predictions
+stop useful fetch until correction; wrong-path execution and cache pollution
+are omitted. The replay starts with empty pipeline/data caches at the window
+boundary while recorded predictor decisions include the RTL's warm-up. It
+retains the existing approximate backend scheduler, store disambiguation
+and memory ordering. F1 false-hit and stale-provider cases have directed
+coverage, not a claim that every speculative validation event is reconstructed
+from the retired stream. Unsupported trapping, FP/atomic and divider behavior
+fails explicitly. This is a calibrated cycle approximation for scalar BRAM
+CoreMark, not a cycle-exact frontend simulator or DDR calibration.
 
-The trace, counters, manifest, comparison record (`coremark_before.json`),
-capture script (`mainci9_capture.sh`) and diagnostic script/results
-(`mainci9_diagnose.py`, `mainci9_diagnosis.json`) are retained in the
-reproduction worktree's ignored `tests/calibration/` directory. Run the
-scripts from the repository root inside the same Docker image. They leave
-the checked-in baseline unchanged; the capture script deliberately exits
-with the failing calibration command's status.
+`run_calibration.py` checks current replay against current measured IPC and
+updates `ci_baseline.json` only with `--refresh` after a passing comparison.
+It requires the separate stream and manifest for `coremark_bram`, disallows
+substituting `--model-run`, and checks that replay retired the same count.
+The stored baseline alone cannot make a failing comparison pass.

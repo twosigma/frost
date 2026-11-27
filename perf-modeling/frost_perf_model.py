@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import heapq
 import json
 import random
@@ -60,6 +61,8 @@ from typing import Any, Protocol
 from collections.abc import Callable, Iterable
 
 from memory_workloads import KERNELS, build_kernel
+from fetch_frontend import FetchFrontend
+from instruction_stream import InstructionStream, read_stream
 
 
 RTL_COMMIT = "410aa8f3e866fffb078fc8f7fd3672866d83d131"
@@ -2513,6 +2516,8 @@ class MicroOp:
     data_address: int | None = None
     depends_on: tuple[int, ...] = ()
     mispredict: bool = False
+    execution_cycles: int | None = None
+    memory_bytes: int = 8
 
 
 @dataclass
@@ -2541,10 +2546,14 @@ class FrostPipeline:
         program: list[MicroOp],
         controller: DdrController | None = None,
         soc: SocTopPort | None = None,
+        frontend: FetchFrontend | None = None,
+        l0_hit_cycles: int = 1,
     ) -> None:
         """Set up the pipeline, caches, and SoC to run program."""
         self.config = config
         self.program = program
+        self.frontend = frontend
+        self.l0_hit_cycles = l0_hit_cycles
         self.loop = EventLoop()
         self.soc: SocTopPort = soc or SocTopModel(
             config, self.loop, controller=controller
@@ -2627,11 +2636,23 @@ class FrostPipeline:
             self.stats["frontend_recovery_stall"] += 1
             return
         dispatched = 0
-        while dispatched < self.config.dispatch_width and self.next_dispatch < len(
-            self.program
-        ):
+        available = self.config.dispatch_width
+        if self.frontend is not None:
+            if not self.frontend.decoded:
+                self.stats["frontend_fetch_stall"] += 1
+                return
+            bundle = self.frontend.decoded[0]
+            if bundle[0].index != self.next_dispatch:
+                raise AssertionError(
+                    "frontend and backend instruction cursors diverged"
+                )
+            available = min(available, len(bundle))
+        while dispatched < available and self.next_dispatch < len(self.program):
             op = self.program[self.next_dispatch]
-            if self.fetch_state.get(self._fetch_line(op.fetch_address)) != "ready":
+            if (
+                self.frontend is None
+                and self.fetch_state.get(self._fetch_line(op.fetch_address)) != "ready"
+            ):
                 self.stats["frontend_fetch_stall"] += 1
                 break
             reason = self._can_dispatch(op)
@@ -2652,6 +2673,8 @@ class FrostPipeline:
             self.next_dispatch += 1
             dispatched += 1
             self.stats["dispatched"] += 1
+        if self.frontend is not None and dispatched:
+            self.frontend.consume(dispatched)
 
     def _deps_ready(self, entry: RobEntry) -> bool:
         deps = entry.op.depends_on
@@ -2706,7 +2729,9 @@ class FrostPipeline:
                     continue
                 entry.issued = True
                 alu_issued += 1
-                self._complete_later(entry, self.config.alu_cycles)
+                self._complete_later(
+                    entry, op.execution_cycles or self.config.alu_cycles
+                )
             elif op.kind == "load":
                 if mem_issued >= self.config.load_issue_width:
                     continue
@@ -2725,7 +2750,9 @@ class FrostPipeline:
                     else -1
                 )
 
-                # FROST LQ L0 Data Cache Fast-Path (direct bypass to CDB, 1 cycle)
+                # L0 hit service: the pressure generators use their legacy
+                # one-cycle abstraction; binary replay includes the measured
+                # three-cycle dependent path through RS/LQ/result staging.
                 if (
                     self.config.l0_cache_depth > 0
                     and self.l0_cache.get(l0_idx) == dword
@@ -2734,7 +2761,9 @@ class FrostPipeline:
                     entry.issued = True
                     mem_issued += 1
                     self.stats["loads_issued"] += 1
-                    self.loop.after(1, lambda entry=entry: self._load_result(entry))
+                    self.loop.after(
+                        self.l0_hit_cycles, lambda entry=entry: self._load_result(entry)
+                    )
                     continue
 
                 self.stats["l0_misses"] += 1
@@ -2764,7 +2793,7 @@ class FrostPipeline:
                         complete=on_load_complete,
                         source="uncached",
                         axi_id=32,
-                        bytes_size=8,
+                        bytes_size=op.memory_bytes,
                     )
                     if not self.soc.submit_axi(local_read):
                         self.stats["load_local_backpressure"] += 1
@@ -2783,7 +2812,7 @@ class FrostPipeline:
                     complete=lambda ok, done=on_load_complete: self.loop.after(
                         self.config.l1d_return_cycles, lambda: done(ok)
                     ),
-                    bytes_size=8,
+                    bytes_size=op.memory_bytes,
                 )
                 if self.config.l1d_request_cycles:
                     self.loop.after(
@@ -2842,10 +2871,18 @@ class FrostPipeline:
             if entry.op.kind in {"alu", "branch"}:
                 self.int_rs_in_use -= 1
                 if entry.op.kind == "branch" and entry.op.mispredict:
-                    self.frontend_blocked_until = max(
-                        self.frontend_blocked_until,
-                        self.loop.cycle + self.config.branch_recovery_cycles,
-                    )
+                    if self.frontend is not None:
+                        self.loop.after(
+                            self.config.branch_recovery_cycles,
+                            lambda target=entry.op.op_id + 1: (
+                                self.frontend.request_redirect("execute", target)
+                            ),
+                        )
+                    else:
+                        self.frontend_blocked_until = max(
+                            self.frontend_blocked_until,
+                            self.loop.cycle + self.config.branch_recovery_cycles,
+                        )
                     self.stats["branch_mispredicts"] += 1
             self.stats["completed"] += 1
 
@@ -2970,8 +3007,11 @@ class FrostPipeline:
             self.memory.l1d.service_replays()
             self._issue()
             self.memory.l1d.step_after_loads()
+            if self.frontend is not None:
+                self.frontend.step(self.loop.cycle)
             self._dispatch()
-            self._issue_fetches()
+            if self.frontend is None:
+                self._issue_fetches()
             self._record_occupancy()
             self.loop.cycle += 1
         elapsed_s = time.perf_counter() - start_time
@@ -3004,6 +3044,8 @@ class FrostPipeline:
             "soc_top": mem_summary["soc"],
             "memory": mem_summary,
         }
+        if self.frontend is not None:
+            result["frontend"] = self.frontend.summary()
         return result
 
 
@@ -3169,14 +3211,11 @@ def workload_coremark(seed: int, operations: int = 3600) -> list[MicroOp]:
     return _coremark_ops(operations, 0x8000_0000, 0x1_0000)
 
 
-def workload_coremark_bram(seed: int, operations: int = 1200) -> list[MicroOp]:
-    """Model the CoreMark kernels in the BRAM tier, as CI's capture runs them.
-
-    Its data lies in low BRAM, whose loads and stores take the SoC's local
-    port and never reach the coherent L1D, so the length needs no tuning for
-    a cold start.
-    """
-    return _coremark_ops(operations, 0x0000_0000, 0x8000)
+def workload_coremark_bram(seed: int) -> list[MicroOp]:
+    """Require the compiled program's instruction stream for BRAM calibration."""
+    raise ValueError(
+        "coremark_bram requires --instruction-trace from the same RTL capture"
+    )
 
 
 def _coremark_ops(operations: int, region: int, stride: int) -> list[MicroOp]:
@@ -3244,23 +3283,42 @@ WORKLOADS: dict[str, Callable[[int], list[MicroOp]]] = {
     "coremark": workload_coremark,
 }
 
-# Workloads outside the sweeps: the CI check's BRAM-tier stand-in for the capture.
-STANDIN_WORKLOADS: dict[str, Callable[[int], list[MicroOp]]] = {
+# Workloads outside the synthetic sweeps: the CI check requires an instruction stream.
+REPLAY_WORKLOADS: dict[str, Callable[[int], list[MicroOp]]] = {
     "coremark_bram": workload_coremark_bram,
 }
 
 
 def _named_workloads() -> dict[str, Callable[[int], list[MicroOp]]]:
-    """Return the sweep workloads and the stand-ins by name."""
-    return {**WORKLOADS, **STANDIN_WORKLOADS}
+    """Return the synthetic sweep workloads and the instruction-replay entry."""
+    return {**WORKLOADS, **REPLAY_WORKLOADS}
 
 
-def run_workload(config: ModelConfig, workload_name: str, seed: int) -> dict[str, Any]:
+def run_workload(
+    config: ModelConfig,
+    workload_name: str,
+    seed: int,
+    instruction_trace: Path | None = None,
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Run a named workload on config and return the result.
 
     The result also names the workload, its seed, and its micro-op count.
-    The CoreMark workload starts with every fetch line ready.
+    Synthetic CoreMark starts with every fetch line ready. CoreMark BRAM
+    requires the binary-bound instruction stream and uses decoupled fetch.
     """
+    if workload_name == "coremark_bram" and instruction_trace is not None:
+        stream = read_stream(instruction_trace, manifest)
+        if (
+            stream.metadata["benchmark"] != "coremark"
+            or stream.metadata["memory_tier"] != "bram"
+        ):
+            raise ValueError("coremark_bram needs a BRAM CoreMark instruction stream")
+        result = run_instruction_stream(config, stream)
+        result.update(
+            workload=workload_name, seed=seed, micro_ops=len(stream.instructions)
+        )
+        return result
     if workload_name not in _named_workloads():
         raise KeyError(workload_name)
     program = _named_workloads()[workload_name](seed)
@@ -3274,6 +3332,83 @@ def run_workload(config: ModelConfig, workload_name: str, seed: int) -> dict[str
     result["seed"] = seed
     result["micro_ops"] = len(program)
     return result
+
+
+def run_instruction_stream(
+    config: ModelConfig, stream: InstructionStream
+) -> dict[str, Any]:
+    """Replay dependencies and addresses through the production fetch structure."""
+    if stream.metadata["memory_tier"] != "bram":
+        raise ValueError(
+            "instruction replay currently implements the BRAM fetch provider"
+        )
+    program = [
+        MicroOp(
+            insn.index,
+            insn.kind,
+            insn.pc,
+            insn.address,
+            insn.depends_on,
+            bool(insn.prediction and insn.prediction.execute_redirect),
+            execution_cycles=instruction_execution_cycles(insn.instruction),
+            memory_bytes=insn.memory_bytes or 8,
+        )
+        for insn in stream.instructions
+    ]
+    frontend = FetchFrontend(stream.instructions, config.decoded_queue_bundles)
+    # The architectural stream exposes real load-use chains. The L0 array
+    # itself is combinational; MEM_RS/LQ and registered result/wakeup are not.
+    # The measured resident dependent chase takes three cycles per load.
+    pipeline = FrostPipeline(config, program, frontend=frontend, l0_hit_cycles=3)
+    result = pipeline.run()
+    result["replay_execution"] = {
+        "l0_dependent_load_cycles": 3,
+        "integer_select_to_wakeup_cycles": 2,
+        "multiply_select_to_result_cycles": 7,
+        "word_and_carryless_multiply_cycles": 4,
+        "instruction_provider_cycles": 1,
+        "wrong_path_execution": "omitted; useful fetch waits for recovery",
+    }
+    result["replay_sources"] = {
+        name: hashlib.sha256((Path(__file__).parent / name).read_bytes()).hexdigest()
+        for name in (
+            "frost_perf_model.py",
+            "fetch_frontend.py",
+            "instruction_stream.py",
+        )
+    }
+    result["instruction_stream"] = {
+        "sha256": stream.sha256,
+        **stream.metadata,
+        "instructions": len(program),
+    }
+    return result
+
+
+def instruction_execution_cycles(instruction: int) -> int:
+    """Use the scalar execution pipelines, not one ALU cycle for every opcode.
+
+    RS selection precedes the stage-2 launch by one cycle; the CDB is
+    registered. A combinational ALU therefore takes two selection-to-wakeup
+    cycles. multiplier.sv takes six launch-to-result cycles; WordMulDepth
+    and cl_multiplier.sv take three. Their CDB adapter accepts a live result.
+    Division is not present in the captured timed body; reject it until
+    operand-dependent divider service is represented.
+    """
+    opcode, funct7, funct3 = (
+        instruction & 127,
+        instruction >> 25,
+        (instruction >> 12) & 7,
+    )
+    if opcode in {0x33, 0x3B} and funct7 == 1:
+        if funct3 >= 4:
+            raise ValueError(
+                "instruction replay needs operand-dependent division service"
+            )
+        return 4 if opcode == 0x3B else 7
+    if opcode == 0x33 and funct7 == 5 and funct3 in {1, 2, 3}:
+        return 4
+    return 2
 
 
 def run_memory_kernel(
@@ -3805,7 +3940,7 @@ def rtl_audit() -> dict[str, Any]:
                 "source": "hw/rtl/soc_top/soc_axi_slave.sv:130-238; hw/rtl/soc_top/soc_top.sv:35-39, 396-399, 1396-1430; hw/rtl/lib/cache/axi_behavioral_memory.sv:18-67",
             },
             {
-                "fact": "Load Queue direct-mapped L0 Data Cache (NormalLqL0Depth = 512 dword entries) provides 1-cycle fast-path bypass for cached hits; EARLY_LOAD_WAKEUP enables 1-cycle dependent scheduling.",
+                "fact": "The direct-mapped L0 array has a combinational lookup and NormalLqL0Depth=512 dword entries. The registered RS/LQ/result path gives a measured three-cycle resident dependent load; early wakeup can use an idle registered CDB lane.",
                 "source": "hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv:18-47; hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv:1926-1928; hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv:43, 2806-2817",
             },
             {
@@ -3846,9 +3981,10 @@ def rtl_audit() -> dict[str, Any]:
             },
         ],
         "implemented_features": [
+            "Binary-bound BRAM CoreMark instruction replay with architectural dependencies, resolved addresses, recorded prediction tiers, decoupled F0/F1 fetch, parcel/metadata capacity, bypass/alignment, PD/ID and decoded queues, and redirect/refill service. Synthetic workloads retain their separate idealized feed.",
             "Explicit CpuTopModel + SocTopModel separation across the 6-bit-ID, 512-bit AXI4 boundary so downstream projects can replace SocTopModel or DdrController independently.",
             "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ with MEM_RS release at issue and LQ release at the result, out-of-order load/ALU completion, two-lane CDB contention, and committed stores draining from the SQ into the L1D's store records.",
-            "Load Queue L0 Data Cache (256 dword entries) with 1-cycle CDB fast-path bypass and fill from L1D memory responses.",
+            "Configurable direct-mapped L0 with fills from memory responses: synthetic defaults use 256 dword entries and one-cycle dependent hits; BRAM calibration uses 512 entries and measured three-cycle dependent hits.",
             "Coherent L1D with an independent four-cycle hit path, tags-only controller shadows, two-entry hit stream training, request endpoints held through U, attached loads that look up again after installation, stream look-ahead on the highest endpoints, four ordered store records with one lent endpoint, and buffered victim writebacks.",
             "Separate L1I and L1D caches; 32-byte to 64-byte sector adapter; L2 with the home's stream prefetch agent; fill ownership; coalescing; writeback slots; write intent; cache-line dirty state.",
             "Explicit cache lower transaction IDs ({type, slot}), 64-byte single-beat AXI transfers, soc_axi_slave physical address decode (DDR vs. local BRAM/MMIO), and a single-channel 512-bit AXI DDR model matching axi_behavioral_memory.sv.",
@@ -3858,7 +3994,7 @@ def rtl_audit() -> dict[str, Any]:
             "Cache stage timing, insertion-LFSR phase, and pipeline stage latencies are abstractions that require cycle-by-cycle calibration.",
             "The L1D controller's priority omits probes, atomics, maintenance and the credited read turn's exact edges; the SQ launch interval, the C-to-U interval (coherence_release_cycles), and the L2 home's lookup and fill timing are abstractions, and the home's instruction prefetch table and DMA pause are not modeled.",
             "The default DDR endpoint models FROST's single-channel axi_behavioral_memory.sv (LATENCY=80, NUM_SLOTS=max(L2MaxSlots,8)); board DDR4 MIG refresh and bank/row timing require hardware or VIP trace calibration.",
-            "Workload micro-ops are representative pressure patterns, not captured Redis, HTTP, Linux or FaaS execution traces.",
+            "Sweep micro-ops are representative pressure patterns, not captured Redis, HTTP, Linux or FaaS execution traces. BRAM CoreMark uses a captured instruction stream but omits wrong-path execution/cache pollution and starts the timed window with empty pipeline/data caches.",
             "The model does not execute the RISC-V ISA, model Sv39 page walks/DMA coherence traffic as workload events, or prove functional RTL equivalence.",
             "The candidate sweep may rank sensitivities, but synthesis/Fmax/area and RTL waveform comparison are required before an RTL change is accepted.",
         ],
@@ -4137,6 +4273,7 @@ def parse_args() -> argparse.Namespace:
     run.add_argument("--seed", type=int, default=11)
     run.add_argument("--out", type=Path, required=True)
     run.add_argument("--config-file", type=Path)
+    run.add_argument("--instruction-trace", type=Path)
     memory_run = sub.add_parser("memory-run", help="Run a DDR benchmark loop body")
     memory_run.add_argument("--kernel", choices=KERNELS, required=True)
     memory_run.add_argument("--scale-shift", type=int, default=4)
@@ -4198,7 +4335,12 @@ def main() -> int:
     if args.command == "run":
         dump_json(
             args.out,
-            run_workload(load_config(args.config_file), args.workload, args.seed),
+            run_workload(
+                load_config(args.config_file),
+                args.workload,
+                args.seed,
+                instruction_trace=args.instruction_trace,
+            ),
         )
         return 0
     if args.command == "memory-run":
