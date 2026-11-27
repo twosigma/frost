@@ -100,6 +100,10 @@ from sweep_coremark_pro import (  # noqa: E402
     read_available,
     serial_holders,
 )
+from vcu118_metadata import (  # noqa: E402
+    read_vcu118_bitstream_metadata,
+    verify_dtb_vector_config,
+)
 
 # Minimum accepted scores for the standard software builds; ``None`` reports a
 # score without checking it. Keep these floors when raising the CPU clock:
@@ -2171,13 +2175,26 @@ def dtb_isa_vlenb(dtb: Path) -> int | None:
 
 
 def resolve_isa_vlenb(
-    repo: Path, board: str = "x3", dtb: Path | None = None
+    repo: Path,
+    board: str = "x3",
+    dtb: Path | None = None,
+    *,
+    vector: bool | None = None,
+    vlen: int | None = None,
 ) -> int | None:
-    """Derive expected ``vlenb`` from the supplied DTB or the board's RTL build."""
+    """Derive expected ``vlenb`` from the supplied DTB, VCU118 options/metadata, or RTL."""
     if dtb is not None:
         from_dtb = dtb_isa_vlenb(dtb)
         if from_dtb is not None:
             return from_dtb
+    if board == "vcu118" and vector:
+        if vlen is not None and vlen > 0:
+            bits = vlen
+        else:
+            meta = read_vcu118_bitstream_metadata(repo)
+            bits = int(meta["vlen"]) if (meta is not None and meta["vector"]) else 0
+        if bits > 0 and bits % 8 == 0 and _is_supported_vlenb(bits // 8):
+            return bits // 8
     for path, pattern in (
         (repo / f"boards/{board}/{board}_frost.sv", r"\.VLEN\(\s*(\d+)\s*\)"),
         (repo / "hw/rtl/frost.sv", r"\bVLEN\s*=\s*(\d+)"),
@@ -3853,7 +3870,10 @@ def stage_loader_extra(
     extra = list(loader_extra)
     if board == "vcu118" and vector is not None:
         extra.append("--vector" if vector else "--no-vector")
-    if vlen is not None and stage_name in VEC_VLEN_APPS:
+    if vlen is not None and (
+        stage_name in VEC_VLEN_APPS
+        or (stage_name == LINUX_STAGE and board == "vcu118" and vector)
+    ):
         extra.extend(["--vlen", str(vlen)])
     if vec_advertise is not None and stage_name in VEC_ADVERTISE_APPS:
         extra.append("--vec-advertise" if vec_advertise else "--no-vec-advertise")
@@ -4116,11 +4136,39 @@ def _main() -> int:
         selected = all_stages
 
     if args.vlen == 0:
+        if vcu118_vector and LINUX_STAGE in selected:
+            parser.error("--vlen 0 cannot run linux_boot with --vector")
         vector_only = [stage for stage in selected if stage in VECTOR_UNIT_APPS]
         if vector_only:
             parser.error(
                 f"--vlen 0 cannot run vector-unit stages: {', '.join(vector_only)}"
             )
+    vcu118_meta: dict[str, Any] | None = None
+    if board == "vcu118":
+        try:
+            vcu118_meta = read_vcu118_bitstream_metadata(args.repo)
+        except ValueError as error:
+            parser.error(str(error))
+        if vcu118_meta is not None:
+            if vcu118_meta["vector"] and not vcu118_vector:
+                parser.error(
+                    f"recorded VCU118 bitstream is a vector build "
+                    f"(VLEN={vcu118_meta['vlen']}); pass --vector"
+                )
+            if not vcu118_meta["vector"] and vcu118_vector:
+                parser.error(
+                    "recorded VCU118 bitstream is scalar (not built with --vector)"
+                )
+            if (
+                vcu118_meta["vector"]
+                and args.vlen is not None
+                and args.vlen != 0
+                and args.vlen != vcu118_meta["vlen"]
+            ):
+                parser.error(
+                    f"--vlen {args.vlen} does not match recorded VCU118 bitstream "
+                    f"VLEN {vcu118_meta['vlen']}"
+                )
     if args.vec_advertise and args.vlen is None and "vec_state_test" in selected:
         try:
             board_vlen, _ = board_vector_config(
@@ -4216,6 +4264,26 @@ def _main() -> int:
                 loader_env = None
                 if stage_name == LINUX_STAGE:
                     assert linux_root is not None
+                    if linux_root.dtb is not None:
+                        expected_linux_vector = True if board == "x3" else vcu118_vector
+                        if not expected_linux_vector:
+                            expected_linux_vlen = 0
+                        elif board == "vcu118" and args.vlen is not None:
+                            expected_linux_vlen = args.vlen
+                        elif vcu118_meta is not None and vcu118_meta["vector"]:
+                            expected_linux_vlen = int(vcu118_meta["vlen"])
+                        else:
+                            expected_linux_vlen = 256
+                        try:
+                            verify_dtb_vector_config(
+                                linux_root.dtb.read_bytes(),
+                                expected_vector=expected_linux_vector,
+                                expected_vlen=expected_linux_vlen,
+                                source=f"linux_dtb ({linux_root.dtb})",
+                                require_cpu_isa=False,
+                            )
+                        except (OSError, ValueError) as error:
+                            parser.error(str(error))
                     stage = linux_stage(
                         linux_root,
                         net_repeat,
@@ -4223,7 +4291,13 @@ def _main() -> int:
                         driver_version=source_driver_version(args.repo),
                         board=board,
                         isa_expect=args.linux_isa_expect,
-                        isa_vlenb=resolve_isa_vlenb(args.repo, board, linux_root.dtb),
+                        isa_vlenb=resolve_isa_vlenb(
+                            args.repo,
+                            board,
+                            linux_root.dtb,
+                            vector=vcu118_vector,
+                            vlen=args.vlen,
+                        ),
                     )
                     stage_timeout = args.linux_timeout
                     loader_env = linux_loader_env(linux_root)

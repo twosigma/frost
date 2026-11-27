@@ -126,7 +126,10 @@ def test_registered_vector_smoke_expects_advertisement(
     runner = test_run_cocotb.CocotbRunner.from_config(
         test_run_cocotb.TEST_REGISTRY[f"vec_smoke_v{vlen}"]
     )
-    assert runner._expected_misa_v() == 1
+    try:
+        assert runner._expected_misa_v() == 1
+    finally:
+        runner.restore_environment()
 
 
 def test_riscv_nonzero_simulator_exit_is_a_failure(
