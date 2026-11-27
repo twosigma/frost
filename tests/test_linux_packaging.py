@@ -661,6 +661,114 @@ def test_vcu118_vector_device_tree_names_zvl_up_to_vlen(vlen: int) -> None:
         assert isa == packer.VCU118_VECTOR_ISA_STRING
 
 
+@pytest.mark.parametrize(
+    "argv,expected_err",
+    [
+        (["--board", "x3", "--vlen", "512"], "x3 vector length is fixed at 256 bits"),
+        (["--board", "x3", "--vlen", "128"], "x3 vector length is fixed at 256 bits"),
+        (
+            ["--board", "vcu118", "--vlen", "128"],
+            "--vlen requires a vector device tree",
+        ),
+        (
+            ["--board", "vcu118", "--vlen", "256"],
+            "--vlen requires a vector device tree",
+        ),
+        (
+            ["--board", "x3", "--no-vector", "--vlen", "256"],
+            "--vlen requires a vector device tree",
+        ),
+    ],
+)
+def test_packer_rejects_invalid_vlen_combinations(
+    capsys: pytest.CaptureFixture[str], argv: list[str], expected_err: str
+) -> None:
+    """frost_boot_image.py rejects --vlen on x3 != 256 and scalar trees."""
+    packer = _load_module(SBI_PACKER)
+    with pytest.raises(SystemExit) as stopped:
+        packer.parse_args(["--firmware", "fw", "--payload", "img", *argv])
+    assert stopped.value.code == 2
+    assert expected_err in capsys.readouterr().err
+
+
+def test_packer_validates_vlen_with_custom_dtb(tmp_path: Path) -> None:
+    """--vlen together with --dtb accepts matching Zvl*b and rejects mismatches."""
+    packer = _load_module(SBI_PACKER)
+    firmware = bytes(range(256)) * 16
+    payload = _linux_image(packer, image_size=0x400000, length=0x1000)
+    fw_path = tmp_path / "fw_jump.bin"
+    img_path = tmp_path / "Image"
+    fw_path.write_bytes(firmware)
+    img_path.write_bytes(payload)
+
+    def build_dtb(tag: str, *, vector: bool, vlen: int) -> Path:
+        sub = tmp_path / f"dtb_{tag}"
+        sub.mkdir()
+        dts = packer.gen_dts(
+            clk_hz=162_500_000,
+            initrd_range=None,
+            bootargs=packer.DEFAULT_BOOTARGS,
+            model=f"test-{tag}",
+            board="vcu118",
+            vector=vector,
+            vlen=vlen,
+        )
+        packer.compile_dtb(dts, sub, "dtc")
+        return sub / "frost.dtb"
+
+    dtb_128 = build_dtb("v128", vector=True, vlen=128)
+    dtb_256 = build_dtb("v256", vector=True, vlen=256)
+    dtb_scalar = build_dtb("scalar", vector=False, vlen=256)
+
+    common = [
+        "--firmware",
+        str(fw_path),
+        "--payload",
+        str(img_path),
+        "--board",
+        "vcu118",
+        "--vector",
+        "--vlen",
+        "128",
+    ]
+    out_ok = tmp_path / "out_ok"
+    assert packer.main([*common, "--dtb", str(dtb_128), "--out", str(out_ok)]) == 0
+    assert (out_ok / "frost.dtb").read_bytes() == dtb_128.read_bytes()
+
+    with pytest.raises(ValueError, match="advertises VLEN 256, expected VLEN 128"):
+        packer.main(
+            [*common, "--dtb", str(dtb_256), "--out", str(tmp_path / "out_bad_vlen")]
+        )
+    with pytest.raises(ValueError, match="requires 'v'"):
+        packer.main(
+            [*common, "--dtb", str(dtb_scalar), "--out", str(tmp_path / "out_scalar")]
+        )
+
+
+def test_gen_dts_rejects_invalid_vlen_combinations() -> None:
+    """gen_dts enforces board/vector applicability for VLEN."""
+    packer = _load_module(SBI_PACKER)
+    with pytest.raises(ValueError, match="fixed at 256 bits"):
+        packer.gen_dts(
+            clk_hz=300_000_000,
+            initrd_range=None,
+            bootargs="",
+            model="t",
+            board="x3",
+            vlen=512,
+        )
+    with pytest.raises(ValueError, match="vector device tree"):
+        packer.gen_dts(
+            clk_hz=200_000_000,
+            initrd_range=None,
+            bootargs="",
+            model="t",
+            board="vcu118",
+            vector=False,
+            vlen=128,
+        )
+
+
 def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:
     """Opt-in VCU118 vector trees advertise V and the implemented Zv extensions."""
     packer = _load_module(SBI_PACKER)

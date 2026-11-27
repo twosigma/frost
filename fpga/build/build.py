@@ -49,8 +49,14 @@ import zipfile
 from pathlib import Path
 from typing import Any, TextIO, TypedDict
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sw" / "apps"))
 from riscv_toolchain import default_riscv_prefix  # noqa: E402
+from vcu118_metadata import (  # noqa: E402
+    read_vcu118_netlist_config,
+    write_vcu118_bitstream_metadata,
+    write_vcu118_netlist_config,
+)
 
 
 # Configuration
@@ -79,7 +85,7 @@ BOARD_CONFIG = {
     },
 }
 
-# Opt-in VCU118 vector build (VLEN 256, misa.V advertised, SLR1 vector pblock).
+# Opt-in VCU118 vector build (misa.V advertised, SLR1 vector pblock; default VLEN 256).
 VCU118_VECTOR_CLOCK_FREQ = 162500000
 VCU118_VECTOR_ROUTE_DIRECTIVE = "AggressiveExplore"
 # Vector length of the opt-in VCU118 vector build unless --vlen selects another.
@@ -3304,6 +3310,31 @@ def generate_bitstream(
 
     bitstream = main_work / f"{board_name}_frost.bit"
     if bitstream.exists():
+        if board_name == "vcu118":
+            try:
+                netlist_cfg = read_vcu118_netlist_config(main_work)
+            except ValueError as error:
+                print(f"Error: {error}", file=sys.stderr)
+                return False
+            if netlist_cfg is not None:
+                vec = bool(netlist_cfg["vector"])
+                vlen = int(netlist_cfg["vlen"])
+                clk_hz = int(netlist_cfg["cpu_clock_hz"])
+            else:
+                vec = os.environ.get("FROST_VECTOR") == "1"
+                vlen = (
+                    int(os.environ.get("FROST_VLEN", str(VCU118_VECTOR_VLEN)))
+                    if vec
+                    else 0
+                )
+                clk_hz = (
+                    VCU118_VECTOR_CLOCK_FREQ
+                    if vec
+                    else int(BOARD_CONFIG["vcu118"]["clock_freq"])
+                )
+            write_vcu118_bitstream_metadata(
+                bitstream, vector=vec, vlen=vlen, cpu_clock_hz=clk_hz
+            )
         print(f"\nBitstream generated: {bitstream}")
         return True
     else:
@@ -3536,7 +3567,8 @@ Examples:
         "--vector",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Include the vector unit (VLEN 256, misa.V advertised) at synthesis "
+        help="Include the vector unit (default VLEN 256 unless --vlen selects "
+        "another, misa.V advertised) at synthesis "
         "(default: on for x3, off for vcu118). On vcu118 this places the unit in "
         "SLR1 and selects the 162500000 Hz CPU clock; x3 always includes it",
     )
@@ -3584,9 +3616,12 @@ Examples:
     if board_name == "vcu118":
         if args.vlen is not None and not vcu118_vector:
             parser.error("--vlen needs --vector")
-        os.environ["FROST_VLEN"] = str(args.vlen or VCU118_VECTOR_VLEN)
+        vcu118_vlen = args.vlen or VCU118_VECTOR_VLEN
+        os.environ["FROST_VLEN"] = str(vcu118_vlen)
     elif args.vlen is not None:
         parser.error("--vlen is only supported for vcu118")
+    else:
+        vcu118_vlen = VCU118_VECTOR_VLEN
     if args.start_at == "bitstream":
         if args.stop_after is not None:
             parser.error("--start-at bitstream cannot be combined with --stop-after")
@@ -3610,6 +3645,27 @@ Examples:
                 capacity,
             ):
                 sys.exit(1)
+        elif board_name == "vcu118":
+            board_build = (
+                args.build_dir if args.build_dir is not None else script_dir / "vcu118"
+            )
+            try:
+                netlist_cfg = read_vcu118_netlist_config(board_build / "work")
+            except ValueError as error:
+                parser.error(str(error))
+            if netlist_cfg is not None:
+                if (
+                    args.vector is not None
+                    and bool(args.vector) != netlist_cfg["vector"]
+                ):
+                    parser.error(
+                        "--vector setting conflicts with the synthesized VCU118 checkpoint"
+                    )
+                if args.vlen is not None and args.vlen != netlist_cfg["vlen"]:
+                    parser.error(
+                        f"--vlen {args.vlen} conflicts with synthesized VCU118 VLEN "
+                        f"{netlist_cfg['vlen']}"
+                    )
         if not generate_bitstream(
             script_dir,
             board_name,
@@ -3786,9 +3842,12 @@ Examples:
     if args.debug_ila:
         print("# Fetch ILA: FROST_DEBUG_FETCH_ILA mirrors + one ILA on main_clock")
     if vcu118_vector:
+        vlen_hint = (
+            f" --vlen {vcu118_vlen}" if vcu118_vlen != VCU118_VECTOR_VLEN else ""
+        )
         print(
-            "# Vector unit included (VLEN 256, misa.V advertised, SLR1 pblock); "
-            "load software with --vector or "
+            f"# Vector unit included (VLEN {vcu118_vlen}, misa.V advertised, "
+            f"SLR1 pblock); load software with --vector{vlen_hint} or "
             f"FROST_CPU_CLK_HZ={VCU118_VECTOR_CLOCK_FREQ}"
         )
     if vcu118_vector and "synth" not in steps_to_run:
@@ -3897,6 +3956,24 @@ Examples:
             board_ddr_log2,
         ):
             sys.exit(1)
+        if board_name == "vcu118":
+            try:
+                netlist_cfg = read_vcu118_netlist_config(main_work)
+            except ValueError as error:
+                parser.error(str(error))
+            if netlist_cfg is not None:
+                if (
+                    args.vector is not None
+                    and bool(args.vector) != netlist_cfg["vector"]
+                ):
+                    parser.error(
+                        "--vector setting conflicts with the synthesized VCU118 checkpoint"
+                    )
+                if args.vlen is not None and args.vlen != netlist_cfg["vlen"]:
+                    parser.error(
+                        f"--vlen {args.vlen} conflicts with synthesized VCU118 VLEN "
+                        f"{netlist_cfg['vlen']}"
+                    )
 
     final_produced = False
     bitstream_generated = False
@@ -3959,6 +4036,15 @@ Examples:
         if not success:
             print(f"\nError: Step '{step}' failed!")
             sys.exit(1)
+
+        if step == "synth" and board_name == "vcu118":
+            write_vcu118_netlist_config(
+                main_work,
+                vector=vcu118_vector,
+                vlen=vcu118_vlen if vcu118_vector else 0,
+                cpu_clock_hz=clock_freq,
+                misaligned_hw=args.misaligned_hw,
+            )
 
         last_report_prefix = actual_prefix
         if actual_prefix == "final":

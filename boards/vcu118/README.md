@@ -183,9 +183,11 @@ python3 fpga/load_software/load_software.py vcu118 --vector linux_boot
 ```
 
 `build.py vcu118 --vector --vlen 128` (or `512`) builds the vector unit at
-another register length. Pass the same `--vlen` to `load_software.py` for
-vector-width applications and for `linux_boot`, whose device tree then names
-Zvl32b up to Zvl<VLEN>b.
+another register length. Synthesis records the built width alongside the
+checkpoint and bitstream; `load_software.py` and `hw_regression.py` read that
+metadata when present, reject mismatched `--vlen` or device-tree settings, and
+otherwise expect the matching `--vlen` on vector-width applications and
+`linux_boot` (whose device tree names `Zvl32b` up to `Zvl<VLEN>b`).
 
 `--build-dir` selects an external build directory. Pass its generated
 `.bit` file with the programmer's `--bitstream` option. Target selection and
@@ -248,13 +250,18 @@ configuration and compile `boards/vcu118/frost_vector.dtb` from
 python3 fpga/flash/make_flash_image.py --vector --output /path/to/boot_vector.bin
 ```
 
+Flash boot supports only the scalar build and the default `VLEN=256` vector
+build (`make -C sw/uboot`, `make_flash_image.py`, and `program_flash.py`,
+including `--boot-only`, reject any non-256 VLEN); non-default `--vlen` widths
+(`128`, `512`) are supported over JTAG loading only.
+
 Component overrides on the packer are `--fsbl`, `--opensbi`, `--dtb`, and
 `--uboot`.
 
 Remove `--prepare-only` to program the selected VCU118 configuration flash.
 Use `--target-exact` and `--hw-server-url` to select a cable and server.
 `--boot-only` replaces `--fpga-image` when updating the four software
-partitions. Select the board's SPI configuration boot mode for startup
+partitions (for scalar and default `VLEN=256` configurations only). Select the board's SPI configuration boot mode for startup
 from flash. The programmer erases and verifies the ranges in its generated
 configuration-memory file.
 

@@ -22,6 +22,57 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
 from hw_target import add_target_args, select_target, validate_target_args
+from vcu118_metadata import (
+    VCU118_DEFAULT_VECTOR_VLEN,
+    _summarize_zvl_and_v,
+    extract_dtb_from_flash_image,
+    fdt_cpu_isa_info,
+    read_bitstream_sidecar,
+    verify_dtb_vector_config,
+)
+
+
+def _check_flash_boot_vlen(
+    boot: Path,
+    *,
+    expected_vector: bool | None = None,
+    expected_vlen: int | None = None,
+) -> None:
+    """Verify the flash boot image's packed DTB does not use a non-256 VLEN."""
+    dtb_blob = extract_dtb_from_flash_image(boot)
+    try:
+        info = fdt_cpu_isa_info(dtb_blob)
+    except ValueError:
+        info = None
+    if info is not None and info["has_cpu_isa"]:
+        for label, tokens in (
+            ("riscv,isa", info["isa_tokens"]),
+            ("riscv,isa-extensions", info["ext_tokens"]),
+        ):
+            if tokens is None:
+                continue
+            has_v, max_zvl = _summarize_zvl_and_v(tokens)
+            if (has_v and max_zvl != VCU118_DEFAULT_VECTOR_VLEN) or (
+                not has_v and max_zvl is not None
+            ):
+                raise ValueError(
+                    f"flash boot image {boot} {label} advertises VLEN {max_zvl}; "
+                    f"flash supports only default VLEN {VCU118_DEFAULT_VECTOR_VLEN} "
+                    "(non-default VLENs are supported over JTAG loading only)"
+                )
+    if expected_vector is not None and expected_vlen is not None:
+        try:
+            verify_dtb_vector_config(
+                dtb_blob,
+                expected_vector=expected_vector,
+                expected_vlen=expected_vlen,
+                source=f"flash boot image {boot}",
+                require_cpu_isa=False,
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"{error} (non-default VLENs are supported over JTAG loading only)"
+            ) from error
 
 
 def main() -> None:
@@ -31,12 +82,24 @@ def main() -> None:
     parser.add_argument("--boot-image", type=Path)
     parser.add_argument("--fpga-image", type=Path)
     parser.add_argument("--boot-only", action="store_true")
+    parser.add_argument(
+        "--vlen",
+        type=int,
+        default=None,
+        help="Vector register length in bits (flash supports only default VLEN 256; non-default VLENs are supported over JTAG loading only)",
+    )
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--vivado-path", default="vivado")
     add_target_args(parser, managed=True)
     args = parser.parse_args()
     validate_target_args(parser, args)
+    if args.vlen is not None and args.vlen != VCU118_DEFAULT_VECTOR_VLEN:
+        parser.error(
+            f"--vlen {args.vlen} is not supported for flash; flash supports only "
+            f"default VLEN {VCU118_DEFAULT_VECTOR_VLEN} "
+            "(non-default VLENs are supported over JTAG loading only)"
+        )
     if args.list_targets:
         select_target(
             args.vivado_path,
@@ -59,6 +122,38 @@ def main() -> None:
         not bit.is_file() or bit.suffix.lower() != ".bit" or not bit.stat().st_size
     ):
         parser.error("--fpga-image must be a nonempty .bit file")
+    try:
+        bit_meta = read_bitstream_sidecar(bit) if bit is not None else None
+    except ValueError as error:
+        parser.error(str(error))
+    if (
+        bit_meta is not None
+        and bool(bit_meta["vector"])
+        and int(bit_meta["vlen"]) != VCU118_DEFAULT_VECTOR_VLEN
+    ):
+        parser.error(
+            f"bitstream {bit} has VLEN {bit_meta['vlen']}; flash supports only "
+            f"default VLEN {VCU118_DEFAULT_VECTOR_VLEN} "
+            "(non-default VLENs are supported over JTAG loading only)"
+        )
+    if args.vlen is not None and bit_meta is not None and not bit_meta["vector"]:
+        parser.error("--vlen 256 cannot be used with a scalar VCU118 bitstream")
+    try:
+        _check_flash_boot_vlen(
+            boot,
+            expected_vector=(
+                bool(bit_meta["vector"])
+                if bit_meta is not None
+                else (True if args.vlen is not None else None)
+            ),
+            expected_vlen=(
+                int(bit_meta["vlen"])
+                if bit_meta is not None
+                else (VCU118_DEFAULT_VECTOR_VLEN if args.vlen is not None else None)
+            ),
+        )
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     output = args.output_dir.resolve()
     cfg = output / "frost_flash_cfg.bin"
     if cfg in (boot, bit):

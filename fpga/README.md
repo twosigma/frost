@@ -139,7 +139,10 @@ enables it (`VLEN=256`, `VECTOR=1`, `VECTOR_ADVERTISE=1`), places
 vector clock configuration in the MMCM, DDR block design, and boot ROM, and
 runs `AggressiveExplore` first-pass routing followed by up to three
 improving `AggressiveExplore` physical-optimization passes after routing. Load
-software and run regressions against that FPGA image with `--vector`.
+software and run regressions against that FPGA image with `--vector` (and
+`--vlen 128` or `512` when built at a non-default width). Non-default VLEN
+builds (`128`, `512`) are supported over JTAG loading only; SPI flash boot
+supports only scalar and default `VLEN=256` images.
 See the [VCU118 guide](../boards/vcu118/README.md).
 
 ## Profiling counters

@@ -2630,10 +2630,11 @@ def test_vcu118_vector_wiring() -> None:
 def test_vcu118_vector_length_selection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     options: list[str],
     expected_vlen: str,
 ) -> None:
-    """build.py --vlen sets the opt-in vector build's VLEN; the default stays 256."""
+    """build.py --vlen sets the opt-in vector build's VLEN, banner, and metadata."""
     monkeypatch.setenv("FROST_VLEN", "64")
     monkeypatch.setattr(
         sys,
@@ -2653,13 +2654,86 @@ def test_vcu118_vector_length_selection(
         sys.modules, "extract_timing_and_util_summary", timing_util_summary
     )
 
+    expected_synth_vlen = [expected_vlen]
+
     def check_synthesis(*args: Any, **kwargs: Any) -> tuple[bool, float, str]:
         assert os.environ["FROST_VECTOR"] == "1"
-        assert os.environ["FROST_VLEN"] == expected_vlen
+        assert os.environ["FROST_VLEN"] == expected_synth_vlen[0]
         return True, 0.0, "post_synth"
 
     monkeypatch.setattr(fpga_build, "run_step", check_synthesis)
     fpga_build.main()
+    stdout = capsys.readouterr().out
+    assert f"Vector unit included (VLEN {expected_vlen}," in stdout
+    netlist_cfg = json.loads((tmp_path / "work/vcu118_netlist_config.json").read_text())
+    assert netlist_cfg["vector"] is True
+    assert netlist_cfg["vlen"] == int(expected_vlen)
+
+    # Generating a bitstream records vcu118_frost.bit.json from the synthesized VLEN,
+    # even if resumed via --start-at bitstream without --vector/--vlen.
+    (tmp_path / "work/final.dcp").write_bytes(b"dcp")
+
+    def fake_bitstream(cmd: list[str], work: Path) -> int:
+        (work / "vcu118_frost.bit").write_bytes(b"bit-" + expected_vlen.encode())
+        return 0
+
+    monkeypatch.setattr(fpga_build, "run_vivado_step", fake_bitstream)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build.py", "vcu118", "--build-dir", str(tmp_path), "--start-at", "bitstream"],
+    )
+    fpga_build.main()
+    bit_meta = json.loads((tmp_path / "work/vcu118_frost.bit.json").read_text())
+    assert bit_meta["vector"] is True
+    assert bit_meta["vlen"] == int(expected_vlen)
+
+    # Resuming with a conflicting --vlen is rejected before running Vivado.
+    wrong_vlen = "512" if expected_vlen != "512" else "128"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "vcu118",
+            "--build-dir",
+            str(tmp_path),
+            "--start-at",
+            "bitstream",
+            "--vector",
+            "--vlen",
+            wrong_vlen,
+        ],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+    assert "conflicts with synthesized VCU118 VLEN" in capsys.readouterr().err
+
+    # A subsequent --stop-after synth run at another width must preserve existing
+    # bitstream sidecars and programmed metadata for the existing .bit file.
+    programmed = tmp_path / "work/programmed_bitstream.json"
+    programmed.write_text((tmp_path / "work/vcu118_frost.bit.json").read_text())
+    other_vlen = "512" if expected_vlen != "512" else "128"
+    expected_synth_vlen[0] = other_vlen
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "vcu118",
+            "--build-dir",
+            str(tmp_path),
+            "--stop-after",
+            "synth",
+            "--vector",
+            "--vlen",
+            other_vlen,
+        ],
+    )
+    fpga_build.main()
+    assert json.loads((tmp_path / "work/vcu118_frost.bit.json").read_text()) == bit_meta
+    assert json.loads(programmed.read_text()) == bit_meta
 
 
 @pytest.mark.parametrize(
@@ -2944,22 +3018,49 @@ source {REPO_ROOT / "fpga/build/build_step.tcl"}
 
 
 @pytest.mark.parametrize(
-    "board,misaligned,vector,generics,expect_vector_xdc",
+    "board,misaligned,vector,vlen,generics,expect_vector_xdc",
     [
-        ("vcu118", None, None, (), False),
-        ("vcu118", "1", "0", (), False),
-        ("vcu118", "0", "0", ("MISALIGNED_HW=0",), False),
+        ("vcu118", None, None, None, (), False),
+        ("vcu118", "1", "0", None, (), False),
+        ("vcu118", "0", "0", None, ("MISALIGNED_HW=0",), False),
         (
             "vcu118",
             "1",
             "1",
+            None,
             ("CPU_CLK_HZ=162500000", "VECTOR=1", "VECTOR_ADVERTISE=1"),
             True,
         ),
         (
             "vcu118",
+            "1",
+            "1",
+            "256",
+            ("CPU_CLK_HZ=162500000", "VECTOR=1", "VECTOR_ADVERTISE=1"),
+            True,
+        ),
+        (
+            "vcu118",
+            "1",
+            "1",
+            "128",
+            ("CPU_CLK_HZ=162500000", "VECTOR=1", "VECTOR_ADVERTISE=1", "VLEN=128"),
+            True,
+        ),
+        (
+            "vcu118",
+            "1",
+            "1",
+            "512",
+            ("CPU_CLK_HZ=162500000", "VECTOR=1", "VECTOR_ADVERTISE=1", "VLEN=512"),
+            True,
+        ),
+        ("vcu118", "1", "1", "64", None, True),
+        (
+            "vcu118",
             "0",
             "1",
+            None,
             (
                 "MISALIGNED_HW=0",
                 "CPU_CLK_HZ=162500000",
@@ -2968,9 +3069,9 @@ source {REPO_ROOT / "fpga/build/build_step.tcl"}
             ),
             True,
         ),
-        ("vcu118", "1", "invalid", None, False),
-        ("x3", "0", "0", (), False),
-        ("x3", "invalid", "invalid", (), False),
+        ("vcu118", "1", "invalid", None, None, False),
+        ("x3", "0", "0", None, (), False),
+        ("x3", "invalid", "invalid", None, (), False),
     ],
 )
 def test_synthesis_vector_generics(
@@ -2978,6 +3079,7 @@ def test_synthesis_vector_generics(
     board: str,
     misaligned: str | None,
     vector: str | None,
+    vlen: str | None,
     generics: tuple[str, ...] | None,
     expect_vector_xdc: bool,
 ) -> None:
@@ -3017,12 +3119,15 @@ puts "ARGS=$synth_args"
             "FROST_PERF_COUNTERS",
             "FROST_MISALIGNED_HW",
             "FROST_VECTOR",
+            "FROST_VLEN",
         )
     }
     if misaligned is not None:
         env["FROST_MISALIGNED_HW"] = misaligned
     if vector is not None:
         env["FROST_VECTOR"] = vector
+    if vlen is not None:
+        env["FROST_VLEN"] = vlen
     result = subprocess.run(
         ["tclsh", str(harness)],
         env=env,
@@ -3032,7 +3137,12 @@ puts "ARGS=$synth_args"
     )
     if generics is None:
         assert result.returncode != 0
-        assert "FROST_VECTOR must be 0 or 1" in result.stderr
+        expected_err = (
+            "FROST_VLEN must be 128, 256 or 512"
+            if vlen == "64"
+            else "FROST_VECTOR must be 0 or 1"
+        )
+        assert expected_err in result.stderr
         return
     assert result.returncode == 0, result.stderr
     xdc_line = next(
