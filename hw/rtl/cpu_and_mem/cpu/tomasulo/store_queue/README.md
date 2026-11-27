@@ -90,14 +90,18 @@ Addresses arrive from the early-address pipeline or from MEM_RS issue, and
 data from MEM_RS issue, matched to entries by ROB tag. Each early-address slot
 supplies two identical address copies, one for the lower half of the queue
 (`i_early_addr_update*.address`) and one for the upper half
-(`i_early_addr_hi*`). If both address sources
-update an entry in the same cycle, the MEM_RS update wins. With translation on,
+(`i_early_addr_hi*`). The queue groups address writes into four banks indexed
+by `{half, parity}` (four entries per bank). Dual-store dispatch bundles
+allocate consecutive tail entries on opposite parities, so fresh slot-1 and
+slot-2 early updates never share a bank. Within a bank, MEM_RS issue takes
+priority over early slot 1, which takes priority over early slot 2; a losing
+opportunistic early update is skipped and the entry receives its address at
+MEM_RS issue. With translation on,
 an early address is captured only together with a successful translation.
 
-A payload can be written before its valid bit is set: the early-address
-pipeline keeps refreshing a waiting store's address until its base register
-resolves. Forwarding and the drain read a payload only after its valid bit is
-set.
+A payload can be written before its valid bit is set when a pre-kill DMMU
+capture fires. Forwarding and the drain read a payload only after its valid bit
+is set.
 
 ## Draining to memory
 

@@ -321,12 +321,11 @@ CSR serialization and full flushes prevent an early-address candidate from
 surviving a mode change.
 
 A store whose base is not ready becomes the slot's repair candidate. It waits
-for its base tag on the done-repair channels or either CDB lane, then writes
-its address. The immediate is added to every possible base in parallel with
-the tag match, which then selects a finished address, in this priority: a
-fresh store, a held address, repair channels 1 through 6, CDB lane 0, and CDB
-lane 1. If a fresh store holds the slot's SQ port that cycle, the candidate
-keeps its address and writes it on the next free cycle. A candidate is
+for its base tag on the done-repair channels (1 through 6) or either CDB lane
+(lane 0 then lane 1), selects the matching base, adds the immediate with one
+adder per slot, and latches the repaired address into the slot's hold register.
+The held address emits on the next cycle that a fresh ready-base store does not
+take the slot's SQ port. A candidate is
 replaced by a newer unready store on the same slot (the old store then gets
 its address at MEM_RS issue), cancelled when MEM_RS issues the store (the
 issue delivers the address anyway), and cleared by any flush. Cancelling at
@@ -334,9 +333,7 @@ issue also keeps a stale candidate from writing into a later store that
 reuses the ROB tag: a store cannot complete, and so its tag cannot be reused,
 before MEM_RS issues it.
 
-While a candidate waits, it writes its provisional address into the SQ entry's
-payload without setting the address-valid bit; only the final update makes the
-address visible. Under data translation the early address goes through the
+Under data translation the early address goes through the
 data MMU's opportunistic lookup and is dropped unless that lookup hits and
 passes every store check; MEM_RS issue translates every store anyway and
 reports any fault.

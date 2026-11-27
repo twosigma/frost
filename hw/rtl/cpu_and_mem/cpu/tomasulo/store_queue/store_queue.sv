@@ -1184,7 +1184,7 @@ module store_queue #(
     // per-entry 64-bit range checkers on sq_address.
 `ifndef SYNTHESIS
     always_comb begin
-      if (sq_valid[slot] && sq_addr_valid[slot]
+      if (i_rst_n && sq_valid[slot] && sq_addr_valid[slot]
 `ifndef FORMAL
           && !$isunknown({sq_address[slot], sq_is_cached_q[slot], sq_normal_buf_q[slot]})
 `endif
@@ -1973,6 +1973,85 @@ endmodule
   end
 
   // ===========================================================================
+  // Banked Address Write Selection & Classification
+  // ===========================================================================
+  // Precompute address classification once per address write port instead of
+  // running DEPTH parallel 64-bit range checkers on sq_address.
+  logic alloc1_is_cached, alloc1_normal_buf;
+  logic alloc2_is_cached, alloc2_normal_buf;
+  logic early1_is_cached, early1_normal_buf;
+  logic early1_hi_is_cached, early1_hi_normal_buf;
+  logic early2_is_cached, early2_normal_buf;
+  logic early2_hi_is_cached, early2_hi_normal_buf;
+  logic upd_is_cached, upd_normal_buf;
+  assign alloc1_is_cached     = address_is_cached(i_alloc.address);
+  assign alloc1_normal_buf    = address_is_normal_buffered(i_alloc.address);
+  assign alloc2_is_cached     = address_is_cached(i_alloc_2.address);
+  assign alloc2_normal_buf    = address_is_normal_buffered(i_alloc_2.address);
+  assign early1_is_cached     = address_is_cached(i_early_addr_update.address);
+  assign early1_normal_buf    = address_is_normal_buffered(i_early_addr_update.address);
+  assign early1_hi_is_cached  = address_is_cached(i_early_addr_hi);
+  assign early1_hi_normal_buf = address_is_normal_buffered(i_early_addr_hi);
+  assign early2_is_cached     = address_is_cached(i_early_addr_update_2.address);
+  assign early2_normal_buf    = address_is_normal_buffered(i_early_addr_update_2.address);
+  assign early2_hi_is_cached  = address_is_cached(i_early_addr_hi_2);
+  assign early2_hi_normal_buf = address_is_normal_buffered(i_early_addr_hi_2);
+  assign upd_is_cached        = address_is_cached(i_addr_update.address);
+  assign upd_normal_buf       = address_is_normal_buffered(i_addr_update.address);
+
+  // Four address write banks indexed by {half, parity}: banks 0..1 serve the
+  // lower half (entries 0..DEPTH/2-1, even/odd) using i_early_addr_update* and
+  // banks 2..3 serve the upper half (DEPTH/2..DEPTH-1, even/odd) using
+  // i_early_addr_hi*. Dual-store dispatch bundles allocate consecutive tail
+  // entries (opposite parity), so fresh slot-1 and slot-2 early updates never
+  // contend. Within each bank, MEM_RS issue wins over early slot 1, which wins
+  // over early slot 2; a losing opportunistic early update is skipped and
+  // falls back to MEM_RS issue. Keeping the four bank buses eliminates
+  // per-entry multi-way address muxes across all DEPTH entries.
+  logic [DEPTH-1:0] addr_upd_match, addr_early1_match, addr_early2_match;
+  logic [DEPTH-1:0] addr_upd_cap_oh, addr_early1_cap_oh, addr_early2_cap_oh;
+  logic [3:0] bank_upd_cap, bank_early1_cap;
+  logic [3:0] bank_wr_mmio, bank_wr_cached, bank_wr_nbuf;
+  (* keep = "true" *) logic [XLEN-1:0] bank_wr_addr[4];
+  always_comb begin
+    bank_upd_cap    = '0;
+    bank_early1_cap = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      int unsigned b;
+      b = ((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1);
+      addr_upd_match[i] = sq_valid[i] && !sq_addr_valid[i] &&
+          (sq_rob_tag[i] == i_addr_update.rob_tag);
+      addr_early1_match[i] = sq_valid[i] && !sq_addr_valid[i] &&
+          (sq_rob_tag[i] == i_early_addr_update.rob_tag);
+      addr_early2_match[i] = sq_valid[i] && !sq_addr_valid[i] &&
+          (sq_rob_tag[i] == i_early_addr_update_2.rob_tag);
+      addr_upd_cap_oh[i]    = i_addr_update_capture_valid && addr_upd_match[i];
+      addr_early1_cap_oh[i] = i_early_addr_capture_valid && addr_early1_match[i];
+      addr_early2_cap_oh[i] = i_early_addr_capture_valid_2 && addr_early2_match[i];
+      if (addr_upd_cap_oh[i]) bank_upd_cap[b] = 1'b1;
+      if (addr_early1_cap_oh[i]) bank_early1_cap[b] = 1'b1;
+    end
+    for (int unsigned b = 0; b < 4; b++) begin
+      if (bank_upd_cap[b]) begin
+        bank_wr_addr[b]   = i_addr_update.address;
+        bank_wr_mmio[b]   = i_addr_update.is_mmio;
+        bank_wr_cached[b] = upd_is_cached;
+        bank_wr_nbuf[b]   = upd_normal_buf;
+      end else if (bank_early1_cap[b]) begin
+        bank_wr_addr[b]   = (b < 2) ? i_early_addr_update.address : i_early_addr_hi;
+        bank_wr_mmio[b]   = i_early_addr_update.is_mmio;
+        bank_wr_cached[b] = (b < 2) ? early1_is_cached : early1_hi_is_cached;
+        bank_wr_nbuf[b]   = (b < 2) ? early1_normal_buf : early1_hi_normal_buf;
+      end else begin
+        bank_wr_addr[b]   = (b < 2) ? i_early_addr_update_2.address : i_early_addr_hi_2;
+        bank_wr_mmio[b]   = i_early_addr_update_2.is_mmio;
+        bank_wr_cached[b] = (b < 2) ? early2_is_cached : early2_hi_is_cached;
+        bank_wr_nbuf[b]   = (b < 2) ? early2_normal_buf : early2_hi_normal_buf;
+      end
+    end
+  end
+
+  // ===========================================================================
   // Sequential Logic
   // ===========================================================================
 
@@ -2030,35 +2109,20 @@ endmodule
       end
 
       // -----------------------------------------------------------------
-      // Early Address Update: pipelined dispatch-time addr (control only)
+      // Address Updates (MEM_RS issue and early-address slots 1 & 2)
       // -----------------------------------------------------------------
-      if (i_early_addr_update.valid) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_addr_valid[i] &&
-              sq_rob_tag[i] == i_early_addr_update.rob_tag) begin
-            sq_addr_valid[i] <= 1'b1;
-          end
-        end
-      end
-
-      // Slot-2 early address update; its tag differs from slot 1's.
-      if (i_early_addr_update_2.valid) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_addr_valid[i] &&
-              sq_rob_tag[i] == i_early_addr_update_2.rob_tag) begin
-            sq_addr_valid[i] <= 1'b1;
-          end
-        end
-      end
-
-      // -----------------------------------------------------------------
-      // Address Update: CAM search for matching rob_tag (control only)
-      // -----------------------------------------------------------------
-      if (i_addr_update.valid) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_addr_update.rob_tag) begin
-            sq_addr_valid[i] <= 1'b1;
-          end
+      // Bank arbitration ({half, parity}) matches the data-path write buses
+      // below so sq_addr_valid only rises for the source that owns the bank.
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        int unsigned b;
+        b = ((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1);
+        if (i_addr_update.valid && addr_upd_match[i]) begin
+          sq_addr_valid[i] <= 1'b1;
+        end else if (i_early_addr_update.valid && !bank_upd_cap[b] && addr_early1_match[i]) begin
+          sq_addr_valid[i] <= 1'b1;
+        end else if (i_early_addr_update_2.valid && !bank_upd_cap[b] && !bank_early1_cap[b] &&
+                     addr_early2_match[i]) begin
+          sq_addr_valid[i] <= 1'b1;
         end
       end
 
@@ -2380,24 +2444,6 @@ endmodule
     end
   end
 
-  // Precompute address classification once per address write port instead of
-  // running DEPTH parallel 64-bit range checkers on sq_address.
-  logic alloc1_is_cached, alloc1_normal_buf;
-  logic alloc2_is_cached, alloc2_normal_buf;
-  logic early1_is_cached, early1_normal_buf;
-  logic early2_is_cached, early2_normal_buf;
-  logic upd_is_cached, upd_normal_buf;
-  assign alloc1_is_cached  = address_is_cached(i_alloc.address);
-  assign alloc1_normal_buf = address_is_normal_buffered(i_alloc.address);
-  assign alloc2_is_cached  = address_is_cached(i_alloc_2.address);
-  assign alloc2_normal_buf = address_is_normal_buffered(i_alloc_2.address);
-  assign early1_is_cached  = address_is_cached(i_early_addr_update.address);
-  assign early1_normal_buf = address_is_normal_buffered(i_early_addr_update.address);
-  assign early2_is_cached  = address_is_cached(i_early_addr_update_2.address);
-  assign early2_normal_buf = address_is_normal_buffered(i_early_addr_update_2.address);
-  assign upd_is_cached     = address_is_cached(i_addr_update.address);
-  assign upd_normal_buf    = address_is_normal_buffered(i_addr_update.address);
-
   // -------------------------------------------------------------------
   // Data-signal always_ff (no reset, no flush_all: self-gated writes)
   // -------------------------------------------------------------------
@@ -2430,45 +2476,20 @@ endmodule
     end
 
     // -----------------------------------------------------------------
-    // Early Address Update: pipelined dispatch-time addr (data only)
+    // Banked Address Update (MEM_RS issue > early slot 1 > early slot 2)
     // -----------------------------------------------------------------
-    if (i_early_addr_capture_valid) begin
-      for (int i = 0; i < DEPTH; i++) begin
-        if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_early_addr_update.rob_tag) begin
-          sq_address[i]      <= (i < (DEPTH / 2)) ? i_early_addr_update.address : i_early_addr_hi;
-          sq_is_mmio[i]      <= i_early_addr_update.is_mmio;
-          sq_is_cached_q[i]  <= early1_is_cached;
-          sq_normal_buf_q[i] <= early1_normal_buf;
-        end
-      end
-    end
-
-    // Slot-2 early address payload.
-    if (i_early_addr_capture_valid_2) begin
-      for (int i = 0; i < DEPTH; i++) begin
-        if (sq_valid[i] && !sq_addr_valid[i] &&
-            sq_rob_tag[i] == i_early_addr_update_2.rob_tag) begin
-          sq_address[i]      <= (i < (DEPTH / 2)) ? i_early_addr_update_2.address : i_early_addr_hi_2;
-          sq_is_mmio[i]      <= i_early_addr_update_2.is_mmio;
-          sq_is_cached_q[i]  <= early2_is_cached;
-          sq_normal_buf_q[i] <= early2_normal_buf;
-        end
-      end
-    end
-
-    // -----------------------------------------------------------------
-    // Address Update: CAM search for matching rob_tag (data only)
-    // -----------------------------------------------------------------
-    // Written after the early-address loops, so a same-cycle MEM_RS update
-    // to the same entry wins.
-    if (i_addr_update_capture_valid) begin
-      for (int i = 0; i < DEPTH; i++) begin
-        if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_addr_update.rob_tag) begin
-          sq_address[i]      <= i_addr_update.address;
-          sq_is_mmio[i]      <= i_addr_update.is_mmio;
-          sq_is_cached_q[i]  <= upd_is_cached;
-          sq_normal_buf_q[i] <= upd_normal_buf;
-        end
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      int unsigned b;
+      logic entry_bank_we;
+      b = ((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1);
+      entry_bank_we = addr_upd_cap_oh[i] ||
+          (!bank_upd_cap[b] && addr_early1_cap_oh[i]) ||
+          (!bank_upd_cap[b] && !bank_early1_cap[b] && addr_early2_cap_oh[i]);
+      if (entry_bank_we) begin
+        sq_address[i]      <= bank_wr_addr[b];
+        sq_is_mmio[i]      <= bank_wr_mmio[b];
+        sq_is_cached_q[i]  <= bank_wr_cached[b];
+        sq_normal_buf_q[i] <= bank_wr_nbuf[b];
       end
     end
 
@@ -2703,6 +2724,14 @@ endmodule
   // Address/data updates may overlap flush. A full flush clears control flags;
   // a partial flush clears killed entries' validity. Payload writes to those
   // entries stay hidden.
+
+  // Payload-only capture enables are supersets of the corresponding visibility
+  // valids (asserted in tomasulo_wrapper and sq_early_addr_pipeline).
+  always_comb begin
+    assume (!i_addr_update.valid || i_addr_update_capture_valid);
+    assume (!i_early_addr_update.valid || i_early_addr_capture_valid);
+    assume (!i_early_addr_update_2.valid || i_early_addr_capture_valid_2);
+  end
 
   // Memory write done only when at least one write is in flight
   always_comb begin
