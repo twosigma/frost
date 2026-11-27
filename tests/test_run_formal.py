@@ -8061,21 +8061,122 @@ def test_check_count_guards_specify_flavor() -> None:
     assert unqualified_check_count_guards(qualified) == []
 
 
-def has_property_count_guard(commands: list[sby_config.ParsedCommand]) -> bool:
-    """Report whether parsed commands include a nonzero property count guard."""
+PROPERTY_COUNT_GUARD_SELECTIONS: frozenset[tuple[str, ...]] = frozenset(
+    {
+        ("t:$assert",),
+        ("t:$cover",),
+        ("t:$check", "r:FLAVOR=assert", "%i"),
+        ("r:FLAVOR=assert", "t:$check", "%i"),
+        ("t:$check", "r:FLAVOR=cover", "%i"),
+        ("r:FLAVOR=cover", "t:$check", "%i"),
+    }
+)
+
+# Existing subsystem-scoped guards whose selection intersects a flavor-qualified
+# t:$check set with a named cell or module pattern. Any new script or task must
+# use one of PROPERTY_COUNT_GUARD_SELECTIONS.
+SCOPED_PROPERTY_COUNT_GUARDS: dict[tuple[str, str], tuple[tuple[str, ...], ...]] = {
+    ("coherence_l1d.sby", "coh_l1d_perf_prove"): (
+        ("c:p_perf_retime_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_answer_bmc"): (
+        ("c:p_answer_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_stream_answer_bmc"): (
+        ("c:p_answer_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_zero_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_zero_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_zero_multi_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_zero_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_zero_lookahead_cover"): (
+        ("c:p_zero_cover_*", "t:$check", "%i", "r:FLAVOR=cover", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_zero_progress_cover"): (
+        ("c:p_zero_progress_*", "t:$check", "%i", "r:FLAVOR=cover", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_full_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_full_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_full_multi_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_full_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_full_lookahead_cover"): (
+        ("c:p_full_cover_*", "t:$check", "%i", "r:FLAVOR=cover", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_withdraw_full_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_full_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_withdraw_zero_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_zero_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_withdraw_full_cover"): (
+        ("c:p_withdraw_full_cover", "t:$check", "%i", "r:FLAVOR=cover", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_full_hold_cover"): (
+        (
+            "c:p_full_hold_cover_*",
+            "c:p_full_credit_cover_*",
+            "%u",
+            "t:$check",
+            "%i",
+            "r:FLAVOR=cover",
+            "%i",
+        ),
+    ),
+    ("coherence_l1d_zero_index.sby", "zero_index_invariants"): (
+        ("c:p_index_head_conflict", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("load_queue.sby", "bmc_age_order"): (
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_age_*", "%i"),
+    ),
+    ("load_queue.sby", "prove_port1_amo"): (
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_amo_port1_*", "%i"),
+        ("t:$check", "r:FLAVOR=cover", "%i", "load_queue/cover_amo_port1_*", "%i"),
+    ),
+    ("load_queue.sby", "cover_port1_amo"): (
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_amo_port1_*", "%i"),
+        ("t:$check", "r:FLAVOR=cover", "%i", "load_queue/cover_amo_port1_*", "%i"),
+    ),
+    ("load_queue_amo_compute.sby", "bmc"): (
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_local_*", "%i"),
+        ("t:$check", "r:FLAVOR=cover", "%i", "load_queue/cover_local_*", "%i"),
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_lq_*_free_tree_*", "%i"),
+    ),
+    ("load_queue_amo_compute.sby", "cover"): (
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_local_*", "%i"),
+        ("t:$check", "r:FLAVOR=cover", "%i", "load_queue/cover_local_*", "%i"),
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_lq_*_free_tree_*", "%i"),
+    ),
+}
+
+
+def has_property_count_guard(
+    commands: list[sby_config.ParsedCommand],
+    extra_selections: tuple[tuple[str, ...], ...] = (),
+) -> bool:
+    """Report whether parsed commands include a nonzero whole-expression property guard."""
+    allowed = PROPERTY_COUNT_GUARD_SELECTIONS | frozenset(extra_selections)
     for cmd in commands:
         if cmd.form.id not in ("select_assert_count", "select_assert_min"):
             continue
         if int(cmd.args[2]) <= 0:
             continue
-        selection = cmd.args[3:]
-        if (
-            "t:$check" in selection
-            and "%i" in selection
-            and any(tok in ("r:FLAVOR=assert", "r:FLAVOR=cover") for tok in selection)
-        ):
-            return True
-        if "t:$assert" in selection or "t:$cover" in selection:
+        if tuple(cmd.args[3:]) in allowed:
             return True
     return False
 
@@ -8085,8 +8186,9 @@ def shared_opening_count_guard_gaps(sby_path: Path) -> list[str]:
     gaps: list[str] = []
     for task, cfg in sby_config.resolved(sby_path).items():
         parsed = cfg.parsed(sby_path.parent, expand_opening=False)
+        extra = SCOPED_PROPERTY_COUNT_GUARDS.get((sby_path.name, task), ())
         if any(cmd.args == tuple(UNDEFINED_OPENING_MARK) for cmd in parsed) and not (
-            has_property_count_guard(parsed)
+            has_property_count_guard(parsed, extra)
         ):
             gaps.append(task or "-")
     return gaps
@@ -8105,6 +8207,17 @@ def test_shared_opening_scripts_have_count_guards(tmp_path: Path) -> None:
             lacking.append(f"{sby_path.name} {task}")
     assert not lacking, lacking
 
+    for (sby_name, task), expected_selections in SCOPED_PROPERTY_COUNT_GUARDS.items():
+        cfg = sby_config.resolved(formal / sby_name)[task]
+        parsed = cfg.parsed(formal, expand_opening=False)
+        present = {
+            tuple(cmd.args[3:])
+            for cmd in parsed
+            if cmd.form.id in ("select_assert_count", "select_assert_min")
+            and int(cmd.args[2]) > 0
+        }
+        assert set(expected_selections) <= present, (sby_name, task, present)
+
     for rejected in (
         "select -assert-count 2 t:$check r:FLAVOR=assume %i",
         "select -assert-count 1 @watch_choice",
@@ -8112,6 +8225,12 @@ def test_shared_opening_scripts_have_count_guards(tmp_path: Path) -> None:
         "select -assert-min 0 t:$check r:FLAVOR=assert %i",
         "select -assert-min 0 t:$assert",
         "select -assert-count 0 t:$check r:FLAVOR=assert %i",
+        "select -assert-min 1 t:$check r:FLAVOR=assert %i @watch_choice %u",
+        "select -assert-count 1 t:$check r:FLAVOR=assert %i @watch_choice %d",
+        "select -assert-count 1 t:$assert c:p_unused %d",
+        "select -assert-count 1 t:$assert n:foo %x",
+        "select -assert-count 1 t:$assert w:foo %i",
+        "select -assert-count 1 t:$check r:FLAVOR=assert %i c:p_foo %u",
     ):
         assert not has_property_count_guard(
             sby_config.parse_script_lines([rejected])
