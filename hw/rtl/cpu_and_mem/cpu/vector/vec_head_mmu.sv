@@ -1399,6 +1399,7 @@ module vec_head_mmu #(
   logic [riscv_pkg::Sv39VpnBits-1:0] f_pending_vpn;
   logic [1:0] f_pages_checked = '0;
   (* anyconst *) logic f_page1_fault;
+  (* anyconst *) logic f_vmem_clear_d1;
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid)
@@ -1406,9 +1407,10 @@ module vec_head_mmu #(
       else assume (!i_rst);
     assume (!i_flush_all && !i_fatal_stop && !i_vmu_fatal);
     assume (i_head_tag == 3 && !i_rob_empty && i_head_safe);
-    // vec_unit clears the head's vector memory flag on the edge that accepts
-    // its CDB completion.
-    assume (i_head_is_vmem == !f_cdb_accepted && i_head_insn == 32'h02056407);
+    // vec_unit clears the head's vector memory flag one cycle after CDB
+    // acceptance through vhead_cdb_done_q (allow both N and N+1 clears).
+    assume (i_head_is_vmem == !(f_vmem_clear_d1 ? f_cdb_registered : f_cdb_accepted) &&
+            i_head_insn == 32'h02056407);
     assume (i_head_vmt_idx == 0 && i_vec_idle && !i_csr_wb_pending && !i_int_take_armed);
     assume (i_vl == 4 && i_vtype == 9'h10 && i_vstart == 0);
     assume (i_rf_read_data == 64'h400ff8 && i_vrf_read_data == '1);
@@ -1484,6 +1486,7 @@ module vec_head_mmu #(
       c_retired : cover (o_desc_valid && !f_page1_fault);
       // The commit at the earliest cycle the registered buses allow.
       c_earliest_commit : cover (i_commit_valid && !$past(f_cdb_registered));
+      c_earliest_commit_d1 : cover (f_vmem_clear_d1 && i_commit_valid && !$past(f_cdb_registered));
     end
   end
 `endif
@@ -1523,6 +1526,7 @@ module vec_head_mmu #(
   // during element 0, pauses element 1 in HM_RUN_ARM, and withdraws without a
   // flush so the run resumes to completion or a later fault.
   (* anyconst *) logic [1:0] f_irq_mode;
+  (* anyconst *) logic f_vmem_clear_d1;
   logic [1:0] f_irq_wait_q = '0;
   logic f_irq_flushed_q = 1'b0;
   logic f_irq_arm_now;
@@ -1583,7 +1587,10 @@ module vec_head_mmu #(
     assume (i_flush_all == f_irq_flush_now && !i_fatal_stop && !i_vmu_fatal);
     assume (i_head_tag == 3 && !i_rob_empty &&
             (i_head_safe == (!f_irq_flush_now && !f_irq_flushed_q)));
-    assume (i_head_is_vmem == (!f_cdb_accepted && !f_irq_flushed_q) &&
+    // vec_unit clears the head's vector memory flag one cycle after CDB
+    // acceptance through vhead_cdb_done_q (allow both N and N+1 clears).
+    assume (i_head_is_vmem ==
+            (!(f_vmem_clear_d1 ? f_cdb_registered : f_cdb_accepted) && !f_irq_flushed_q) &&
             i_head_insn == (f_indexed ? ((f_ordered ? 32'h0f056407 : 32'h07056407) |
                                          (f_store ? 32'h20 : 32'h0)) :
                                         (f_store ? 32'h0ab56427 : 32'h0ab56407)));

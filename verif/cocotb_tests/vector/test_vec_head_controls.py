@@ -56,6 +56,7 @@ class Bench:
                 "o_desc_valid",
                 "o_cdb_done",
                 "o_rf_read_en",
+                "o_vrf_read_en",
                 "o_vmem_fault_vstart_valid",
                 "o_vmem_fault_vstart",
                 "o_retire_vload",
@@ -66,7 +67,15 @@ class Bench:
         await ReadOnly()
         return observed
 
-    async def reset(self, *, split: bool = False, fault: bool = False) -> None:
+    async def reset(
+        self,
+        *,
+        split: bool = False,
+        fault: bool = False,
+        insn: int = 0x02008407,
+        vl: int = 4,
+        vtype: int = 0,
+    ) -> None:
         """Reset with a cached-memory vector instruction at the head."""
         values = dict(
             i_rst=1,
@@ -74,7 +83,7 @@ class Bench:
             i_rob_empty=0,
             i_head_safe=1,
             i_head_is_vmem=1,
-            i_head_insn=0x02008407,
+            i_head_insn=insn,
             i_head_vmt_idx=0,
             i_flush_all=0,
             i_fatal_stop=0,
@@ -85,8 +94,8 @@ class Bench:
             i_csr_wb_pending=0,
             i_sq_committed_empty=1,
             i_int_take_armed=0,
-            i_vl=4,
-            i_vtype=0,
+            i_vl=vl,
+            i_vtype=vtype,
             i_vstart=0,
             i_rf_read_data=0x80000FFE if split else 0x80000100,
             i_vrf_read_data=0,
@@ -108,10 +117,17 @@ class Bench:
         await self.tick(i_rst=0)
 
     async def reach(
-        self, target: int, *, fault: bool = False, split: bool = False
+        self,
+        target: int,
+        *,
+        fault: bool = False,
+        split: bool = False,
+        insn: int = 0x02008407,
+        vl: int = 4,
+        vtype: int = 0,
     ) -> None:
         """Run the real state transitions, including successful and faulting walks."""
-        await self.reset(fault=fault, split=split)
+        await self.reset(fault=fault, split=split, insn=insn, vl=vl, vtype=vtype)
         for _ in range(100):
             state = int(self.dut.state_q.value)
             if state == target:
@@ -154,14 +170,48 @@ async def test_flush_each_precommit_state(dut: Any) -> None:
     """Flush pulses inhibit the sampling edge and the delayed cleanup cycle."""
     Clock(dut.i_clk, 10, unit="ns").start()
     b = Bench(dut)
+    checked = 0
     for target in range(WAIT_RETIRE):
         fault = target in range(11, 24)
         split = target in range(7, 11) or target in range(14, 20)
         await b.reach(target, fault=fault, split=split)
-        no_publication(await b.tick(i_flush_all=1, i_head_safe=0, i_grant=1))
-        no_publication(await b.tick(i_flush_all=0, i_rob_empty=1, i_head_is_vmem=0))
+        s0 = await b.tick(i_flush_all=1, i_head_safe=0, i_grant=1)
+        no_publication(s0)
+        assert s0["o_vrf_read_en"] == 0, (target, s0)
+        s1 = await b.tick(i_flush_all=0, i_rob_empty=1, i_head_is_vmem=0)
+        no_publication(s1)
+        assert s1["o_vrf_read_en"] == 0, (target, s1)
         assert int(dut.state_q.value) == IDLE, target
-    dut._log.info("flush checked in all 27 pre-retirement states")
+        checked += 1
+
+    # Strided setup and indexed run states, including HM_RUN_IDX_ADD.
+    vlse32 = (2 << 26) | (1 << 25) | (2 << 20) | (1 << 15) | (6 << 12) | (8 << 7) | 0x07
+    vluxei32 = 0x07056407
+    run_targets: tuple[tuple[int, int], ...] = (
+        (STRIDE_RD, vlse32),
+        (STRIDE_CAP, vlse32),
+        (RUN_SEEK, vluxei32),
+        (RUN_IDX, vluxei32),
+        (RUN_IDX_CAP, vluxei32),
+        (RUN_IDX_ADD, vluxei32),
+        (RUN_ADDR, vluxei32),
+        (RUN_SPLIT, vluxei32),
+        (RUN_ARM, vluxei32),
+        (RUN_SETTLE, vluxei32),
+        (RUN_LAUNCH, vluxei32),
+    )
+    for target, insn in run_targets:
+        await b.reach(target, insn=insn, vl=3, vtype=0x10)
+        s0 = await b.tick(i_flush_all=1, i_head_safe=0, i_grant=1)
+        no_publication(s0)
+        assert s0["o_vrf_read_en"] == 0, (target, s0)
+        s1 = await b.tick(i_flush_all=0, i_rob_empty=1, i_head_is_vmem=0)
+        no_publication(s1)
+        assert s1["o_vrf_read_en"] == 0, (target, s1)
+        assert int(dut.state_q.value) == IDLE, target
+        checked += 1
+
+    dut._log.info(f"flush checked in all {checked} pre-retirement states")
 
 
 @cocotb.test()

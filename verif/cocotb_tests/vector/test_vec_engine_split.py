@@ -507,7 +507,8 @@ async def test_vec_engine_split_directed(dut: Any) -> None:
         encode_vmacc_vv(32, 0, min(3, epr32), 0, 1, 7, 5, 6),
         encode_vmacc_vv(32, 0, epr32, 0, 1, 7, 5, 6),
         encode_vmacc_vv(32, 1, 2 * epr32 - 1, 0, 0, 10, 12, 14),
-        # Widening vwmacc.vv: partial (<=128b beat 0 only) and full m1/m2.
+        # Widening vwmacc.vv: single-beat (<=64b), two-beat (<=128b), and full m1/m2.
+        encode_vwmacc_vv(32, 0, min(2, epr32), 0, 1, 16, 5, 6),
         encode_vwmacc_vv(32, 0, min(4, epr32), 0, 1, 16, 5, 6),
         encode_vwmacc_vv(32, 0, epr32, 0, 1, 18, 5, 6),
         encode_vwmacc_vv(32, 1, 2 * epr32, 0, 0, 20, 12, 14),

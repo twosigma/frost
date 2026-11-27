@@ -28,11 +28,11 @@
   overlap and chain at register-group granularity, stalling only when a source
   register (or v0 / old vd when used) is still pending write in the pipeline.
 
-  vec_int_exec executes integer multiply/MAC (two 64-bit lanes per pipelined
-  beat), reductions (pipelined 64-bit lane per cycle), and mixed-width/
-  fixed-point/divide/mask/permutation operations. vec_fp_exec sequences
-  FP16/32/64 arithmetic, conversions and reductions. vec_crypto_exec gathers
-  registered element groups for AES, SHA-2 and GHASH, and handles Zvbc
+  vec_int_exec executes integer multiply/MAC (one shared 64-bit lane per
+  pipelined beat), reductions (pipelined 64-bit lane per cycle), and
+  mixed-width/fixed-point/divide/mask/permutation operations. vec_fp_exec
+  sequences FP16/32/64 arithmetic, conversions and reductions. vec_crypto_exec
+  gathers registered element groups for AES, SHA-2 and GHASH, and handles Zvbc
   carry-less multiplication. These auxiliary executors take exclusive ownership
   of engine VRF ports while busy. o_unsupported pulses for unrecognized
   encodings.
