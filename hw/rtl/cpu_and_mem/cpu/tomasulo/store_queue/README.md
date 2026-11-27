@@ -205,10 +205,11 @@ record open to collect a 64-byte block. Every cycle the SQ also registers
 32-byte sector of its last write, also a cached plain store, so the L1D may
 give it credit as a combining write when all four sector records are in use
 (see the [cache library](../../../../lib/cache/README.md#full-line-stores)).
-The sector match is evaluated only for the current drain cursor and the
-post-fire cursor candidate rather than all sixteen entries. The room-qualified
-allocation targets and sent marks split each candidate so dispatch valids apply
-next and the write launch selects last.
+The sector match runs per entry in parallel with the cursor scan and, for an
+aligned power-of-two cached region, compares only the sector offset bits within
+the cached region. The room-qualified allocation targets and sent marks split
+each entry's claim before the cursor choices select one entry per launch
+outcome, dispatch valids apply next, and the write launch selects last.
 
 Cached ordinary stores complete when captured in one of the L1D's four ordered
 sector records. Each scalar receives an acknowledgement, including scalars

@@ -147,23 +147,81 @@ module vec_hold_rows #(
     // for those two indices instead of all DEPTH entries.
     logic [DEPTH-1:0] new_mask;
     logic [IdxW-1:0] new_idx_lo, new_idx_hi;
-    logic new_found_lo;
     logic [TagW-1:0] new_tag_lo, new_tag_hi;
     logic [VMT-1:0] row_init_lo, row_init_hi;
-    always_comb begin
-      new_mask = i_valid & ~mirror_q;
-      new_idx_lo = '0;
-      new_idx_hi = '0;
-      new_found_lo = 1'b0;
-      for (int i = 0; i < DEPTH; i++) begin
-        if (new_mask[i]) begin
-          if (!new_found_lo) begin
-            new_idx_lo = IdxW'(i);
-            new_found_lo = 1'b1;
+    assign new_mask = i_valid & ~mirror_q;
+    if (DEPTH == 16) begin : gen_new_idx_16
+      // Parallel four-nibble lowest/highest set-bit encoders avoid a 16-deep
+      // serial priority chain into row_q and o_hold_d.
+      logic [3:0] n_any, n_lo0, n_lo1, n_hi0, n_hi1;
+      always_comb begin
+        for (int n = 0; n < 4; n++) begin
+          logic [3:0] m;
+          m        = new_mask[4*n+:4];
+          n_any[n] = |m;
+          n_lo1[n] = !m[0] && !m[1] && (m[2] || m[3]);
+          n_lo0[n] = !m[0] && (m[1] || (!m[2] && m[3]));
+          n_hi1[n] = m[3] || m[2];
+          n_hi0[n] = m[3] || (!m[2] && m[1]);
+        end
+        new_idx_lo[3] = !n_any[0] && !n_any[1] && (n_any[2] || n_any[3]);
+        new_idx_lo[2] = !n_any[0] && (n_any[1] || (!n_any[2] && n_any[3]));
+        if (n_any[0]) new_idx_lo[1:0] = {n_lo1[0], n_lo0[0]};
+        else if (n_any[1]) new_idx_lo[1:0] = {n_lo1[1], n_lo0[1]};
+        else if (n_any[2]) new_idx_lo[1:0] = {n_lo1[2], n_lo0[2]};
+        else new_idx_lo[1:0] = {n_lo1[3], n_lo0[3]};
+
+        new_idx_hi[3] = n_any[3] || n_any[2];
+        new_idx_hi[2] = n_any[3] || (!n_any[2] && n_any[1]);
+        if (n_any[3]) new_idx_hi[1:0] = {n_hi1[3], n_hi0[3]};
+        else if (n_any[2]) new_idx_hi[1:0] = {n_hi1[2], n_hi0[2]};
+        else if (n_any[1]) new_idx_hi[1:0] = {n_hi1[1], n_hi0[1]};
+        else new_idx_hi[1:0] = {n_hi1[0], n_hi0[0]};
+      end
+`ifndef SYNTHESIS
+      logic [IdxW-1:0] ref_idx_lo, ref_idx_hi;
+      logic ref_found_lo;
+      always_comb begin
+        ref_idx_lo   = '0;
+        ref_idx_hi   = '0;
+        ref_found_lo = 1'b0;
+        for (int i = 0; i < DEPTH; i++) begin
+          if (new_mask[i]) begin
+            if (!ref_found_lo) begin
+              ref_idx_lo   = IdxW'(i);
+              ref_found_lo = 1'b1;
+            end
+            ref_idx_hi = IdxW'(i);
           end
-          new_idx_hi = IdxW'(i);
+        end
+        if (!i_rst
+`ifndef FORMAL
+            && !$isunknown(new_mask)
+`endif
+            ) begin
+          p_vhold_new_idx_16_match :
+          assert ((new_idx_lo == ref_idx_lo) && (new_idx_hi == ref_idx_hi));
         end
       end
+`endif
+    end else begin : gen_new_idx_generic
+      logic new_found_lo;
+      always_comb begin
+        new_idx_lo   = '0;
+        new_idx_hi   = '0;
+        new_found_lo = 1'b0;
+        for (int i = 0; i < DEPTH; i++) begin
+          if (new_mask[i]) begin
+            if (!new_found_lo) begin
+              new_idx_lo   = IdxW'(i);
+              new_found_lo = 1'b1;
+            end
+            new_idx_hi = IdxW'(i);
+          end
+        end
+      end
+    end
+    always_comb begin
       new_tag_lo = i_tag_flat[TagW*new_idx_lo+:TagW];
       new_tag_hi = i_tag_flat[TagW*new_idx_hi+:TagW];
       for (int t = 0; t < VMT; t++) begin
@@ -229,13 +287,20 @@ module vec_hold_rows #(
       end
     end
 
+    // On an entry's first valid cycle (!mirror_q[i]), cur_ovl_match is zero,
+    // so eff_ovl_valid is zero and the hold is the OR of the entry's initial
+    // row (|row_init_lo or |row_init_hi). Reduce those two rows once rather
+    // than through each entry's row_d mux.
+    wire hold_init_lo = |row_init_lo;
+    wire hold_init_hi = |row_init_hi;
     wire cur_ovl_match = (cur_ovl_idx_q == i_cursor_idx) && mirror_q[i_cursor_idx];
     always_comb begin
       for (int i = 0; i < DEPTH; i++) begin
         logic [VMT-1:0] eff_ovl_valid;
         eff_ovl_valid = ((IdxW'(i) == i_cursor_idx) && cur_ovl_match) ? cur_ovl_valid_q : '0;
-        o_hold_d[i] = i_valid[i] &&
-            |(row_d[i] & (i_atomic[i] ? '1 : (~eff_ovl_valid | cur_ovl_q)));
+        if (!i_valid[i]) o_hold_d[i] = 1'b0;
+        else if (!mirror_q[i]) o_hold_d[i] = (IdxW'(i) == new_idx_lo) ? hold_init_lo : hold_init_hi;
+        else o_hold_d[i] = |(row_q[i] & live & (i_atomic[i] ? '1 : (~eff_ovl_valid | cur_ovl_q)));
       end
     end
   end else begin : gen_all_entries

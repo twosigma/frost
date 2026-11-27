@@ -6909,8 +6909,8 @@ TWIN_COMPARISONS = {
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
     ),
     ("store_queue_twin", "sq_twin"): TwinComparison(
-        primitive_points=104,
-        all_points=12629,
+        primitive_points=1414,
+        all_points=12903,
         top="store_queue",
         gold_inputs=(
             "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
@@ -6923,15 +6923,15 @@ TWIN_COMPARISONS = {
         ),
         registers=170,
         clock="i_clk",
-        gold_only_free=356,
-        gate_only_free=356,
+        gold_only_free=330,
+        gate_only_free=330,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
         initialized_nets=32,
     ),
     ("store_queue_twin", "sq_twin_cpu"): TwinComparison(
-        primitive_points=104,
-        all_points=12638,
+        primitive_points=1414,
+        all_points=12912,
         top="store_queue",
         gold_inputs=(
             "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
@@ -6948,15 +6948,15 @@ TWIN_COMPARISONS = {
         ),
         registers=174,
         clock="i_clk",
-        gold_only_free=359,
-        gate_only_free=359,
+        gold_only_free=333,
+        gate_only_free=333,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
         initialized_nets=32,
     ),
     ("coherence_l1d_twin", "l1d_twin_single"): TwinComparison(
         primitive_points=9,
-        all_points=31352,
+        all_points=31351,
         top="coherence_l1d",
         gold_inputs=(
             *L1D_TWIN_GOLD_READS,
@@ -6966,7 +6966,7 @@ TWIN_COMPARISONS = {
             *L1D_TWIN_GATE_READS,
             "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d",
         ),
-        registers=299,
+        registers=298,
         clock="i_clk",
         paired_free=467,
         gold_only_free=103,
@@ -6979,7 +6979,7 @@ TWIN_COMPARISONS = {
     ),
     ("coherence_l1d_twin", "l1d_twin_multi"): TwinComparison(
         primitive_points=12,
-        all_points=40269,
+        all_points=40268,
         top="coherence_l1d",
         gold_inputs=(
             *L1D_TWIN_GOLD_READS,
@@ -6989,7 +6989,7 @@ TWIN_COMPARISONS = {
             *L1D_TWIN_GATE_READS,
             "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d",
         ),
-        registers=334,
+        registers=333,
         clock="i_clk",
         paired_free=547,
         gold_only_free=52,
@@ -7002,7 +7002,7 @@ TWIN_COMPARISONS = {
     ),
     ("coherence_l1d_twin", "l1d_twin_stream"): TwinComparison(
         primitive_points=14,
-        all_points=62327,
+        all_points=62326,
         top="coherence_l1d",
         gold_inputs=(
             *L1D_TWIN_GOLD_READS,
@@ -7012,7 +7012,7 @@ TWIN_COMPARISONS = {
             *L1D_TWIN_GATE_READS,
             "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d",
         ),
-        registers=433,
+        registers=432,
         clock="i_clk",
         paired_free=579,
         gold_only_free=56,

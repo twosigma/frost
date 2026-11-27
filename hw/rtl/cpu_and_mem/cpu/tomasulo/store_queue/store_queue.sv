@@ -1113,6 +1113,15 @@ module store_queue #(
   localparam bit CachedRegionAligned = CachedSize != 0 &&
       (CachedSize & CachedMask) == 0 && (CachedBase & CachedMask) == 0 &&
       CachedLimit > CachedBase;
+  // For an aligned power-of-two cached region, any two cached addresses share
+  // all bits above the region size, so same-sector comparisons need only the
+  // sector offset bits within the region.
+  localparam longint unsigned CachedSizeSafe =
+      CachedRegionAligned ? CACHED_SIZE_BYTES : 64'd64;
+  localparam int unsigned CachedAddrBits =
+      CachedRegionAligned ? $clog2(CachedSizeSafe) : XLEN;
+  localparam int unsigned NextSameSectorBits =
+      (CachedAddrBits > 5) ? (CachedAddrBits - 5) : 1;
   function automatic logic address_is_cached(input logic [XLEN-1:0] addr);
     if (CachedRegionAligned) address_is_cached = (addr & ~CachedMask) == CachedBase;
     else address_is_cached = (addr >= CachedBase) && (addr < CachedLimit);
@@ -1690,58 +1699,60 @@ module store_queue #(
   // registered state and the room-qualified allocation targets; the cursor
   // choices then select one entry for each launch outcome, the allocation's
   // dispatch valids apply next, and the launch selects last.
-  logic [XLEN-6:0] last_write_sector_q;
+  logic [NextSameSectorBits-1:0] last_write_sector_q;
   logic last_write_plain_q, next_same_d;
-  wire [XLEN-6:0] last_write_sector_d = mem_write_fire_next ?
-      sq_address[drain_idx_q][XLEN-1:5] : last_write_sector_q;
+  wire [NextSameSectorBits-1:0] last_write_sector_d = mem_write_fire_next ?
+      sq_address[drain_idx_q][NextSameSectorBits+4:5] : last_write_sector_q;
   wire last_write_plain_d = mem_write_fire_next ?
       sq_cached_plain_class[drain_idx_q] && !drain_is_cmo : last_write_plain_q;
   // Per entry: a valid committed cached plain store with its address, not a
-  // Zicbom entry (class). Only the current drain cursor and the post-fire
-  // cursor can become the next cursor, so compare sectors only for those two
-  // indices instead of all DEPTH entries. Each outcome is still split by the
-  // entry's sent mark so dispatch valids and write launch select last.
+  // Zicbom entry (class); the next write after a cached plain launch from the
+  // cursor, in the launching entry's sector (fire); the next write without a
+  // launch, in the last write's sector (hold). Each claim is formed in
+  // parallel with the cursor scan and kept before splitting by the entry's
+  // sent mark: unsent, or sent and taken by this cycle's first allocation
+  // (sent1) or by a pair's second allocation (sent2).
   logic [DEPTH-1:0] next_same_class;
-  logic [XLEN-6:0] drain_cur_sector, drain_pf_sector;
+  (* keep = "true" *) logic [DEPTH-1:0] next_same_fire_entry, next_same_hold_entry;
+  (* keep = "true" *) logic [DEPTH-1:0] next_same_fire_unsent_e, next_same_fire_sent1_e;
+  (* keep = "true" *) logic [DEPTH-1:0] next_same_fire_sent2_e, next_same_hold_unsent_e;
+  (* keep = "true" *) logic [DEPTH-1:0] next_same_hold_sent1_e, next_same_hold_sent2_e;
   logic next_same_hold_cursor;
-  (* keep = "true" *) logic next_same_fire_ok, next_same_hold_cur_ok, next_same_hold_pf_ok;
+  // The cursor choices then select one bit of each.
   (* keep = "true" *) logic next_same_fire_unsent, next_same_fire_sent1, next_same_fire_sent2;
   (* keep = "true" *) logic next_same_hold_unsent, next_same_hold_sent1, next_same_hold_sent2;
   (* keep = "true" *) logic next_same_if_fire, next_same_if_hold;
   logic next_same_launch;
+  wire [NextSameSectorBits-1:0] drain_cur_sector =
+      sq_address[drain_idx_q][NextSameSectorBits+4:5];
   always_comb
     for (int i = 0; i < DEPTH; i++) begin
       next_same_class[i] = sq_valid[i] && sq_committed[i] && sq_addr_valid[i] &&
           sq_cached_plain_class[i] && !sq_is_cmo[i];
+      next_same_fire_entry[i] = sq_cached_plain_class[drain_idx_q] && !drain_is_cmo &&
+          drain_idx_q != IdxWidth'(i) && next_same_class[i] &&
+          sq_address[i][NextSameSectorBits+4:5] == drain_cur_sector;
+      next_same_hold_entry[i] = last_write_plain_q && next_same_class[i] &&
+          sq_address[i][NextSameSectorBits+4:5] == last_write_sector_q;
+      next_same_fire_unsent_e[i] = next_same_fire_entry[i] && !sq_sent[i];
+      next_same_fire_sent1_e[i] = next_same_fire_entry[i] && sq_sent[i] && first_room_oh[i];
+      next_same_fire_sent2_e[i] = next_same_fire_entry[i] && sq_sent[i] && second_room_oh[i];
+      next_same_hold_unsent_e[i] = next_same_hold_entry[i] && !sq_sent[i];
+      next_same_hold_sent1_e[i] = next_same_hold_entry[i] && sq_sent[i] && first_room_oh[i];
+      next_same_hold_sent2_e[i] = next_same_hold_entry[i] && sq_sent[i] && second_room_oh[i];
     end
-  assign drain_cur_sector = sq_address[drain_idx_q][XLEN-1:5];
-  assign drain_pf_sector  = sq_address[drain_post_fire_idx_d][XLEN-1:5];
-  assign next_same_fire_ok = sq_cached_plain_class[drain_idx_q] && !drain_is_cmo &&
-      (drain_idx_q != drain_post_fire_idx_d) && next_same_class[drain_post_fire_idx_d] &&
-      (drain_pf_sector == drain_cur_sector);
-  assign next_same_hold_cur_ok = last_write_plain_q && next_same_class[drain_idx_q] &&
-      (drain_cur_sector == last_write_sector_q);
-  assign next_same_hold_pf_ok = last_write_plain_q && next_same_class[drain_post_fire_idx_d] &&
-      (drain_pf_sector == last_write_sector_q);
   // A launch: the post-fire entry. No launch: the cursor entry, or the
   // post-fire entry.
   assign next_same_hold_cursor = drain_base_idx_d == drain_idx_q && !cmo_drain_fire;
-  assign next_same_fire_unsent = next_same_fire_ok && !sq_sent[drain_post_fire_idx_d];
-  assign next_same_fire_sent1 = next_same_fire_ok && sq_sent[drain_post_fire_idx_d] &&
-      first_room_oh[drain_post_fire_idx_d];
-  assign next_same_fire_sent2 = next_same_fire_ok && sq_sent[drain_post_fire_idx_d] &&
-      second_room_oh[drain_post_fire_idx_d];
-  assign next_same_hold_unsent = next_same_hold_cursor ?
-      (next_same_hold_cur_ok && !sq_sent[drain_idx_q]) :
-      (next_same_hold_pf_ok && !sq_sent[drain_post_fire_idx_d]);
-  assign next_same_hold_sent1 = next_same_hold_cursor ?
-      (next_same_hold_cur_ok && sq_sent[drain_idx_q] && first_room_oh[drain_idx_q]) :
-      (next_same_hold_pf_ok && sq_sent[drain_post_fire_idx_d] &&
-       first_room_oh[drain_post_fire_idx_d]);
-  assign next_same_hold_sent2 = next_same_hold_cursor ?
-      (next_same_hold_cur_ok && sq_sent[drain_idx_q] && second_room_oh[drain_idx_q]) :
-      (next_same_hold_pf_ok && sq_sent[drain_post_fire_idx_d] &&
-       second_room_oh[drain_post_fire_idx_d]);
+  assign next_same_fire_unsent = next_same_fire_unsent_e[drain_post_fire_idx_d];
+  assign next_same_fire_sent1 = next_same_fire_sent1_e[drain_post_fire_idx_d];
+  assign next_same_fire_sent2 = next_same_fire_sent2_e[drain_post_fire_idx_d];
+  assign next_same_hold_unsent = next_same_hold_cursor ? next_same_hold_unsent_e[drain_idx_q] :
+      next_same_hold_unsent_e[drain_post_fire_idx_d];
+  assign next_same_hold_sent1 = next_same_hold_cursor ? next_same_hold_sent1_e[drain_idx_q] :
+      next_same_hold_sent1_e[drain_post_fire_idx_d];
+  assign next_same_hold_sent2 = next_same_hold_cursor ? next_same_hold_sent2_e[drain_idx_q] :
+      next_same_hold_sent2_e[drain_post_fire_idx_d];
   assign next_same_if_fire = next_same_fire_unsent ||
       (next_same_fire_sent1 && (i_alloc.valid || i_alloc_2.valid)) ||
       (next_same_fire_sent2 && i_alloc.valid && i_alloc_2.valid);
@@ -1795,7 +1806,7 @@ module store_queue #(
   assign next_same_reference = last_write_plain_d && sq_valid[drain_idx_d] &&
       !sq_sent_next[drain_idx_d] && sq_committed[drain_idx_d] && sq_addr_valid[drain_idx_d] &&
       sq_cached_plain_class[drain_idx_d] && !sq_is_cmo[drain_idx_d] &&
-      sq_address[drain_idx_d][XLEN-1:5] == last_write_sector_d;
+      sq_address[drain_idx_d][NextSameSectorBits+4:5] == last_write_sector_d;
 `undef SQ_NEXT_SAME_REFERENCE
 `endif
 `ifdef SQ_NEXT_SAME_LOCAL_PROOF
@@ -2006,15 +2017,22 @@ endmodule
   // entries (opposite parity), so fresh slot-1 and slot-2 early updates never
   // contend. Within each bank, MEM_RS issue wins over early slot 1, which wins
   // over early slot 2; a losing opportunistic early update is skipped and
-  // falls back to MEM_RS issue. Keeping the four bank buses eliminates
-  // per-entry multi-way address muxes across all DEPTH entries.
-  logic [DEPTH-1:0] addr_upd_match, addr_early1_match, addr_early2_match;
-  logic [DEPTH-1:0] addr_upd_cap_oh, addr_early1_cap_oh, addr_early2_cap_oh;
+  // falls back to MEM_RS issue. Keeping the early-only bank buses and entry
+  // enables lets i_addr_update_capture_valid enter a single final LUT into
+  // both bank_wr_addr and each entry's write enable.
+  (* keep = "true" *) logic [DEPTH-1:0] addr_upd_match;
+  logic [DEPTH-1:0] addr_early1_match, addr_early2_match;
+  logic [DEPTH-1:0] addr_early1_cap_oh, addr_early2_cap_oh;
+  (* keep = "true" *) logic [3:0] bank_upd_match;
   logic [3:0] bank_upd_cap, bank_early1_cap;
+  (* keep = "true" *) logic [DEPTH-1:0] entry_early_we;
+  logic [DEPTH-1:0] entry_bank_we;
+  logic [3:0] bank_early_mmio, bank_early_cached, bank_early_nbuf;
   logic [3:0] bank_wr_mmio, bank_wr_cached, bank_wr_nbuf;
+  (* keep = "true" *) logic [XLEN-1:0] bank_early_addr[4];
   (* keep = "true" *) logic [XLEN-1:0] bank_wr_addr[4];
   always_comb begin
-    bank_upd_cap    = '0;
+    bank_upd_match  = '0;
     bank_early1_cap = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
       int unsigned b;
@@ -2025,29 +2043,69 @@ endmodule
           (sq_rob_tag[i] == i_early_addr_update.rob_tag);
       addr_early2_match[i] = sq_valid[i] && !sq_addr_valid[i] &&
           (sq_rob_tag[i] == i_early_addr_update_2.rob_tag);
-      addr_upd_cap_oh[i]    = i_addr_update_capture_valid && addr_upd_match[i];
       addr_early1_cap_oh[i] = i_early_addr_capture_valid && addr_early1_match[i];
       addr_early2_cap_oh[i] = i_early_addr_capture_valid_2 && addr_early2_match[i];
-      if (addr_upd_cap_oh[i]) bank_upd_cap[b] = 1'b1;
+      if (addr_upd_match[i]) bank_upd_match[b] = 1'b1;
       if (addr_early1_cap_oh[i]) bank_early1_cap[b] = 1'b1;
     end
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      int unsigned b;
+      b = ((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1);
+      entry_early_we[i] = addr_early1_cap_oh[i] ||
+          (!bank_early1_cap[b] && addr_early2_cap_oh[i]);
+    end
+    bank_upd_cap = {4{i_addr_update_capture_valid}} & bank_upd_match;
     for (int unsigned b = 0; b < 4; b++) begin
-      if (bank_upd_cap[b]) begin
-        bank_wr_addr[b]   = i_addr_update.address;
-        bank_wr_mmio[b]   = i_addr_update.is_mmio;
-        bank_wr_cached[b] = upd_is_cached;
-        bank_wr_nbuf[b]   = upd_normal_buf;
-      end else if (bank_early1_cap[b]) begin
-        bank_wr_addr[b]   = (b < 2) ? i_early_addr_update.address : i_early_addr_hi;
-        bank_wr_mmio[b]   = i_early_addr_update.is_mmio;
-        bank_wr_cached[b] = (b < 2) ? early1_is_cached : early1_hi_is_cached;
-        bank_wr_nbuf[b]   = (b < 2) ? early1_normal_buf : early1_hi_normal_buf;
-      end else begin
-        bank_wr_addr[b]   = (b < 2) ? i_early_addr_update_2.address : i_early_addr_hi_2;
-        bank_wr_mmio[b]   = i_early_addr_update_2.is_mmio;
-        bank_wr_cached[b] = (b < 2) ? early2_is_cached : early2_hi_is_cached;
-        bank_wr_nbuf[b]   = (b < 2) ? early2_normal_buf : early2_hi_normal_buf;
-      end
+      bank_early_addr[b] = bank_early1_cap[b] ?
+          ((b < 2) ? i_early_addr_update.address : i_early_addr_hi) :
+          ((b < 2) ? i_early_addr_update_2.address : i_early_addr_hi_2);
+      bank_early_mmio[b] = bank_early1_cap[b] ?
+          i_early_addr_update.is_mmio : i_early_addr_update_2.is_mmio;
+      bank_early_cached[b] = bank_early1_cap[b] ?
+          ((b < 2) ? early1_is_cached : early1_hi_is_cached) :
+          ((b < 2) ? early2_is_cached : early2_hi_is_cached);
+      bank_early_nbuf[b] = bank_early1_cap[b] ?
+          ((b < 2) ? early1_normal_buf : early1_hi_normal_buf) :
+          ((b < 2) ? early2_normal_buf : early2_hi_normal_buf);
+      bank_wr_mmio[b]   = bank_upd_cap[b] ? i_addr_update.is_mmio : bank_early_mmio[b];
+      bank_wr_cached[b] = bank_upd_cap[b] ? upd_is_cached : bank_early_cached[b];
+      bank_wr_nbuf[b]   = bank_upd_cap[b] ? upd_normal_buf : bank_early_nbuf[b];
+    end
+  end
+  for (genvar g_slot = 0; g_slot < DEPTH; g_slot++) begin : gen_entry_bank_we
+    localparam int unsigned Bank = ((g_slot >= (DEPTH / 2)) ? 2 : 0) + (g_slot & 1);
+`ifdef FROST_XILINX_PRIMS
+    (* dont_touch = "true" *) LUT4 #(
+        .INIT(16'hf2aa)
+    ) u_entry_bank_we (
+        .I0(entry_early_we[g_slot]),
+        .I1(bank_upd_match[Bank]),
+        .I2(addr_upd_match[g_slot]),
+        .I3(i_addr_update_capture_valid),
+        .O (entry_bank_we[g_slot])
+    );
+`else
+    assign entry_bank_we[g_slot] = (i_addr_update_capture_valid && addr_upd_match[g_slot]) ||
+        (!(i_addr_update_capture_valid && bank_upd_match[Bank]) && entry_early_we[g_slot]);
+`endif
+  end
+  for (genvar g_bank = 0; g_bank < 4; g_bank++) begin : gen_bank_wr_addr
+    for (genvar g_bit = 0; g_bit < XLEN; g_bit++) begin : gen_bit
+`ifdef FROST_XILINX_PRIMS
+      (* dont_touch = "true" *) LUT4 #(
+          .INIT(16'hcaaa)
+      ) u_bank_wr_addr (
+          .I0(bank_early_addr[g_bank][g_bit]),
+          .I1(i_addr_update.address[g_bit]),
+          .I2(bank_upd_match[g_bank]),
+          .I3(i_addr_update_capture_valid),
+          .O (bank_wr_addr[g_bank][g_bit])
+      );
+`else
+      assign bank_wr_addr[g_bank][g_bit] =
+          (i_addr_update_capture_valid && bank_upd_match[g_bank]) ?
+          i_addr_update.address[g_bit] : bank_early_addr[g_bank][g_bit];
+`endif
     end
   end
 
@@ -2480,12 +2538,8 @@ endmodule
     // -----------------------------------------------------------------
     for (int unsigned i = 0; i < DEPTH; i++) begin
       int unsigned b;
-      logic entry_bank_we;
       b = ((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1);
-      entry_bank_we = addr_upd_cap_oh[i] ||
-          (!bank_upd_cap[b] && addr_early1_cap_oh[i]) ||
-          (!bank_upd_cap[b] && !bank_early1_cap[b] && addr_early2_cap_oh[i]);
-      if (entry_bank_we) begin
+      if (entry_bank_we[i]) begin
         sq_address[i]      <= bank_wr_addr[b];
         sq_is_mmio[i]      <= bank_wr_mmio[b];
         sq_is_cached_q[i]  <= bank_wr_cached[b];
