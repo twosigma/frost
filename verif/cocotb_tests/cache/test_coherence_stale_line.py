@@ -618,6 +618,255 @@ def value(rng: random.Random) -> int:
     return rng.getrandbits(64) | 1
 
 
+def dup_node(c: NodeCluster, rng: random.Random, nodes: list[int], dst: int) -> None:
+    """Append __mt_dup's node copy: zero fills, memcpy from the parent, slot fixes.
+
+    The parent is usually the node 256 bytes below in the same page, as in the
+    board's corrupted tree; the zero fill is init_on_alloc's memset, often
+    followed by mas_pop_node's, sometimes after a cbo.zero of the page.
+    """
+    below = dst - NODE
+    src = (
+        below
+        if below in nodes and rng.random() < 0.8
+        else rng.choice([n for n in nodes if n != dst])
+    )
+    if rng.random() < 0.2:
+        for block in range(dst, dst + NODE, 64):
+            c.zero(block)
+    for _ in range(rng.choice((1, 2, 2))):
+        for offset in range(0, NODE, 8):
+            c.st(dst + offset, 0)
+    # memcpy: sixteen loads, then their sixteen stores, per 128 bytes.
+    group = rng.choice((16, 16, 8))
+    for start in range(0, NODE, 8 * group):
+        for offset in range(start, start + 8 * group, 8):
+            c.ld(src + offset)
+        for offset in range(start, start + 8 * group, 8):
+            c.st(dst + offset, c.word(src + offset))
+    # The parent pointer, some slots, and sometimes the metadata bytes.
+    c.st(dst, value(rng))
+    for _ in range(rng.randrange(0, 4)):
+        c.st(dst + 0x50 + 8 * rng.randrange(10), value(rng))
+    if rng.random() < 0.4:
+        lane = rng.randrange(8)
+        c.st(dst + 0xF8 + lane, value(rng) << (8 * lane), 1 << lane)
+    for _ in range(rng.randrange(0, 6)):
+        c.ld(dst + 8 * rng.randrange(NODE // 8))
+
+
+def build_ops(c: NodeCluster, rng: random.Random, nodes: list[int], count: int) -> None:
+    """Append count node operations to the program."""
+    dup = os.environ.get("STALE_MODE") == "dup"
+    for _ in range(count):
+        op = rng.random()
+        dst = rng.choice(nodes)
+        if dup and op < 0.6:
+            dup_node(c, rng, nodes, dst)
+        elif dup and op < 0.75:
+            # Unrelated traffic in the same sets: another node rewritten.
+            for offset in range(0, NODE, 8):
+                c.st(dst + offset, value(rng))
+        elif dup:
+            for _ in range(rng.randrange(4, 24)):
+                c.ld(rng.choice(nodes) + 8 * rng.randrange(NODE // 8))
+        elif op < 0.35:
+            # mas_pop_node + copy: memset the node, copy a parent into it,
+            # then read some of it back.
+            src = rng.choice([n for n in nodes if n != dst])
+            for offset in range(0, NODE, 8):
+                c.st(dst + offset, 0)
+            group = rng.choice((1, 2, 4, 8, 16))
+            for start in range(0, NODE, 8 * group):
+                for offset in range(start, start + 8 * group, 8):
+                    c.ld(src + offset)
+                for offset in range(start, start + 8 * group, 8):
+                    c.st(dst + offset, c.word(src + offset))
+            for _ in range(rng.randrange(0, 12)):
+                c.ld(dst + 8 * rng.randrange(NODE // 8))
+        elif op < 0.5:
+            # A node rewritten with new values, line by line.
+            for offset in range(0, NODE, 8):
+                c.st(dst + offset, value(rng))
+        elif op < 0.6:
+            # clear_page-like: cbo.zero blocks, then a few stores.
+            for block in range(dst, dst + NODE, 64):
+                if rng.random() < 0.7:
+                    c.zero(block)
+            for _ in range(rng.randrange(0, 4)):
+                c.st(dst + 8 * rng.randrange(NODE // 8), value(rng))
+        elif op < 0.75:
+            # Partial stores: words and bytes.
+            for _ in range(rng.randrange(1, 10)):
+                offset = rng.randrange(NODE)
+                size = rng.choice((1, 4, 8))
+                offset &= -size
+                lane = offset & 7
+                mask = ((1 << size) - 1) << lane
+                c.st(dst + (offset & -8) + lane, value(rng) << (8 * lane), mask)
+        else:
+            for _ in range(rng.randrange(4, 24)):
+                c.ld(rng.choice(nodes) + 8 * rng.randrange(NODE // 8))
+
+
+async def node_reuse(dut: Any, seed: int, ops: int, hold: bool) -> None:
+    """Run one seeded program and check every node at the end."""
+    rng = random.Random(seed)
+    c = NodeCluster(dut, rng)
+    await c.reset()
+    l1d_bytes = int(os.environ.get("STALE_L1D", "1024"))
+    pool = int(os.environ.get("STALE_POOL", "0")) or max(6, 3 * l1d_bytes // NODE)
+    base = 0x80400000
+    nodes = [base + NODE * n for n in range(pool)]
+    for n, node in enumerate(nodes):
+        c.preload_node(node, 0x1000 * (n + 1) + seed)
+    # DMA-only nodes in the same sets: DMA writes them, the CPU only reads
+    # them at the end.
+    c.dma_nodes = [base + 0x10000 + NODE * n for n in range(4)]
+    for n, node in enumerate(c.dma_nodes):
+        c.preload_node(node, 0x9000 + 0x100 * n + seed)
+        for offset in range(0, NODE, 8):
+            c.dma_model[node + offset] = c.model.pop(node + offset)
+    c.agent_targets = nodes + c.dma_nodes
+    c.agent_rate = float(os.environ.get("STALE_AGENT", "0.04"))
+    c.agent_on = c.agent_rate > 0
+    for _ in range(ops // 20):
+        build_ops(c, rng, nodes, 20)
+        await c.run_program(hold=hold)
+    await c.agent_quiesce()
+    await c.drain()
+    for node in c.dma_nodes:
+        for offset in range(0, NODE, 8):
+            got = await c.read(node + offset)
+            want = c.dma_model[node + offset]
+            if got != want:
+                c.failures.append(
+                    f"final DMA node {node + offset:#x}: {got:#x} != {want:#x}"
+                )
+    for node in nodes:
+        for offset in range(0, NODE, 8):
+            got = await c.read(node + offset)
+            want = c.word(node + offset)
+            if got != want:
+                c.failures.append(f"final {node + offset:#x}: {got:#x} != {want:#x}")
+    for node in nodes:
+        for sector in range(0, NODE, 32):
+            data = await c.dma(node + sector)
+            for word in range(4):
+                got = (data >> (64 * word)) & MASK64
+                want = c.word(node + sector + 8 * word)
+                if got != want:
+                    c.failures.append(
+                        f"final DMA {node + sector + 8 * word:#x}: {got:#x} != {want:#x}"
+                    )
+    dut._log.info(
+        "NODE_REUSE seed=%d loads=%d stores=%d twins=%d agent=%d cycles=%d failures=%d",
+        seed,
+        c.loads_checked,
+        c.pushes,
+        c.twin_installs,
+        c.agent_ops,
+        c.cycle,
+        len(c.failures),
+    )
+    assert not c.failures, "\n".join(c.failures[:8])
+
+
+@cocotb.test()
+async def node_reuse_random(dut: Any) -> None:
+    """Check seeded node-reuse programs, with and without channel holds."""
+    seeds = int(os.environ.get("STALE_SEEDS", "4"))
+    first = int(os.environ.get("STALE_SEED0", "1"))
+    ops = int(os.environ.get("STALE_OPS", "200"))
+    for seed in range(first, first + seeds):
+        await node_reuse(dut, seed, ops, hold=bool(seed & 1))
+
+
+@cocotb.test()
+async def node_copy_beside_stream(dut: Any) -> None:
+    """Check __mt_dup's node copy on cold pages while its source trains the stream.
+
+    Each page holds a parent node and, 256 bytes above it, the new node: the
+    new node's zero memset, the parent's sequential loads (which train the L1D
+    stream detector, whose window covers the new node) and the memcpy stores
+    run together, as the store queue overlaps them, so a full pair may acquire
+    the new node's blocks through look-ahead while the stream prefetches their
+    sectors. Every dword of the new node is checked after the copy and at the
+    end.
+    """
+    pages = int(os.environ.get("STALE_PAGES", "96"))
+    # Before the prefetch fix, seed 14 lost a new node's last 32 bytes on
+    # 109d3911 and seed 16 on e71b1fd0.
+    seeds = os.environ.get("STALE_SEED0")
+    for seed in [int(seeds)] if seeds else [14, 16]:
+        await node_copy_pages(dut, seed, pages)
+
+
+async def node_copy_pages(dut: Any, seed: int, pages: int) -> None:
+    """Run one seed of node_copy_beside_stream.
+
+    STALE_ZERO=1 zeroes the new node with cbo.zero (clear_page) instead of
+    memset, the only no-fill path a build without full-line stores has.
+    """
+    zero_fill = os.environ.get("STALE_ZERO", "0") != "0"
+    # STALE_ZERO=2 also zeroes the node above the new one, so the zero blocks
+    # fill all four records, and every copy load waits for the zeroes' dones.
+    zero_deep = os.environ.get("STALE_ZERO") == "2"
+    rng = random.Random(seed)
+    c = NodeCluster(dut, rng)
+    await c.reset()
+    c.dma_nodes = []
+    copies = []
+    for page in range(pages):
+        base = 0x80800000 + 0x1000 * page
+        # The deep zero mode zeroes the node above the new one, inside the page.
+        src = base + NODE * rng.randrange(0, 14 if zero_deep else 15)
+        dst = src + NODE
+        c.preload_node(src, 0x7000 + page)
+        c.preload_node(dst, 0x7800 + page)
+        if zero_fill:
+            for block in range(dst, dst + (2 * NODE if zero_deep else NODE), 64):
+                c.zero(block)
+        else:
+            for _ in range(rng.choice((1, 2))):
+                for offset in range(0, NODE, 8):
+                    c.st(dst + offset, 0)
+        group = rng.choice((16, 16, 8, 4))
+        wait = zero_deep or rng.random() < 0.7
+        for start in range(0, NODE, 8 * group):
+            for offset in range(start, start + 8 * group, 8):
+                c.ld(src + offset, after_stores=wait and start == 0)
+            for offset in range(start, start + 8 * group, 8):
+                c.st(dst + offset, c.word(src + offset))
+        c.st(dst, value(rng))
+        if rng.random() < 0.5:
+            c.st(dst + 0xF8, value(rng) & 0xFF, 0x01)
+        for offset in range(0, NODE, 8):
+            c.ld(dst + offset)
+        copies.append(dst)
+        await c.run_program(hold=bool(page & 1))
+    await c.drain()
+    for dst in copies:
+        for offset in range(0, NODE, 8):
+            got = await c.read(dst + offset)
+            want = c.word(dst + offset)
+            if got != want:
+                c.failures.append(f"final {dst + offset:#x}: {got:#x} != {want:#x}")
+    into = [a for a in c.speculative_requests if any(d <= a < d + NODE for d in copies)]
+    dut._log.info(
+        "NODE_COPY pages=%d loads=%d twins=%d prefetches=%d into_new_nodes=%d upper=%d "
+        "failures=%d",
+        pages,
+        c.loads_checked,
+        c.twin_installs,
+        len(c.speculative_requests),
+        len(into),
+        sum(1 for a in into if a & 32),
+        len(c.failures),
+    )
+    assert not c.failures, "\n".join(c.failures[:8])
+
+
 @cocotb.test()
 async def zero_twin_beside_stream(dut: Any) -> None:
     """Check a cbo.zero twin whose sector the stream prefetches during its look-ahead GetMZero.

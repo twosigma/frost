@@ -38,6 +38,7 @@
     "l1d_bytes": 131072,
     "l1d_hit_path": true,
     "l1d_id_bits": 4,
+    "l1d_lookahead_hints": false,
     "l1d_lookahead_sectors": 8,
     "l1d_lookahead_slots": 2,
     "l1d_mshrs": 8,
@@ -92,10 +93,10 @@
   },
   "cpu_top": {
     "axi_master": {
-      "inflight_cycles": 10640,
+      "inflight_cycles": 10240,
       "max_inflight": 8,
-      "read_beats": 133,
-      "responses": 133
+      "read_beats": 128,
+      "responses": 128
     },
     "l1d": {
       "occupancy": {
@@ -104,33 +105,29 @@
         "writeback_slots": 0
       },
       "stats": {
-        "bimodal_untouched_allocations": 151,
-        "controller_busy_cycles": 6153,
+        "bimodal_untouched_allocations": 140,
+        "controller_busy_cycles": 5887,
         "downstream_backpressure": 15,
-        "fills_issued": 186,
-        "hit_path_hits": 853,
-        "hit_path_offers": 1022,
-        "hit_path_refused": 89,
-        "hit_path_stream_reports": 853,
-        "hit_path_takes": 933,
-        "hit_path_touch_drops": 47,
-        "hits": 917,
-        "installations": 186,
-        "lookahead_attached": 11,
-        "lookahead_issued": 49,
-        "misses": 154,
-        "mru_allocations": 3,
+        "fills_issued": 176,
+        "hit_path_hits": 835,
+        "hit_path_offers": 1018,
+        "hit_path_refused": 83,
+        "hit_path_stream_reports": 835,
+        "hit_path_takes": 935,
+        "hit_path_touch_drops": 50,
+        "hits": 874,
+        "installations": 176,
+        "misses": 144,
+        "mru_allocations": 4,
         "mshr_backpressure": 1,
-        "mshr_merges": 11,
-        "shadow_lookups": 416,
-        "shadow_skips": 405,
-        "store_acquisitions": 30,
+        "shadow_lookups": 450,
+        "shadow_skips": 417,
+        "store_acquisitions": 29,
         "store_hits": 267,
-        "store_lookaheads": 2,
+        "store_lookaheads": 3,
         "store_records": 299,
         "store_records_installed": 299,
-        "store_upgrades": 32,
-        "useful_lookaheads": 39
+        "store_upgrades": 32
       }
     },
     "l1i": {
@@ -146,24 +143,24 @@
         "writeback_slots": 0
       },
       "stats": {
-        "fills_issued": 133,
-        "hits": 146,
+        "fills_issued": 128,
+        "hits": 138,
         "input_backpressure": 12,
-        "misses": 133,
-        "mru_allocations": 133,
+        "misses": 128,
+        "mru_allocations": 128,
         "mshr_backpressure": 3,
-        "mshr_merges": 16,
-        "prefetch_fills": 109,
+        "mshr_merges": 14,
+        "prefetch_fills": 104,
         "prefetch_in_flight": 4,
         "prefetch_resident": 68,
-        "useful_prefetches": 76
+        "useful_prefetches": 71
       }
     },
     "line_size_adapter": {
       "backpressure": 15,
-      "requests": 201,
-      "sector_0": 133,
-      "sector_1": 53
+      "requests": 191,
+      "sector_0": 128,
+      "sector_1": 48
     },
     "pipeline": {
       "max_occupancy": {
@@ -176,42 +173,42 @@
       },
       "stats": {
         "branch_mispredicts": 3,
-        "cdb_contention": 3779,
+        "cdb_contention": 3750,
         "completed": 9328,
         "dispatch_stall_int_rs": 10,
-        "dispatch_stall_lq": 1896,
-        "dispatch_stall_rob": 674,
+        "dispatch_stall_lq": 1716,
+        "dispatch_stall_rob": 762,
         "dispatched": 9328,
-        "early_load_tokens": 792,
+        "early_load_tokens": 801,
         "frontend_recovery_stall": 6,
-        "l0_fills": 1022,
-        "l0_hits": 2594,
-        "l0_misses": 1022,
+        "l0_fills": 1018,
+        "l0_hits": 2598,
+        "l0_misses": 1018,
         "l0_store_updates": 149,
-        "load_store_disambiguation_stall": 2784,
+        "load_store_disambiguation_stall": 2677,
         "loads_issued": 3616,
-        "retire_head_not_ready": 2665,
+        "retire_head_not_ready": 2573,
         "retired": 9328,
         "stores_drained": 299
       }
     },
     "prefetcher": {
-      "completed": 181,
-      "identity_stall": 95,
-      "issued": 181,
-      "observations": 186,
+      "completed": 176,
+      "identity_stall": 92,
+      "issued": 176,
+      "observations": 176,
       "room_stall": 949,
-      "streams_allocated": 55
+      "streams_allocated": 54
     }
   },
-  "cycles": 7145,
-  "ipc": 1.3055283414975507,
+  "cycles": 7054,
+  "ipc": 1.3223702863623477,
   "memory": {
     "axi": {
-      "inflight_cycles": 10640,
+      "inflight_cycles": 10240,
       "max_inflight": 8,
-      "read_beats": 133,
-      "responses": 133
+      "read_beats": 128,
+      "responses": 128
     },
     "ddr": {
       "configuration": {
@@ -232,10 +229,10 @@
       "inflight_writes": 0,
       "kind": "frost_single_channel_axi_ddr",
       "stats": {
-        "accepted": 133,
-        "completed": 133,
-        "read_completed": 133,
-        "reads": 133
+        "accepted": 128,
+        "completed": 128,
+        "read_completed": 128,
+        "reads": 128
       }
     },
     "l1d": {
@@ -245,33 +242,29 @@
         "writeback_slots": 0
       },
       "stats": {
-        "bimodal_untouched_allocations": 151,
-        "controller_busy_cycles": 6153,
+        "bimodal_untouched_allocations": 140,
+        "controller_busy_cycles": 5887,
         "downstream_backpressure": 15,
-        "fills_issued": 186,
-        "hit_path_hits": 853,
-        "hit_path_offers": 1022,
-        "hit_path_refused": 89,
-        "hit_path_stream_reports": 853,
-        "hit_path_takes": 933,
-        "hit_path_touch_drops": 47,
-        "hits": 917,
-        "installations": 186,
-        "lookahead_attached": 11,
-        "lookahead_issued": 49,
-        "misses": 154,
-        "mru_allocations": 3,
+        "fills_issued": 176,
+        "hit_path_hits": 835,
+        "hit_path_offers": 1018,
+        "hit_path_refused": 83,
+        "hit_path_stream_reports": 835,
+        "hit_path_takes": 935,
+        "hit_path_touch_drops": 50,
+        "hits": 874,
+        "installations": 176,
+        "misses": 144,
+        "mru_allocations": 4,
         "mshr_backpressure": 1,
-        "mshr_merges": 11,
-        "shadow_lookups": 416,
-        "shadow_skips": 405,
-        "store_acquisitions": 30,
+        "shadow_lookups": 450,
+        "shadow_skips": 417,
+        "store_acquisitions": 29,
         "store_hits": 267,
-        "store_lookaheads": 2,
+        "store_lookaheads": 3,
         "store_records": 299,
         "store_records_installed": 299,
-        "store_upgrades": 32,
-        "useful_lookaheads": 39
+        "store_upgrades": 32
       }
     },
     "l1i": {
@@ -287,32 +280,32 @@
         "writeback_slots": 0
       },
       "stats": {
-        "fills_issued": 133,
-        "hits": 146,
+        "fills_issued": 128,
+        "hits": 138,
         "input_backpressure": 12,
-        "misses": 133,
-        "mru_allocations": 133,
+        "misses": 128,
+        "mru_allocations": 128,
         "mshr_backpressure": 3,
-        "mshr_merges": 16,
-        "prefetch_fills": 109,
+        "mshr_merges": 14,
+        "prefetch_fills": 104,
         "prefetch_in_flight": 4,
         "prefetch_resident": 68,
-        "useful_prefetches": 76
+        "useful_prefetches": 71
       }
     },
     "line_size_adapter": {
       "backpressure": 15,
-      "requests": 201,
-      "sector_0": 133,
-      "sector_1": 53
+      "requests": 191,
+      "sector_0": 128,
+      "sector_1": 48
     },
     "prefetcher": {
-      "completed": 181,
-      "identity_stall": 95,
-      "issued": 181,
-      "observations": 186,
+      "completed": 176,
+      "identity_stall": 92,
+      "issued": 176,
+      "observations": 176,
       "room_stall": 949,
-      "streams_allocated": 55
+      "streams_allocated": 54
     },
     "soc": {
       "configuration": {
@@ -347,20 +340,20 @@
         "inflight_writes": 0,
         "kind": "frost_single_channel_axi_ddr",
         "stats": {
-          "accepted": 133,
-          "completed": 133,
-          "read_completed": 133,
-          "reads": 133
+          "accepted": 128,
+          "completed": 128,
+          "read_completed": 128,
+          "reads": 128
         }
       },
       "kind": "frost_soc_top",
       "stats": {
-        "ddr_reads_forwarded": 133
+        "ddr_reads_forwarded": 128
       }
     }
   },
   "micro_ops": 9328,
-  "micro_ops_per_second": 52482,
+  "micro_ops_per_second": 86851,
   "model_version": "1.0",
   "pipeline": {
     "max_occupancy": {
@@ -373,28 +366,28 @@
     },
     "stats": {
       "branch_mispredicts": 3,
-      "cdb_contention": 3779,
+      "cdb_contention": 3750,
       "completed": 9328,
       "dispatch_stall_int_rs": 10,
-      "dispatch_stall_lq": 1896,
-      "dispatch_stall_rob": 674,
+      "dispatch_stall_lq": 1716,
+      "dispatch_stall_rob": 762,
       "dispatched": 9328,
-      "early_load_tokens": 792,
+      "early_load_tokens": 801,
       "frontend_recovery_stall": 6,
-      "l0_fills": 1022,
-      "l0_hits": 2594,
-      "l0_misses": 1022,
+      "l0_fills": 1018,
+      "l0_hits": 2598,
+      "l0_misses": 1018,
       "l0_store_updates": 149,
-      "load_store_disambiguation_stall": 2784,
+      "load_store_disambiguation_stall": 2677,
       "loads_issued": 3616,
-      "retire_head_not_ready": 2665,
+      "retire_head_not_ready": 2573,
       "retired": 9328,
       "stores_drained": 299
     }
   },
   "retired": 9328,
   "seed": 11,
-  "simulated_cycles_per_second": 40200,
+  "simulated_cycles_per_second": 65678,
   "soc_top": {
     "configuration": {
       "bram_base": 0,
@@ -428,17 +421,17 @@
       "inflight_writes": 0,
       "kind": "frost_single_channel_axi_ddr",
       "stats": {
-        "accepted": 133,
-        "completed": 133,
-        "read_completed": 133,
-        "reads": 133
+        "accepted": 128,
+        "completed": 128,
+        "read_completed": 128,
+        "reads": 128
       }
     },
     "kind": "frost_soc_top",
     "stats": {
-      "ddr_reads_forwarded": 133
+      "ddr_reads_forwarded": 128
     }
   },
-  "wall_time_seconds": 0.177735,
+  "wall_time_seconds": 0.107402,
   "workload": "coremark"
 }

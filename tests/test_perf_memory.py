@@ -514,7 +514,9 @@ def test_look_ahead_takes_the_highest_endpoints_and_demand_the_lowest(
     slots: int, expected: list[int]
 ) -> None:
     """Demand misses take endpoints from 1 up; hints fill the top slots only."""
-    l1d, loop, _lower = coherent_l1d(l1d_hit_path=False, l1d_lookahead_slots=slots)
+    l1d, loop, _lower = coherent_l1d(
+        l1d_hit_path=False, l1d_lookahead_slots=slots, l1d_lookahead_hints=True
+    )
     for sector in range(3):
         idle(l1d, loop)
         assert l1d.submit(load(0x8000_0000 + 32 * sector, ident=sector))
