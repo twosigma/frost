@@ -2993,7 +2993,7 @@ static int run_ptrace(const char *run_id, bool present_mode, uint64_t vlenb)
     size_t want_bytes = REGSET_HDR_BYTES + (size_t) (32U * vlenb);
     uint8_t vec_buf[REGSET_HDR_BYTES + MAX_PROBE_VSIZE];
     uint8_t set_buf[REGSET_HDR_BYTES + MAX_PROBE_VSIZE];
-    char reason[160] = "";
+    char reason[192] = "";
     int status = 0;
 
     if (!present_mode) {
