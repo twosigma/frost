@@ -334,6 +334,9 @@ module coherence_l1d #(
   logic [255:0] pending_data_q;
   logic [31:0] pending_mask_q;
   logic atomic_q, atomic_sc_q, atomic_granted_q, atomic_written_q;
+  // Dedicated output copy of atomic_q so the long core-facing o_atomic_live
+  // path does not share placement with the internal L1D FSM fanout.
+  (* dont_touch = "true" *) logic atomic_live_out_q;
   logic atomic_local_q, sc_home_q, local_hit_q, local_conflict_q;
   logic local_admit, local_decision, local_sc_match, lookup_wb_conflict;
   logic [2:0] atomic_read_q;
@@ -1279,7 +1282,7 @@ module coherence_l1d #(
   assign pending_tag = store_tag[store_head_index];
   assign tail_addr = store_addr[store_next_index];
   assign o_pending_store = pending_q;
-  assign o_atomic_live = atomic_q;
+  assign o_atomic_live = atomic_live_out_q;
   assign o_sc_write_pending = atomic_q && atomic_sc_q && atomic_granted_q && !atomic_written_q;
   // SQ launch readiness precedes its registered write by one cycle. The CPU
   // presents an atomic only after its committed stores drain, so no store
@@ -3471,6 +3474,7 @@ module coherence_l1d #(
       o_read_error <= 1'b0;
       pending_miss_q <= 1'b0;
       atomic_q <= 1'b0;
+      atomic_live_out_q <= 1'b0;
       atomic_local_q <= 1'b0;
       atomic_read_q <= '0;
       atomic_read_onehot_q <= 8'd1;
@@ -3581,6 +3585,7 @@ module coherence_l1d #(
       if (i_u_valid && ep_u_ready[0] && atomic_q && !atomic_local_q) begin
         block_zero_addr_q <= store_addr[0];
         atomic_q <= 1'b0;
+        atomic_live_out_q <= 1'b0;
         atomic_granted_q <= 1'b0;
       end
       if (!o_read_valid || i_read_ready) begin
@@ -3608,6 +3613,7 @@ module coherence_l1d #(
       end
       if (i_sc_valid && o_sc_ready) begin
         atomic_q <= 1'b1;
+        atomic_live_out_q <= 1'b1;
         atomic_local_q <= 1'b0;
         sc_home_q <= 1'b0;
         atomic_sc_q <= 1'b1;
@@ -3894,6 +3900,7 @@ module coherence_l1d #(
             if (local_decision) begin
               if (local_hit_q) begin
                 atomic_q <= 1'b1;
+                atomic_live_out_q <= 1'b1;
                 atomic_local_q <= 1'b1;
                 atomic_granted_q <= operation_q != SCOp || local_sc_match;
                 atomic_written_q <= 1'b0;
@@ -3918,6 +3925,7 @@ module coherence_l1d #(
                 phase_q <= Idle;
               end else begin
                 atomic_q <= 1'b1;
+                atomic_live_out_q <= 1'b1;
                 atomic_local_q <= 1'b0;
                 atomic_sc_q <= 1'b0;
                 atomic_granted_q <= 1'b0;
@@ -3951,6 +3959,7 @@ module coherence_l1d #(
           LocalRelease: begin
             block_zero_addr_q <= store_addr[0];
             atomic_q <= 1'b0;
+            atomic_live_out_q <= 1'b0;
             atomic_local_q <= 1'b0;
             atomic_granted_q <= 1'b0;
             phase_q <= Idle;

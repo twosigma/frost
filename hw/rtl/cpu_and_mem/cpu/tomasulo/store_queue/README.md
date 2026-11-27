@@ -106,15 +106,17 @@ entry is eligible and has its address and data, and it never skips ahead.
 An entry also waits while an older vector memory instruction that overlaps it,
 or whose range is not known yet, is still live in the vector unit's memory
 table; an SC waits for every older live one (the load queue README, "Vector
-range holds", describes the rows; the SQ registers the hold before the drain
-check).
+range holds", describes the rows; the SQ enables `CURSOR_ONLY=1` so every entry
+tracks its older-VMT row while sector derivation and range overlap run only for
+the drain cursor, and registers the hold before the drain check).
 Cached and buffered Normal entries require commit; precise uncached entries require ROB-head
 permission and the shield.
 Entry, ordering and FIFO checks prepare launch and cursor completion before
 coherent store credit arrives. Credit qualifies the cached arm last.
 Explicit store credit and precise-store permission enter the final launch and
 cursor-completion selection directly; implicit SC credit is prepared separately.
-Each stored address is classified in parallel with cursor selection. Aligned
+Cached and buffered-Normal address classes are evaluated when an entry's address
+is written and held in per-entry registers. Aligned
 power-of-two cached regions use a mask comparison; other maps retain the
 general range comparison, including empty or wrapping ranges.
 Each entry prepares its cached serial, uncached serial, buffered overlap and
@@ -199,13 +201,10 @@ record open to collect a 64-byte block. Every cycle the SQ also registers
 32-byte sector of its last write, also a cached plain store, so the L1D may
 give it credit as a combining write when all four sector records are in use
 (see the [cache library](../../../../lib/cache/README.md#full-line-stores)).
-Each entry's claim is formed from registered state and the room-qualified
-allocation targets, and the cursor choices select one entry for each launch
-outcome: after a cached plain launch the cursor's post-fire choice; without a
-launch the post-fire choice past a Zicbom entry and the base choice
-otherwise, where the base choice is the cursor entry itself or the same entry
-as the post-fire choice. The allocation's dispatch valids apply next and the
-launch selects last.
+The sector match is evaluated only for the current drain cursor and the
+post-fire cursor candidate rather than all sixteen entries. The room-qualified
+allocation targets and sent marks split each candidate so dispatch valids apply
+next and the write launch selects last.
 
 Cached ordinary stores complete when captured in one of the L1D's four ordered
 sector records. Each scalar receives an acknowledgement, including scalars

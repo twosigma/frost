@@ -370,9 +370,13 @@ Coherent SC completion supplies a zero-value flag from the selected success
 or fault-address source. The uncached store permit uses this flag with the
 completion valid bit and cached-region classification.
 
-The coherent SC table classifies aligned power-of-two cached regions with an
-address mask. Empty, unaligned, non-power-of-two or wrapping regions use the
-unsigned range comparison.
+The coherent SC table stores physical addresses in a two-write-port distributed
+RAM (allocation and MMU PA fill) and latches the ROB-head SC into a single-entry
+head register once its physical address is known. Cached-region classification,
+reservation comparison, and DMA coherence line queries read that single head
+register. Aligned power-of-two cached regions use an address mask; empty,
+unaligned, non-power-of-two or wrapping regions use the unsigned range
+comparison.
 
 A cached SC compares the exact physical address
 and W/D size recorded by LR. The reservation set is a 32-byte sector. Local

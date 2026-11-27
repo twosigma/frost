@@ -48,6 +48,7 @@
 */
 module vec_hold_rows_formal #(
     parameter bit DIRECT_ADDR = 1'b0,
+    parameter bit CURSOR_ONLY = 1'b0,
     parameter int unsigned D = 2,
     parameter int unsigned V = 2
 ) (
@@ -279,10 +280,25 @@ module vec_hold_rows_formal #(
     };
   end
 
+  (* anyseq *) logic [IW-1:0] cursor_idx;
+  logic [IW-1:0] cursor_idx_p, cursor_idx_pp;
+  logic cursor_settled;
+  always_ff @(posedge i_clk) begin
+    if (rst) begin
+      cursor_idx_p  <= '0;
+      cursor_idx_pp <= '0;
+    end else begin
+      cursor_idx_p  <= cursor_idx;
+      cursor_idx_pp <= cursor_idx_p;
+    end
+  end
+  assign cursor_settled = (cursor_idx == cursor_idx_p) && (cursor_idx == cursor_idx_pp);
+
   logic [D-1:0] hold;
   vec_hold_rows #(
       .DEPTH(D),
       .DIRECT_ADDR(DIRECT_ADDR),
+      .CURSOR_ONLY(CURSOR_ONLY),
       .VMT(V)
   ) dut (
       .i_clk(i_clk),
@@ -299,6 +315,7 @@ module vec_hold_rows_formal #(
       .i_addr_flat(addr_flat),
       .i_size_flat(size_flat),
       .i_addr_valid(s_ak & s_valid),
+      .i_cursor_idx(cursor_idx),
       .i_vmt(vmt),
       .o_hold_d(hold)
   );
@@ -319,7 +336,9 @@ module vec_hold_rows_formal #(
   logic [D-1:0] ak_settled;
   always_comb begin
     for (int i = 0; i < D; i++) begin
-      ak_settled[i] = DIRECT_ADDR ? (s_valid_p[i] && s_ak_pp[i]) : (s_valid_p[i] && s_ak_p[i]);
+      ak_settled[i] = CURSOR_ONLY ?
+          ((IW'(i) == cursor_idx) && cursor_settled && s_valid_p[i] && s_ak_pp[i]) :
+          (DIRECT_ADDR ? (s_valid_p[i] && s_ak_pp[i]) : (s_valid_p[i] && s_ak_p[i]));
       for (int t = 0; t < V; t++) begin
         logic ovl;
         ovl = seg_hit(addr_c[i], size_c[i], s_block[i], rng_v0[t], rng_p0[t], rng_lo0[t],

@@ -39,9 +39,9 @@ check -assert
 select -assert-none t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
 select -assert-count 4 a:init
 select -assert-none i:* o:* %i
-single: select -assert-count 298 t:$dff
-multi: select -assert-count 333 t:$dff
-stream: select -assert-count 432 t:$dff
+single: select -assert-count 299 t:$dff
+multi: select -assert-count 334 t:$dff
+stream: select -assert-count 433 t:$dff
 select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
 expose -dff -cut coherence_l1d/w:*
 select -assert-none coherence_l1d/t:$dff %co:+[Q] coherence_l1d/w:* %i %co1 coherence_l1d/t:* %i
@@ -78,9 +78,9 @@ check -assert
 select -assert-none t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
 select -assert-count 4 a:init
 select -assert-none i:* o:* %i
-single: select -assert-count 298 t:$dff
-multi: select -assert-count 333 t:$dff
-stream: select -assert-count 432 t:$dff
+single: select -assert-count 299 t:$dff
+multi: select -assert-count 334 t:$dff
+stream: select -assert-count 433 t:$dff
 select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
 expose -dff -cut coherence_l1d/w:*
 select -assert-none coherence_l1d/t:$dff %co:+[Q] coherence_l1d/w:* %i %co1 coherence_l1d/t:* %i
@@ -116,9 +116,9 @@ select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
 l1d_twin_single: select -assert-min 9 @blk
 l1d_twin_multi: select -assert-min 12 @blk
 l1d_twin_stream: select -assert-min 14 @blk
-l1d_twin_single: select -assert-min 31351 t:$equiv
-l1d_twin_multi: select -assert-min 40268 t:$equiv
-l1d_twin_stream: select -assert-min 62326 t:$equiv
+l1d_twin_single: select -assert-min 31352 t:$equiv
+l1d_twin_multi: select -assert-min 40269 t:$equiv
+l1d_twin_stream: select -assert-min 62327 t:$equiv
 equiv_simple
 equiv_status -assert
 design -reset

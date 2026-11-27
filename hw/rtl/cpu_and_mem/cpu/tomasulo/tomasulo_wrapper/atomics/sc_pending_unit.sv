@@ -152,12 +152,7 @@ module sc_pending_unit #(
   logic [ScTableDepth-1:0] sct_valid;
   logic [ScTableDepth-1:0] sct_addr_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sct_tag[ScTableDepth];
-  logic [riscv_pkg::XLEN-1:0] sct_addr[ScTableDepth];
   logic [2:0] sct_size[ScTableDepth];
-  // Classify each stored PA in parallel with the ROB-head lookup. Selecting
-  // one class bit avoids a wide address mux followed by range comparisons
-  // on the uncached SC completion path.
-  (* keep = "true" *) logic [ScTableDepth-1:0] sct_is_cached;
   function automatic logic addr_is_cached(input logic [riscv_pkg::XLEN-1:0] addr);
     addr_is_cached = (addr >= riscv_pkg::XLEN'(CACHED_BASE)) &&
         (addr < riscv_pkg::XLEN'(CACHED_BASE) + riscv_pkg::XLEN'(CACHED_SIZE_BYTES));
@@ -169,26 +164,34 @@ module sc_pending_unit #(
   localparam bit CachedRegionAligned = CachedSize != 0 &&
       (CachedSize & CachedMask) == 0 && (CachedBase & CachedMask) == 0 &&
       CachedLimit > CachedBase;
+
+  // Single-entry registered ROB-head cache. Physical addresses live in a
+  // two-write-port distributed RAM (allocation + MMU fill) and are latched
+  // into this register once the head SC has a valid PA, so cached-region
+  // classification, reservation compare, and DMA coherence query compare a
+  // single register instead of all ScTableDepth entries.
+  logic sct_head_valid_q;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] sct_head_tag_q;
+  logic [ScIdxWidth-1:0] sct_head_idx_q;
+  logic [riscv_pkg::XLEN-1:0] sct_head_addr_q;
+  logic [riscv_pkg::XLEN-1:0] sct_head_vaddr_q;
+  logic [2:0] sct_head_size_q;
+
+  logic sct_head_is_cached;
   if (CachedRegionAligned) begin : gen_coherent_cached_class
-    for (genvar i = 0; i < ScTableDepth; i++) begin : gen_slot
-      assign sct_is_cached[i] = (sct_addr[i] & ~CachedMask) == CachedBase;
-    end
+    assign sct_head_is_cached = (sct_head_addr_q & ~CachedMask) == CachedBase;
   end else begin : gen_range_cached_class
-    for (genvar i = 0; i < ScTableDepth; i++) begin : gen_cached_class
-      assign sct_is_cached[i] = addr_is_cached(sct_addr[i]);
-    end
+    assign sct_head_is_cached = addr_is_cached(sct_head_addr_q);
   end
 `ifndef SYNTHESIS
   if (1'b1) begin : gen_cached_class_check
-    for (genvar i = 0; i < ScTableDepth; i++) begin : gen_slot
 `ifdef FORMAL
-      always_comb begin
+    always_comb begin
 `else
-      always @(posedge i_clk) begin
-        if (!$isunknown(sct_addr[i]))
+    always @(posedge i_clk) begin
+      if (!$isunknown(sct_head_addr_q))
 `endif
-        assert (sct_is_cached[i] == addr_is_cached(sct_addr[i]));
-      end
+      assert (sct_head_is_cached == addr_is_cached(sct_head_addr_q));
     end
   end
 `endif
@@ -206,53 +209,42 @@ module sc_pending_unit #(
     end
   endfunction
 
-  // Compare reservation granules before selecting the head entry, for timing.
-  // With no head match, the default compares the zero address.
-  logic [ScTableDepth-1:0] sct_resv_match;
-  always_comb begin
-    for (int i = 0; i < ScTableDepth; i++) begin
-      sct_resv_match[i] = sct_is_cached[i] ?
-          (lq_reservation_addr == sct_addr[i] && i_reservation_size == sct_size[i]) :
-          (lq_reservation_addr[riscv_pkg::XLEN-1:3] == sct_addr[i][riscv_pkg::XLEN-1:3]);
-    end
-  end
-
   // Head match: an in-flight SC sits at the ROB head.
   logic                       sct_hit;
   logic [     ScIdxWidth-1:0] sct_hit_idx;
   logic                       sct_hit_addr_valid;
-  logic [riscv_pkg::XLEN-1:0] sct_hit_addr;
-  logic                       sct_hit_resv_match;
   logic [                2:0] sct_hit_size;
   logic [   ScTableDepth-1:0] sct_hit_oh;
   always_comb begin
-    sct_hit               = 1'b0;
-    sct_hit_idx           = '0;
-    sct_hit_addr_valid    = 1'b0;
-    sct_hit_addr          = '0;
-    sct_hit_resv_match    = (lq_reservation_addr[riscv_pkg::XLEN-1:3] == '0);
-    sct_hit_oh            = '0;
-    sct_hit_size          = '0;
-    o_sc_head_query_match = 1'b0;
-    o_sc_head_is_cached   = addr_is_cached('0);
+    sct_hit            = 1'b0;
+    sct_hit_idx        = '0;
+    sct_hit_addr_valid = 1'b0;
+    sct_hit_oh         = '0;
+    sct_hit_size       = '0;
     for (int i = 0; i < ScTableDepth; i++) begin
       if (sct_valid[i] && (sct_tag[i] == head_tag)) begin
-        sct_hit = 1'b1;
-        sct_hit_idx = ScIdxWidth'(i);
+        sct_hit            = 1'b1;
+        sct_hit_idx        = ScIdxWidth'(i);
         sct_hit_addr_valid = sct_addr_valid[i];
-        sct_hit_addr = sct_addr[i];
-        sct_hit_size = sct_size[i];
-        o_sc_head_is_cached = sct_is_cached[i];
-        sct_hit_resv_match = sct_resv_match[i];
-        sct_hit_oh[i] = 1'b1;
-        // Use sct_hit_addr's highest-index priority, even if its address is invalid.
-        // Coherence queries compare complete DMA sectors.
-        o_sc_head_query_match = sct_addr_valid[i] &&
-            (sct_addr[i][riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb] ==
-             i_coh_query_addr[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb]);
+        sct_hit_size       = sct_size[i];
+        sct_hit_oh[i]      = 1'b1;
       end
     end
   end
+
+  logic sct_head_ready;
+  assign sct_head_ready = sct_head_valid_q && sct_hit && sct_hit_addr_valid &&
+      (sct_head_tag_q == head_tag) && (sct_head_idx_q == sct_hit_idx);
+
+  logic sct_hit_resv_match;
+  assign sct_hit_resv_match = sct_head_is_cached ?
+      (lq_reservation_addr == sct_head_addr_q && i_reservation_size == sct_head_size_q) :
+      (lq_reservation_addr[riscv_pkg::XLEN-1:3] == sct_head_addr_q[riscv_pkg::XLEN-1:3]);
+
+  assign o_sc_head_is_cached = sct_head_is_cached;
+  assign o_sc_head_query_match = sct_head_ready &&
+      (sct_head_addr_q[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb] ==
+       i_coh_query_addr[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb]);
 
   // First free slot for a newly-issued SC. At 16 entries, compute nibble
   // fullness in parallel so the one-hot mask does not ripple across all 16.
@@ -364,11 +356,43 @@ module sc_pending_unit #(
     assign coherent_hit_vaddr = sct_hit ? virtual_address_ram[sct_hit_idx] : '0;
   end
 
+  // Per-entry payload fill match omits flush and fault gates; sct_addr_valid
+  // keeps faulted fills hidden, and a flush clears sct_valid on the same edge.
+  logic [ScTableDepth-1:0] sct_fill_capture_oh;
+  logic [ScIdxWidth-1:0] sct_fill_idx;
+  logic sct_fill_we;
+  always_comb begin
+    sct_fill_idx = '0;
+    for (int i = 0; i < ScTableDepth; i++) begin
+      sct_fill_capture_oh[i] = i_sct_addr_fill_capture_valid && sct_valid[i] &&
+          !sct_addr_valid[i] && (sct_tag[i] == i_sct_addr_fill_tag);
+      if (sct_fill_capture_oh[i]) sct_fill_idx = ScIdxWidth'(i);
+    end
+    sct_fill_we = |sct_fill_capture_oh;
+  end
+
+  // Store physical addresses in a two-write-port distributed RAM: port 0
+  // captures issue-time addresses (SC has imm==0, so src1 is its address),
+  // and port 1 captures MMU PA fills for valid entries lacking a PA.
+  logic [riscv_pkg::XLEN-1:0] sct_ram_hit_addr;
+  mwp_dist_ram #(
+      .ADDR_WIDTH(ScIdxWidth),
+      .DATA_WIDTH(riscv_pkg::XLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_sct_addr_ram (
+      .i_clk(i_clk),
+      .i_write_enable({sct_fill_we, sct_payload_alloc && sct_has_free}),
+      .i_write_address({sct_fill_idx, sct_free_idx}),
+      .i_write_data({i_sct_addr_fill_addr, o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0]}),
+      .i_read_address(sct_hit_idx),
+      .o_read_data(sct_ram_hit_addr)
+  );
+
   // The fire also waits for the entry's PA (i_sct_addr_fill_* under active
-  // translation). Firing at the issue cycle would compare the VA against the
-  // PA-domain reservation, and it would beat the MMU's fault delivery for an
-  // SC whose translation is refused.
-  assign sc_can_fire = sct_hit && sct_hit_addr_valid && sq_committed_empty;
+  // translation) to latch into the single head register. Firing at the issue
+  // cycle would compare the VA against the PA-domain reservation, and it would
+  // beat the MMU's fault delivery for an SC whose translation is refused.
+  assign sc_can_fire = sct_head_ready && sq_committed_empty;
   // Coherent cached SC matches the exact physical address and W/D size.
   // Other SCs match the reserved doubleword by comparing address[XLEN-1:3].
   assign sc_success  = lq_reservation_valid && sct_hit_resv_match;
@@ -406,9 +430,9 @@ module sc_pending_unit #(
         if (o_coherent_arm_valid && i_atomic_protected && !speculative_flush_all) begin
           coherent_selected_q <= 1'b1;
           coherent_sent_q <= 1'b0;
-          coherent_addr_q <= sct_hit_addr;
-          coherent_vaddr_q <= coherent_hit_vaddr;
-          coherent_size_q <= sct_hit_size;
+          coherent_addr_q <= sct_head_addr_q;
+          coherent_vaddr_q <= sct_head_vaddr_q;
+          coherent_size_q <= sct_head_size_q;
           coherent_tag_q <= head_tag;
         end
         if (o_coherent_valid && i_coherent_ready) coherent_sent_q <= 1'b1;
@@ -435,8 +459,39 @@ module sc_pending_unit #(
     assign o_sc_fire_success = sc_fire_now &&
         (coherent_selected_q ? i_coherent_success && !i_coherent_error : sc_success);
   end
-  assign o_sc_head_addr_valid = sct_hit && sct_hit_addr_valid;
-  assign o_sc_head_addr = sct_hit_addr;
+  assign o_sc_head_addr_valid = sct_head_ready;
+  assign o_sc_head_addr = sct_head_addr_q;
+
+  // Latch the ROB-head SC's physical and virtual addresses from distributed
+  // RAM once its PA is valid. Hold the cached entry unchanged while a selected
+  // coherent SC awaits completion.
+  logic sct_head_load;
+  assign sct_head_load = sct_hit && sct_hit_addr_valid && !sct_head_ready &&
+      !coherent_selected_q && !sc_fire_now &&
+      !(store_misalign_fu_complete_reg.valid &&
+        (store_misalign_fu_complete_reg.tag == head_tag));
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || speculative_flush_all) begin
+      sct_head_valid_q <= 1'b0;
+    end else if (sc_fire_now ||
+        (store_misalign_fu_complete_reg.valid &&
+         (store_misalign_fu_complete_reg.tag == head_tag))) begin
+      sct_head_valid_q <= 1'b0;
+    end else if (sct_head_load) begin
+      sct_head_valid_q <= 1'b1;
+    end else if (!sct_head_ready) begin
+      sct_head_valid_q <= 1'b0;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (sct_head_load) begin
+      sct_head_tag_q   <= head_tag;
+      sct_head_idx_q   <= sct_hit_idx;
+      sct_head_addr_q  <= sct_ram_hit_addr;
+      sct_head_vaddr_q <= coherent_hit_vaddr;
+      sct_head_size_q  <= sct_hit_size;
+    end
+  end
 
 `ifdef FORMAL
 `ifdef SC_HEAD_QUERY_LOCAL_PROOF
@@ -502,30 +557,13 @@ module sc_pending_unit #(
     end
   end
 
-  // Per-entry payload fill match omits flush and fault gates; sct_addr_valid
-  // keeps faulted fills hidden, and a flush clears sct_valid on the same edge.
-  logic [ScTableDepth-1:0] sct_fill_capture_oh;
-  always_comb begin
-    for (int i = 0; i < ScTableDepth; i++) begin
-      sct_fill_capture_oh[i] = i_sct_addr_fill_capture_valid && sct_valid[i] &&
-          !sct_addr_valid[i] && (sct_tag[i] == i_sct_addr_fill_tag);
-    end
-  end
-
-  // SC tag, size, and address capture (no reset; gated by the alloc one-hot),
-  // plus the MMU's later PA fill under active translation. Fill targets valid
-  // entries and allocation targets free entries, so sct_valid selects the
-  // address source directly without pulling issue controls onto the data pin.
+  // SC tag and size capture (no reset; gated by the alloc one-hot). Physical
+  // addresses are written into u_sct_addr_ram above.
   always_ff @(posedge i_clk) begin
     for (int i = 0; i < ScTableDepth; i++) begin
       if (sct_payload_alloc && sct_free_oh[i]) begin
         sct_tag[i] <= o_mem_rs_issue.rob_tag;
         sct_size[i] <= (o_mem_rs_issue.mem_size == riscv_pkg::MEM_SIZE_DOUBLE) ? 3'd3 : 3'd2;
-      end
-      if (sct_fill_capture_oh[i] || (sct_payload_alloc && sct_free_oh[i])) begin
-        // SC has no immediate: dispatch supplies imm==0, so src1 is its address.
-        sct_addr[i] <= sct_valid[i] ? i_sct_addr_fill_addr :
-            o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
       end
     end
   end

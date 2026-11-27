@@ -1322,7 +1322,14 @@ FORMAL_TARGETS = [
         "atomic scalar entry or one with an unknown address, unknown vector range, "
         "or overlap. A settled hold has such a cause in either queue. The cleanup "
         "covers forbid head advancement on rollback edges",
-        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "vhold_lq_cover", "cover"),
+        tasks=(
+            "vhold_lq_bmc",
+            "vhold_sq_bmc",
+            "vhold_sq_cursor_bmc",
+            "vhold_lq_cover",
+            "cover",
+            "vhold_sq_cursor_cover",
+        ),
     ),
     FormalTarget(
         "vec_vmt.sby",
@@ -3908,8 +3915,16 @@ SBY_TASKS = [
         "Vector range holds with the store queue's per-entry addresses, 8 frames.",
     ),
     (
+        "vhold_sq_cursor_bmc",
+        "Vector range holds with cursor-only overlap checks for the store queue, 8 frames.",
+    ),
+    (
         "vhold_lq_cover",
         "Vector range-hold reachability with the load queue's address-update port, 16 frames.",
+    ),
+    (
+        "vhold_sq_cursor_cover",
+        "Vector range-hold reachability with cursor-only overlap checks for the store queue, 16 frames.",
     ),
     (
         "vmt_bmc",
@@ -6895,7 +6910,7 @@ TWIN_COMPARISONS = {
     ),
     ("store_queue_twin", "sq_twin"): TwinComparison(
         primitive_points=104,
-        all_points=13959,
+        all_points=12253,
         top="store_queue",
         gold_inputs=(
             "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
@@ -6906,17 +6921,17 @@ TWIN_COMPARISONS = {
             "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
             "vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv",
         ),
-        registers=166,
+        registers=170,
         clock="i_clk",
-        gold_only_free=504,
-        gate_only_free=504,
+        gold_only_free=324,
+        gate_only_free=324,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
         initialized_nets=32,
     ),
     ("store_queue_twin", "sq_twin_cpu"): TwinComparison(
         primitive_points=104,
-        all_points=14880,
+        all_points=12262,
         top="store_queue",
         gold_inputs=(
             "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
@@ -6931,17 +6946,17 @@ TWIN_COMPARISONS = {
             "chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 "
             "-set CACHE_NORMAL_MEMORY 1 store_queue",
         ),
-        registers=170,
+        registers=174,
         clock="i_clk",
-        gold_only_free=507,
-        gate_only_free=507,
+        gold_only_free=327,
+        gate_only_free=327,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
         initialized_nets=32,
     ),
     ("coherence_l1d_twin", "l1d_twin_single"): TwinComparison(
         primitive_points=9,
-        all_points=31351,
+        all_points=31352,
         top="coherence_l1d",
         gold_inputs=(
             *L1D_TWIN_GOLD_READS,
@@ -6951,7 +6966,7 @@ TWIN_COMPARISONS = {
             *L1D_TWIN_GATE_READS,
             "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 coherence_l1d",
         ),
-        registers=298,
+        registers=299,
         clock="i_clk",
         paired_free=467,
         gold_only_free=103,
@@ -6964,7 +6979,7 @@ TWIN_COMPARISONS = {
     ),
     ("coherence_l1d_twin", "l1d_twin_multi"): TwinComparison(
         primitive_points=12,
-        all_points=40268,
+        all_points=40269,
         top="coherence_l1d",
         gold_inputs=(
             *L1D_TWIN_GOLD_READS,
@@ -6974,7 +6989,7 @@ TWIN_COMPARISONS = {
             *L1D_TWIN_GATE_READS,
             "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 3 coherence_l1d",
         ),
-        registers=333,
+        registers=334,
         clock="i_clk",
         paired_free=547,
         gold_only_free=52,
@@ -6987,7 +7002,7 @@ TWIN_COMPARISONS = {
     ),
     ("coherence_l1d_twin", "l1d_twin_stream"): TwinComparison(
         primitive_points=14,
-        all_points=62326,
+        all_points=62327,
         top="coherence_l1d",
         gold_inputs=(
             *L1D_TWIN_GOLD_READS,
@@ -6997,7 +7012,7 @@ TWIN_COMPARISONS = {
             *L1D_TWIN_GATE_READS,
             "chparam -set CACHE_BYTES 64 -set WAYS 1 -set TAG_BITS 2 -set MISSES 8 -set STREAM_PREFETCH 1 coherence_l1d",
         ),
-        registers=432,
+        registers=433,
         clock="i_clk",
         paired_free=579,
         gold_only_free=56,

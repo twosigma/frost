@@ -1155,6 +1155,8 @@
   "vec_hold_rows:vhold_lq_bmc": [],
   "vec_hold_rows:vhold_lq_cover": [],
   "vec_hold_rows:vhold_sq_bmc": [],
+  "vec_hold_rows:vhold_sq_cursor_bmc": [],
+  "vec_hold_rows:vhold_sq_cursor_cover": [],
   "vec_lmul_legality_equiv:bmc": ["design 0 read 3: read_verilog -formal -DSYNTHESIS -DVEC_LMUL_LEGALITY_LOCAL_PROOF -sv dispatch.sv"],
   "vec_lmul_legality_equiv:cover": ["design 0 read 3: read_verilog -formal -DVEC_DISPATCH_LEGALITY_LOCAL_PROOF -sv vec_dispatch_legality.sv"],
   "vec_lmul_legality_equiv:prove": ["design 0 read 3: read_verilog -formal -DVEC_DISPATCH_LEGALITY_LOCAL_PROOF -sv vec_dispatch_legality.sv"],
