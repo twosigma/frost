@@ -3107,7 +3107,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="strings_test",
         nic_mac_clocks=False,
-        description="String, character, and integer-conversion library checks",
+        description=(
+            "String, character, and integer-conversion library checks, including "
+            "memcpy and memset at block-edge lengths and every offset 0 to 7"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),
     ),
     "ras_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
