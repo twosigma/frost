@@ -74,6 +74,33 @@ def elf_segments(path: Path) -> list[tuple[int, bytes]]:
 class InstructionTrace:
     """Capture a complete window, with binary and predictor provenance."""
 
+    # Explicit leaves let the static VPI audit check every required signal.
+    CAPTURE_PATHS = (
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.flush_pipeline",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.dbg_pipeline_stall",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.gen_decoded_queue.u_queue.accept",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_redirect",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_redirect_slot2",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_redirect_taken",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_redirect_target",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.from_pd_to_id",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.from_pd_to_id_2",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_stage_inst.pd_itt_redirect_r",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_stage_inst.pd_itt_redirect_2_r",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_stage_inst.pd_backing_redirect_r",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.pd_stage_inst.pd_backing_redirect_2_r",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.from_id_to_ex",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.from_id_to_ex_2",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.decoded_packet",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.decoded_packet_2",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.rob_alloc_req",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.rob_alloc_req_2",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.rob_alloc_resp",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.rob_alloc_resp_2",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.rob_commit_comb",
+        "cpu_and_memory_subsystem.cpu.hart.cpu_inst.rob_commit_comb_2",
+    )
+
     def __init__(
         self, dut: Any, path: Path, program: Path, identity: dict[str, Any]
     ) -> None:
@@ -88,33 +115,13 @@ class InstructionTrace:
             for name in ("sw.elf", "sw.bin")
         }
         self.handles: dict[str, Any] = {}
-        names = [
-            "flush_pipeline",
-            "dbg_pipeline_stall",
-            "gen_decoded_queue.u_queue.accept",
-            "pd_redirect",
-            "pd_redirect_slot2",
-            "pd_redirect_taken",
-            "pd_redirect_target",
-            "from_pd_to_id",
-            "from_pd_to_id_2",
-            "pd_stage_inst.pd_itt_redirect_r",
-            "pd_stage_inst.pd_itt_redirect_2_r",
-            "pd_stage_inst.pd_backing_redirect_r",
-            "pd_stage_inst.pd_backing_redirect_2_r",
-        ]
-        for suffix in ("", "_2"):
-            names += [
-                f"from_id_to_ex{suffix}",
-                f"decoded_packet{suffix}",
-                f"rob_alloc_req{suffix}",
-                f"rob_alloc_resp{suffix}",
-                f"rob_commit_comb{suffix}",
-            ]
-        for name in names:
-            handle = _signal(dut, f"{CORE_PATH}.{name}")
+        for signal_path in self.CAPTURE_PATHS:
+            if not signal_path.startswith(CORE_PATH + "."):
+                raise AssertionError("instruction and aggregate capture roots differ")
+            handle = _signal(dut, signal_path)
             if handle is None:
-                raise AssertionError(f"instruction capture needs {CORE_PATH}.{name}")
+                raise AssertionError(f"instruction capture needs {signal_path}")
+            name = signal_path.removeprefix(CORE_PATH + ".").replace(".", "__")
             self.handles[name] = handle
         for name, layout in (
             ("rob_commit_comb", COMMIT_FIELDS),
@@ -162,7 +169,7 @@ class InstructionTrace:
         # Accept precedes pop in this observer so empty bypass and concurrent
         # push/pop both retain the RTL's bundle order. A held producer is accepted
         # only once, as qualified by the queue's consumed_q state.
-        if self.read("gen_decoded_queue.u_queue.accept"):
+        if self.read("gen_decoded_queue__u_queue__accept"):
             if len(self.producer) != 2:
                 raise AssertionError(
                     "instruction capture: accepted bundle has no producer"
@@ -234,9 +241,9 @@ class InstructionTrace:
         }
         if self.read("pd_redirect") and self.read("pd_redirect_slot2") == slot:
             tier = "pd_direction"
-            if self.read(f"pd_stage_inst.pd_itt_redirect{suffix}_r"):
+            if self.read(f"pd_stage_inst__pd_itt_redirect{suffix}_r"):
                 tier = "pd_ittage"
-            elif self.read(f"pd_stage_inst.pd_backing_redirect{suffix}_r"):
+            elif self.read(f"pd_stage_inst__pd_backing_redirect{suffix}_r"):
                 tier = "pd_backing"
             prediction = {
                 **prediction,

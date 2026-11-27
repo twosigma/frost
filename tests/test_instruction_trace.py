@@ -202,7 +202,7 @@ def allocate(capture: Any, pc: int, insn: int, tag: int, **extra: int) -> None:
 
 def bundle_signals(packets: list[dict[str, int]], tags: list[int]) -> dict[str, int]:
     """Accept and dispatch a bundle through the empty queue bypass."""
-    values = {"gen_decoded_queue.u_queue.accept": 1}
+    values = {"gen_decoded_queue__u_queue__accept": 1}
     for slot, (packet, tag) in enumerate(zip(packets, tags, strict=True)):
         suffix = "_2" if slot else ""
         encoded = packed_structs.pack_struct(cpu_structs.ID_TO_EX_FIELDS, packet)
@@ -301,7 +301,7 @@ def test_prediction_annotations_follow_allocation_and_flush(
     }
     if tier != "pd_direction":
         name = "backing" if tier == "pd_backing" else "itt"
-        values[f"pd_stage_inst.pd_{name}_redirect{suffix}_r"] = 1
+        values[f"pd_stage_inst__pd_{name}_redirect{suffix}_r"] = 1
     drive(cap, **values)
     cap.sample(False)
     packet = {
@@ -351,7 +351,9 @@ def test_same_pc_iterations_keep_prediction_lineage(
     # Allocate the old queue head as the younger override enters ID.
     drive(
         cap,
-        **{k: v for k, v in values.items() if k != "gen_decoded_queue.u_queue.accept"},
+        **{
+            k: v for k, v in values.items() if k != "gen_decoded_queue__u_queue__accept"
+        },
         from_pd_to_id=pd,
         pd_redirect=1,
         pd_redirect_taken=1,
