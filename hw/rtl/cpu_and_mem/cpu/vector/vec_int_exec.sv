@@ -16,7 +16,7 @@
 
 // Committed integer operations outside the single-width ALU path.
 // Single-width and widening integer multiply/multiply-accumulate execute
-// across two 64-bit multiply lanes (128 bits per pipelined beat), skipping
+// through one shared 64-bit multiply lane in pipelined 64-bit beats, skipping
 // register groups and upper beats outside vstart..vl. Integer and
 // widening-sum reductions stream one 64-bit lane per cycle through the
 // pipelined reduction tree. Fixed-point, carry/borrow, widening/narrowing
@@ -28,9 +28,7 @@ module vec_int_exec #(
     parameter int unsigned VLEN = 256,
     localparam int unsigned Lanes = VLEN / 64,
     localparam int unsigned LaneBits = $clog2(Lanes),
-    localparam int unsigned MulLanes = 2,
-    localparam int unsigned MulBeats = Lanes / MulLanes,
-    localparam int unsigned BeatBits = (MulBeats > 1) ? $clog2(MulBeats) : 1,
+    localparam int unsigned WideQuarters = VLEN / 128,
     localparam int unsigned Bytes = VLEN / 8,
     localparam int unsigned ByteBits = $clog2(Bytes),
     localparam int unsigned MaskBits = $clog2(VLEN)
@@ -81,7 +79,6 @@ module vec_int_exec #(
     GM_RD1,
     GM_LAUNCH,
     GM_WAIT,
-    GM_WR_HI,
     GR_RD,
     GR_FEED,
     GR_WAIT
@@ -104,12 +101,12 @@ module vec_int_exec #(
   logic [VLEN-1:0] wdata_q;
   logic [Bytes-1:0] wbe_q;
 
-  // Pipelined 128-bit beat multiply/MAC state
+  // Pipelined 64-bit beat multiply/MAC state
   logic [3:0] g_q, last_g_q;
   logic [4:0] gm_waddr_lo_q;
-  logic [BeatBits-1:0] gm_beat_q, gm_last_beat_q, gm_wr_beat_q;
+  logic [LaneBits-1:0] gm_beat_q, gm_last_beat_q, gm_wr_beat_q;
   logic [1:0] gm_prep_q;
-  logic gm_v0_captured_q, gm_has_hi_q;
+  logic gm_v0_captured_q;
   logic [15:0] gbase_q;
   logic [Bytes-1:0] gm_act_d, gm_act_q, wbe_lo_d, wbe_hi_d, wbe_lo_q, wbe_hi_q;
 
@@ -226,39 +223,37 @@ module vec_int_exec #(
   assign o_raddr = raddr_q;
 
   // Group and beat bounds computed from registered state in PRE / group advance.
-  logic [2:0] epr_shift, epb_shift, epl_shift;
+  logic [2:0] epr_shift, epl_shift;
   logic [3:0] max_g, eff_last_g, next_g;
   logic [15:0] first_g_raw, last_g_raw, vl_m1_beat;
   logic no_body;
   assign epr_shift = 3'(ByteBits) - {1'b0, sew_q};
-  assign epb_shift = 3'd4 - {1'b0, sew_q};
   assign epl_shift = 3'd3 - {1'b0, sew_q};
   assign max_g = lmul_q[2] ? 4'd0 : ((4'd1 << lmul_q[1:0]) - 4'd1);
   assign first_g_raw = vstart_q >> epr_shift;
   assign last_g_raw = (vl_q - 16'd1) >> epr_shift;
-  assign vl_m1_beat = (vl_q - 16'd1) >> epb_shift;
+  assign vl_m1_beat = (vl_q - 16'd1) >> epl_shift;
   assign no_body = (vstart_q >= vl_q) || (first_g_raw > {12'd0, max_g});
   assign eff_last_g = (last_g_raw > {12'd0, max_g}) ? max_g : last_g_raw[3:0];
   assign next_g = g_q + 4'd1;
 
-  logic [BeatBits-1:0] first_last_beat, next_last_beat;
-  assign first_last_beat = (MulBeats == 1) ? BeatBits'(0) :
-      (((first_g_raw[3:0] < eff_last_g) || (last_g_raw > {12'd0, max_g})) ?
-       BeatBits'(MulBeats - 1) : vl_m1_beat[BeatBits-1:0]);
-  assign next_last_beat = (MulBeats == 1) ? BeatBits'(0) :
-      (((next_g < last_g_q) || (last_g_raw > {12'd0, max_g})) ?
-       BeatBits'(MulBeats - 1) : vl_m1_beat[BeatBits-1:0]);
+  logic [LaneBits-1:0] first_last_beat, next_last_beat;
+  assign first_last_beat = ((first_g_raw[3:0] < eff_last_g) || (last_g_raw > {12'd0, max_g})) ?
+      LaneBits'(Lanes - 1) : vl_m1_beat[LaneBits-1:0];
+  assign next_last_beat = ((next_g < last_g_q) || (last_g_raw > {12'd0, max_g})) ?
+      LaneBits'(Lanes - 1) : vl_m1_beat[LaneBits-1:0];
 
   vec_pkg::mul_op_e   mul_op;
   vec_pkg::mask_op_e  mask_op;
   vec_pkg::red_op_e   red_op;
   vec_pkg::extra_op_e fixed_op;
   logic [63:0] mul_x, mul_y, mul_z, mask_a, mask_b, mask_act;
-  logic [MulLanes-1:0] mul_lane_valid, mul_lane_ovalid;
-  logic [MulLanes-1:0][63:0] mul_lane_x, mul_lane_y, mul_lane_z, mul_lane_result;
-  logic [MulLanes-1:0][127:0] mul_lane_wide;
-  logic [127:0] beat_a, beat_b, beat_c, mul_res_128;
-  logic [255:0] wide_256, wide_wa, wide_wb, wide_acc_256;
+  logic mul_lane_valid, mul_ovalid;
+  logic [63:0] mul_lane_x, mul_lane_y, mul_lane_z, mul_result;
+  logic [127:0] mul_wide;
+  logic [63:0] beat_a, beat_b, beat_c;
+  logic [127:0] wide_wb, wide_acc_128, wide_res_128;
+  logic wide_hi_sel;
   logic [4:0] gm_waddr_next;
   logic [VLEN-1:0] gm_wdata_next;
   logic [Bytes-1:0] gm_wbe_next;
@@ -269,55 +264,59 @@ module vec_int_exec #(
   logic fixed_sat;
 
   always_comb begin
-    beat_a = i_rdata[0][127:0];
-    beat_b = i_rdata[1][127:0];
-    beat_c = i_rdata[2][127:0];
+    beat_a = i_rdata[0][63:0];
+    beat_b = i_rdata[1][63:0];
+    beat_c = i_rdata[2][63:0];
     if (gm_beat_q != '0) begin
-      for (int b = 0; b < MulBeats; b++) begin
-        if (gm_beat_q == BeatBits'(b)) begin
-          beat_a = regs_q[0][128*b+:128];
-          beat_b = regs_q[1][128*b+:128];
-          beat_c = regs_q[2][128*b+:128];
+      for (int b = 0; b < Lanes; b++) begin
+        if (gm_beat_q == LaneBits'(b)) begin
+          beat_a = regs_q[0][64*b+:64];
+          beat_b = regs_q[1][64*b+:64];
+          beat_c = regs_q[2][64*b+:64];
         end
       end
     end
   end
 
-  assign mul_res_128 = {mul_lane_result[1], mul_lane_result[0]};
-  assign wide_256    = {mul_lane_wide[1], mul_lane_wide[0]};
+  assign wide_hi_sel = gm_wr_beat_q[LaneBits-1];
+  assign wide_res_128 = wide_mac_q ? wide_acc_128 : mul_wide;
+  assign gm_waddr_next = wide_mul_q ? (vd + {g_q[3:0], wide_hi_sel}) : gm_waddr_lo_q;
+  assign gm_wdata_next = wide_mul_q ? {WideQuarters{wide_res_128}} : {Lanes{mul_result}};
 
   if (VLEN == 128) begin : gen_wide_128
-    assign wide_wa = (state == GM_WR_HI) ? {128'd0, regs_q[0][127:0]} : {128'd0, wide_256[127:0]};
-    assign wide_wb = (state == GM_WR_HI) ? {128'd0, i_rdata[2][127:0]} : {128'd0, regs_q[2][127:0]};
-    assign gm_waddr_next = gm_waddr_lo_q;
-    assign gm_wdata_next = wide_mul_q ?
-        (wide_mac_q ? wide_acc_256[127:0] : wide_256[127:0]) : mul_res_128;
-    assign gm_wbe_next = wbe_lo_q;
+    assign wide_wb = wide_hi_sel ? i_rdata[2][127:0] : regs_q[2][127:0];
+    assign gm_wbe_next = wide_mul_q ? (wide_hi_sel ? wbe_hi_q : wbe_lo_q) :
+        (gm_wr_beat_q[0] ? {wbe_lo_q[15:8], 8'd0} : {8'd0, wbe_lo_q[7:0]});
   end else if (VLEN == 256) begin : gen_wide_256
-    assign wide_wa = wide_256;
-    assign wide_wb = gm_wr_beat_q[0] ? i_rdata[2][255:0] : regs_q[2][255:0];
-    assign gm_waddr_next = wide_mul_q ? (vd + {g_q[3:0], gm_wr_beat_q[0]}) : gm_waddr_lo_q;
-    assign gm_wdata_next = wide_mul_q ?
-        (wide_mac_q ? wide_acc_256 : wide_256) : {MulBeats{mul_res_128}};
-    assign gm_wbe_next = wide_mul_q ? (gm_wr_beat_q[0] ? wbe_hi_q : wbe_lo_q) :
-        (gm_wr_beat_q[0] ? {wbe_lo_q[31:16], 16'd0} : {16'd0, wbe_lo_q[15:0]});
-  end else begin : gen_wide_512
-    assign wide_wa = wide_256;
-    assign wide_wb = gm_wr_beat_q[1] ?
-        (gm_wr_beat_q[0] ? i_rdata[2][511:256] : i_rdata[2][255:0]) :
-        (gm_wr_beat_q[0] ? regs_q[2][511:256] : regs_q[2][255:0]);
-    assign gm_waddr_next = wide_mul_q ? (vd + {g_q[3:0], gm_wr_beat_q[1]}) : gm_waddr_lo_q;
-    assign gm_wdata_next = wide_mul_q ?
-        {2{wide_mac_q ? wide_acc_256 : wide_256}} : {MulBeats{mul_res_128}};
+    assign wide_wb = wide_hi_sel ?
+        (gm_wr_beat_q[0] ? i_rdata[2][255:128] : i_rdata[2][127:0]) :
+        (gm_wr_beat_q[0] ? regs_q[2][255:128] : regs_q[2][127:0]);
     always_comb begin
       gm_wbe_next = '0;
       if (wide_mul_q) begin
         if (gm_wr_beat_q[0])
-          gm_wbe_next[63:32] = gm_wr_beat_q[1] ? wbe_hi_q[63:32] : wbe_lo_q[63:32];
-        else gm_wbe_next[31:0] = gm_wr_beat_q[1] ? wbe_hi_q[31:0] : wbe_lo_q[31:0];
+          gm_wbe_next[31:16] = wide_hi_sel ? wbe_hi_q[31:16] : wbe_lo_q[31:16];
+        else gm_wbe_next[15:0] = wide_hi_sel ? wbe_hi_q[15:0] : wbe_lo_q[15:0];
       end else begin
-        for (int b = 0; b < MulBeats; b++) begin
-          if (gm_wr_beat_q == BeatBits'(b)) gm_wbe_next[16*b+:16] = wbe_lo_q[16*b+:16];
+        for (int b = 0; b < Lanes; b++) begin
+          if (gm_wr_beat_q == LaneBits'(b)) gm_wbe_next[8*b+:8] = wbe_lo_q[8*b+:8];
+        end
+      end
+    end
+  end else begin : gen_wide_512
+    always_comb begin
+      wide_wb = '0;
+      gm_wbe_next = '0;
+      for (int q = 0; q < WideQuarters; q++) begin
+        if (gm_wr_beat_q[1:0] == 2'(q)) begin
+          wide_wb = wide_hi_sel ? i_rdata[2][128*q+:128] : regs_q[2][128*q+:128];
+          if (wide_mul_q)
+            gm_wbe_next[16*q+:16] = wide_hi_sel ? wbe_hi_q[16*q+:16] : wbe_lo_q[16*q+:16];
+        end
+      end
+      if (!wide_mul_q) begin
+        for (int b = 0; b < Lanes; b++) begin
+          if (gm_wr_beat_q == LaneBits'(b)) gm_wbe_next[8*b+:8] = wbe_lo_q[8*b+:8];
         end
       end
     end
@@ -357,34 +356,33 @@ module vec_int_exec #(
       endcase
     end
 
-    for (int l = 0; l < MulLanes; l++) begin
+    begin
       logic [63:0] la, lb, lc;
-      la = beat_a[64*l+:64];
-      lb = use_scalar ? scalar_rep_q : beat_b[64*l+:64];
-      lc = beat_c[64*l+:64];
-      mul_lane_valid[l] = (state == GM_LAUNCH) || ((l == 0) && (state == LAUNCH) && fractional);
-      if ((l == 0) && (state == LAUNCH) && fractional) begin
-        mul_lane_x[l] = mul_x;
-        mul_lane_y[l] = mul_y;
-        mul_lane_z[l] = mul_z;
+      la = beat_a;
+      lb = use_scalar ? scalar_rep_q : beat_b;
+      lc = beat_c;
+      mul_lane_valid = (state == GM_LAUNCH) || ((state == LAUNCH) && fractional);
+      if ((state == LAUNCH) && fractional) begin
+        mul_lane_x = mul_x;
+        mul_lane_y = mul_y;
+        mul_lane_z = mul_z;
       end else if (wide_mul && f6 == 6'h3f) begin
-        mul_lane_x[l] = lb;
-        mul_lane_y[l] = la;
-        mul_lane_z[l] = 64'd0;
+        mul_lane_x = lb;
+        mul_lane_y = la;
+        mul_lane_z = 64'd0;
       end else if (!wide_mul && (f6 == 6'h29 || f6 == 6'h2b)) begin
-        mul_lane_x[l] = lc;
-        mul_lane_y[l] = lb;
-        mul_lane_z[l] = la;
+        mul_lane_x = lc;
+        mul_lane_y = lb;
+        mul_lane_z = la;
       end else begin
-        mul_lane_x[l] = la;
-        mul_lane_y[l] = lb;
-        mul_lane_z[l] = lc;
+        mul_lane_x = la;
+        mul_lane_y = lb;
+        mul_lane_z = lc;
       end
     end
 
-    for (int l = 0; l < 4; l++) begin
-      wide_acc_256[64*l+:64] = wide_add64(wide_wa[64*l+:64], wide_wb[64*l+:64], sew_q);
-    end
+    wide_acc_128[63:0]   = wide_add64(mul_wide[63:0], wide_wb[63:0], sew_q);
+    wide_acc_128[127:64] = wide_add64(mul_wide[127:64], wide_wb[127:64], sew_q);
 
     case (f6[2:0])
       0: mask_op = vec_pkg::VK_ANDN;
@@ -475,21 +473,19 @@ module vec_int_exec #(
       ((state == LAUNCH) && !simple_op && !mask_op_sel && !reduce_op &&
        !multiply_op && !divide_op);
 
-  for (genvar l = 0; l < MulLanes; l++) begin : gen_mul
-    vec_mul_lane u_mul (
-        .i_clk(i_clk),
-        .i_rst(i_rst),
-        .i_valid(mul_lane_valid[l]),
-        .i_op(mul_op),
-        .i_sew(vec_pkg::sew_e'(sew_q)),
-        .i_x(mul_lane_x[l]),
-        .i_y(mul_lane_y[l]),
-        .i_z(mul_lane_z[l]),
-        .o_valid(mul_lane_ovalid[l]),
-        .o_result(mul_lane_result[l]),
-        .o_wide(mul_lane_wide[l])
-    );
-  end
+  vec_mul_lane u_mul (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_valid(mul_lane_valid),
+      .i_op(mul_op),
+      .i_sew(vec_pkg::sew_e'(sew_q)),
+      .i_x(mul_lane_x),
+      .i_y(mul_lane_y),
+      .i_z(mul_lane_z),
+      .o_valid(mul_ovalid),
+      .o_result(mul_result),
+      .o_wide(mul_wide)
+  );
   vec_mask_unit #(
       .MAX_BITS(VLEN)
   ) u_mask (
@@ -626,22 +622,17 @@ module vec_int_exec #(
         GM_RD0: state <= GM_RD1;
         GM_RD1: state <= GM_LAUNCH;
         GM_LAUNCH: begin
+          if (mul_ovalid) we_q <= 1'b1;
           if (gm_beat_q == '0) gm_prep_q <= 2'd1;
           if (gm_beat_q == gm_last_beat_q) state <= GM_WAIT;
         end
         GM_WAIT: begin
-          if (mul_lane_ovalid[0]) begin
+          if (mul_ovalid) begin
             we_q <= 1'b1;
             if (gm_wr_beat_q == gm_last_beat_q) begin
-              if ((MulBeats == 1) && gm_has_hi_q) state <= GM_WR_HI;
-              else if (g_q < last_g_q) state <= GM_RD0;
-              else state <= IDLE;
+              state <= (g_q < last_g_q) ? GM_RD0 : IDLE;
             end
           end
-        end
-        GM_WR_HI: begin
-          we_q  <= 1'b1;
-          state <= (g_q < last_g_q) ? GM_RD0 : IDLE;
         end
         GR_RD: state <= GR_FEED;
         GR_FEED: if (red_lane_q == red_last_lane_q) state <= GR_WAIT;
@@ -665,7 +656,7 @@ module vec_int_exec #(
         GEXTRACT: state <= LAUNCH;
         LAUNCH: state <= simple_op ? FORMAT : WAIT_RESULT;
         WAIT_RESULT: begin
-          if (mul_lane_ovalid[0]) state <= PRODUCT;
+          if (mul_ovalid) state <= PRODUCT;
           else if (mask_valid || fixed_valid || div_valid) state <= FORMAT;
         end
         PRODUCT: state <= ROUND_START;
@@ -731,8 +722,6 @@ module vec_int_exec #(
           gm_wr_beat_q <= '0;
           gbase_q <= {12'd0, first_g_raw[3:0]} << epr_shift;
           gm_waddr_lo_q <= vd + (wide_mul ? {first_g_raw[3:0], 1'b0} : 5'(first_g_raw[3:0]));
-          gm_has_hi_q <= (MulBeats == 1) && wide_mul &&
-              ((({12'd0, first_g_raw[3:0]} << epr_shift) + (16'(Bytes >> 1) >> sew_q)) < vl_q);
           scalar_rep_q <= replicate64(scalar_q, sew_q);
           gm_v0_captured_q <= 1'b0;
           if (first_g_raw != 16'd0) begin
@@ -756,47 +745,32 @@ module vec_int_exec #(
           end
           if (wide_mac_q) raddr_q[2] <= vd + {g_q[3:0], 1'b1};
         end
-        if (gm_beat_q != gm_last_beat_q) gm_beat_q <= gm_beat_q + BeatBits'(1);
+        if (gm_beat_q != gm_last_beat_q) gm_beat_q <= gm_beat_q + LaneBits'(1);
+        if (mul_ovalid) begin
+          waddr_q      <= gm_waddr_next;
+          wbe_q        <= gm_wbe_next;
+          wdata_q      <= gm_wdata_next;
+          gm_wr_beat_q <= gm_wr_beat_q + LaneBits'(1);
+        end
       end
       GM_WAIT: begin
-        if (mul_lane_ovalid[0]) begin
+        if (mul_ovalid) begin
           waddr_q <= gm_waddr_next;
           wbe_q   <= gm_wbe_next;
           wdata_q <= gm_wdata_next;
-          if ((MulBeats == 1) && wide_mul_q) regs_q[0][127:0] <= wide_256[255:128];
           if (gm_wr_beat_q != gm_last_beat_q) begin
-            gm_wr_beat_q <= gm_wr_beat_q + BeatBits'(1);
-          end else if (!((MulBeats == 1) && gm_has_hi_q) && (g_q < last_g_q)) begin
+            gm_wr_beat_q <= gm_wr_beat_q + LaneBits'(1);
+          end else if (g_q < last_g_q) begin
             g_q <= next_g;
             gm_last_beat_q <= next_last_beat;
             gm_beat_q <= '0;
             gm_wr_beat_q <= '0;
             gbase_q <= {12'd0, next_g} << epr_shift;
             gm_waddr_lo_q <= vd + (wide_mul_q ? {next_g, 1'b0} : 5'(next_g));
-            gm_has_hi_q <= (MulBeats == 1) && wide_mul_q &&
-                ((({12'd0, next_g} << epr_shift) + (16'(Bytes >> 1) >> sew_q)) < vl_q);
             raddr_q[0] <= vs2 + 5'(next_g);
             raddr_q[1] <= vs1 + 5'(next_g);
             raddr_q[2] <= vd + (wide_mul_q ? {next_g, 1'b0} : 5'(next_g));
           end
-        end
-      end
-      GM_WR_HI: begin
-        waddr_q <= vd + {g_q[3:0], 1'b1};
-        wbe_q   <= wbe_hi_q;
-        wdata_q <= wide_mac_q ? VLEN'(wide_acc_256[127:0]) : regs_q[0];
-        if (g_q < last_g_q) begin
-          g_q <= next_g;
-          gm_last_beat_q <= next_last_beat;
-          gm_beat_q <= '0;
-          gm_wr_beat_q <= '0;
-          gbase_q <= {12'd0, next_g} << epr_shift;
-          gm_waddr_lo_q <= vd + (wide_mul_q ? {next_g, 1'b0} : 5'(next_g));
-          gm_has_hi_q <= (MulBeats == 1) && wide_mul_q &&
-              ((({12'd0, next_g} << epr_shift) + (16'(Bytes >> 1) >> sew_q)) < vl_q);
-          raddr_q[0] <= vs2 + 5'(next_g);
-          raddr_q[1] <= vs1 + 5'(next_g);
-          raddr_q[2] <= vd + (wide_mul_q ? {next_g, 1'b0} : 5'(next_g));
         end
       end
       GR_FEED: begin
@@ -861,9 +835,9 @@ module vec_int_exec #(
       end
       LAUNCH: if (simple_op) result_q <= scalar_move ? cut(scalar_q, sew_q) : a_q;
       WAIT_RESULT: begin
-        if (mul_lane_ovalid[0]) begin
-          result_q  <= mul_lane_result[0];
-          product_q <= mul_lane_wide[0];
+        if (mul_ovalid) begin
+          result_q  <= mul_result;
+          product_q <= mul_wide;
         end else if (mask_valid) begin
           result_q <= mask_result;
         end else if (fixed_valid) begin
@@ -912,6 +886,8 @@ module vec_int_exec #(
     if (ie_reset_seen_q && !i_rst) begin
       assert (!red_last_sr_q[5] || red_valid)
       else $error("vec_int_exec: reduction final strobe misaligned with u_red.o_valid");
+      assert (!(state == GM_LAUNCH && mul_ovalid && (gm_wr_beat_q == gm_last_beat_q)))
+      else $error("vec_int_exec: final multiply beat completed during GM_LAUNCH");
     end
   end
 `endif
