@@ -240,9 +240,10 @@ module vec_head_mmu #(
     HM_RUN_SETTLE,
     HM_RUN_LAUNCH,
     HM_RUN_WAIT,
-    // An indexed element's index: the VRF read, then the address
+    // An indexed element's index: the VRF read, capture, then address add
     HM_RUN_IDX,
     HM_RUN_IDX_CAP,
+    HM_RUN_IDX_ADD,
     // A fault-only-first load that stops before a faulting element > 0
     HM_RUN_TRIM,
     HM_RUN_TRIM_SETTLE
@@ -280,6 +281,7 @@ module vec_head_mmu #(
   logic [XLEN-1:0] seg_last_q;
   logic [15:0] run_elem_q;
   logic [XLEN-1:0] run_addr_q, stride_q;
+  logic [VLEN-1:0] idx_vrf_q;
   logic vs_dirty_q;
 
   // Decoded instruction attributes & active mask
@@ -577,7 +579,7 @@ module vec_head_mmu #(
     idx_word = '0;
     for (int w = 0; w < VLEN / 64; w++) begin
       if (idx_byte[Log2VlenBytes-1:3] == (Log2VlenBytes - 3)'(w)) begin
-        idx_word = i_vrf_read_data[64*w+:64];
+        idx_word = idx_vrf_q[64*w+:64];
       end
     end
     idx_shifted = idx_word >> {idx_byte[2:0], 3'b000};
@@ -1240,7 +1242,9 @@ module vec_head_mmu #(
             end
           end
 
-          HM_RUN_IDX_CAP: begin
+          HM_RUN_IDX_CAP: state_q <= HM_RUN_IDX_ADD;
+
+          HM_RUN_IDX_ADD: begin
             run_addr_q <= rs1_q + idx_value;
             state_q    <= HM_RUN_ADDR;
           end
@@ -1249,6 +1253,12 @@ module vec_head_mmu #(
         endcase
       end
     end
+  end
+
+  // Register the raw VRF index word in fabric before word selection and the
+  // 64-bit base addition (reset-free).
+  always_ff @(posedge i_clk) begin
+    if (state_q == HM_RUN_IDX_CAP) idx_vrf_q <= i_vrf_read_data;
   end
 
   // --------------------------------------------------------------------------
@@ -1263,11 +1273,12 @@ module vec_head_mmu #(
   assign read_stride_now = !cancel_outputs &&
                            ((state_q == HM_STRIDE_RD) || (state_q == HM_STRIDE_CAP));
   assign o_rf_read_en = read_regs_now || read_stride_now;
-  assign o_rf_read_addr = read_stride_now ? dec_umop : dec_rs1;
+  assign o_rf_read_addr = ((state_q == HM_STRIDE_RD) || (state_q == HM_STRIDE_CAP)) ?
+      dec_umop : dec_rs1;
   logic read_index_now;
   assign read_index_now = !cancel_outputs && (state_q == HM_RUN_IDX);
   assign o_vrf_read_en = read_regs_now || read_index_now;
-  assign o_vrf_read_addr = read_index_now ? idx_reg : 5'd0;
+  assign o_vrf_read_addr = (state_q == HM_RUN_IDX) ? idx_reg : 5'd0;
 
   assign o_walk_req_valid = !cancel_outputs && head_matches_q &&
                             ((state_q == HM_WALK_REQ_P0) || (state_q == HM_WALK_REQ_P1));
