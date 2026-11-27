@@ -8062,18 +8062,20 @@ def test_check_count_guards_specify_flavor() -> None:
 
 
 def has_property_count_guard(commands: list[sby_config.ParsedCommand]) -> bool:
-    """Report whether parsed commands include an assertion or cover count guard."""
+    """Report whether parsed commands include a nonzero property count guard."""
     for cmd in commands:
         if cmd.form.id not in ("select_assert_count", "select_assert_min"):
             continue
+        if int(cmd.args[2]) <= 0:
+            continue
         selection = cmd.args[3:]
-        if "t:$check" in selection and any(
-            tok in ("r:FLAVOR=assert", "r:FLAVOR=cover") for tok in selection
+        if (
+            "t:$check" in selection
+            and "%i" in selection
+            and any(tok in ("r:FLAVOR=assert", "r:FLAVOR=cover") for tok in selection)
         ):
             return True
         if "t:$assert" in selection or "t:$cover" in selection:
-            return True
-        if any(tok.startswith(("c:", "@")) for tok in selection):
             return True
     return False
 
@@ -8103,19 +8105,26 @@ def test_shared_opening_scripts_have_count_guards(tmp_path: Path) -> None:
             lacking.append(f"{sby_path.name} {task}")
     assert not lacking, lacking
 
-    assert not has_property_count_guard(
-        sby_config.parse_script_lines(
-            ["select -assert-count 2 t:$check r:FLAVOR=assume %i"]
+    for rejected in (
+        "select -assert-count 2 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 1 @watch_choice",
+        "select -assert-count 3 c:p_equiv_*",
+        "select -assert-min 0 t:$check r:FLAVOR=assert %i",
+        "select -assert-min 0 t:$assert",
+        "select -assert-count 0 t:$check r:FLAVOR=assert %i",
+    ):
+        assert not has_property_count_guard(
+            sby_config.parse_script_lines([rejected])
+        ), rejected
+    for accepted in (
+        "select -assert-count 2 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 2 t:$cover",
+        "select -assert-min 1 t:$assert",
+        "select -assert-min 1 t:$check r:FLAVOR=assert %i",
+    ):
+        assert has_property_count_guard(sby_config.parse_script_lines([accepted])), (
+            accepted
         )
-    )
-    assert has_property_count_guard(
-        sby_config.parse_script_lines(
-            ["select -assert-count 2 t:$check r:FLAVOR=assert %i"]
-        )
-    )
-    assert has_property_count_guard(
-        sby_config.parse_script_lines(["select -assert-count 2 t:$cover"])
-    )
     (tmp_path / UNDEFINED_OPENING_FILE).write_bytes(
         (formal / UNDEFINED_OPENING_FILE).read_bytes()
     )

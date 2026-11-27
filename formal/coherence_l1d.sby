@@ -442,8 +442,10 @@ covers: chformal -cover -remove c:c_path_*
 pathcovers: select -assert-count 6 c:c_path_*
 pathcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_path_* %d
 pathcovers: chformal -assert -remove
+pathcovers: select -assert-count 6 t:$check r:FLAVOR=cover %i
 streamcovers: select -assert-count 4 c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit
 streamcovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:*p_stream_two c:*p_stream_attach c:*p_stream_lr_admit c:*p_stream_amo_admit %u %u %u %d
+streamcovers: select -assert-count 4 t:$check r:FLAVOR=cover %i
 snapcover: select -assert-count 5 c:c_sc_wb_* c:c_snapshot_* %u t:$check %i r:FLAVOR=cover %i
 snapcover: chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_sc_wb_* c:c_snapshot_* %u %d
 snapcover: select -assert-count 5 t:$check r:FLAVOR=cover %i
@@ -503,14 +505,18 @@ fhcover: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_full_hold_cover_
 fhcover: chformal -assert -remove
 payload: select -assert-count 5 c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5
 payload: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_1 c:p_store_data_2 c:p_store_data_3 c:p_store_data_4 c:p_store_data_5 %u %u %u %u %d
+payload: select -assert-count 5 t:$check r:FLAVOR=assert %i
 arraydata: select -assert-count 4 c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known
 arraydata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_6 c:p_store_data_7 c:p_store_data_path c:p_store_data_path_known %u %u %u %d
+arraydata: select -assert-count 4 t:$check r:FLAVOR=assert %i
 grantdata: select -assert-count 3 c:p_store_data_8 c:p_store_data_9 c:p_store_data_10
 grantdata: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_data_8 c:p_store_data_9 c:p_store_data_10 %u %u %d
+grantdata: select -assert-count 3 t:$check r:FLAVOR=assert %i
 answer: select -assert-count 11 c:p_answer_* t:$check %i r:FLAVOR=assert %i
 answer: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_answer_* %d
 turncovers: select -assert-count 4 c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn c:p_stream_cancel_turn
 turncovers: chformal -cover -remove t:$check r:FLAVOR=cover %i c:p_stream_read_turn c:p_stream_empty_turn c:p_stream_probe_turn c:p_stream_cancel_turn %u %u %u %d
+turncovers: select -assert-count 4 t:$check r:FLAVOR=cover %i
 local: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_local_* c:p_atomic_context_identity c:p_atomic_read_identity c:p_selected_kind %u %u %u %d
 local: chformal -assert -remove c:p_local_probe_data
 # Each owned task proves the local atomic lemmas, the read ownership lemmas and
