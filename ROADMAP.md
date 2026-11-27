@@ -497,15 +497,15 @@ an ASIC, the RTL also needs:
 
 ## Single-core performance
 
-FROST runs CoreMark at 4.89 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
-The next goal is 5 CoreMark/MHz. Work toward it is paused while memory
-performance on the coherent hierarchy and timing margin at the target clock
-are restored. A score counts only from a run of at least ten seconds that
+FROST runs CoreMark at 5.24 CoreMark/MHz, past the goals of 4 and 5
+CoreMark/MHz. Further single-core work is paused while memory performance
+on the coherent hierarchy and timing margin at the target clock are
+restored. A score counts only from a run of at least ten seconds that
 passes the CRC checks for both official seed sets, with the compiler flags,
 the `sw.bin` hash, and memory and cache settings recorded; see the
 [CoreMark README](sw/apps/coremark/README.md).
 
-5 CoreMark/MHz is 200,000 cycles per iteration, against about 205,000 today.
+5 CoreMark/MHz is 200,000 cycles per iteration; FROST now takes about 190,800.
 A model driven by the CoreMark instruction trace gives these estimates for
 each change on its own, for the design before load results woke integer
 consumers early and before Zbc. It treats the BRAM as attached directly to
@@ -526,12 +526,12 @@ baseline is 4.27:
 | Word multiplies two cycles faster | 4.29 |
 | A 64-entry ROB, 16 checkpoints, and 16-entry load and store queues | 4.28 |
 
-No single change reaches 5. Perfect prediction alone stops near 4.7, and the
-back end as built stops near 5.1 even with perfect prediction and ideal fetch.
-Reaching 5 takes about three changes together: two-instruction straight-line
-fetch, a cycle off load-to-use latency, and half the remaining mispredictions
-give about 5.1, as does the same set with back-to-back integer issue in place
-of the load-latency cut.
+For that design, no single change reaches 5. Perfect prediction alone stops
+near 4.7, and the back end as built stops near 5.1 even with perfect
+prediction and ideal fetch. Reaching 5 takes about three changes together:
+two-instruction straight-line fetch, a cycle off load-to-use latency, and half
+the remaining mispredictions give about 5.1, as does the same set with
+back-to-back integer issue in place of the load-latency cut.
 
 Priorities, guided by the performance counters and timing reports:
 
