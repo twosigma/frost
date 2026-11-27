@@ -33,6 +33,8 @@ module vcu118_frost #(
     parameter bit MISALIGNED_HW = 1'b1,
     // Optional vector unit (VLEN 256) and misa.V advertisement.
     parameter bit VECTOR = 1'b0,
+    // Vector register length in bits with VECTOR (build.py --vlen: 128, 256 or 512).
+    parameter int unsigned VLEN = 256,
     parameter bit VECTOR_ADVERTISE = 1'b0
 ) (
     // Differential system clock SYSCLK1_300 (G31 / F31, Bank 47 in SLR1)
@@ -295,7 +297,7 @@ module vcu118_frost #(
       .PERF_COUNTERS     (PERF_COUNTERS),
       .MISALIGNED_HW     (MISALIGNED_HW && (ENABLE_CACHED_TIER != 0)),
       .VECTOR            (VECTOR),
-      .VLEN              (256),
+      .VLEN              (VLEN),
       .VECTOR_ADVERTISE  (VECTOR_ADVERTISE),
       .RAW_LOOPBACK      (0),
       .ENABLE_1G_ETH     (1)

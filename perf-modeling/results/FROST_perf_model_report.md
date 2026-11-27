@@ -17,12 +17,12 @@ This is an evidence-backed *model recommendation*, not a claim that the RTL alre
 
 | Candidate | Geomean cycles / baseline | Mean cycles | Mean IPC | L2-MSHR backpressure |
 |---|---:|---:|---:|---:|
-| l2_mshr_12 | 0.993 | 38730.0 | 0.253 | 0 |
-| l2_mshr_12_wb_4 | 0.993 | 38730.0 | 0.253 | 0 |
-| rtl_baseline | 1.000 | 38864.5 | 0.252 | 1556 |
-| l2_mshr_8 | 1.000 | 38864.5 | 0.252 | 1556 |
-| l2_mshr_8_wb_4 | 1.000 | 38864.5 | 0.252 | 1556 |
-| l2_mshr_8_prefetch_off | 1.035 | 39195.8 | 0.213 | 1553 |
+| l2_mshr_12 | 0.993 | 38714.8 | 0.256 | 0 |
+| l2_mshr_12_wb_4 | 0.993 | 38714.8 | 0.256 | 0 |
+| rtl_baseline | 1.000 | 38849.3 | 0.255 | 1556 |
+| l2_mshr_8 | 1.000 | 38849.3 | 0.255 | 1556 |
+| l2_mshr_8_wb_4 | 1.000 | 38849.3 | 0.255 | 1556 |
+| l2_mshr_8_prefetch_off | 1.046 | 39270.3 | 0.204 | 1553 |
 
 | Workload | Baseline cycles | Recommended cycles | Delta |
 |---|---:|---:|---:|
@@ -31,7 +31,7 @@ This is an evidence-backed *model recommendation*, not a claim that the RTL alre
 | faas_cold | 92896 | 92896 | +0.0% |
 | linux_service | 59471 | 59471 | +0.0% |
 | memory_stress | 20455 | 19667 | -3.9% |
-| coremark | 7145 | 7126 | -0.3% |
+| coremark | 7054 | 7035 | -0.3% |
 
 The baseline has 1556 modeled L2-MSHR backpressure events across the workload set. Enlarging L2 concurrency is a more focused next RTL experiment than enlarging L1D MSHRs: the latter cannot exceed eight without changing the existing four-bit L1D `{type, slot}` ownership/ID contract and is not useful beyond the 8-entry load queue in this model.
 

@@ -92,7 +92,9 @@ class Cluster:
                 if self.get("i_reservation_addr") & -32 == address:
                     await self.set(i_reservation_valid=0)
             if self.get("o_cut_hold"):
-                assert not int(self.dut.r_valid.value)
+                # The L1D side of R: with link stages a reply may still sit in
+                # the stage while the L1D holds a cut.
+                assert not int(self.dut.l1d_r_valid.value)
                 if int(self.dut.hart.phase_q.value) == 8:
                     self.cut_lookup_overlap += 1
             if int(self.dut.r_valid.value) and int(self.dut.r_ready.value):

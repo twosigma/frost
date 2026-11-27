@@ -1197,7 +1197,7 @@ package riscv_pkg;
   localparam bit [11:0] CsrHpmcounter3 = 12'hC03;  // Retired branches
   localparam bit [11:0] CsrHpmcounter4 = 12'hC04;  // Branch mispredictions
   localparam bit [11:0] CsrHpmcounter5 = 12'hC05;  // ITLB misses
-  localparam bit [11:0] CsrHpmcounter6 = 12'hC06;  // DTLB misses
+  localparam bit [11:0] CsrHpmcounter6 = 12'hC06;  // DMMU walk requests
   localparam bit [11:0] CsrHpmcounter7 = 12'hC07;  // L1D permission misses
   localparam bit [11:0] CsrHpmcounter8 = 12'hC08;  // Store-queue full stall cycles
   localparam bit [11:0] CsrHpmcounter9 = 12'hC09;  // Cycles, mode-filtered

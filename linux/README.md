@@ -173,9 +173,12 @@ The X3 device tree and the opt-in VCU118 vector device tree (`--vector` on
 `frost_boot_image.py` and `load_software.py`, and
 `boards/vcu118/dts/frost_vcu118_vector.dts`) advertise V with Zvbb, Zvbc,
 Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn,
-Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, and the Zvl32b, Zvl64b, Zvl128b
-and Zvl256b length guarantees. Those builds set `misa.V` and have `VLEN=256`
-and `ELEN=64`. These entries describe the vector capabilities for Linux ISA
+Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, and the `Zvl*b` length guarantees
+up to the build's `VLEN` (`Zvl32b`, `Zvl64b`, `Zvl128b` and `Zvl256b` on X3,
+the static `frost_vcu118_vector.dts`, and the default VCU118 `--vector` build,
+or up to `Zvl128b` / `Zvl512b` when `--vlen` selects 128 or 512 on VCU118).
+Those builds set `misa.V` and have `ELEN=64` (with `VLEN=256` on X3 and
+default VCU118 `--vector`, or `VLEN` 128/256/512 with VCU118 `--vlen`). These entries describe the vector capabilities for Linux ISA
 discovery. In the pinned Debian 7.3 kernel, the RISC-V vector-crypto (`Zvkned`,
 `Zvknha`/`Zvknhb`, `Zvkg`, `Zvkb`, `Zvbb`) and carry-less CRC32 (`Zbc`)
 implementations reside in `lib/crypto` and `lib/crc`: `aes-lib`,
@@ -302,18 +305,22 @@ through the SBI PMU. The DTB's `riscv,pmu` node maps both events to
 counters 9 and 10. Standard events map retired branches, branch mispredictions,
 ITLB read misses, and L1D permission misses. Permission misses include
 atomic requests that require cache permission. Raw selectors 3 through 10
-select branches, mispredictions, L1 ITLB misses, L1 DTLB misses, L1D permission
-misses, store-queue capacity stalls, cycles, and retired instructions,
-respectively. L1 TLB misses include requests answered by the second-level
-TLB. DTLB misses include loads and stores; SQ stalls cover one source of
+select branches, mispredictions, L1 ITLB misses, DMMU walk requests (data
+misses past both the 16-entry L1 DTLB and its 256-entry S1 4 KiB cache), L1D
+permission misses, store-queue capacity stalls, cycles, and retired
+instructions, respectively. Both translation-miss events include requests
+answered by the second-level TLB; selector 6 counts loads and stores and leaves
+out DTLB misses answered by the S1 cache, while SQ stalls cover one source of
 backend stalls. These two
 events are exposed only through `riscv,raw-event-to-mhpmcounters`. Three raw
 translation selectors share those counters: 16 counts page-walker busy
 cycles on counter 8, 17 counts SFENCE.VMA and SINVAL.VMA TLB invalidates on counter 7, and
 18 counts CSR-requested translation-state flushes (any `satp` access, or an `mstatus`
 write that changes MPRV, or MPP while MPRV is set) on counter 4. Walker busy
-cycles divided by ITLB plus DTLB misses give walker busy cycles per L1 TLB
-miss, including second-level TLB hits in the denominator. CSR-requested
+cycles divided by the sum of L1 ITLB misses and DMMU walk requests give walker
+busy cycles per request to the second-level TLB and walker, including
+second-level TLB hits in the denominator (and excluding DTLB misses answered by
+the S1 cache). CSR-requested
 flushes can preserve ASID-tagged TLB entries. Three raw
 cache refill selectors follow: 19 counts L1I refills (lines the L1I requests
 from the L2, including the fetch provider's next-line prefetches) on counter
@@ -323,7 +330,8 @@ the L2 prefetcher reads from memory) on counter 5. The generic
 `L1-icache-load-misses`, `LLC-load-misses` and `LLC-prefetch-misses` events
 map to them; `perf stat -e r13,r14,r15` names them as raw events. A counter
 counts either its fixed event or its alternate selector, so selector 19
-replaces branches on counter 3, and 20 and 21 replace the L1 DTLB and ITLB misses.
+replaces branches on counter 3, and 20 and 21 replace DMMU walk requests and
+L1 ITLB misses.
 The L1I event counts allocations that fetch a line, including speculative
 fetches that are later discarded. L2 events count accepted memory line reads,
 including reads that return an error. A prefetch fill stays a prefetch event

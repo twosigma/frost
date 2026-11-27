@@ -23,6 +23,7 @@
 
 #define ROOT 0x81400000ul
 #define TABLE 0x81401000ul
+#define L0 0x81402000ul
 #define FRAME 0x81800000ul
 #define BAD_VA 0x08000018ul
 #define GOOD_VA 0x08200018ul
@@ -73,8 +74,11 @@ probe(unsigned int delay, int discard, int train)
     unsigned long value;
     switch (delay) {
         PHASE(0);
+        PHASE(2);
         PHASE(4);
+        PHASE(6);
         PHASE(8);
+        PHASE(10);
         PHASE(12);
         PHASE(16);
         PHASE(20);
@@ -88,20 +92,29 @@ probe(unsigned int delay, int discard, int train)
 
 static int exercise_walk_recovery(void)
 {
+    static const unsigned int delays[] = {0, 2, 4, 6, 8, 10, 12, 16, 20, 24, 28};
     volatile uint64_t *root = (volatile uint64_t *) ROOT;
     volatile uint64_t *table = (volatile uint64_t *) TABLE;
+    volatile uint64_t *l0 = (volatile uint64_t *) L0;
     int ok = 1;
     set_trap_handler(fault_entry);
     csr_write(mie, 0);
+    for (int i = 0; i < 512; i++) {
+        root[i] = 0;
+        table[i] = 0;
+        l0[i] = 0;
+    }
     root[0] = (TABLE >> 2) | 1ul;
-    table[64] = 0;
+    table[64] = (L0 >> 2) | 1ul;
     table[65] = (FRAME >> 2) | 0xCFul;
     *(volatile uint64_t *) (FRAME + 24) = VALUE;
     csr_write(satp, (8ul << 60) | (ROOT >> 12));
     for (int discard = 0; discard < 2; discard++) {
-        for (unsigned int delay = 0; delay < 32; delay += 4) {
+        for (unsigned int i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+            unsigned int delay = delays[i];
             __asm__ volatile("sfence.vma" ::: "memory");
-            ok &= probe(delay, discard, 1) == VALUE;
+            for (int t = 0; t < 4; t++)
+                ok &= probe(delay, discard, 1) == VALUE;
             __asm__ volatile("sfence.vma" ::: "memory");
             ok &= probe(delay, discard, 0) == VALUE;
         }

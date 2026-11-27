@@ -629,7 +629,7 @@ endpoint 0 to be idle and excludes a selected grant. Grant processing and
 SC acceptance are mutually exclusive. Probe capture and service own local arbitration through R
 acceptance. Invalidation admission starts on P capture and keeps the captured
 address until the CPU accepts admission. Ready grants, writes and maintenance request one local selection
-edge after R acceptance. An eligible read requests a turn after four completed
+edge after R acceptance. An eligible read requests a turn after three completed
 probe replies. Grants and atomic writes take priority within that turn. A waiting data read
 can use the turn between hit-store installations. A selected local operation
 completes its array service before P is accepted. A local Modified atomic holds
@@ -1420,15 +1420,15 @@ open, Idle does not select a head that is the only record, unsealed, not a
 zero record and not a full upper sector; while the pair window is open, it
 does not select a full lower head whose upper record is the youngest,
 unsealed and not yet full. A store continuation stops before such a record,
-and look-ahead skips it while its upper record can still take writes (a record
-is free or the store queue claims a combining write), and skips the upper
+and look-ahead skips it throughout the pair window (even at four records while
+between store-queue combining claims), and skips the upper
 record of an unacquired full lower record. A hold needs a recent write into a record that can still grow,
 and it ends when the stream moves to another block, a record seals at 32
 contributors, or the writes stop. A hold of the head lasts only while at most
 two records exist, so store credit stays available; a continuation that stops
 before a growing next record holds with up to three, and look-ahead's pair
-wait can hold with four while the store queue claims a combining write, which
-the combining credit below serves.
+wait can hold with four while the pair window stays open for the combining
+credit below to serve the remaining writes of the upper sector.
 
 **Combining credit.** Two blocks fill all four records, so the second
 block's upper record could otherwise take only its first write. The SQ
@@ -2061,6 +2061,7 @@ to answer.
 | `coherence_line_client*` | The hart's line client on the hart-and-home cluster at zero and one link stage: a sector read returns the L1D's dirty bytes, a masked sector write replaces only its bytes and later L1D reads see them, both identities in flight at once, a line read beside a DMA write, and random line reads and writes mixed with L1D loads and stores against a byte-level reference |
 | `coherence_cbo_mgmt*` | Zicbom write-back on the hart-and-home cluster with one and three L1D endpoints, direct tag launch in the home, 32- and 64-byte home lines and link stages: clean and flush of L1D-Modified, half-dirty and L2-only dirty blocks write the latest bytes to memory before done, inval leaves memory and the next load at memory's bytes, clean, resident and absent blocks write nothing, no eviction rewrites a cleaned block after a non-coherent write, DMA writes at every delay around a flush, a block whose dirty sector is leaving as a PutM, and stores, loads and CMOs in program order |
 | `coherence_full_line*` | Full-line stores on the hart-and-home cluster with one and three L1D endpoints, 64- and 32-byte home lines and a two-set L1D: stores at the SQ cadence and back to back fill blocks without memory reads; the same stores without the SQ hint, partial, reversed and byte-written blocks fill; loads between the stores, DMA reads and writes of the block at every delay, stale Shared and dirty copies, and streams through evictions keep every byte; streams with irregular gaps keep the store queue's claim standing between writes and combine claimed writes at four records; a hint whose stores the store queue flushes holds a record only for its window; a reset with a gathering head, a pair hold or a held look-ahead leaves the cluster clean |
+| `coherence_stale_line*` | Slab-like 256-byte node reuse on the hart-and-home cluster (default, two-set L1D, eight endpoints, link stages, L1D stream prefetch): seeded programs of memset, memcpy, cbo.zero, rewrites, partial stores and loads that run ahead of older stores, under the store queue's ordering and hints, random memory latency, grant, put-ack and release holds, and background DMA reads, DMA writes and L2 prefetches in the same sets; every load checks its program-order value and every byte is checked at the end |
 | `full_line_test` (program) | Full-line stores from the production store queue into the L1D on the whole system: gapped, unaligned and partial memset and copy streams, stores squashed by a mispredicted branch or a faulting load inside a gathered line, ordering after two overlapped cached stores (forwarding, fence, fence.i, cbo.clean/flush/inval/zero, LR/SC), and DMA copies and fills of lines the CPU writes whole; `FullLineWatch` requires the store-queue hints, claims at three and four records, overlap, gather and pair holds, head and look-ahead pairs, data twins, flushes in a window and DMA requests that waited for a pair's window |
 | `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, dirty-L1D walker coherence, and one refill event per allocation that reads a line |
 | `coherence_home*` | Home service and ownership, with each accepted memory line read producing exactly one demand or prefetch refill pulse, including a held read accepted after fatal stop |

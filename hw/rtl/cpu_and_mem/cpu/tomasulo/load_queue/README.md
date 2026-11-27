@@ -143,7 +143,7 @@ ROB-head entries precede the age-order scan. The coherent scan index and ROB
 tag decode from the selected age-order mask. Head matches use the head
 selector's index and tag. The pre-issue selector registers a one-hot mask
 alongside the candidate matches. Staging capture uses candidate presence
-independently of ring ordering. A helper prepares capture and clear outcomes
+independently of age ordering. A helper prepares capture and clear outcomes
 for launch hold, an unheld miss and an unheld hit. These outcomes include the
 staged head match, SQ drain and forwarding permissions, memory-busy and
 L0-hit permission, phase and cut hold. Held implies miss, and miss implies
@@ -192,7 +192,7 @@ atomic flag in one final term. The captured Normal-memory class supplies
 L0-hit eligibility.
 Staging captures misalignment with the address and size. Fault checks apply
 the live trap setting to that captured result. The first candidate mask determines which
-address source wins ring order. Candidate presence is independent of
+address source wins age order. Candidate presence is independent of
 that ordering and the selected payload.
 The coherent L0 computes lookup permission from validity, memory type and
 invalidation independently of the tag comparison. A hit requires both.
@@ -213,9 +213,21 @@ orders eligible entries by their registered ROB-head-relative age
 (for example, waiting on an unresolved older store S) and any older ready load O
 becomes eligible, O wins the age-ordered scan even if a younger load Z reused a
 lower physical slot, so `sq_check_replace` evicts Y for O without waiting for O
-to reach the ROB head. The ROB-head load H also gets explicit priority and
-evicts any younger staged load; this guarantees forward progress for head
-device loads, LRs, and AMOs once the committed-store queue is empty.
+to reach the ROB head.
+
+Age order prevents a staging deadlock. Suppose a younger load Y holds the
+staging register while it waits on an older store S that overlaps it but cannot
+forward (S covers only part of Y, say). If S has not committed, it is younger
+than the ROB head H, so it cannot commit or drain until H retires, and Y never
+leaves. Under physical ring order, a load Z younger than Y but ahead of H in
+the ring could win the scan every cycle without being able to evict Y, so H
+would never be selected. With age-ordered selection, an eligible head load H
+(including a head device load, or a head LR or AMO once the committed-store
+queue is empty) is in the normal scan at age 0, so age order always selects H
+ahead of every younger entry and evicts Y. The dedicated ROB-head path selects
+the same head-matched entry directly. Evicting Y for H is always safe: every
+store older than H has committed and drains on its own. A head AMO or LR
+becomes eligible only once the committed-store queue is empty.
 
 ### Staging and the SQ check
 
@@ -782,17 +794,23 @@ entire capacity is one zero block, and
 and ROB-tag reuse against slow, reordered DDR responses. The wrapper and
 router suites (`tomasulo_coherence`, `data_mem_request_router` and others)
 check the connected handshakes, and simulation assertions check cached-slot
-identity, AMO write stability, the device-read shield, and that every launched
+identity, AMO write stability, the device-read shield, registered ROB-head-relative
+age order and oldest-eligible Phase A/B selection (with no entry eligible in
+its first valid cycle), and that every launched
 load other than an AMO stays tracked (by the fast tracker or a cached slot)
 until its data is valid or a flush removes it. In coverage builds,
 [cover points](../../../../../../tests/README.md#cover-points) count corner
 cases such as a DMA write that cancels the LR reservation or hits a load in
-flight, and the ROB-head load evicting a younger staged load. The L0's cover
+flight, the ROB-head load or an older non-head load evicting a younger staged
+load, and non-head memory or CDB selection picking an older load at a higher
+physical slot than a younger eligible load. The L0's cover
 points count a response fill that coincides with a DMA or AMO invalidation,
 and a store update that takes the RAM port from a fill at another index.
 
-Formally, `load_queue` checks queue invariants from reset, and its
-`bmc_probe_launch` and `cover_probe_launch` tasks repeat that with
+Formally, `load_queue` checks queue invariants from reset, its `bmc_age_order`
+task (with `F_LQ_AGE_ORDER_PROOF`) checks registered-age order, first-cycle
+ineligibility, and oldest-eligible Phase A/B selection, and its
+`bmc_probe_launch` and `cover_probe_launch` tasks repeat the queue checks with
 `PROBE_LAUNCH=1`: a dropped response reaches neither the LQ data, the CDB
 stage nor the L0, each verdict keeps or drops the read as above,
 `p_probe_block_inval_no_launch` and `p_probe_zero_twin_no_launch` pin the
@@ -801,7 +819,10 @@ covers for the pending twin, post-flush hold, block invalidation, and
 release-then-launch; the independent check of the L1D contract remains
 `p_zero_pending_twin_no_read_req` in `coherence_l1d.sv`. Covers also reach a
 launch followed by a forward, a keep, a block and relaunch, a replaced stage, a
-response in the verdict cycle, and a store accepted on the launch edge.
+response in the verdict cycle, a store accepted on the launch edge, a non-head
+older load evicting a younger staged load, and non-head memory and CDB
+selection picking an older load at a higher physical slot than a younger
+eligible load.
 `coherent_cpu` repeats all five unbounded `coh_lq_*` prove tasks with
 `PROBE_LAUNCH=1`. `coherence_store_boundary` checks composed SQ, router, L1D,
 and LQ ordering with `PROBE_LAUNCH=1` and decoupled `store_ack`
