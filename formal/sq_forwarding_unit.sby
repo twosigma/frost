@@ -25,7 +25,7 @@ cover: chparam -set DEPTH 16 sq_forwarding_unit_formal
 ~tree_equiv: hierarchy -top sq_forwarding_unit_formal
 ~tree_equiv: script free_undefined.ys
 ~tree_equiv: prep -top sq_forwarding_unit_formal
-~tree_equiv: select -assert-count 9 t:$check r:FLAVOR=assert %i
+~tree_equiv: select -assert-count 8 t:$check r:FLAVOR=assert %i
 ~tree_equiv: select -assert-count 11 t:$check r:FLAVOR=cover %i
 
 tree_equiv: read_slang --top sq_forwarding_unit --single-unit -DSYNTHESIS riscv_pkg.sv sq_forwarding_unit.sv

@@ -404,13 +404,9 @@ module sq_forwarding_unit #(
   assign o_sq_forward.data = i_sq_data_fwd_data << {fwd_winner_store_off_q, 3'b000};
 
 `ifdef FORMAL
-  always_comb begin
-    if (i_rst_n && o_sq_forward.can_forward) begin
-      p_registered_metadata_data_exact :
-      assert (o_sq_forward.data == (i_sq_data_fwd_data << {fwd_winner_store_off_q, 3'b000}));
-    end
-  end
-
+  // Capture-time forwarding-RAM stability and shifted data equality are
+  // checked around the real u_sq_data_fwd instance in store_queue.sv, and
+  // against the ring-order reference in formal/sq_forwarding_unit_formal.sv.
   always_ff @(posedge i_clk) begin
     if (i_rst_n) begin
       cover_forward_aligned : cover (o_sq_forward.can_forward && fwd_winner_store_off_q == 3'b000);

@@ -109,7 +109,7 @@ module sq_forwarding_unit_formal #(
   // Caller contracts proved in load_queue and store_queue:
   // 1. load_queue replicates its probe address across all four fanout copies.
   // 2. store_queue sets sq_is_zero on every sq_is_cmo entry passed to the CAM.
-  // 3. store_queue's write-once FF data mirror holds a valid entry's payload
+  // 3. store_queue's write-once forwarding RAM holds a valid entry's payload
   //    across the capture edge through the consume cycle.
   always_comb begin
     assume (i_sq_check_addr_b == i_sq_check_addr);
@@ -118,7 +118,7 @@ module sq_forwarding_unit_formal #(
     assume ((sq_is_cmo & ~sq_is_zero) == '0);
   end
 
-  for (genvar s = 0; s < DEPTH; s++) begin : gen_data_mirror_hold
+  for (genvar s = 0; s < DEPTH; s++) begin : gen_data_ram_hold
     always_ff @(posedge i_clk) begin
       if (f_past_valid && i_rst_n && $past(
               i_rst_n

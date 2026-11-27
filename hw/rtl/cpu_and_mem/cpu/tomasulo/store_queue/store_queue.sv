@@ -402,13 +402,13 @@ module store_queue #(
   // sq_data storage
   // ===========================================================================
   // Write only while sq_data_valid is clear, so visible payloads never change.
-  // The drain reads LUTRAM at drain_idx_q. Forwarding reads a per-entry FF
-  // mirror after registering the winning index. Valid flags gate reads;
-  // allocation need not zero the payload.
+  // Both drain and forwarding read dedicated distributed RAM copies
+  // (u_sq_data_drain at drain_idx_q and u_sq_data_fwd at the forwarding
+  // unit's registered winning index). Valid flags gate reads; allocation need
+  // not zero the payload.
 
-  // Write port: per-entry CAM match from data_update. The forwarding mirror
-  // consumes the match mask directly per entry; the drain LUTRAM encodes the
-  // highest-index match in parallel nibbles.
+  // Write port: per-entry CAM match from data_update. Both distributed RAMs
+  // share the same write enable and nibble-encoded highest-index write address.
   logic [   DEPTH-1:0] sq_data_tag_match;
   logic                sq_data_we;
   logic [IdxWidth-1:0] sq_data_wr_idx;
@@ -453,8 +453,10 @@ module store_queue #(
   end
 
 `ifndef SYNTHESIS
+  logic                sq_data_we_reference;
   logic [IdxWidth-1:0] sq_data_wr_idx_reference;
   always_comb begin
+    sq_data_we_reference     = i_data_update_capture_valid && (|sq_data_tag_match);
     sq_data_wr_idx_reference = '0;
     for (int i = 0; i < DEPTH; i++) begin
       if (sq_data_tag_match[i]) sq_data_wr_idx_reference = IdxWidth'(i);
@@ -818,7 +820,7 @@ module store_queue #(
 
   // ===========================================================================
   // Store-to-load forwarding -> sq_forwarding_unit.sv.
-  // The SQ forwarding data mirror stays here.
+  // The SQ forwarding data RAM stays here.
   // ===========================================================================
   sq_forwarding_unit #(
       .DEPTH(DEPTH)
@@ -2722,6 +2724,7 @@ endmodule
       // The per-outcome count candidates selected by the valids equal the
       // reference adder forms.
       p_live_count_next_reference : assert (live_count_next_sum == live_count_next_reference);
+      p_sq_data_we_reference : assert (sq_data_we == sq_data_we_reference);
       p_sq_data_wr_idx_reference : assert (sq_data_wr_idx == sq_data_wr_idx_reference);
       p_dispatch_full_next_reference : assert (dispatch_full_next == dispatch_full_next_reference);
       p_dispatch_full_for_2_next_reference :
@@ -3041,6 +3044,69 @@ endmodule
     end
   end
 
+  // Independent capture-time forwarding-data reference around u_sq_data_fwd.
+  // Tracks one universally quantified slot (f_fwd_watch_slot) and payload bit
+  // (f_fwd_watch_bit) directly from the architectural write-once slot-match
+  // rule (without sharing sq_data_tag_match, sq_data_we, or sq_data_wr_idx)
+  // and latches its pre-edge payload bit, byte offset, and forwarding
+  // eligibility on i_sq_check_capture_valid. Comparing against the real
+  // u_sq_data_fwd output and o_sq_forward.data on the consume cycle proves for
+  // every slot and bit that the selected RAM row holds its pre-edge payload
+  // across the capture edge and is shifted by the pre-edge byte offset.
+  (* anyconst *) logic [IdxWidth-1:0] f_fwd_watch_slot;
+  (* anyconst *) logic [$clog2(FLEN)-1:0] f_fwd_watch_bit;
+  logic [   DEPTH-1:0] f_data_match;
+  logic [IdxWidth-1:0] f_data_wr_idx;
+  always_comb begin
+    f_data_wr_idx = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      f_data_match[i] = sq_valid[i] && !sq_data_valid[i] && !sq_is_cmo[i] &&
+          (sq_rob_tag[i] == i_data_update.rob_tag);
+      if (f_data_match[i]) f_data_wr_idx = IdxWidth'(i);
+    end
+  end
+
+  logic f_fwd_watch_bit_q;
+  initial f_fwd_watch_bit_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_data_update_capture_valid && (|f_data_match) && (f_data_wr_idx == f_fwd_watch_slot)) begin
+      f_fwd_watch_bit_q <= i_data_update.data[f_fwd_watch_bit];
+    end
+  end
+
+  logic       f_fwd_capture_eligible_q;
+  logic       f_fwd_capture_bit_q;
+  logic [2:0] f_fwd_capture_off_q;
+  always_ff @(posedge i_clk) begin
+    if (i_sq_check_capture_valid) begin
+      f_fwd_capture_eligible_q <= sq_valid[f_fwd_watch_slot] && sq_addr_valid[f_fwd_watch_slot] &&
+          sq_data_valid[f_fwd_watch_slot] && !sq_is_mmio[f_fwd_watch_slot] &&
+          !sq_is_sc[f_fwd_watch_slot] && !sq_is_zero[f_fwd_watch_slot] &&
+          !sq_is_cmo[f_fwd_watch_slot];
+      f_fwd_capture_bit_q <= f_fwd_watch_bit_q;
+      f_fwd_capture_off_q <= sq_address[f_fwd_watch_slot][2:0];
+    end
+  end
+
+  logic [3:0] f_fwd_out_byte;
+  assign f_fwd_out_byte = {1'b0, f_fwd_watch_bit[5:3]} + {1'b0, f_fwd_capture_off_q};
+
+  always_comb begin
+    if (i_rst_n && o_sq_forward.can_forward && (sq_data_fwd_rd_idx == f_fwd_watch_slot)) begin
+      p_fwd_watch_eligible : assert (f_fwd_capture_eligible_q);
+      p_fwd_ram_stable_across_capture :
+      assert (sq_data_fwd_rd[f_fwd_watch_bit] == f_fwd_capture_bit_q);
+      if (!f_fwd_out_byte[3]) begin
+        p_fwd_data_matches_capture :
+        assert (o_sq_forward.data[{f_fwd_out_byte[2:0], f_fwd_watch_bit[2:0]}] ==
+            f_fwd_capture_bit_q);
+      end
+      if (f_fwd_watch_bit[5:3] < f_fwd_capture_off_q) begin
+        p_fwd_data_low_lanes_zero : assert (o_sq_forward.data[f_fwd_watch_bit] == 1'b0);
+      end
+    end
+  end
+
   // Committed entries are never flushed: after a partial flush, every entry
   // that was committed and valid before it is still valid or already sent.
   logic [DEPTH-1:0] f_committed_before;
@@ -3120,6 +3186,9 @@ endmodule
       cover_cmo_inval_pulse : cover (cmo_inval_pulse_q && o_cache_invalidate_block);
       cover_forward_match : cover (o_sq_forward.match);
       cover_forward_data : cover (o_sq_forward.can_forward);
+      cover_forward_watch_slot :
+      cover (o_sq_forward.can_forward && (sq_data_fwd_rd_idx == f_fwd_watch_slot) &&
+          (o_sq_forward.data != '0));
       cover_full : cover (full);
       cover_flush_nonempty : cover (i_flush_en && |sq_valid);
 
@@ -3208,6 +3277,30 @@ endmodule
       end
     end
   end
+
+`ifdef VERILATOR
+  // Capture-time check around the real u_sq_data_fwd RAM in simulation: sample
+  // the winning slot's pre-edge RAM payload and byte offset at capture time and
+  // verify that the consume-cycle RAM read and shifted forwarding output still
+  // match (catching any post-edge overwrite or bypass under FROST_RANDOM_START).
+  logic [FLEN-1:0] sim_fwd_capture_raw_q;
+  logic [FLEN-1:0] sim_fwd_capture_data_q;
+  always_ff @(posedge i_clk) begin
+    if (i_sq_check_capture_valid) begin
+      sim_fwd_capture_raw_q <= u_sq_data_fwd.ram[sq_forwarding_unit_inst.fwd_match_idx];
+      sim_fwd_capture_data_q <= u_sq_data_fwd.ram[sq_forwarding_unit_inst.fwd_match_idx] <<
+          {sq_forwarding_unit_inst.fwd_winner_store_off, 3'b000};
+    end
+    if (reset_seen_q && i_rst_n && o_sq_forward.can_forward) begin
+      a_fwd_ram_stable_across_capture :
+      assert (sq_data_fwd_rd === sim_fwd_capture_raw_q)
+      else $error("SQ forwarding RAM payload changed across capture edge");
+      a_fwd_data_matches_capture :
+      assert (o_sq_forward.data === sim_fwd_capture_data_q)
+      else $error("SQ forwarded data does not match capture-time RAM payload");
+    end
+  end
+`endif  // VERILATOR
 `endif  // FORMAL
 `endif  // SYNTHESIS
 

@@ -266,10 +266,11 @@ the entry without writing memory. The LR reservation lives in the LQ.
 ## Storage
 
 Control fields are flip-flops, because the address CAM, the forwarding scan,
-and flushes read every entry at once. Store data lives in a LUTRAM read by the
-drain (written via a nibble-encoded match index), plus a per-entry flip-flop
-copy written directly from each entry's ROB-tag match and read by the
-forwarding path. The LQ
+and flushes read every entry at once. Store data lives in two distributed RAM
+copies written together via the same nibble-encoded ROB-tag match index:
+`u_sq_data_drain`, read by the drain at `drain_idx_q`, and `u_sq_data_fwd`,
+read by the forwarding path at the forwarding unit's registered winning slot
+index. The LQ
 sends four identical copies of the check address (`i_sq_check_addr` and
 `_b`, `_c`, `_d`), each compared against a quarter of the entries (four).
 
@@ -278,7 +279,8 @@ sends four identical copies of the check address (`i_sq_check_addr` and
 The `store_queue` cocotb target covers two-wide allocation, updates,
 forwarding, pipelined drain, flushes, and SC discard. Inline formal properties
 check live-count consistency, write prerequisites, in-flight bounds,
-forwarding, and that committed stores survive a partial flush; `sq_forwarding_unit`
+forwarding (including an independent capture-time payload reference around
+`u_sq_data_fwd`), and that committed stores survive a partial flush; `sq_forwarding_unit`
 proves the standalone forwarding unit unbounded at eight entries (at sixteen
 the base case does not finish within the task budget), covers it at sixteen,
 and checks `tree_equiv` between the synthesized fixed-priority newest pick and
