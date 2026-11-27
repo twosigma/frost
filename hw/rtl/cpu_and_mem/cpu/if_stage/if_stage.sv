@@ -1105,8 +1105,8 @@ module if_stage #(
   // parallel 3-bit-chunk LUT trees to keep carry chains and provider_q muxing
   // off the F1 accept/resteer cone.
   localparam int unsigned ServedWordBits = XLEN - 2;
-  localparam int unsigned TagChunkCount = (ServedWordBits + 2) / 3;
-  localparam int unsigned TagGroupCount = (TagChunkCount + 5) / 6;
+  localparam int unsigned TagChunkCount  = (ServedWordBits + 2) / 3;
+  localparam int unsigned TagGroupCount  = (TagChunkCount + 5) / 6;
   (* keep = "true" *)logic [TagChunkCount-1:0] f1_tag_low_chunk;
   (* keep = "true" *)logic [TagChunkCount-1:0] f1_tag_high_chunk;
   (* keep = "true" *)logic [TagGroupCount-1:0] f1_tag_low_group;
