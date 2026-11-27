@@ -1877,6 +1877,18 @@ The same output and paired next-state checks must hold for every value of
 those bits. Yosys encodes the undefined-bit checks with `xprop` before
 ABC reduces the Boolean miter and SAT verifies the assertion.
 
+The banked scalar `fetch_btb_2w.btb_valid` array needs an explicit state
+alias: `read_verilog` maps it to 256 scalar words, while slang maps it to
+two 128-bit words. For its ascending unpacked dimensions, native word
+`bank * 128 + entry` corresponds to slang word `bank`, bit `127 - entry`.
+The test derives the entry count from the mapped words and adds a public
+wire in common bank/entry order, checking that every bit is distinct flop
+state. This pairs all 256 valid bits and compares their initialization,
+controls and next-state functions without changing either circuit or
+constraining the inputs. Small banked-memory cases verify this mapping with
+asymmetric initialization and require failures for changed bank/row reads,
+write data, reset values and initial contents.
+
 ```bash
 ./scripts/frost.py run pytest tests/test_yosys_equivalence.py -m synthesis -v
 ```
@@ -1912,13 +1924,16 @@ task list with the runner registration; selecting no matching task is an error.
 The Primitive forms job runs `rs_payload_twin:cover_cmo_request` to require a
 simultaneous CMO request from both copies at the second commit comparison’s depth.
 
-In the Frontend and predictor shard, `test_predictor_mutations.py` changes one input or
-register assignment in a private copy of the RTL for John Goodacre's backing BTB
-and TAGE/ITTAGE predictor design. It checks the direction table read address,
-indirect table write data, backing BTB held read, direction history fold, and PD
-indirect redirect. The fetch case inverts the branch flag on a live second slot
-and requires the packet checker to identify that flag. Each case requires a
-counterexample at a named assertion and a saved solver trace.
+In the Frontend and predictor shard, `test_predictor_mutations.py` changes one
+expression, condition, or register assignment in a private copy of the RTL for
+John Goodacre's backing BTB and TAGE/ITTAGE predictor design. It corrupts the
+direction table's external folded index, reverses target correctness in the
+owned indirect provider's read-stage update, removes redirect from the backing
+BTB held-read validity clear, corrupts the lookup direction-history fold, and
+flips the registered PD indirect-eligibility flag. The fetch case inverts the
+branch flag on the served second slot and requires the packet checker to
+identify that flag. Each anchor must match exactly once, and each case requires
+a counterexample at a named assertion and a saved solver trace.
 
 In the Floating-point and vector memory shard, `test_fp_forward_wake_mutations.py` injects isolated
 RTL faults into private staged copies of the proofs for John Goodacre's
