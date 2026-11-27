@@ -361,6 +361,20 @@ The shared AXI return port carries at most one read response and one write respo
 
 The built-in workloads are synthetic instruction and memory-pressure patterns: `coremark`, `memory_stress`, `redis_kv`, `http_api`, `faas_cold`, and `linux_service`. The CoreMark generator represents selected kernel dependencies and starts with instruction fetches ready. It is not the compiled CoreMark program.
 
+The current front end is an idealized dispatch feed. `_dispatch` reads the
+workload directly once its instruction line is ready; `decoded_queue_bundles`
+limits instruction-line look-ahead in `_issue_fetches`, but does not instantiate
+a decoded queue. CoreMark starts with every line ready, so even that look-ahead
+does not limit its throughput. There is no F0/F1 predictor pipeline, parcel
+queue, compressed-instruction alignment, or redirect refill in this model.
+`branch_recovery_cycles` only pauses dispatch; it does not flush speculative
+work. Consequently, the current model cannot attribute the performance change
+from the RTL's decoupled front end (#595) to a removed fetch stall. The
+[front-end calibration investigation](docs/frontend_calibration.md) records
+the reproduced CI failure, the relevant RTL structure, and the missing
+instruction evidence needed for a causal update. The 10% CI tolerance remains
+unchanged.
+
 `memory_workloads.py` supplies the three timed bodies of `ddr_mlp_test` and all nine `ddr_bench` kernels. It preserves their data addresses, strides, address-generator seeds, record sectors, accumulator chains, copy dependencies, and serialized chase dependencies. Arithmetic and loop-control operations are representative, not a compiled instruction trace. The MLP ring is prepared and evicted before the modeled region. DDR bench data is zero, matching the behavioral memory's initial contents. Setup, eviction, profiling, UART, and verification are outside the modeled region.
 
 `memory-run` starts with cold data and warm instruction fetches. `--scale-shift` applies the DDR bench's size divisor and defaults to 4. `--mlp-lines` defaults to 512. `--passes` repeats a body while sharing cache contents. A production-cache RTL comparison of the MLP bodies requires an eviction sequence that reaches those caches' capacity or conflicting sets.
