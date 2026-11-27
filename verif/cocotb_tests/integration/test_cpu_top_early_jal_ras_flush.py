@@ -138,8 +138,8 @@ async def direct_call_ras_push_restored_on_older_fault_without_early_jalr(
             )
         if before_call is not None and trap_cycle is None:
             if (
-                int(front.ras_checkpoint_valid_count.value) >= 2
-                and int(front.ras_checkpoint_top.value) == call1_pc + 4
+                int(front.ras_valid_count.value) >= 2
+                and int(front.ras_top.value) == call1_pc + 4
             ):
                 saw_speculative_push = True
         if (
@@ -152,9 +152,9 @@ async def direct_call_ras_push_restored_on_older_fault_without_early_jalr(
             trap_cycle is not None and after_trap is None and s.cycle >= trap_cycle + 3
         ):
             after_trap = (
-                int(front.ras_checkpoint_tos.value),
-                int(front.ras_checkpoint_valid_count.value),
-                int(front.ras_checkpoint_top.value),
+                int(front.ras_tos.value),
+                int(front.ras_valid_count.value),
+                int(front.ras_top.value),
             )
 
     s.before_edge = observe

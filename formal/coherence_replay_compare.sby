@@ -22,6 +22,8 @@ prove_xlen66: chparam -set XLEN 66 lq_coherence_port
 hierarchy -top lq_coherence_port
 script free_undefined.ys
 prep -top lq_coherence_port
+select -assert-count 69 t:$check r:FLAVOR=assert %i
+select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

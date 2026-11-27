@@ -15,7 +15,7 @@
  */
 
 /*
- * IMMU bench with a clocked fetch-PC register like pc_controller's.
+ * IMMU bench with a clocked fetch-PC register like fetch_pc_decoupled's.
  * i_pc_update_en permits PC changes only at clock edges, preserving retag
  * bubbles and simultaneous PC/walk transitions. IMMU detects changes by
  * comparing the PC with its result tag.

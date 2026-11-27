@@ -15,21 +15,25 @@
  */
 
 /*
- * Instruction fetch (IF), the first front-end stage. It cuts up to two
- * instructions per cycle from a 64-bit fetch window. pc_controller keeps the
- * fetch PC (o_pc) and the PC of the emitted packet (pc_reg); branch_prediction
- * holds the BTB, the bimodal and tagged direction predictors, the RAS, and
- * prediction metadata; c_extension aligns parcels and keeps the instruction
- * buffer; mmu/immu translates o_pc into the physical addresses of the
- * window's two words.
+ * Instruction fetch (IF), decoupled around a 16-halfword parcel queue with
+ * zero-cycle empty and partial bypass.
  *
- * IF needs no RVC decompressor: the predecode sideband carries each parcel's
- * RV64C expansion. PD forms slot 1's instruction from the fields IF passes
- * it; slot 2 is built here from fixed candidates before its position mux.
- * Misprediction redirects, BTB training, and RAS restores arrive on
- * i_from_ex_comb. IF captures its packet when a pipeline stall begins and, if
- * it was a real instruction, replays it on release, because the fetch window
- * moves on during the stall.
+ * Fetch (F0) runs ahead of decode on o_pc: fetch_pc_decoupled steps by 8 bytes
+ * per 64-bit window or steers immediately on a two-bank fast-BTB hit
+ * (fetch_btb_2w) while fetch_dir_4b, backing_btb, tage_predictor,
+ * ittage_predictor, and immu look up the same window in parallel.
+ *
+ * Validate (F1) checks the arriving window's served tag against the launched
+ * request, walks the four halfwords' instruction boundaries (tracking a
+ * spanning 32-bit instruction across sequential windows with f1_carry_hi_q),
+ * cancels or resteers on false fast-BTB hits, and pushes 1 to 4 parcels plus
+ * one window metadata record into fetch_parcel_queue.
+ *
+ * Drain reads up to four head parcels (bypassing directly from F1 when the
+ * queue is empty or partially filled), aligns and pairs slot 1 and slot 2
+ * across window boundaries, expands slot 2 from the predecode sideband,
+ * computes PD redirect target sums, and advances the queue by 1 to 4 halfwords
+ * when PD accepts the bundle.
  */
 module if_stage #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -38,38 +42,22 @@ module if_stage #(
     input logic i_clk,
     input logic [riscv_pkg::XLEN-1:0] i_boot_addr = '0,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
-    // Early-recovery counter update candidate, computed in parallel with
-    // lower-priority updates. i_from_ex_comb alone selects the BTB write.
     input logic i_btb_early_update_active,
     input logic [XLEN-1:0] i_btb_early_update_pc,
     input logic i_btb_early_update_taken,
-    // Counter read-modify-write candidate for the lower-priority update
-    // sources, selected without the early-recovery term. It never decides
-    // whether a BTB write happens.
     input logic [XLEN-1:0] i_btb_late_update_pc,
     input logic i_btb_late_update_taken,
-    input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
-    // i_instr's sources kept apart: the low BRAM's words in physical bank
-    // order ({odd, even}), the cached provider's {next, current} window, and
-    // which of the two i_instr carries (1: the cached window).
+    input logic [63:0] i_instr,
     input logic [63:0] i_instr_low_by_parity,
     input logic [63:0] i_instr_high,
     input logic i_instr_window_high,
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
-    // Replica of the size and pairing predecode bits, per fetched word, ordered
-    // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
-    // Only a simulation check reads it here; the aligner uses the per-provider
-    // replicas below.
     input logic [7:0] i_instr_pc_metadata,
-    // Raw timing replicas in {cached odd, cached even, BRAM odd, BRAM even}
-    // provider/parity order.  The aligner selects the active lane directly.
     input logic [15:0] i_instr_pc_metadata_by_provider_parity,
     input logic [7:0] i_pc_pairability_by_provider_parity,
     input logic [3:0] i_slot2_start_valid_lo_by_provider_parity,
     input logic i_instr_pc_metadata_served_high,
-    input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
-    // Served-window word tags: S = full fetch PC[XLEN-1:2], S+1, S-1,
-    // registered with each provider's payload.
+    input logic i_instr_bank_sel_r,
     input logic [XLEN-3:0] i_served_word_low,
     input logic [XLEN-3:0] i_served_last_word_low,
     input logic [XLEN-3:0] i_served_prev_word_low,
@@ -78,81 +66,35 @@ module if_stage #(
     input logic [XLEN-3:0] i_served_last_word_high,
     input logic [XLEN-3:0] i_served_prev_word_high,
     input logic i_served_prev_word_valid_high,
-    // Payload, sideband, parity, and fault flags are valid for the served
-    // word tags. The owed request can lag the live fetch PC. Without a valid
-    // window or saved packet to replay, IF emits bubbles and holds its PCs
-    // and packet state. The provider continues the owed fetch; redirects
-    // still apply. Gaps include cache misses, two-cycle low-BRAM fetches
-    // outside the predecode overlay, and FETCH_VALID_FUZZ.
     input logic i_instr_valid,
-    // Fetch-fault status of the served window's two words, {fault, page} per
-    // word (page: a page fault rather than an access fault), registered with
-    // the payload like i_instr_bank_sel_r. Used only while i_instr_valid is
-    // high.
     input logic i_instr_fault0,
     input logic i_instr_fault0_page,
     input logic i_instr_fault1,
     input logic i_instr_fault1_page,
-    // The served window came from the cached-tier provider (which withholds
-    // valid across stalls) rather than the low BRAM. Only simulation checks
-    // read it; the logic uses its registered replica,
-    // i_instr_pc_metadata_served_high.
     input logic i_served_high,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
-    // Front-end state flush. The producer guarantees it covers every
-    // i_fence_i_flush pulse as well as trap, xRET, and misprediction recovery.
     input logic i_frontend_state_flush,
-    // The full-flush part of the flush above: the registered trap, xRET, or
-    // FENCE-class pulse. See pc_control_sel_nop.
     input logic i_flush_all,
-    // Registered FENCE-class front-end flush (FENCE.I, SFENCE.VMA, or a CSR
-    // access that may change translation) and its refetch target.
     input logic i_fence_i_flush,
     input logic [XLEN-1:0] i_fence_i_target,
-    // In the full-flush cycle of a FENCE.I, an SFENCE.VMA, a satp write (not
-    // mstatus/sstatus), a take between bare and Sv39 fetch, or a take into or
-    // within Debug Mode: the code or address space may have changed, so the
-    // BTB's entries may describe instructions that are no longer there.
     input logic i_btb_invalidate,
-    // Blocks BTB, RAS, and slot-2 predictions.
     input logic i_disable_branch_prediction,
-    // Bimodal direction-predictor training from commit (conditional branches
-    // only), at the predict-time index the branch carried.
+    input logic i_fetch_trap_hold = 1'b0,
     input logic i_dir_update_valid,
     input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
     input logic i_dir_update_taken,
-    // PD redirect (from pd_stage): a conditional branch in either slot whose
-    // final direction differs from the BTB direction IF followed, or a backing
-    // BTB prediction of a jump in either slot, with the new direction and
-    // target
     input logic i_pd_redirect,
     input logic i_pd_redirect_taken,
     input logic [XLEN-1:0] i_pd_redirect_target,
-    // A PD redirect's return address stack operation, for a backing BTB
-    // prediction of a call, return, or coroutine swap (from pd_stage)
     input logic i_pd_redirect_ras_push,
     input logic i_pd_redirect_ras_pop,
     input logic [XLEN-1:0] i_pd_redirect_ras_link,
-    // The PC of the backing BTB entry that a firing PD redirect used, whose
-    // replacement state the backing BTB refreshes (from pd_stage)
     input logic i_pd_backing_refresh,
     input logic [XLEN-1:0] i_pd_backing_refresh_pc,
     output logic [XLEN-1:0] o_pc,
-    // The previous cycle consumed the stall-captured packet. The provider
-    // uses this to classify PC movement as served. o_pc holds the owed fetch
-    // through a stall; redirects kill the captured packet.
     output logic o_fetch_replay_consume,
-    // Combinational claim for a live provider response that IF either consumes
-    // now or captures on the first backend-stall cycle. A squashed live window
-    // is not claimed; replay consumes the saved packet instead.
     output logic o_fetch_live_claim,
-    // Physical side of the fetch address; o_pc stays the virtual fetch
-    // address. With translation off (Bare mode or M-mode) these are a
-    // combinational function of o_pc and always valid. Under Sv39 they are a
-    // page-tagged result with live offsets. Page or privilege changes cost
-    // one capture cycle; a crossing window requires an exact PC tag and can
-    // need another cycle for its next-page sample. An ITLB miss stalls fetch.
     output logic [riscv_pkg::PhysAddrBits-1:0] o_fetch_pa0,
     output logic [riscv_pkg::PhysAddrBits-1:0] o_fetch_pa1,
     output logic o_fetch_pa_valid,
@@ -161,33 +103,14 @@ module if_stage #(
     output logic o_fetch_fault1,
     output logic o_fetch_fault1_page,
     output logic o_fetch_line_after_ok,
-    // Registered pulse: the fetch PC loaded a nonsequential next-PC arm, so
-    // the low-BRAM presenter's owed request is dead. A slot-1 prediction made
-    // before its branch was emitted is the exception: the branch's window is
-    // still owed and must arrive before the presenter requests the target.
     output logic o_fetch_redirect,
-    // Registered retarget pulse for the cached-tier provider. fetch_provider
-    // detects unaccepted PC movement itself and must not abandon an owed
-    // branch just because a prediction ran the fetch PC ahead, so this pulse
-    // covers only redirects that kill the old request: misprediction and PD
-    // redirects, served-window resteers, taken slot-2 predictions, and slot-1
-    // predictions emitted with their branch. It also fires on every trap,
-    // xRET, and FENCE-class flush, since those can change translation or
-    // cache state.
     output logic o_fetch_cached_retarget,
-    // No translated result is visible yet for o_pc, so the front end must
-    // stall (cpu_ooo folds this into pipeline_ctrl.stall).
     output logic o_fetch_pa_hold,
-    // o_fetch_pa_hold's value from separate IMMU copies, for the decoded
-    // queue's shadow select only.
     output logic [riscv_pkg::FetchPaHoldCopies-1:0] o_fetch_pa_hold_copy,
-    // Translation state (csr_file, combinational) and the page-table walker
-    // port.
     input logic i_fetch_translation_active,
     input logic i_fetch_priv_u,
     input logic [riscv_pkg::AsidBits-1:0] i_fetch_asid,
     input logic i_tlb_invalidate,
-    // ITLB entries to remove (SFENCE.VMA window, or a CSR-requested flush).
     input riscv_pkg::tlb_flush_t i_tlb_flush,
     output logic o_walk_req_valid,
     input logic i_walk_req_ready,
@@ -195,39 +118,16 @@ module if_stage #(
     input logic i_walk_resp_valid,
     input riscv_pkg::ptw_resp_t i_walk_resp,
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd,
-    // Slot-2 packet. sel_nop marks an invalid slot; PD and ID propagate it
-    // as a NOP so dispatch sees i_valid_2='0.
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2,
-    // Backing BTB result for each slot of the packet (index 0 is slot 1),
-    // replay-aligned like the packet: a hit, the entry's size and return
-    // type, and target bits [PhysAddrBits-1:1]. PD qualifies it.
     output logic [1:0] o_backing_hit,
     output logic [1:0] o_backing_compressed,
     output logic [1:0] o_backing_return,
     output logic [1:0][riscv_pkg::PhysAddrBits-2:0] o_backing_target,
-    // Slot 2's return type and target for each size of slot 1, indexed by
-    // slot 1's compressed flag and replay-aligned the same way:
-    // o_backing_return[1] and o_backing_target[1] are the entries at
-    // o_from_if_to_pd.sel_compressed.
     output logic [1:0] o_backing_slot2_return_by_size,
     output logic [1:0][riscv_pkg::PhysAddrBits-2:0] o_backing_slot2_target_by_size,
-    // Replay-aligned control-flow class from the aligner's predecode, used
-    // by frontend_validity_tracker.
     output logic o_slot1_has_control_flow,
-    // Replay-aligned slot-1 indirect-jump class, from the predecode sideband:
-    // riscv_pkg::imem_indirect_parcel of o_from_if_to_pd.raw_parcel.
     output logic o_slot1_is_indirect,
-    // Width profiling, registered one cycle after an unstalled IF
-    // presentation. Kill causes follow replay. PD may squash the packet
-    // on a redirect; these counters do not include that gate.
     output riscv_pkg::if_width_events_t o_width_events,
-
-    // Tagged direction predictor. cpu_ooo keeps the path history and passes
-    // the lookup history in. Each slot's lookup is valid when the registered
-    // lookup covered that slot's word; cpu_ooo saves the branch's lookup and
-    // the history it used, to train the same entries at commit.
-    // The tagged predictor's direction history and the indirect target
-    // predictor's path history (tage_history).
     input logic [riscv_pkg::TageDirHistBits-1:0] i_tage_hist,
     input logic [riscv_pkg::TageTables-1:0][riscv_pkg::TageIndexBits-1:0] i_tage_hist_fold = '0,
     input logic [riscv_pkg::TageHistBits-1:0] i_itt_hist,
@@ -239,15 +139,11 @@ module if_stage #(
     input logic i_tage_train_mispredicted,
     output logic o_tage_hist_push,
     output logic [4:1] o_tage_hist_restore_arm,
-    // The fetch PC's [3:2], which a history push shifts in.
     output logic [riscv_pkg::TagePathBits-1:0] o_tage_fetch_path_bits,
-    output logic [1:0] o_tage_slot_valid,  // bit s: slot s + 1
+    output logic [1:0] o_tage_slot_valid,
     output riscv_pkg::tage_lookup_t o_tage_slot_lookup,
     output riscv_pkg::tage_lookup_t o_tage_slot_lookup_2,
     output logic [riscv_pkg::TageHistBits-1:0] o_tage_lookup_hist,
-    // Indirect target predictor: training (commit); each slot's saved lookup
-    // and PD prediction (a hit and target bits [PhysAddrBits-1:1]). A slot's
-    // lookup covers it when o_tage_slot_valid says so (the same lookup).
     input logic i_itt_train_valid,
     input riscv_pkg::itt_lookup_t i_itt_train_lookup,
     input logic i_itt_train_bank,
@@ -260,760 +156,494 @@ module if_stage #(
 );
 
   // ===========================================================================
-  // Submodule Signals
+  // Local Constants & Packed Types
   // ===========================================================================
+  localparam int unsigned SbWidth = riscv_pkg::ImemSidebandWidth;
+  localparam int unsigned BtbIndexBits = 8;
+  localparam int unsigned BackingIndexBits = $clog2(
+      riscv_pkg::BackingBtbEntries / riscv_pkg::BackingBtbWays
+  );
+  localparam int unsigned BackingTargetBits = riscv_pkg::PhysAddrBits - 1;
+  localparam int unsigned RasPtrBits = riscv_pkg::RasPtrBits;
 
-  // ---------------------------------------------------------------------------
-  // Branch Prediction Controller Interface (branch_prediction_controller)
-  // ---------------------------------------------------------------------------
-  logic [XLEN-1:0] btb_predicted_target;  // Combinational: Predicted target address
-  // The BTB entry behind the target is typed as a call or a return.
-  logic btb_predicted_is_call;
-  logic btb_predicted_is_return;
-  logic prediction_used_r;  // Registered: Prediction was applied
-  logic [XLEN-1:0] btb_predicted_target_r;  // Registered: Target for pipeline alignment
-  logic btb_predicted_is_call_r;  // Registered with the target
-  logic btb_predicted_is_return_r;
-  logic prediction_used;  // Current prediction being used
-  logic prediction_used_for_pc;  // Stall-ungated PC mux select
-  logic prediction_used_live_cofactor;  // prediction_used without the slot-2 alias gate
-  logic prediction_holdoff;  // Block prediction (stale data)
-  logic disable_branch_prediction_effective;  // i_disable_branch_prediction + IF-internal gates
-  // The same with window_cannot_serve_pc_reg (WCS) forced to 0 and to 1.
-  logic disable_branch_prediction_effective_wcs0;
-  logic disable_branch_prediction_effective_wcs;
-  logic sel_prediction_r;  // Select registered prediction target
-  logic prediction_requires_pc_reg_handoff;  // Predicted op must still reach IF/PD/ID
-  logic control_flow_to_halfword_pred;  // Prediction targets halfword address
+  typedef struct packed {
+    logic [15:0] parcel;
+    logic allows_slot2_after;
+    logic slot2_start_valid;
+    logic is_indirect;
+    logic is_control;
+    logic [1:0] rvc_source_hot;
+    logic [4:0] rvc_bits24_20;
+    logic [2:0] rvc_rs1_rest;
+    logic [22:0] rvc_extra;
+    logic [1:0] hw_in_win;  // bit 1: word_in_win (0=W, 1=W+1), bit 0: PC[1]
+    logic fault;
+    logic fault_page;
+    logic bp_dir_taken;
+    logic btb_taken;
+    logic backing_hit;
+    logic backing_compressed;
+    logic backing_return;
+    logic [BackingTargetBits-1:0] backing_target;
+  } parcel_t;
 
-  // Slot-2 prediction and its separate staged and complete live target selects.
-  logic slot2_predicted_taken;
-  logic [XLEN-1:0] slot2_predicted_target;
-  logic [XLEN-1:0] slot2_predicted_target_for_pc;
-  logic slot2_prediction_used;
-  logic slot2_prediction_used_for_pc;
-  logic slot2_prediction_used_for_fetch_mux;
-  logic slot2_staged_pc_without_valid;
-  logic slot2_live_pc_without_valid;
-  logic [XLEN-1:0] slot2_staged_predicted_target;
-  logic [XLEN-1:0] slot2_live_predicted_target;
-  riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending;
-  riscv_pkg::pc_pending_rel_t slot2_live_target_rel_pending;
-  logic slot2_predicted_is_call;
-  logic slot2_predicted_is_return;
-  logic slot2_prediction_used_live;
-  logic slot2_prediction_used_for_pc_live;
-  logic slot2_prediction_used_for_fetch_mux_live;
-  logic slot2_staged_prediction_used_for_capture;
-  logic [XLEN-1:0] slot2_predicted_target_for_pc_live;
-  logic [XLEN-1:0] slot2_staged_predicted_target_live;
-  riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending_live;
-  logic slot2_replay_request;
-  logic slot2_replay_consumed;
-  logic [XLEN-1:0] slot2_predicted_target_sc;
-  logic [1:0] slot2_predicted_kind_sc;
-  riscv_pkg::pc_pending_rel_t slot2_staged_target_rel_pending_sc;
+  // Explicit bit width for Yosys parameter-override compatibility (checked below).
+  localparam int unsigned ParcelBits = 16 + 4 + 2 + 5 + 3 + 23 + 2 + 2 + 2 + 3 + BackingTargetBits;
 
-  assign slot2_prediction_used = slot2_prediction_used_live || slot2_replay_consumed;
-  assign slot2_prediction_used_for_pc = slot2_prediction_used_for_pc_live || slot2_replay_request;
-  assign slot2_prediction_used_for_fetch_mux =
-      slot2_prediction_used_for_fetch_mux_live || slot2_replay_request;
-  (* keep = "true", max_fanout = 32 *) logic if_stage_stall_registered;
-  assign slot2_predicted_target_for_pc = if_stage_stall_registered ? slot2_predicted_target_sc :
-      slot2_predicted_target_for_pc_live;
-  assign slot2_staged_predicted_target = if_stage_stall_registered ? slot2_predicted_target_sc :
-      slot2_staged_predicted_target_live;
-  assign slot2_staged_target_rel_pending = if_stage_stall_registered ?
-      slot2_staged_target_rel_pending_sc : slot2_staged_target_rel_pending_live;
+  typedef struct packed {
+    logic [XLEN-3:0] word0_pc;
+    logic [XLEN-3:0] word1_pc;
+    logic [XLEN-2:0] btb_target_hi;
+    logic [RasPtrBits-1:0] ras_ckpt_tos;
+    logic [RasPtrBits:0] ras_ckpt_cnt;
+    logic [XLEN-1:0] ras_ckpt_top;
+    logic [1:0] tage_cov;
+    riscv_pkg::tage_lookup_t tage_w0;
+    riscv_pkg::tage_lookup_t tage_w1;
+    riscv_pkg::itt_lookup_t itt_w0;
+    riscv_pkg::itt_lookup_t itt_w1;
+    logic [1:0] itt_hit;
+    logic [1:0][BackingTargetBits-1:0] itt_target;
+    logic [riscv_pkg::TageHistBits-1:0] itt_hist;
+  } meta_t;
 
-  // Return address stack: the top of stack, valid count and top entry, the
-  // recovery point of the packet leaving IF now, the push or pop for that
-  // packet, and the push or pop of the packet PD took last cycle, which the
-  // stack applies now ("Return address stack" in the CPU README).
-  logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos;
-  logic [riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count;
-  logic [XLEN-1:0] ras_checkpoint_top;
-  logic ras_push;
-  logic ras_pop;
-  logic ras_push_q;
-  logic ras_pop_q;
-  logic [XLEN-1:0] ras_pending_push_address;
-  // Types of the BTB entry behind each output packet's prediction, through the
-  // same live, registered, pending, and stall-replay selection as its target.
-  logic slot1_btb_predicted_taken_raw;
-  logic slot1_packet_is_call;
-  logic slot1_packet_is_return;
-  logic slot2_packet_is_call;
-  logic slot2_packet_is_return;
+  localparam int unsigned MetaBits = (2 * (XLEN - 2)) + (XLEN - 1) +
+      RasPtrBits + (RasPtrBits + 1) + XLEN + 2 + (2 * riscv_pkg::TageLookupBits) +
+      (2 * riscv_pkg::IttLookupBits) + 2 + (2 * BackingTargetBits) + riscv_pkg::TageHistBits;
 
-  // Bimodal direction prediction, carried with each slot-1 instruction to PD
-  // so PD can redirect a branch the BTB does not predict taken.
-  logic bp_dir_taken;
-  logic bp_dir_taken_live;
-  logic bp_dir_taken_live_cofactor;
-  // Predict-time bimodal index (slot 1 and slot 2), carried to commit so
-  // training updates the entry the prediction read.
-  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx;
-  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_live;
-  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_2;
+  typedef struct packed {
+    logic [XLEN-1:0] pc;
+    logic [riscv_pkg::BpDirIdxBits-3:0] even_dir_idx;
+    logic span_veto;
+    logic span_tail;
+    logic btb_taken;
+    logic btb_is_span;
+    logic [1:0] btb_pos;
+    logic btb_comp;
+    logic [XLEN-1:0] btb_target;
+    logic [riscv_pkg::BpDirIdxBits-3:0] btb_even_dir_idx;
+    logic btb_is_call;
+    logic btb_is_return;
+    logic [XLEN-1:0] btb_link;
+    logic btb_link_cached;
+    logic [3:0] dir_taken;
+    logic [RasPtrBits-1:0] ras_ckpt_tos;
+    logic [RasPtrBits:0] ras_ckpt_cnt;
+    logic [XLEN-1:0] ras_ckpt_top;
+    logic ras_ckpt_from_live;
+  } f1_req_t;
 
-  // ---------------------------------------------------------------------------
-  // PC Controller Interface (pc_controller)
-  // ---------------------------------------------------------------------------
-  logic [XLEN-1:0] pc;  // Current program counter (fetch address)
-  logic [XLEN-1:0] pc_reg;  // PC of the packet IF emits (instruction address)
-  logic control_flow_change;  // Branch/jump taken this cycle
-  logic control_flow_holdoff;  // Wait cycle after control flow change
-  logic control_flow_to_halfword;  // Target address is halfword-aligned
-  logic control_flow_to_halfword_r;  // Registered version for timing
-  logic reset_holdoff;  // Wait cycle after reset
-  logic any_holdoff;  // Any holdoff condition active
-  logic any_holdoff_safe;  // Safe holdoff (registered signals only)
-  logic pending_prediction_active;  // A slot-1 prediction waits for pc_reg to reach its branch
-  logic [XLEN-1:0] pending_prediction_pc;  // PC of the branch the prediction belongs to
-  logic pending_prediction_target_handoff;  // Pending branch consumed; pc_reg moves to target
-  logic pending_prediction_holdoff;  // Prediction disable for a pending prediction
-  logic pending_prediction_holdoff_wcs0;  // ... with WCS forced to 0
-  logic pending_prediction_holdoff_wcs;  // ... with WCS forced to 1
-  logic pending_prediction_fetch_holdoff;  // Packet squash for a pending prediction
-  logic pending_prediction_fetch_holdoff_wcs0;  // ... with WCS forced to 0
-  logic pending_prediction_fetch_holdoff_wcs;  // ... with WCS forced to 1
-  logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
-  logic pending_prediction_walk_past;  // pc_reg is past a pending prediction's PC
-  logic pending_prediction_blocks_slot1;  // Walk-past or crossing predecessor blocks slot 1
-  logic pending_prediction_redirect_kill;  // Pending prediction dies without its handoff
-  logic pc_update_en;  // Fetch-PC load enable; qualifies the low-presenter retarget
-  // Used only to classify fetch retargets as sequential or not.
-  logic [riscv_pkg::PcNextArms-1:0] npc_sel;
+  typedef struct packed {
+    logic [XLEN-1:0] target;
+    logic [riscv_pkg::BpDirIdxBits-3:0] even_dir_idx;
+    logic is_call;
+    logic is_return;
+    logic [XLEN-1:0] link;
+    logic link_cached;
+  } span_btb_t;
+
+  typedef struct packed {
+    logic [riscv_pkg::TageLookupHiBit:2] tage_word;
+    logic [riscv_pkg::TageLookupHiBit:2] tage_word_next;
+    riscv_pkg::tage_lookup_t tage_bank0;
+    riscv_pkg::tage_lookup_t tage_bank1;
+    riscv_pkg::itt_lookup_t itt_bank0;
+    riscv_pkg::itt_lookup_t itt_bank1;
+    logic [1:0] itt_hit;
+    logic [1:0][BackingTargetBits-1:0] itt_target;
+    logic [riscv_pkg::TageHistBits-1:0] itt_hist;
+    logic [3:0] backing_hit;
+    logic [3:0] backing_comp;
+    logic [3:0] backing_ret;
+    logic [3:0][BackingTargetBits-1:0] backing_target;
+  } pred_hold_t;
+
+  // ===========================================================================
+  // Shared Control & Flush Classification
+  // ===========================================================================
+  logic frontend_flush;
+  logic any_redirect;
+  logic pqueue_flush;
+  assign frontend_flush = i_pipeline_ctrl.flush || i_frontend_state_flush;
+  assign any_redirect = frontend_flush || i_pd_redirect || i_trap_ctrl.trap_taken ||
+      i_trap_ctrl.mret_taken || i_fence_i_flush || i_from_ex_comb.branch_taken;
+  assign pqueue_flush = any_redirect;
+
+  // ===========================================================================
+  // Forward Declarations (declared before first use)
+  // ===========================================================================
+  logic [XLEN-1:0] pc;
   logic [riscv_pkg::TageLookupHiBit:2] pc_tage_lookup;
-  logic [riscv_pkg::PcNextArms-1:0] npc_cond;
-  logic [riscv_pkg::PcNextArms-1:0] npc_seq;
-  // pc_controller's one-hot next-PC arm ordering; arm 8 is slot-1 prediction.
-  localparam int unsigned PredictionNpcArm = 8;
-  logic fetch_pa_valid;  // physical result for o_pc is visible
-  // The IMMU forms the hold copies in their own LUTs (PA_COPY_HOLD), so no
-  // inverter sits between them and the queue's stall-select LUTs.
-  logic [riscv_pkg::FetchPaHoldCopies-1:0] fetch_pa_hold_copy;
-  logic fetch_fault0_live;  // o_pc's word-0 fetch fault
+  logic [BtbIndexBits-2:0] pc_even_btb_idx;
+  logic [riscv_pkg::BpDirIdxBits-3:0] pc_even_dir_idx;
+  logic [XLEN-1:0] next_pc;
+  logic pc_update_en;
+  logic f0_self_loop;
+  logic [riscv_pkg::PcNextArms-1:0] npc_sel;
 
-  // ---------------------------------------------------------------------------
-  // C-Extension State Interface (c_ext_state)
-  // ---------------------------------------------------------------------------
-  logic [31:0] instr_buffer;  // Word kept for its upper parcel (see c_ext_state)
-  logic prev_was_compressed_at_lo;  // Previous instr was compressed at addr[1]=0
-  logic use_instr_buffer_for_coverage_timing;
-  logic is_compressed_saved;  // Saved is_compressed for fast path
-  logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
-  logic [riscv_pkg::ImemSidebandWidth-1:0] instr_buffer_sideband;
-  logic [1:0] instr_buffer_fault;  // {fault, page} captured with the buffered word
-  // Fetch-fault status of the aligner's current and next word, mapped from
-  // the served window's per-word flags; see "Fetch-fault tags" below.
-  logic [1:0] cur_fault_pair;  // {fault, page} of the current word
-  logic [1:0] next_fault_pair;  // {fault, page} of the next word
+  logic fetch_pa_valid;
+  logic fetch_fault0_live;
+  logic [riscv_pkg::PhysAddrBits-1:0] fetch_pa0_live;
+  logic [riscv_pkg::PhysAddrBits-1:0] fetch_pa1_live;
 
-  // ---------------------------------------------------------------------------
-  // Instruction Aligner Interface (instruction_aligner)
-  // ---------------------------------------------------------------------------
-  logic [15:0] raw_parcel;  // Slot-1 parcel for predecode and PD's reference
-  logic [31:0] effective_instr;  // Raw current word (for state machine/buffer)
-  logic is_compressed;  // Current instruction is 16-bit compressed
-  logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
-  logic is_compressed_for_pc_advance;  // PC-selector-only timing-replica path
-  // With no buffer in use, a window that ends at pc_reg's word can serve the
-  // packet.
-  logic no_buffer_accepts_served_last;
-  logic sel_nop;  // Select NOP (during holdoff/flush)
-  // Shared progress gate for holdoffs, bubbles, and stall-held state.
-  // The fanout limit permits local copies.
-  (* max_fanout = 32 *)
-  logic fetch_progress;  // live window valid OR replay bundle presented
-  logic fetch_invalid_unstalled_q;  // last unstalled cycle had no live window
-  logic lookup_lead_collapsed;  // first live window after such a gap
-  logic sel_compressed;  // Select compressed instruction path
-  logic use_instr_buffer;  // Use buffered instruction
-  logic [2:0] rvc_source_hot;
-  logic [4:0] rvc_bits24_20;
-  logic [2:0] rvc_rs1_rest;
-  logic [22:0] rvc_extra;
-  logic is_indirect;
+  logic f1_req_valid_q;
+  f1_req_t f1_req_q;
+  (* max_fanout = 16 *) logic f1_start_off_q;
+  logic span_btb_valid_q;
+  span_btb_t span_btb_pending_q;
+  logic f1_carry_hi_q;
+  (* max_fanout = 64 *) logic f1_pred_fresh_q;
+  logic collapsed_armed_q;
+  logic f1_resteer_nopred_q;
+  pred_hold_t f1_pred_hold_q;
 
-  // Slot-2 outputs from instruction_aligner (2-wide dispatch).
-  logic [15:0] raw_parcel_2;
-  logic [31:0] effective_instr_2;
-  logic slot2_decomp_illegal;
-  logic slot2_is_cond_branch_live;
-  logic is_compressed_2;
-  logic sel_nop_2_aligner;  // raw output from instruction_aligner
-  logic sel_nop_2;  // effective: also NOP'd whenever slot-1 NOPs
-  logic sel_compressed_2;
-  logic [2:0] source_hot_2;
-  logic [4:0] bits24_20_2;
-  logic [2:0] rs1_rest_2;
-  logic slot2_valid_for_pc_live;
-  logic slot2_is_compressed_for_pc_live;
-  logic slot2_is_compressed_plus2_for_btb;
-  logic slot2_is_compressed_plus4_for_btb;
-  logic slot2_plus2_candidate_valid;
-  logic slot2_plus4_candidate_valid;
-  logic pending_prediction_owns_live_slot1;
-  logic pending_prediction_owns_live_slot2;
-  logic pending_prediction_kills_live_slot2;
-  logic [XLEN-1:0] pending_prediction_prev_pc;
-  logic [XLEN-1:0] pending_prediction_prev_native_pc;
-  logic pc_reg_at_pending;
-  logic pc_reg_at_pending_predecessor;
-  logic pc_reg_at_pending_native_predecessor;
-  logic fetch_lookup_is_lower_parcel;
-  logic pc_reg_high_for_coverage;
-  logic slot2_valid_for_pc_live_effective;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_advance_sel_base_live;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_advance_sel_run_live;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_live;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_saved;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_live;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_saved;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel;
-  logic slot2_valid;  // matches the output slot-2 valid sent to PD/dispatch
-  logic slot2_prediction_valid;  // live-only valid for the current staged slot-2 lookup
-  logic slot2_prediction_valid_wcs0;  // the same with the raw served-window guard low
-  logic slot2_redirect_q;  // One-cycle bubble after slot-2 BTB redirect.
-  // Slot 2 bubbles with slot 1: holdoffs and flushes can leave live bytes
-  // unrelated to pc_reg. A pending prediction belongs to one instruction at P.
-  // If a compressed predecessor at P - 2 or a native one at P - 4 is in slot 1,
-  // kill the branch at P in slot 2 so it is delivered later as slot 1 with its
-  // saved metadata (an overlapping 32-bit slot 1 at P - 2 has slot 2 at P + 2,
-  // which stays live and retires the pending entry if predicted taken). When
-  // the branch is slot 1, kill its wrong-path partner even if stale bytes look
-  // pairable. Dispatch, slot-2 prediction, and PC advance share this one-wide
-  // decision. pc_controller registers pc_reg's equality with the branch PC and
-  // both predecessor PCs, for timing; select the predecessor by size.
-  assign pending_prediction_owns_live_slot1 = pending_prediction_active && pc_reg_at_pending;
-  assign pending_prediction_owns_live_slot2 =
-      pending_prediction_active && !sel_nop_2_aligner &&
-      (is_compressed ? pc_reg_at_pending_predecessor : pc_reg_at_pending_native_predecessor);
-  assign pending_prediction_kills_live_slot2 =
-      pending_prediction_owns_live_slot1 || pending_prediction_owns_live_slot2;
-  assign sel_nop_2 = sel_nop_2_aligner || sel_nop || pending_prediction_kills_live_slot2;
-  assign slot2_valid_for_pc_live_effective =
-      slot2_valid_for_pc_live && !pending_prediction_kills_live_slot2;
-  // PC advance and C-extension state must use the replayed slot-2 valid
-  // and size. Mixing live slot 2 with saved slot 1 can select the wrong
-  // advance (for example, +6 for native + RVC) and land inside an instruction.
-  // The staged BTB lookup uses live valid, blocked by the registered stall.
-  assign slot2_prediction_valid = !sel_nop_2;
+  logic q_stop_fetch;
+  logic f0_stop_fetch;
+  logic f0_launch_raw;
+  logic f0_launch;
+  assign f0_stop_fetch = q_stop_fetch || i_fetch_trap_hold;
+  logic f1_accept_raw;
+  logic f1_accept;
+  logic f1_collapsed_accept_raw;
+  logic f1_collapsed_accept;
+  logic f1_collapsed_btb_steer_raw;
+  logic f1_collapsed_btb_steer;
+  logic f1_collapsed_btb_span_raw;
+  logic f1_collapsed_btb_span;
+  logic f1_collapsed_span_fire_raw;
+  logic f1_collapsed_span_fire;
+  logic f1_tag_resteer_raw;
+  logic f1_tag_resteer;
+  logic f1_false_btb_raw;
+  logic f1_false_btb_resteer_raw;
+  logic f1_false_btb_resteer;
+  logic f1_cancel_span_raw;
+  logic f1_cancel_span;
+  logic f1_resteer_raw;
+  logic f1_resteer;
+  logic [XLEN-1:0] f1_resteer_target;
+  logic f1_span_tail_fault;
 
+  logic ras_nonempty;
+  logic [XLEN-1:0] ras_top;
+  logic [RasPtrBits-1:0] ras_tos;
+  logic [RasPtrBits:0] ras_valid_count;
+  logic f0_ras_push;
+  logic f0_ras_pop;
+  logic [XLEN-1:0] f0_ras_link;
+  logic f0_ras_link_cached;
+  logic f0_ras_push_q;
+  logic f0_ras_pop_q;
+  logic [XLEN-1:0] f0_ras_link_q;
+  logic f0_ras_link_cached_q;
+  logic [riscv_pkg::RasDepth-1:0] ras_cached_q;
+  logic ras_top_cached_q;
+  logic ras_below_cached_q;
+  logic [RasPtrBits-1:0] ras_cached_tos_q;
+  logic [RasPtrBits:0] ras_cached_cnt_q;
+  logic ras_cached_ne0_q;
+  logic ras_cached_gt1_q;
+  logic [RasPtrBits-1:0] ras_sh_tos_next;
+  logic [RasPtrBits:0] ras_sh_cnt_next;
+  logic f1_ras_restore_comb;
+  logic ras_restore_q;
+  logic [RasPtrBits-1:0] ras_restore_tos_q;
+  logic [RasPtrBits:0] ras_restore_cnt_q;
+  logic [XLEN-1:0] ras_restore_top_q;
+  logic ras_restore_push_q;
+  logic ras_restore_pop_q;
+  logic [XLEN-1:0] ras_restore_link_q;
+  logic ras_restore_top_cached_q;
+  logic ras_restore_link_cached_q;
+  logic ras_restore_pure_pop_q;
+  logic ras_restore_nonempty_q;
+  logic ras_restore_uses_link_q;
 
-`ifndef SYNTHESIS
-  logic coverage_reset_seen_q = 1'b0;
-  logic [7:0] instr_pc_metadata_canonical;
-  logic [7:0] active_pc_metadata_by_parity;
-  logic [7:0] active_pc_metadata_by_parity_canonical;
-  logic [3:0] active_pc_pairability_by_parity;
-  logic [3:0] active_pc_pairability_by_parity_canonical;
-  logic [1:0] active_slot2_start_valid_lo_by_parity;
-  logic [1:0] active_slot2_start_valid_lo_by_parity_canonical;
-  // Fault responses carry arbitrary bytes and predecode metadata.
-  logic provider_metadata_check_valid;
-  assign provider_metadata_check_valid = coverage_reset_seen_q &&
-      !i_pipeline_ctrl.reset && i_instr_valid && !i_instr_fault0 && !i_instr_fault1;
-  // Check metadata replicas and the +2/+4 candidate selects. Compare the
-  // latter only when prediction_common would be set; the fast size may
-  // differ while prediction is blocked.
-  logic slot2_candidate_legacy_oracle_active;
-  assign slot2_candidate_legacy_oracle_active =
-      coverage_reset_seen_q && !i_pipeline_ctrl.reset && slot2_prediction_valid &&
-      !i_trap_ctrl.trap_taken && !i_trap_ctrl.mret_taken &&
-      !if_stage_stall_registered && !any_holdoff_safe &&
-      !prediction_holdoff && !use_instr_buffer &&
-      !disable_branch_prediction_effective;
-  always_comb begin
-    instr_pc_metadata_canonical = {
-      i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],
-      i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableCompressedHi],
-      i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedHi],
-      i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedLo],
-      i_instr_sideband[riscv_pkg::ImemSbPairableNativeHi],
-      i_instr_sideband[riscv_pkg::ImemSbPairableCompressedHi],
-      i_instr_sideband[riscv_pkg::ImemSbIsCompressedHi],
-      i_instr_sideband[riscv_pkg::ImemSbIsCompressedLo]
-    };
-    active_pc_metadata_by_parity = i_instr_pc_metadata_served_high ?
-        i_instr_pc_metadata_by_provider_parity[15:8] :
-        i_instr_pc_metadata_by_provider_parity[7:0];
-    active_slot2_start_valid_lo_by_parity = i_instr_pc_metadata_served_high ?
-        i_slot2_start_valid_lo_by_provider_parity[3:2] :
-        i_slot2_start_valid_lo_by_provider_parity[1:0];
-    active_pc_pairability_by_parity = i_instr_pc_metadata_served_high ?
-        i_pc_pairability_by_provider_parity[7:4] :
-        i_pc_pairability_by_provider_parity[3:0];
-    active_pc_metadata_by_parity_canonical = i_instr_bank_sel_r ?
-        {instr_pc_metadata_canonical[3:0], instr_pc_metadata_canonical[7:4]} :
-        instr_pc_metadata_canonical;
-    active_slot2_start_valid_lo_by_parity_canonical = i_instr_bank_sel_r ?
-        {
-          i_instr_sideband[riscv_pkg::ImemSbSlot2StartValidLo],
-          i_instr_sideband[
-              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
-          ]
-        } : {
-          i_instr_sideband[
-              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
-          ],
-          i_instr_sideband[riscv_pkg::ImemSbSlot2StartValidLo]
-        };
-    active_pc_pairability_by_parity_canonical = i_instr_bank_sel_r ?
-        {
-          i_instr_sideband[riscv_pkg::ImemSbPairableNativeLo],
-          i_instr_sideband[riscv_pkg::ImemSbEvenLocalPairValid],
-          i_instr_sideband[
-              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeLo
-          ],
-          i_instr_sideband[
-              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbEvenLocalPairValid
-          ]
-        } : {
-          i_instr_sideband[
-              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeLo
-          ],
-          i_instr_sideband[
-              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbEvenLocalPairValid
-          ],
-          i_instr_sideband[riscv_pkg::ImemSbPairableNativeLo],
-          i_instr_sideband[riscv_pkg::ImemSbEvenLocalPairValid]
-        };
-  end
-  always_ff @(posedge i_clk) begin
-    if (provider_metadata_check_valid && !$isunknown(
-            {i_instr_pc_metadata, instr_pc_metadata_canonical}
-        )) begin
-      p_pc_metadata_matches_canonical : assert (i_instr_pc_metadata == instr_pc_metadata_canonical);
-    end
-    if (provider_metadata_check_valid && !$isunknown(
-            {
-              active_pc_metadata_by_parity,
-              active_pc_metadata_by_parity_canonical,
-              active_pc_pairability_by_parity,
-              active_pc_pairability_by_parity_canonical,
-              active_slot2_start_valid_lo_by_parity,
-              active_slot2_start_valid_lo_by_parity_canonical
-            }
-        )) begin
-      p_active_pc_metadata_by_parity_matches_canonical :
-      assert (active_pc_metadata_by_parity == active_pc_metadata_by_parity_canonical);
-      p_active_pc_pairability_by_parity_matches_canonical :
-      assert (active_pc_pairability_by_parity == active_pc_pairability_by_parity_canonical);
-      p_active_slot2_start_valid_lo_by_parity_matches_canonical :
-      assert (
-        active_slot2_start_valid_lo_by_parity ==
-        active_slot2_start_valid_lo_by_parity_canonical
-      );
-    end
-    if (slot2_candidate_legacy_oracle_active && !$isunknown(
-            {is_compressed_fast, slot2_plus2_candidate_valid, slot2_plus4_candidate_valid}
-        )) begin
-      p_slot2_candidate_identity_matches_legacy_live_selector :
-      assert ({slot2_plus4_candidate_valid, slot2_plus2_candidate_valid} ==
-              {!is_compressed_fast, is_compressed_fast});
-    end
-  end
-`endif
-
-  // ---------------------------------------------------------------------------
-  // Derived Signals and Stall State
-  // ---------------------------------------------------------------------------
-  logic prev_was_compressed_at_lo_saved;  // Saved for stall recovery
-  (* keep = "true", max_fanout = 32 *)logic if_stage_stall;
-  (* keep = "true" *)logic pc_controller_stall;
-
-  logic window_cannot_serve_pc_reg;
-
-  // The aligner sees raw bytes during flush for timing. The PC selects a
-  // redirect, ID applies the NOP carried by PD, and c_ext_state gates its
-  // own updates on flush.
-  //
-  // i_pd_redirect is omitted from prediction gating for timing. Its
-  // wrong-path hits are cleared by redirect_kill_pending_q and pd_redirect_q.
-  //
-  // Served-window faults, non-covering windows, and first-word fetch faults
-  // disable prediction and pending-prediction arming. Second-word faults stay
-  // off the lookup path so they do not gate next_pc: an upper-parcel native
-  // entry whose second word faults can redirect fetch, and packet assembly
-  // clears btb_predicted_taken (blocking RAS updates) on any packet carrying
-  // fetch_fault. Check pc_reg's PMA only without translation: a virtual
-  // address has no physical PMA meaning. Unresolved translations stall IF,
-  // blocking predictions.
-  logic pc_pma_bad;
-  logic served_fault_any;
-  assign served_fault_any = i_instr_valid && (i_instr_fault0 || i_instr_fault1);
-  // Without translation, fetch_fault0_live equals !pma_fetch_ok(pc), so
-  // o_pc needs no separate PMA check. Keep this late fault separate from
-  // the pc_reg check for timing.
-  logic prediction_pma_bad_without_fetch_fault;
-  assign prediction_pma_bad_without_fetch_fault = served_fault_any ||
-      (!i_fetch_translation_active && !riscv_pkg::pma_fetch_ok(
-      pc_reg
-  ));
-  assign pc_pma_bad = prediction_pma_bad_without_fetch_fault || fetch_fault0_live;
-  (* keep = "true" *)logic prediction_disable_without_fetch_fault;
-  (* keep = "true" *)logic prediction_disable_without_fetch_fault_wcs0;
-  assign prediction_disable_without_fetch_fault =
-      i_disable_branch_prediction || pending_prediction_holdoff ||
-      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
-      prediction_pma_bad_without_fetch_fault || window_cannot_serve_pc_reg;
-  assign disable_branch_prediction_effective =
-      prediction_disable_without_fetch_fault || fetch_fault0_live;
-  // Compute prediction disables for both values of the late WCS input.
-  assign prediction_disable_without_fetch_fault_wcs0 =
-      i_disable_branch_prediction || pending_prediction_holdoff_wcs0 ||
-      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
-      prediction_pma_bad_without_fetch_fault;
-  assign disable_branch_prediction_effective_wcs0 =
-      prediction_disable_without_fetch_fault_wcs0 || fetch_fault0_live;
-  assign disable_branch_prediction_effective_wcs = 1'b1;
-`ifndef SYNTHESIS
-  logic pc_pma_bad_ref;
-  assign pc_pma_bad_ref = (!i_fetch_translation_active && (!riscv_pkg::pma_fetch_ok(
-      pc
-  ) || !riscv_pkg::pma_fetch_ok(
-      pc_reg
-  ))) || fetch_fault0_live || served_fault_any;
-  always_comb begin
-    if (!$isunknown(
-            {pc, pc_reg, i_fetch_translation_active, fetch_fault0_live, served_fault_any}
-        )) begin
-      p_prediction_pma_fault_cofactor_exact : assert (pc_pma_bad == pc_pma_bad_ref);
-    end
-  end
-`endif
-  // cpu_ooo supplies equal pipeline and front-end state flushes, including
-  // the registered trap and xRET pulses.
-  logic flush_for_c_ext_safe;
-  assign flush_for_c_ext_safe = i_frontend_state_flush;
-  assign if_stage_stall = i_pipeline_ctrl.stall;
-  assign if_stage_stall_registered = i_pipeline_ctrl.stall_registered;
-  assign pc_controller_stall = if_stage_stall;
-  (* max_fanout = 16 *)logic instr_bank_sel_for_c_ext;
-  (* max_fanout = 16 *)logic instr_bank_sel_for_aligner;
-  (* max_fanout = 16 *)logic instr_bank_sel_for_spanning;
-  logic fetch_word_swapped_for_c_ext;
-  logic fetch_word_swapped_for_spanning;
-  // Use parity registered with the window. Redirects and stalls can pair
-  // a served window with a different pc_reg.
-  assign instr_bank_sel_for_c_ext = i_instr_bank_sel_r;
-  assign instr_bank_sel_for_aligner = i_instr_bank_sel_r;
-  assign instr_bank_sel_for_spanning = i_instr_bank_sel_r;
-  assign fetch_word_swapped_for_c_ext = instr_bank_sel_for_c_ext ^ pc_reg[2];
-  assign fetch_word_swapped_for_spanning = instr_bank_sel_for_spanning ^ pc_reg[2];
+  logic [RasPtrBits-1:0] pd_ras_ckpt_tos_q;
+  logic [RasPtrBits:0] pd_ras_ckpt_cnt_q;
+  logic [XLEN-1:0] pd_ras_ckpt_top_q;
+  logic pd_ras_restore;
 
   // ===========================================================================
-  // Branch Prediction Controller
+  // F0: Fast-BTB (2-Bank Even/Odd) & 4-Bank Bimodal Direction Predictor
   // ===========================================================================
-  // Declared before first use to avoid Vivado warnings.
-  logic use_saved_values;
-  assign use_saved_values = if_stage_stall_registered && saved_values_valid;
-  logic            prediction_reset_c_ext;
-  logic [    15:0] raw_parcel_sc;
-  logic [    31:0] assembled_instr_sc;
-  logic [XLEN-1:0] instruction_pc_sc;
-  logic [XLEN-1:0] link_address_sc;
+  // Register BTB training by one cycle for timing and hold i_btb_invalidate
+  // for four cycles so pre-flush in-flight training writes cannot reinstall
+  // stale entries after FENCE.I, SFENCE.VMA, satp, or Debug Mode transitions.
+  logic btb_update_q;
+  (* max_fanout = 64 *) logic [XLEN-1:0] btb_update_pc_q;
+  logic [XLEN-1:0] btb_update_target_q;
+  logic btb_update_taken_q;
+  logic btb_update_compressed_q;
+  logic btb_update_call_q;
+  logic btb_update_return_q;
+  logic btb_early_update_active_q;
+  (* max_fanout = 48 *) logic [XLEN-1:0] btb_early_update_pc_q;
+  logic btb_early_update_taken_q;
+  logic [XLEN-1:0] btb_late_update_pc_q;
+  logic btb_late_update_taken_q;
+  logic [1:0] btb_invalidate_hold_q;
+  (* max_fanout = 32 *) logic btb_invalidate_active;
 
-  // Slot 2 is at pc_reg+2 after RVC or pc_reg+4 after a native instruction.
-  // The fetch PC reads the +2, +4, and rotated +2 BTB copies one cycle ahead.
-  // Full tags and the aligner's one-hot, valid-qualified selects choose the
-  // candidate; raw instruction size does not drive the RAM address.
-  logic [XLEN-1:0] slot2_pc_plus2_for_btb;
-  logic [XLEN-1:0] slot2_pc_plus4_for_btb;
-  assign slot2_pc_plus2_for_btb = pc_reg + riscv_pkg::PcIncrementCompressed;
-  assign slot2_pc_plus4_for_btb = pc_reg + riscv_pkg::PcIncrement32bit;
-
-  // Fixed-latency fetch normally looks ahead to slot 2. Suppress a live hit
-  // there for slot 1; only a response gap (lookup_lead_collapsed) lets slot 2
-  // use it. Stall release replays a saved packet, so it is not such a gap.
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
-      fetch_invalid_unstalled_q <= 1'b0;
-    end else if (!if_stage_stall) begin
-      fetch_invalid_unstalled_q <= !i_instr_valid;
+    if (i_pipeline_ctrl.reset) begin
+      btb_update_q              <= 1'b0;
+      btb_early_update_active_q <= 1'b0;
+      btb_invalidate_hold_q     <= '0;
+    end else begin
+      btb_update_q              <= i_from_ex_comb.btb_update;
+      btb_early_update_active_q <= i_btb_early_update_active;
+      if (i_btb_invalidate) btb_invalidate_hold_q <= 2'd3;
+      else if (btb_invalidate_hold_q != '0) btb_invalidate_hold_q <= btb_invalidate_hold_q - 2'd1;
     end
+    btb_update_pc_q          <= i_from_ex_comb.btb_update_pc;
+    btb_update_target_q      <= i_from_ex_comb.btb_update_target;
+    btb_update_taken_q       <= i_from_ex_comb.btb_update_taken;
+    btb_update_compressed_q  <= i_from_ex_comb.btb_update_compressed;
+    btb_update_call_q        <= i_from_ex_comb.btb_update_call;
+    btb_update_return_q      <= i_from_ex_comb.btb_update_return;
+    btb_early_update_pc_q    <= i_btb_early_update_pc;
+    btb_early_update_taken_q <= i_btb_early_update_taken;
+    btb_late_update_pc_q     <= i_btb_late_update_pc;
+    btb_late_update_taken_q  <= i_btb_late_update_taken;
   end
-  assign lookup_lead_collapsed =
-      fetch_invalid_unstalled_q && i_instr_valid && !if_stage_stall_registered;
+  assign btb_invalidate_active = i_btb_invalidate || (btb_invalidate_hold_q != '0);
 
-  branch_prediction_controller #(
-      .SLOT2_PC_FROM_BASE(XLEN == riscv_pkg::XLEN)
-  ) branch_prediction_controller_inst (
-`ifndef SYNTHESIS
-      .i_metadata_check_valid(provider_metadata_check_valid && !cur_fault_pair[1]),
-`endif
+  // Mirror the RAS entries' cached-region membership in an 8-bit FF bank so
+  // F0 BTB tier checking reads a single LUT instead of traversing u_ras RAM
+  // and a 64-bit PMA range comparator.
+  logic ras_sh_not_empty;
+  logic ras_sh_pending_swap;
+  logic ras_sh_pending_push;
+  logic ras_sh_pending_pop;
+  logic [RasPtrBits-1:0] ras_sh_below_tos;
+  assign ras_sh_not_empty    = ras_cached_ne0_q;
+  assign ras_sh_pending_swap = f0_ras_push_q && f0_ras_pop_q && ras_sh_not_empty;
+  assign ras_sh_pending_push = f0_ras_push_q && !f0_ras_pop_q;
+  assign ras_sh_pending_pop  = f0_ras_pop_q && !f0_ras_push_q && ras_sh_not_empty;
+  assign ras_sh_below_tos    = ras_cached_tos_q - RasPtrBits'(1);
+
+  logic ras_top_is_cached;
+  logic pc_is_cached;
+  (* keep = "true" *) logic eff_ras_nonempty;
+  logic [XLEN-1:0] eff_ras_top;
+  logic eff_ras_top_cached;
+  logic [RasPtrBits-1:0] eff_ras_tos;
+  logic [RasPtrBits:0] eff_ras_cnt;
+  logic [riscv_pkg::BpDirIdxBits-3:0] ras_even_dir_idx;
+
+  assign ras_top_is_cached = (ras_sh_pending_push || ras_sh_pending_swap) ?
+      f0_ras_link_cached_q : (ras_sh_pending_pop ? ras_below_cached_q : ras_top_cached_q);
+  assign pc_is_cached = riscv_pkg::pma_cached_ok(pc);
+
+  // While a registered RAS restore commits into u_ras, forward the exact
+  // post-restore top, pointer, count, and cached bit for every non-pure-pop
+  // restore so F0 predictions and checkpoints keep zero-cycle availability.
+  // Compute eff_ras_nonempty from 6 registered flags in a single LUT6.
+  assign eff_ras_nonempty = ras_restore_q ? ras_restore_nonempty_q :
+      (f0_ras_push_q ? (!f0_ras_pop_q || ras_cached_ne0_q) :
+                       (f0_ras_pop_q ? ras_cached_gt1_q : ras_cached_ne0_q));
+  assign eff_ras_top = ras_restore_q ?
+      (ras_restore_uses_link_q ? ras_restore_link_q : ras_restore_top_q) : ras_top;
+  assign eff_ras_top_cached = ras_restore_q ?
+      (ras_restore_uses_link_q ? ras_restore_link_cached_q : ras_restore_top_cached_q) :
+      ras_top_is_cached;
+  assign eff_ras_tos = ras_restore_q ? ras_sh_tos_next : ras_tos;
+  assign eff_ras_cnt = ras_restore_q ? ras_sh_cnt_next : ras_valid_count;
+  assign ras_even_dir_idx =
+      eff_ras_top[riscv_pkg::BpDirIdxBits:3] + (riscv_pkg::BpDirIdxBits - 2)'(eff_ras_top[2]);
+
+  logic btb_taken_raw;
+  logic btb_steer_raw;
+  logic [1:0] btb_taken_pos;
+  logic [XLEN-1:0] f0_btb_eff_target;
+  logic [riscv_pkg::BpDirIdxBits-3:0] f0_btb_even_dir_idx;
+  logic btb_compressed;
+  logic btb_is_call;
+  logic btb_is_return;
+  logic btb_is_span;
+  logic btb_w0_sel;
+  logic [XLEN-1:0] btb_w1_target;
+  logic [riscv_pkg::BpDirIdxBits-3:0] btb_w1_even_dir_idx;
+  logic btb_w1_is_call;
+  logic btb_w1_is_return;
+  logic btb_w0_link_inc;
+  logic btb_w1_link_inc;
+  logic btb_w0_link_hw;
+  logic btb_w1_link_hw;
+
+  fetch_btb_2w #(
+      .XLEN(XLEN),
+      .BTB_INDEX_BITS(BtbIndexBits),
+      .BIM_BITS(riscv_pkg::BpDirIdxBits)
+  ) u_fetch_btb_2w (
       .i_clk,
-      .i_reset(i_pipeline_ctrl.reset),
-      .i_btb_invalidate(i_btb_invalidate),
-      // Serialization stalls (for unresolved older branches or CSRs) must also
-      // block new predictions. Otherwise a younger speculative branch or return
-      // can arm a pending prediction that outlives, and conflicts with, the
-      // older instruction's misprediction recovery.
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_fetch_progress(fetch_progress),
-      // Flush with registered trap and xRET terms; see flush_for_c_ext_safe.
-      .i_flush(flush_for_c_ext_safe),
-      // PD redirect kills in-flight slot-1 prediction metadata (see module).
-      .i_pd_redirect(i_pd_redirect),
-      .i_pd_redirect_taken(i_pd_redirect_taken),
-      .i_pd_redirect_target(i_pd_redirect_target),
-
-      // Current PC for BTB lookup
+      .i_rst(i_pipeline_ctrl.reset),
       .i_pc(pc),
-
-      // Slot-2 PCs for the staged BTB lookup.
-      .i_pc_2(slot2_pc_plus2_for_btb),
-      .i_pc_2_alt(slot2_pc_plus4_for_btb),
-      .i_pc_2_base(pc_reg),
-      .i_lookup_lead_collapsed(lookup_lead_collapsed),
-      .i_slot2_plus2_candidate_valid(slot2_plus2_candidate_valid),
-      .i_slot2_plus4_candidate_valid(slot2_plus4_candidate_valid),
-      .i_slot2_valid(slot2_prediction_valid),
-      .i_slot2_valid_wcs0(slot2_prediction_valid_wcs0),
-      .i_slot2_is_compressed_plus2(slot2_is_compressed_plus2_for_btb),
-      .i_slot2_is_compressed_plus4(slot2_is_compressed_plus4_for_btb),
-      // The per-candidate sizes above let branch_prediction_controller qualify
-      // +2 and +4 in parallel; the selected live size feeds only its
-      // simulation checks.
-      .i_slot2_is_compressed(is_compressed_2),
-      .i_pending_prediction_pc(pending_prediction_pc),
-      .i_pending_prediction_prev_pc(pending_prediction_prev_pc),
-      .i_pending_prediction_prev_native_pc(pending_prediction_prev_native_pc),
-
-      // Control signals for prediction gating
-      .i_trap_taken(i_trap_ctrl.trap_taken),
-      .i_mret_taken(i_trap_ctrl.mret_taken),
-      .i_branch_taken(i_from_ex_comb.branch_taken),
-      .i_any_holdoff_safe(any_holdoff_safe),
-      // This select omits the FENCE-class term, which already blocks
-      // prediction. The packet uses use_instr_buffer.
-      .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
-      .i_disable_branch_prediction(disable_branch_prediction_effective),
-      .i_disable_branch_prediction_wcs0(disable_branch_prediction_effective_wcs0),
-      .i_disable_branch_prediction_wcs(disable_branch_prediction_effective_wcs),
-      .i_window_cannot_serve_raw(window_cannot_serve_pc_reg),
-      .i_fetch_lookup_is_lower_parcel(fetch_lookup_is_lower_parcel),
-      .i_pending_prediction_blocks_slot1(pending_prediction_blocks_slot1),
-
-      // BTB update interface (from ex_comb_synthesizer)
-      .i_btb_update(i_from_ex_comb.btb_update),
-      .i_btb_update_pc(i_from_ex_comb.btb_update_pc),
-      .i_btb_update_target(i_from_ex_comb.btb_update_target),
-      .i_btb_update_taken(i_from_ex_comb.btb_update_taken),
-      .i_btb_update_compressed(i_from_ex_comb.btb_update_compressed),
-      .i_btb_update_call(i_from_ex_comb.btb_update_call),
-      .i_btb_update_return(i_from_ex_comb.btb_update_return),
-      .i_btb_early_update_active,
-      .i_btb_early_update_pc,
-      .i_btb_early_update_taken,
-      .i_btb_late_update_pc,
-      .i_btb_late_update_taken,
-
-      // Return address stack operation for the packet PD took last cycle
-      .i_ras_push(ras_push_q),
-      .i_ras_pop(ras_pop_q),
-      .i_ras_push_address(ras_pending_push_address),
-
-      // RAS misprediction recovery (from branch recovery)
-      .i_ras_misprediction(i_from_ex_comb.ras_misprediction),
-      .i_ras_restore_tos(i_from_ex_comb.ras_restore_tos),
-      .i_ras_restore_valid_count(i_from_ex_comb.ras_restore_valid_count),
-      .i_ras_restore_top(i_from_ex_comb.ras_restore_top),
-      .i_ras_pop_after_restore(i_from_ex_comb.ras_pop_after_restore),
-      .i_ras_push_after_restore(i_from_ex_comb.ras_push_after_restore),
-      .i_ras_push_address_after_restore(i_from_ex_comb.ras_push_address_after_restore),
-
-      // Bimodal direction-predictor training (conditional branches only)
-      .i_dir_update_valid(i_dir_update_valid),
-      .i_dir_update_idx  (i_dir_update_idx),
-      .i_dir_update_taken(i_dir_update_taken),
-
-      // Combinational prediction target (for pc_controller)
-      .o_predicted_target(btb_predicted_target),
-      .o_predicted_is_call(btb_predicted_is_call),
-      .o_predicted_is_return(btb_predicted_is_return),
-
-      // Registered prediction outputs (for pipeline alignment)
-      .o_prediction_used_r(prediction_used_r),
-      .o_predicted_target_r(btb_predicted_target_r),
-      .o_predicted_is_call_r(btb_predicted_is_call_r),
-      .o_predicted_is_return_r(btb_predicted_is_return_r),
-
-      // Control outputs
-      .o_prediction_used(prediction_used),
-      .o_prediction_used_for_pc(prediction_used_for_pc),
-      .o_prediction_used_live_cofactor(prediction_used_live_cofactor),
-      .o_prediction_holdoff(prediction_holdoff),
-      .o_sel_prediction_r(sel_prediction_r),
-      .o_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
-      .o_control_flow_to_halfword_pred(control_flow_to_halfword_pred),
-
-      // Slot-2 prediction outputs.
-      .o_slot2_prediction_used(slot2_prediction_used_live),
-      .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc_live),
-      .o_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_fetch_mux_live),
-      .o_slot2_staged_prediction_used_for_pc(),
-      .o_slot2_staged_prediction_used_for_capture(slot2_staged_prediction_used_for_capture),
-      .o_slot1_aliases_slot2_candidate(),
-      .o_slot2_live_target_used_for_pc_cofactor(),
-      .o_slot2_live_target_used_for_pc(),
-      .o_slot2_staged_pc_without_valid(slot2_staged_pc_without_valid),
-      .o_slot2_live_pc_without_valid(slot2_live_pc_without_valid),
-      .o_slot2_predicted_taken(slot2_predicted_taken),
-      .o_slot2_predicted_target(slot2_predicted_target),
-      .o_slot2_predicted_target_for_pc(slot2_predicted_target_for_pc_live),
-      .o_slot2_staged_predicted_target(slot2_staged_predicted_target_live),
-      .o_slot2_live_predicted_target(slot2_live_predicted_target),
-      .o_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending_live),
-      .o_slot2_live_target_rel_pending(slot2_live_target_rel_pending),
-      .o_slot2_predicted_is_call(slot2_predicted_is_call),
-      .o_slot2_predicted_is_return(slot2_predicted_is_return),
-
-      // The stack state before this cycle's push or pop: the recovery point of
-      // the packets IF hands PD this cycle.
-      .o_ras_checkpoint_tos(ras_checkpoint_tos),
-      .o_ras_checkpoint_valid_count(ras_checkpoint_valid_count),
-      .o_ras_checkpoint_top(ras_checkpoint_top),
-
-      // Bimodal direction and predict-time index, carried to PD
-      .o_dir_predicted_taken(bp_dir_taken),
-      .o_dir_predicted_taken_live(bp_dir_taken_live),
-      .o_dir_predicted_taken_live_cofactor(bp_dir_taken_live_cofactor),
-      .o_dir_idx(bp_dir_idx),
-      .o_dir_idx_live(bp_dir_idx_live),
-      .o_dir_idx_2(bp_dir_idx_2)
+      .i_pc_even_idx(pc_even_btb_idx),
+      .i_fetch_translation_active(i_fetch_translation_active),
+      .i_pc_is_cached(pc_is_cached),
+      .i_ras_nonempty(eff_ras_nonempty),
+      .i_ras_top_is_cached(eff_ras_top_cached),
+      .i_ras_top(eff_ras_top),
+      .i_ras_even_dir_idx(ras_even_dir_idx),
+      .o_taken(btb_taken_raw),
+      .o_taken_steer(btb_steer_raw),
+      .o_taken_pos(btb_taken_pos),
+      .o_target(f0_btb_eff_target),
+      .o_target_even_dir_idx(f0_btb_even_dir_idx),
+      .o_compressed(btb_compressed),
+      .o_is_call(btb_is_call),
+      .o_is_return(btb_is_return),
+      .o_is_span(btb_is_span),
+      .o_target_is_cached(),
+      .o_w0_hit(),
+      .o_w1_hit(),
+      .o_w0_taken(),
+      .o_w0_sel(btb_w0_sel),
+      .o_w1_target(btb_w1_target),
+      .o_w1_even_dir_idx(btb_w1_even_dir_idx),
+      .o_w1_is_call(btb_w1_is_call),
+      .o_w1_is_return(btb_w1_is_return),
+      .o_w0_link_inc(btb_w0_link_inc),
+      .o_w1_link_inc(btb_w1_link_inc),
+      .o_w0_link_hw(btb_w0_link_hw),
+      .o_w1_link_hw(btb_w1_link_hw),
+      .i_update(btb_update_q),
+      .i_update_pc(btb_update_pc_q),
+      .i_update_target(btb_update_target_q),
+      .i_update_taken(btb_update_taken_q),
+      .i_update_compressed(btb_update_compressed_q),
+      .i_update_call(btb_update_call_q),
+      .i_update_return(btb_update_return_q),
+      .i_early_update_active(btb_early_update_active_q),
+      .i_early_update_pc(btb_early_update_pc_q),
+      .i_early_update_taken(btb_early_update_taken_q),
+      .i_late_update_pc(btb_late_update_pc_q),
+      .i_late_update_taken(btb_late_update_taken_q),
+      .i_invalidate_all(btb_invalidate_active)
   );
 
-  logic live_prediction_emits_with_output;
-  logic window_resteer_pc_reg;
-  logic pc_control_sel_nop;
-  logic sel_nop_existing_pc_control;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_one, pc_fetch_advance_sel_two;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_one, pc_reg_advance_sel_two;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_nop;
+  logic [3:0] dir_taken_f0;
+  fetch_dir_4b #(
+      .XLEN(XLEN),
+      .BIM_BITS(riscv_pkg::BpDirIdxBits)
+  ) u_fetch_dir_4b (
+      .i_clk,
+      .i_rst(i_pipeline_ctrl.reset),
+      .i_pc(pc),
+      .i_pc_even_dir_idx(pc_even_dir_idx),
+      .o_taken(dir_taken_f0),
+      .i_update_valid(i_dir_update_valid),
+      .i_update_idx(i_dir_update_idx),
+      .i_update_taken(i_dir_update_taken)
+  );
+
+  // Qualify F0 fast-BTB prediction: block when prediction is disabled, on a
+  // faulting word 0, after a tag resteer, while a pure-pop RAS restore updates
+  // u_ras, or while a spanning BTB target is completing. Bare-mode tier
+  // matching is already folded inside u_fetch_btb_2w.
+  logic f0_span_fault_veto;
+  logic f0_span_btb_fire;
+  logic f0_pred_en;
+  logic f0_btb_valid;
+  logic f0_btb_steer_now;
+  logic [XLEN-1:0] f0_btb_link;
+  logic f0_btb_link_cached;
+
+  assign f0_span_fault_veto = span_btb_valid_q && !f1_cancel_span_raw && fetch_fault0_live;
+  assign f0_span_btb_fire = span_btb_valid_q && !f1_cancel_span_raw && !fetch_fault0_live;
+  assign f0_pred_en = !i_disable_branch_prediction && !fetch_fault0_live &&
+      !f1_resteer_nopred_q && !ras_restore_pure_pop_q && !f0_span_btb_fire &&
+      (i_fetch_translation_active || riscv_pkg::pma_fetch_ok(
+      pc
+  ));
+  assign f0_btb_valid = f0_pred_en && btb_taken_raw;
+  assign f0_btb_steer_now = f0_pred_en && btb_steer_raw;
+
+  // Precompute word+1, word+2, and per-word candidate link addresses and
+  // cached-region flags in parallel with BTB tag compare so only one 2:1 LUT3
+  // mux controlled by btb_w0_taken sits on the F0 link path.
+  (* keep = "true" *) logic [XLEN-3:0] pc_word_p1;
+  (* keep = "true" *) logic [XLEN-3:0] pc_word_p2;
+  logic pc_p1_cached;
+  logic pc_p2_cached;
+  logic [XLEN-3:0] w0_link_word;
+  logic [XLEN-3:0] w1_link_word;
+  logic w0_link_cached;
+  logic w1_link_cached;
+  assign pc_word_p1 = pc[XLEN-1:2] + (XLEN - 2)'(1);
+  assign pc_word_p2 = pc[XLEN-1:2] + (XLEN - 2)'(2);
+  assign pc_p1_cached = riscv_pkg::pma_cached_ok({pc_word_p1, 2'b00});
+  assign pc_p2_cached = riscv_pkg::pma_cached_ok({pc_word_p2, 2'b00});
+  assign w0_link_word = btb_w0_link_inc ? pc_word_p1 : pc[XLEN-1:2];
+  assign w1_link_word = btb_w1_link_inc ? pc_word_p2 : pc_word_p1;
+  assign w0_link_cached = btb_w0_link_inc ? pc_p1_cached : pc_is_cached;
+  assign w1_link_cached = btb_w1_link_inc ? pc_p2_cached : pc_p1_cached;
+  assign f0_btb_link = btb_w0_sel ?
+      {w0_link_word, btb_w0_link_hw, 1'b0} : {w1_link_word, btb_w1_link_hw, 1'b0};
+  assign f0_btb_link_cached = btb_w0_sel ? w0_link_cached : w1_link_cached;
 
   // ===========================================================================
-  // PC Controller
+  // F0: Decoupled PC Controller (instance name kept for RVFI/testbench probes)
   // ===========================================================================
-  pc_controller #(
+  logic [riscv_pkg::BpDirIdxBits-3:0] f1_resteer_even_dir_idx;
+
+  fetch_pc_decoupled #(
       .XLEN(XLEN),
-      // A ready pending handoff asserts pending_prediction_holdoff_wcs0, which
-      // blocks prediction_common, and the WCS=1 disable is always set. Staged
-      // and live slot-2 predictions both need prediction_common, so the
-      // controller can skip its own slot-2 check on the handoff.
-      .PENDING_HANDOFF_EXCLUDES_SLOT2(1'b1)
+      .BTB_INDEX_BITS(BtbIndexBits),
+      .BIM_BITS(riscv_pkg::BpDirIdxBits),
+      .PRECOMPUTED_RESTEER_DIR(1'b1)
   ) pc_controller_inst (
       .i_clk,
       .i_boot_addr,
       .i_reset(i_pipeline_ctrl.reset),
-      .i_stall(pc_controller_stall),
-      .i_fetch_progress(fetch_progress),
-      // Flush with registered trap and xRET terms; see flush_for_c_ext_safe.
-      .i_flush(flush_for_c_ext_safe),
+      .i_trap_taken(i_trap_ctrl.trap_taken),
+      .i_mret_taken(i_trap_ctrl.mret_taken),
+      .i_trap_target(i_trap_ctrl.trap_target),
       .i_fence_i_flush(i_fence_i_flush),
       .i_fence_i_target(i_fence_i_target),
-
-      .i_branch_taken (i_from_ex_comb.branch_taken),
+      .i_branch_taken(i_from_ex_comb.branch_taken),
       .i_branch_target(i_from_ex_comb.branch_target_address),
-
-      .i_pd_redirect(i_pd_redirect),
+      .i_pd_redirect(i_pd_redirect && !i_pipeline_ctrl.stall),
       .i_pd_redirect_target(i_pd_redirect_target),
-      .i_window_cannot_serve(window_resteer_pc_reg),
-      .i_window_cannot_serve_raw(window_cannot_serve_pc_reg),
-
-      .i_trap_taken (i_trap_ctrl.trap_taken),
-      .i_mret_taken (i_trap_ctrl.mret_taken),
-      .i_trap_target(i_trap_ctrl.trap_target),
-
-      // Replay the captured bundle advance with the packet.
-      .i_pc_fetch_advance_sel(pc_fetch_advance_sel),
-      .i_pc_reg_advance_sel(pc_reg_advance_sel),
-      .i_pc_fetch_advance_sel_one(pc_fetch_advance_sel_one),
-      .i_pc_fetch_advance_sel_two(pc_fetch_advance_sel_two),
-      .i_pc_reg_advance_sel_one(pc_reg_advance_sel_one),
-      .i_pc_reg_advance_sel_two(pc_reg_advance_sel_two),
-      .i_pc_reg_advance_sel_nop(pc_reg_advance_sel_nop),
-      .i_slot2_valid(slot2_valid_for_pc_live_effective),
-
-      // Branch prediction (from branch_prediction_controller)
-      .i_predicted_target(btb_predicted_target),
-      .i_predicted_target_r(btb_predicted_target_r),
-      .i_prediction_used(prediction_used),
-      .i_prediction_used_for_pc(prediction_used_for_pc),
-      .i_sel_prediction_r(sel_prediction_r),
-      .i_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
-      .i_prediction_holdoff(prediction_holdoff),
-      .i_prediction_already_emitted(live_prediction_emits_with_output),
-      // pc_control_sel_nop without the served-window check, which
-      // pc_controller adds back itself.
-      .i_sel_nop_wcs0(sel_nop_existing_pc_control),
-
-      // Slot-2 redirect, plus its staged and live parts (split for timing).
-      .i_slot2_prediction_used(slot2_prediction_used),
-      .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
-      .i_slot2_prediction_used_for_fetch_mux(slot2_prediction_used_for_fetch_mux),
-      .i_slot2_predicted_target(slot2_predicted_target_for_pc),
-      .i_slot2_pc_valid(slot2_prediction_valid),
-      .i_slot2_pc_replay(slot2_replay_request),
-      .i_slot2_staged_pc_without_valid(slot2_staged_pc_without_valid),
-      .i_slot2_live_pc_without_valid(slot2_live_pc_without_valid),
-      .i_slot2_staged_predicted_target(slot2_staged_predicted_target),
-      .i_slot2_live_predicted_target(slot2_live_predicted_target),
-      .i_slot2_staged_target_rel_pending(slot2_staged_target_rel_pending),
-      .i_slot2_live_target_rel_pending(slot2_live_target_rel_pending),
-      .o_slot2_redirect_q(slot2_redirect_q),
-
+      .i_any_redirect(any_redirect),
+      .i_f1_resteer(f1_resteer_raw),
+      .i_f1_resteer_target(f1_resteer_target),
+      .i_f1_resteer_even_dir_idx(f1_resteer_even_dir_idx),
+      .i_f0_launch(f0_launch_raw),
+      .i_f1_collapsed_accept(f1_collapsed_accept_raw),
+      .i_span_btb_fire(f1_collapsed_accept_raw ? f1_collapsed_span_fire_raw : f0_span_btb_fire),
+      .i_span_btb_target(span_btb_pending_q.target),
+      .i_span_btb_even_dir_idx(span_btb_pending_q.even_dir_idx),
+      .i_collapsed_btb_taken(f1_collapsed_btb_steer_raw),
+      .i_collapsed_btb_target(f1_req_q.btb_target),
+      .i_collapsed_btb_even_dir_idx(f1_req_q.btb_even_dir_idx),
+      .i_btb_en(f0_pred_en),
+      .i_btb_taken(btb_steer_raw),
+      .i_btb_target(f0_btb_eff_target),
+      .i_btb_even_dir_idx(f0_btb_even_dir_idx),
       .o_pc(pc),
-      .o_pc_reg(pc_reg),
-      .o_pc_reg_high_for_coverage(pc_reg_high_for_coverage),
-      .o_fetch_lookup_is_lower_parcel(fetch_lookup_is_lower_parcel),
-      .o_control_flow_change(control_flow_change),
-      .o_control_flow_holdoff(control_flow_holdoff),
-      .o_control_flow_to_halfword(control_flow_to_halfword),
-      .o_control_flow_to_halfword_r(control_flow_to_halfword_r),
-      .o_reset_holdoff(reset_holdoff),
-      .o_any_holdoff(any_holdoff),
-      .o_any_holdoff_safe(any_holdoff_safe),
-      .o_pending_prediction_active(pending_prediction_active),
-      .o_pending_prediction_pc(pending_prediction_pc),
-      .o_pending_prediction_prev_pc(pending_prediction_prev_pc),
-      .o_pending_prediction_prev_native_pc(pending_prediction_prev_native_pc),
-      .o_pc_reg_at_pending(pc_reg_at_pending),
-      .o_pc_reg_at_pending_predecessor(pc_reg_at_pending_predecessor),
-      .o_pc_reg_at_pending_native_predecessor(pc_reg_at_pending_native_predecessor),
-      .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
-      .o_pending_prediction_holdoff(pending_prediction_holdoff),
-      .o_pending_prediction_holdoff_wcs0(pending_prediction_holdoff_wcs0),
-      .o_pending_prediction_holdoff_wcs(pending_prediction_holdoff_wcs),
-      .o_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
-      .o_pending_prediction_fetch_holdoff_wcs0(pending_prediction_fetch_holdoff_wcs0),
-      .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
-      .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
-      .o_pending_prediction_redirect_kill(pending_prediction_redirect_kill),
-      .o_pending_prediction_walk_past(pending_prediction_walk_past),
-      .o_pending_prediction_blocks_slot1(pending_prediction_blocks_slot1),
-      .o_next_pc(),
-      .o_next_pc_holds(),
-      .o_pc_update_en(pc_update_en),
       .o_pc_tage_lookup(pc_tage_lookup),
-      .o_tage_hist_push,
-      .o_tage_hist_restore_arm,
+      .o_pc_even_btb_idx(pc_even_btb_idx),
+      .o_pc_even_dir_idx(pc_even_dir_idx),
+      .o_next_pc(next_pc),
+      .o_pc_update_en(pc_update_en),
+      .o_f0_self_loop(f0_self_loop),
+      .o_tage_hist_push(o_tage_hist_push),
+      .o_tage_hist_restore_arm(o_tage_hist_restore_arm),
+      .o_fetch_redirect(o_fetch_redirect),
+      .o_fetch_cached_retarget(o_fetch_cached_retarget),
       .o_npc_sel(npc_sel),
-      .o_npc_cond(npc_cond),
-      .o_npc_seq(npc_seq),
-      .o_npc_cmp_val(),
       .o_npc_val()
   );
 
+  assign o_pc = pc;
+  assign o_tage_fetch_path_bits = pc_tage_lookup[3:2];
+
   // ===========================================================================
-  // Instruction MMU
+  // Instruction MMU (decoupled from PD/ID: fetch_pa_valid gates F0 launch only)
   // ===========================================================================
-  // Translation and visibility timing are described at o_fetch_pa0.
   immu #(
       .XLEN(XLEN),
       .NUM_ENTRIES(16),
@@ -1029,10 +659,10 @@ module if_stage #(
       .i_asid(i_fetch_asid),
       .i_full_flush(i_flush_all),
       .i_pc(pc),
-      .o_pa0(o_fetch_pa0),
-      .o_pa1(o_fetch_pa1),
+      .o_pa0(fetch_pa0_live),
+      .o_pa1(fetch_pa1_live),
       .o_pa_valid(fetch_pa_valid),
-      .o_pa_valid_copy(fetch_pa_hold_copy),
+      .o_pa_valid_copy(),
       .o_fault0(fetch_fault0_live),
       .o_fault0_page(o_fetch_fault0_page),
       .o_fault1(o_fetch_fault1),
@@ -1044,799 +674,1109 @@ module if_stage #(
       .i_walk_resp_valid(i_walk_resp_valid),
       .i_walk_resp(i_walk_resp)
   );
+
+  assign o_fetch_pa0 = fetch_pa0_live;
+  assign o_fetch_pa1 = fetch_pa1_live;
   assign o_fetch_pa_valid = fetch_pa_valid;
   assign o_fetch_fault0 = fetch_fault0_live;
-  assign o_fetch_pa_hold = !fetch_pa_valid;
-  assign o_fetch_pa_hold_copy = fetch_pa_hold_copy;
+  assign o_fetch_pa_hold = 1'b0;
+  assign o_fetch_pa_hold_copy = '0;
 
-  // The presenter needs a pulse when a nonsequential PC load kills its
-  // owed request. A slot-1 prediction made before emitting its branch must
-  // preserve that request until the branch arrives, then request the target.
-  // pc_update_en restricts the pulse to actual PC loads.
-  //
-  // fetch_redirect computes prediction cases in parallel for timing.
-  // Omit sequential catch-up: it excludes pending-hold, the only
-  // lower-priority arm that could redirect, so the result is unchanged.
-  logic [riscv_pkg::PcNextArms-1:1] npc_cond_for_redirect;
-  always_comb begin
-    npc_cond_for_redirect = npc_cond[riscv_pkg::PcNextArms-1:1];
-    npc_cond_for_redirect[11] = 1'b0;
-  end
-  fetch_redirect fetch_redirect_inst (
-      .i_clk(i_clk),
-      .i_reset(i_pipeline_ctrl.reset),
-      .i_pc_update_en(pc_update_en),
-      .i_npc_cond(npc_cond_for_redirect),
-      .i_npc_seq(npc_seq[riscv_pkg::PcNextArms-1:1]),
-      .i_live_prediction_emits_with_output(live_prediction_emits_with_output),
-      .o_fetch_redirect(o_fetch_redirect)
+  // ===========================================================================
+  // Return Address Stack (speculative F0 push/pop, exact EX/PD/F1 restore)
+  // ===========================================================================
+  assign pd_ras_restore = i_pd_redirect && !i_pipeline_ctrl.stall && !frontend_flush &&
+      !i_trap_ctrl.trap_taken && !i_trap_ctrl.mret_taken && !i_fence_i_flush &&
+      !i_from_ex_comb.branch_taken && !i_from_ex_comb.ras_misprediction;
+
+  // Resolve F1's effective RAS checkpoint (using live u_ras outputs when the
+  // window launched during a pure-pop RAS restore cycle).
+  logic [RasPtrBits-1:0] f1_eff_ras_ckpt_tos;
+  logic [RasPtrBits:0] f1_eff_ras_ckpt_cnt;
+  logic [XLEN-1:0] f1_eff_ras_ckpt_top;
+  assign f1_eff_ras_ckpt_tos = f1_req_q.ras_ckpt_from_live ? ras_tos : f1_req_q.ras_ckpt_tos;
+  assign f1_eff_ras_ckpt_cnt = f1_req_q.ras_ckpt_from_live ?
+      ras_valid_count : f1_req_q.ras_ckpt_cnt;
+  assign f1_eff_ras_ckpt_top = f1_req_q.ras_ckpt_from_live ? ras_top : f1_req_q.ras_ckpt_top;
+
+  // Register unified EX/PD/F1 RAS restores and their precomputed cached-region
+  // flags by one cycle so ROB commit, PD redirect, and F1 validation paths
+  // never drive return_address_stack's RAM write ports or ras_cached_q directly.
+  assign f1_ras_restore_comb = !any_redirect && !i_from_ex_comb.ras_misprediction &&
+      (f1_resteer || f1_span_tail_fault);
+
+  logic ex_ras_top_cached;
+  logic ex_ras_link_cached;
+  logic pd_ras_top_cached;
+  logic pd_ras_link_cached;
+  logic f1_ras_top_cached;
+  assign ex_ras_top_cached = riscv_pkg::pma_cached_ok(i_from_ex_comb.ras_restore_top);
+  assign ex_ras_link_cached = riscv_pkg::pma_cached_ok(
+      i_from_ex_comb.ras_push_address_after_restore
   );
-`ifndef SYNTHESIS
-  logic fetch_redirect_reference_q;
-  logic fetch_redirect_reference_valid_q = 1'b0;
-  always_ff @(posedge i_clk) begin
-    fetch_redirect_reference_valid_q <= 1'b1;
-    fetch_redirect_reference_q <= !i_pipeline_ctrl.reset &&
-        pc_update_en && |(npc_sel & ~npc_seq) &&
-        !(npc_sel[PredictionNpcArm] && !live_prediction_emits_with_output);
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset &&
-        fetch_redirect_reference_valid_q && !$isunknown(
-            {o_fetch_redirect, fetch_redirect_reference_q}
-        )) begin
-      p_fetch_redirect_original_registered_equation :
-      assert (o_fetch_redirect == fetch_redirect_reference_q);
+  assign pd_ras_top_cached = riscv_pkg::pma_cached_ok(pd_ras_ckpt_top_q);
+  assign pd_ras_link_cached = riscv_pkg::pma_cached_ok(i_pd_redirect_ras_link);
+  assign f1_ras_top_cached  = f1_req_q.ras_ckpt_from_live ?
+      ras_top_is_cached : riscv_pkg::pma_cached_ok(
+      f1_req_q.ras_ckpt_top
+  );
+
+  logic ras_restore_comb;
+  logic [RasPtrBits-1:0] ras_restore_tos_comb;
+  logic [RasPtrBits:0] ras_restore_cnt_comb;
+  logic [XLEN-1:0] ras_restore_top_comb;
+  logic ras_restore_push_comb;
+  logic ras_restore_pop_comb;
+  logic [XLEN-1:0] ras_restore_link_comb;
+  logic ras_restore_top_cached_comb;
+  logic ras_restore_link_cached_comb;
+
+  always_comb begin
+    // F1 restores never push, so the restore link mux needs only EX vs PD.
+    ras_restore_link_comb = i_from_ex_comb.ras_misprediction ?
+        i_from_ex_comb.ras_push_address_after_restore : i_pd_redirect_ras_link;
+    ras_restore_link_cached_comb = i_from_ex_comb.ras_misprediction ?
+        ex_ras_link_cached : pd_ras_link_cached;
+
+    if (i_from_ex_comb.ras_misprediction) begin
+      ras_restore_comb            = 1'b1;
+      ras_restore_tos_comb        = i_from_ex_comb.ras_restore_tos;
+      ras_restore_cnt_comb        = i_from_ex_comb.ras_restore_valid_count;
+      ras_restore_top_comb        = i_from_ex_comb.ras_restore_top;
+      ras_restore_push_comb       = i_from_ex_comb.ras_push_after_restore;
+      ras_restore_pop_comb        = i_from_ex_comb.ras_pop_after_restore;
+      ras_restore_top_cached_comb = ex_ras_top_cached;
+    end else if (pd_ras_restore) begin
+      ras_restore_comb            = 1'b1;
+      ras_restore_tos_comb        = pd_ras_ckpt_tos_q;
+      ras_restore_cnt_comb        = pd_ras_ckpt_cnt_q;
+      ras_restore_top_comb        = pd_ras_ckpt_top_q;
+      ras_restore_push_comb       = i_pd_redirect_ras_push;
+      ras_restore_pop_comb        = i_pd_redirect_ras_pop;
+      ras_restore_top_cached_comb = pd_ras_top_cached;
+    end else begin
+      // Default payload to F1's checkpoint so f1_ras_restore_comb drives only
+      // the 1-bit restore flags and never fans out across 64-bit payload flops.
+      ras_restore_comb            = f1_ras_restore_comb;
+      ras_restore_tos_comb        = f1_eff_ras_ckpt_tos;
+      ras_restore_cnt_comb        = f1_eff_ras_ckpt_cnt;
+      ras_restore_top_comb        = f1_eff_ras_ckpt_top;
+      ras_restore_push_comb       = 1'b0;
+      ras_restore_pop_comb        = 1'b0;
+      ras_restore_top_cached_comb = f1_ras_top_cached;
     end
   end
-`endif
-  // The execute and PD redirects and the flush terms combine first, so the
-  // fetch-loop prediction terms, the window resteer and the PC load enable
-  // can reach the register through one LUT.
-  (* keep = "true" *)logic fetch_cached_retarget_redirect;
-  (* keep = "true" *)logic fetch_cached_retarget_flush;
-  assign fetch_cached_retarget_redirect = i_from_ex_comb.branch_taken || i_pd_redirect;
-  assign fetch_cached_retarget_flush = i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken ||
-                                       i_fence_i_flush;
-  logic discard_fetch_request;
-  assign discard_fetch_request = (pc_update_en &&
-      (fetch_cached_retarget_redirect || slot2_prediction_used_for_pc ||
-       live_prediction_emits_with_output || window_resteer_pc_reg)) ||
-      fetch_cached_retarget_flush;
+
+  // Precompute per-source post-restore emptiness and link selection before the
+  // EX/PD/F1 mux so late EX checkpoint counts cross only one 3:1 LUT.
+  logic ex_ras_nonempty;
+  logic pd_ras_nonempty;
+  logic f1_ras_nonempty;
+  logic ex_ras_uses_link;
+  logic pd_ras_uses_link;
+  logic ras_restore_nonempty_next;
+  logic ras_restore_uses_link_next;
+  assign ex_ras_nonempty =
+      (i_from_ex_comb.ras_push_after_restore && !i_from_ex_comb.ras_pop_after_restore) ? 1'b1 :
+      (i_from_ex_comb.ras_pop_after_restore && !i_from_ex_comb.ras_push_after_restore) ?
+          (i_from_ex_comb.ras_restore_valid_count > (RasPtrBits + 1)'(1)) :
+          (i_from_ex_comb.ras_restore_valid_count != '0);
+  assign pd_ras_nonempty =
+      (i_pd_redirect_ras_push && !i_pd_redirect_ras_pop) ? 1'b1 :
+      (i_pd_redirect_ras_pop && !i_pd_redirect_ras_push) ?
+          (pd_ras_ckpt_cnt_q > (RasPtrBits + 1)'(1)) :
+          (pd_ras_ckpt_cnt_q != '0);
+  assign f1_ras_nonempty = (f1_eff_ras_ckpt_cnt != '0);
+  assign ex_ras_uses_link = i_from_ex_comb.ras_push_after_restore &&
+      (!i_from_ex_comb.ras_pop_after_restore || (i_from_ex_comb.ras_restore_valid_count != '0));
+  assign pd_ras_uses_link = i_pd_redirect_ras_push &&
+      (!i_pd_redirect_ras_pop || (pd_ras_ckpt_cnt_q != '0));
+  assign ras_restore_nonempty_next = i_from_ex_comb.ras_misprediction ? ex_ras_nonempty :
+      (pd_ras_restore ? pd_ras_nonempty : (f1_ras_restore_comb && f1_ras_nonempty));
+  assign ras_restore_uses_link_next = i_from_ex_comb.ras_misprediction ? ex_ras_uses_link :
+      (pd_ras_restore ? pd_ras_uses_link : 1'b0);
+
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) o_fetch_cached_retarget <= 1'b0;
-    else o_fetch_cached_retarget <= discard_fetch_request;
+    if (i_pipeline_ctrl.reset) begin
+      ras_restore_q           <= 1'b0;
+      ras_restore_pure_pop_q  <= 1'b0;
+      ras_restore_nonempty_q  <= 1'b0;
+      ras_restore_uses_link_q <= 1'b0;
+    end else begin
+      ras_restore_q           <= ras_restore_comb;
+      ras_restore_pure_pop_q  <= ras_restore_comb && ras_restore_pop_comb && !ras_restore_push_comb;
+      ras_restore_nonempty_q  <= ras_restore_nonempty_next;
+      ras_restore_uses_link_q <= ras_restore_uses_link_next;
+    end
   end
 
+  // Restore payload flops are only consumed when ras_restore_q is asserted;
+  // omit reset to keep synchronous reset off 128+ data bits.
+  always_ff @(posedge i_clk) begin
+    ras_restore_tos_q         <= ras_restore_tos_comb;
+    ras_restore_cnt_q         <= ras_restore_cnt_comb;
+    ras_restore_top_q         <= ras_restore_top_comb;
+    ras_restore_push_q        <= ras_restore_push_comb;
+    ras_restore_pop_q         <= ras_restore_pop_comb;
+    ras_restore_link_q        <= ras_restore_link_comb;
+    ras_restore_top_cached_q  <= ras_restore_top_cached_comb;
+    ras_restore_link_cached_q <= ras_restore_link_cached_comb;
+  end
+
+  assign f0_ras_push = !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore_comb &&
+      !fetch_fault0_live &&
+      ((f0_launch && ((f0_btb_steer_now && btb_is_call) ||
+                      (f0_span_btb_fire && span_btb_pending_q.is_call))) ||
+       (f1_collapsed_btb_steer && f1_req_q.btb_is_call) ||
+       (f1_collapsed_span_fire && span_btb_pending_q.is_call));
+  assign f0_ras_pop = !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore_comb &&
+      !fetch_fault0_live &&
+      ((f0_launch && ((f0_btb_steer_now && btb_is_return) ||
+                      (f0_span_btb_fire && span_btb_pending_q.is_return))) ||
+       (f1_collapsed_btb_steer && f1_req_q.btb_is_return) ||
+       (f1_collapsed_span_fire && span_btb_pending_q.is_return));
+  // Whenever f0_ras_push fires, spanning ops are uniquely selected by
+  // (span_btb_valid_q && !f1_cancel_span_raw) and collapsed-lead ops by
+  // f1_collapsed_accept_raw, keeping redirects and f1_btb_ok off the 64-bit mux.
+  assign f0_ras_link = (span_btb_valid_q && !f1_cancel_span_raw) ?
+      span_btb_pending_q.link : (f1_collapsed_accept_raw ? f1_req_q.btb_link : f0_btb_link);
+  assign f0_ras_link_cached = (span_btb_valid_q && !f1_cancel_span_raw) ?
+      span_btb_pending_q.link_cached :
+      (f1_collapsed_accept_raw ? f1_req_q.btb_link_cached : f0_btb_link_cached);
+
+  // Register F0's speculative push/pop by one cycle to match return_address_stack's
+  // pending-op contract: o_top/o_tos/o_valid_count reflect the prior cycle's push/pop
+  // with zero-cycle bypass, stay free of this cycle's own op (giving exact pre-op
+  // checkpoints and exact return targets), and avoid a combinational loop through o_top.
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      f0_ras_push_q <= 1'b0;
+      f0_ras_pop_q  <= 1'b0;
+    end else if (any_redirect || i_from_ex_comb.ras_misprediction || f1_ras_restore_comb) begin
+      f0_ras_push_q <= 1'b0;
+      f0_ras_pop_q  <= 1'b0;
+    end else begin
+      f0_ras_push_q <= f0_ras_push;
+      f0_ras_pop_q  <= f0_ras_pop;
+    end
+  end
+
+  // f0_ras_link_q is only consumed when f0_ras_push_q is asserted; omit reset.
+  always_ff @(posedge i_clk) begin
+    f0_ras_link_q        <= f0_ras_link;
+    f0_ras_link_cached_q <= f0_ras_link_cached;
+  end
+
+  // Maintain the 8-bit cached-region shadow in lockstep with u_ras purely from
+  // registered F0/restore flops.
+  logic [RasPtrBits:0] ras_sh_cnt_after_push;
+  logic ras_sh_restore_swap_req;
+  logic ras_sh_do_restore_swap;
+  logic ras_sh_do_restore_push;
+  logic ras_sh_do_swap;
+  logic ras_sh_do_push;
+  logic [RasPtrBits-1:0] ras_sh_write_base;
+  logic [RasPtrBits-1:0] ras_sh_above_addr;
+  logic ras_sh_link_cached;
+  logic ras_sh_top_write;
+  logic ras_sh_above_write;
+  logic ras_sh_top_data;
+
+  assign ras_sh_cnt_after_push = (ras_cached_cnt_q != (RasPtrBits + 1)'(riscv_pkg::RasDepth)) ?
+      (ras_cached_cnt_q + (RasPtrBits + 1)'(1)) : ras_cached_cnt_q;
+  assign ras_sh_restore_swap_req = ras_restore_pop_q && ras_restore_push_q;
+  assign ras_sh_do_restore_swap  =
+      ras_restore_q && ras_sh_restore_swap_req && (ras_restore_cnt_q != '0);
+  assign ras_sh_do_restore_push = ras_restore_q && ras_restore_push_q && !ras_sh_restore_swap_req;
+  assign ras_sh_do_swap = !ras_restore_q && ras_sh_pending_swap;
+  assign ras_sh_do_push = !ras_restore_q && ras_sh_pending_push;
+  assign ras_sh_write_base = ras_restore_q ? ras_restore_tos_q : ras_cached_tos_q;
+  assign ras_sh_above_addr = ras_sh_write_base + RasPtrBits'(1);
+  assign ras_sh_link_cached = ras_restore_q ? ras_restore_link_cached_q : f0_ras_link_cached_q;
+  assign ras_sh_top_write = ras_restore_q || ras_sh_do_swap;
+  assign ras_sh_above_write = ras_sh_do_restore_push || ras_sh_do_push;
+  assign ras_sh_top_data         = (ras_sh_do_restore_swap || ras_sh_do_swap) ?
+      ras_sh_link_cached : ras_restore_top_cached_q;
+
+  always_comb begin
+    ras_sh_tos_next = ras_cached_tos_q;
+    ras_sh_cnt_next = ras_cached_cnt_q;
+    if (ras_sh_pending_push) begin
+      ras_sh_tos_next = ras_cached_tos_q + RasPtrBits'(1);
+      ras_sh_cnt_next = ras_sh_cnt_after_push;
+    end else if (ras_sh_pending_pop) begin
+      ras_sh_tos_next = ras_cached_tos_q - RasPtrBits'(1);
+      ras_sh_cnt_next = ras_cached_cnt_q - (RasPtrBits + 1)'(1);
+    end
+    if (ras_restore_q) begin
+      if (ras_sh_restore_swap_req) begin
+        ras_sh_tos_next = ras_restore_tos_q;
+        ras_sh_cnt_next = ras_restore_cnt_q;
+      end else if (ras_restore_pop_q && (ras_restore_cnt_q != '0)) begin
+        ras_sh_tos_next = ras_restore_tos_q - RasPtrBits'(1);
+        ras_sh_cnt_next = ras_restore_cnt_q - (RasPtrBits + 1)'(1);
+      end else if (ras_restore_push_q) begin
+        ras_sh_tos_next = ras_restore_tos_q + RasPtrBits'(1);
+        ras_sh_cnt_next = (ras_restore_cnt_q != (RasPtrBits + 1)'(riscv_pkg::RasDepth)) ?
+            (ras_restore_cnt_q + (RasPtrBits + 1)'(1)) : ras_restore_cnt_q;
+      end else begin
+        ras_sh_tos_next = ras_restore_tos_q;
+        ras_sh_cnt_next = ras_restore_cnt_q;
+      end
+    end
+  end
+
+  logic [riscv_pkg::RasDepth-1:0] ras_cached_next;
+  always_comb begin
+    ras_cached_next = ras_cached_q;
+    if (ras_sh_top_write) ras_cached_next[ras_sh_write_base] = ras_sh_top_data;
+    if (ras_sh_above_write) ras_cached_next[ras_sh_above_addr] = ras_sh_link_cached;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      ras_cached_q       <= '0;
+      ras_top_cached_q   <= 1'b0;
+      ras_below_cached_q <= 1'b0;
+      ras_cached_tos_q   <= '0;
+      ras_cached_cnt_q   <= '0;
+      ras_cached_ne0_q   <= 1'b0;
+      ras_cached_gt1_q   <= 1'b0;
+    end else begin
+      ras_cached_tos_q   <= ras_sh_tos_next;
+      ras_cached_cnt_q   <= ras_sh_cnt_next;
+      ras_cached_ne0_q   <= (ras_sh_cnt_next != '0);
+      ras_cached_gt1_q   <= (ras_sh_cnt_next > (RasPtrBits + 1)'(1));
+      ras_cached_q       <= ras_cached_next;
+      ras_top_cached_q   <= ras_cached_next[ras_sh_tos_next];
+      ras_below_cached_q <= ras_cached_next[ras_sh_tos_next-RasPtrBits'(1)];
+    end
+  end
+
+  // Drive all return_address_stack write controls directly from flops.
+  return_address_stack #(
+      .RAS_DEPTH(riscv_pkg::RasDepth),
+      .RAS_PTR_BITS(RasPtrBits)
+  ) u_ras (
+      .i_clk,
+      .i_rst(i_pipeline_ctrl.reset),
+      .i_push(f0_ras_push_q),
+      .i_pop(f0_ras_pop_q),
+      .i_push_address(f0_ras_link_q),
+      .i_misprediction(ras_restore_q),
+      .i_restore_tos(ras_restore_tos_q),
+      .i_restore_valid_count(ras_restore_cnt_q),
+      .i_restore_top(ras_restore_top_q),
+      .i_pop_after_restore(ras_restore_pop_q),
+      .i_push_after_restore(ras_restore_push_q),
+      .i_push_address_after_restore(ras_restore_link_q),
+      .o_nonempty(ras_nonempty),
+      .o_top(ras_top),
+      .o_tos(ras_tos),
+      .o_valid_count(ras_valid_count)
+  );
+
   // ===========================================================================
-  // C-Extension State Controller
+  // Synchronous Predictors (Backing BTB, TAGE, ITTAGE)
   // ===========================================================================
-  c_ext_state #(
-      .XLEN(XLEN)
-  ) c_ext_state_inst (
+  // f1_pred_hold_q already captures live predictor outputs whenever
+  // f1_pred_fresh_q is asserted and holds them across miss stalls, so tie
+  // i_lookup_capture high on u_tage_predictor and u_ittage_predictor to drop
+  // their redundant internal hold registers and high-fanout capture flops.
+  logic [XLEN-1:0] f1_win_pc;
+  assign f1_win_pc = f1_req_q.pc;
+
+  logic [3:0] backing_win_hit_live;
+  logic [3:0] backing_win_comp_live;
+  logic [3:0] backing_win_ret_live;
+  logic [3:0][BackingTargetBits-1:0] backing_win_target_live;
+
+  logic backing_refresh_q;
+  logic [XLEN-1:0] backing_refresh_pc_q;
+  always_ff @(posedge i_clk) begin
+    backing_refresh_q    <= i_pd_backing_refresh;
+    backing_refresh_pc_q <= i_pd_backing_refresh_pc;
+  end
+
+  backing_btb #(
+      .XLEN(XLEN),
+      .PRECOMPARE_WIN_PC(1'b1)
+  ) u_backing_btb (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
-      .i_stall(if_stage_stall),
-      // Shared state flush, with registered trap and xRET terms.
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall_registered(if_stage_stall_registered),
-
-      .i_control_flow_holdoff(control_flow_holdoff),
-      .i_any_holdoff_safe(any_holdoff_safe),
-      .i_prediction_holdoff(prediction_holdoff),
-      .i_prediction_reset_state(prediction_reset_c_ext),
-      .i_pending_prediction_active(pending_prediction_active),
-      .i_pending_prediction_target_handoff(pending_prediction_target_handoff),
-      .i_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
-
-      .i_effective_instr(effective_instr),
-      .i_pc_reg(pc_reg),
-
-      .i_is_compressed(is_compressed),
-      .i_sel_nop(sel_nop),
-      .i_fetch_progress(fetch_progress),
-      .i_window_cannot_serve(window_cannot_serve_pc_reg),
-      .i_slot2_valid(slot2_valid),
-      // Align sideband to match instruction word selection
-      .i_instr_sideband(fetch_word_swapped_for_c_ext ?
-                            i_instr_sideband[(2*riscv_pkg::ImemSidebandWidth)-1:
-                                             riscv_pkg::ImemSidebandWidth] :
-                            i_instr_sideband[riscv_pkg::ImemSidebandWidth-1:0]),
-      .o_instr_buffer(instr_buffer),
-      .o_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
-      .o_is_compressed_saved(is_compressed_saved),
-      .o_saved_values_valid(saved_values_valid),
-      .o_instr_buffer_sideband(instr_buffer_sideband),
-      .i_instr_fault(cur_fault_pair),
-      .o_instr_buffer_fault(instr_buffer_fault)
+      .i_redirect(|npc_sel[5:1]),
+      .i_lookup_index(pc_tage_lookup[BackingIndexBits+1:2]),
+      .i_packet_pc('0),
+      .i_packet_compressed(1'b0),
+      .o_hit(),
+      .o_compressed(),
+      .o_return(),
+      .o_target(),
+      .o_slot2_return_by_size(),
+      .o_slot2_target_by_size(),
+      .i_lookup_pc(pc),
+      .i_win_pc(f1_win_pc),
+      .o_win_hit(backing_win_hit_live),
+      .o_win_compressed(backing_win_comp_live),
+      .o_win_return(backing_win_ret_live),
+      .o_win_target(backing_win_target_live),
+      .i_update(i_from_ex_comb.btb_update && i_from_ex_comb.btb_update_jump),
+      .i_update_pc(i_from_ex_comb.btb_update_pc),
+      .i_update_target(i_from_ex_comb.btb_update_target),
+      .i_update_compressed(i_from_ex_comb.btb_update_compressed),
+      .i_update_return(i_from_ex_comb.btb_update_return),
+      .i_refresh(backing_refresh_q),
+      .i_refresh_pc(backing_refresh_pc_q)
   );
 
-  // ===========================================================================
-  // Stall State Preservation
-  // ===========================================================================
-  // prev_was_compressed_at_lo is captured when a stall begins.
+  logic [riscv_pkg::TageLookupHiBit:2] tage_word_live;
+  logic [riscv_pkg::TageLookupHiBit:2] tage_word_next_live;
+  riscv_pkg::tage_lookup_t tage_bank0_live;
+  riscv_pkg::tage_lookup_t tage_bank1_live;
 
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe || prediction_reset_c_ext) begin
-      // A flush invalidates the pre-flush capture (registered flush; see
-      // flush_for_c_ext_safe).
-      prev_was_compressed_at_lo_saved <= 1'b0;
-    end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      prev_was_compressed_at_lo_saved <= prev_was_compressed_at_lo;
-    end
-  end
-
-  // ===========================================================================
-  // Instruction Aligner
-  // ===========================================================================
-  // Live slot-2 kill-cause classification from the aligner. The native and
-  // compressed slot-1 control taps also feed frontend_validity_tracker; all
-  // six taps feed width-funnel profiling.
-  logic slot2_kill_s1_native_ctrl_live;
-  logic slot2_kill_s1_native_serialize_live;
-  logic slot2_kill_slot1_ctrl_live;
-  logic slot2_kill_class_live;
-  logic slot2_kill_window_limit_live;
-  logic slot2_kill_transient_live;
-
-  instruction_aligner #(
-      .XLEN(XLEN)
-  ) instruction_aligner_inst (
-`ifndef SYNTHESIS
-      .i_metadata_check_valid(provider_metadata_check_valid && !cur_fault_pair[1]),
-`endif
-      .i_instr(i_instr),
-      .i_instr_low_by_parity(i_instr_low_by_parity),
-      .i_instr_high(i_instr_high),
-      .i_instr_window_high(i_instr_window_high),
-      .i_instr_sideband(i_instr_sideband),
-      .i_instr_pc_metadata_by_provider_parity(i_instr_pc_metadata_by_provider_parity),
-      .i_pc_pairability_by_provider_parity(i_pc_pairability_by_provider_parity),
-      .i_slot2_start_valid_lo_by_provider_parity(i_slot2_start_valid_lo_by_provider_parity),
-      .i_instr_pc_metadata_served_high(i_instr_pc_metadata_served_high),
-      .i_instr_bank_sel_r(instr_bank_sel_for_aligner),
-      .i_instr_buffer(instr_buffer),
-      .i_instr_buffer_sideband(instr_buffer_sideband),
-      .i_pc_reg(pc_reg),
-      .i_pc_reg_high_for_coverage(pc_reg_high_for_coverage),
-
-      .i_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
-
-      // Registered stall only, for timing.
-      .i_stall_registered(if_stage_stall_registered),
-      .i_prev_was_compressed_at_lo_saved(prev_was_compressed_at_lo_saved),
-      .i_is_compressed_saved(is_compressed_saved),
-      .i_saved_values_valid(saved_values_valid && !i_fence_i_flush),
-
-      .o_raw_parcel(raw_parcel),
-      .o_effective_instr(effective_instr),
-      .o_is_compressed(is_compressed),
-      .o_is_compressed_fast(is_compressed_fast),
-      .o_is_compressed_for_pc_advance(is_compressed_for_pc_advance),
-      .o_no_buffer_accepts_served_last(no_buffer_accepts_served_last),
-      .o_sel_compressed(sel_compressed),
-      .o_use_instr_buffer(use_instr_buffer),
-      .o_rvc_source_hot(rvc_source_hot),
-      .o_rvc_bits24_20(rvc_bits24_20),
-      .o_rvc_rs1_rest(rvc_rs1_rest),
-      .o_rvc_extra(rvc_extra),
-      .o_is_indirect(is_indirect),
-
-      // Slot-2 outputs. sel_nop_2 is the aligner's live pairing decision;
-      // this module adds the slot-1 holdoffs and flushes.
-      .o_raw_parcel_2(raw_parcel_2),
-      .o_effective_instr_2(effective_instr_2),
-      .o_slot2_decomp_illegal(slot2_decomp_illegal),
-      .o_slot2_is_cond_branch(slot2_is_cond_branch_live),
-      .o_is_compressed_2(is_compressed_2),
-      .o_sel_nop_2(sel_nop_2_aligner),
-      .o_sel_compressed_2(sel_compressed_2),
-      .o_source_hot_2(source_hot_2),
-      .o_bits24_20_2(bits24_20_2),
-      .o_rs1_rest_2(rs1_rest_2),
-      .o_slot2_valid_for_pc(slot2_valid_for_pc_live),
-      .o_slot2_is_compressed_for_pc(slot2_is_compressed_for_pc_live),
-      .o_slot2_is_compressed_plus2_for_btb(slot2_is_compressed_plus2_for_btb),
-      .o_slot2_is_compressed_plus4_for_btb(slot2_is_compressed_plus4_for_btb),
-      .o_slot2_plus2_candidate_valid(slot2_plus2_candidate_valid),
-      .o_slot2_plus4_candidate_valid(slot2_plus4_candidate_valid),
-
-      // Slot-2 kill-cause taps (see their declarations above).
-      .o_slot2_kill_s1_native_ctrl(slot2_kill_s1_native_ctrl_live),
-      .o_slot2_kill_s1_native_serialize(slot2_kill_s1_native_serialize_live),
-      .o_slot2_kill_slot1_ctrl(slot2_kill_slot1_ctrl_live),
-      .o_slot2_kill_class(slot2_kill_class_live),
-      .o_slot2_kill_window_limit(slot2_kill_window_limit_live),
-      .o_slot2_kill_transient(slot2_kill_transient_live)
-  );
-
-  // A PD redirect applies even without a fetch response. Capture its bubble
-  // on that edge, then retain it until fetch progresses without a stall.
-  // Prediction metadata can still be held from an earlier BTB hit across the
-  // gap, so pd_redirect_q must override the prediction-holdoff exemption:
-  // the target is not the deferred predicted branch. Emitting it while the
-  // redirect holdoff holds pc_reg would dispatch the target bundle twice.
-  logic pd_redirect_q;
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) pd_redirect_q <= 1'b0;
-    else if (!i_pipeline_ctrl.stall && (i_pd_redirect || fetch_progress)) begin
-      pd_redirect_q <= i_pd_redirect;
-    end
-  end
-
-  // With pc == pc_reg, a prediction can emit its branch on the redirect
-  // cycle. Its first target response must bubble: the usual prediction
-  // exemption would treat it as a deferred branch and dispatch it twice.
-  // Hold this flag through stalls and gaps in fetch progress.
-  logic prediction_already_emitted_q;
-  logic lookup_pc_matches_packet_pc;
-  assign lookup_pc_matches_packet_pc = pc == pc_reg;
-  assign live_prediction_emits_with_output = prediction_used_live_cofactor && !sel_nop &&
-                                             !if_stage_stall_registered &&
-                                             lookup_pc_matches_packet_pc;
-`ifndef SYNTHESIS
-  // prediction_used_live_cofactor lacks only the slot-2 alias gate. pc ==
-  // pc_reg rules out both alias addresses (pc_reg+2 and pc_reg+4), so with
-  // that equality applied it must match the same expression built from
-  // prediction_used.
-  logic live_prediction_emits_with_output_legacy;
-  assign live_prediction_emits_with_output_legacy =
-      prediction_used && !sel_nop && !if_stage_stall_registered &&
-      lookup_pc_matches_packet_pc;
-  always_comb begin
-    if (!$isunknown(
-            {
-              lookup_pc_matches_packet_pc,
-              branch_prediction_controller_inst.slot1_prediction_owned_by_slot2,
-              live_prediction_emits_with_output,
-              live_prediction_emits_with_output_legacy
-            }
-        )) begin
-      p_exact_live_lookup_excludes_slot2_ownership :
-      assert (!lookup_pc_matches_packet_pc ||
-              !branch_prediction_controller_inst.slot1_prediction_owned_by_slot2);
-      p_live_prediction_output_cofactor_is_exact :
-      assert (live_prediction_emits_with_output == live_prediction_emits_with_output_legacy);
-    end
-  end
-`endif
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
-      prediction_already_emitted_q <= 1'b0;
-    end else if (!i_pipeline_ctrl.stall && fetch_progress) begin
-      prediction_already_emitted_q <= live_prediction_emits_with_output;
-    end
-  end
-  // Redirects leave a stale response, even at word-aligned targets. A
-  // slot-1 prediction is exempt so it can deliver its branch. Pending
-  // predictions must wait for their handoff (or release their predecessor);
-  // exempting them could dispatch the branch before its metadata is ready
-  // and again at handoff. Slot-2 redirects always bubble: a simultaneous
-  // slot-1 hit can set prediction_holdoff while the next response is stale.
-  // PD redirects also override the exemption when an earlier prediction's
-  // holdoff survives a gap in fetch responses.
-  //
-  // For served word S, pc_reg's word P must be S or S+1, or S-1 if buffered.
-  // P = S+1 is insufficient when P+1 is needed: a high-parcel native
-  // instruction spans there, and a buffered high-parcel RVC can pair there.
-  // Bank parity alone cannot distinguish an unrelated word with equal parity.
-  // Each provider has its own coverage check for timing.
-  logic [XLEN-3:0] pc_reg_word;
-  logic served_window_covers_low;
-  logic served_window_covers_high;
-  logic served_window_covers_pc_reg;
-  logic prev_was_compressed_at_lo_for_coverage_timing;
-  assign pc_reg_word = pc_reg[XLEN-1:2];
-  // This buffer select omits the FENCE-class term and uses a copy of
-  // pc_reg[1]. It drives prediction and coverage only; a FENCE-class flush
-  // squashes any difference from the packet's select. Without a buffer,
-  // the served-last flag allows a low parcel or a compressed high parcel.
-  // With a buffer, that flag is ignored.
-  assign prev_was_compressed_at_lo_for_coverage_timing = use_saved_values ?
-      prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
-  assign use_instr_buffer_for_coverage_timing =
-      prev_was_compressed_at_lo_for_coverage_timing && pc_reg_high_for_coverage;
-
-`ifndef SYNTHESIS
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) coverage_reset_seen_q <= 1'b1;
-  end
-  always_ff @(posedge i_clk) begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
-            {
-              use_instr_buffer_for_coverage_timing,
-              prev_was_compressed_at_lo_for_coverage_timing,
-              pc_reg_high_for_coverage,
-              pc_reg[1]
-            }
-        )) begin
-      p_use_instr_buffer_for_coverage_timing_exact :
-      assert (use_instr_buffer_for_coverage_timing ==
-              (prev_was_compressed_at_lo_for_coverage_timing && pc_reg[1]));
-      p_pc_reg_high_for_coverage_exact : assert (pc_reg_high_for_coverage == pc_reg[1]);
-    end
-  end
-`endif
-
-  // Shared override for the per-provider served-last predicate, reproducing
-  // instruction_aligner's saved-size (gated on !i_fence_i_flush) and
-  // stall-selected buffered-size branches.
-  logic coverage_use_saved_size;
-  logic coverage_prev_fast;
-  (* keep = "true" *)logic coverage_override_sel;
-  (* keep = "true" *)logic coverage_override_val;
-  assign coverage_use_saved_size =
-      if_stage_stall_registered && saved_values_valid && !i_fence_i_flush;
-  assign coverage_prev_fast = if_stage_stall_registered ?
-      prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
-  assign coverage_override_sel = coverage_use_saved_size || coverage_prev_fast;
-  assign coverage_override_val = coverage_use_saved_size ?
-      is_compressed_saved : instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi];
-
-  served_window_coverage #(
-      .WORD_BITS(XLEN - 2)
-  ) u_served_window_coverage_low (
-      .i_pc_word(pc_reg_word),
-      .i_served_word(i_served_word_low),
-      .i_served_last_word(i_served_last_word_low),
-      .i_served_prev_word(i_served_prev_word_low),
-      .i_served_prev_word_valid(i_served_prev_word_valid_low),
-      .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
-      .i_hi_compressed_by_parity({
-        i_instr_pc_metadata_by_provider_parity[5], i_instr_pc_metadata_by_provider_parity[1]
-      }),
-      .i_override_sel(coverage_override_sel),
-      .i_override_val(coverage_override_val),
-      .i_pc_high(pc_reg_high_for_coverage),
-      .o_covers(served_window_covers_low)
-  );
-
-  served_window_coverage #(
-      .WORD_BITS(XLEN - 2)
-  ) u_served_window_coverage_high (
-      .i_pc_word(pc_reg_word),
-      .i_served_word(i_served_word_high),
-      .i_served_last_word(i_served_last_word_high),
-      .i_served_prev_word(i_served_prev_word_high),
-      .i_served_prev_word_valid(i_served_prev_word_valid_high),
-      .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
-      .i_hi_compressed_by_parity({
-        i_instr_pc_metadata_by_provider_parity[13], i_instr_pc_metadata_by_provider_parity[9]
-      }),
-      .i_override_sel(coverage_override_sel),
-      .i_override_val(coverage_override_val),
-      .i_pc_high(pc_reg_high_for_coverage),
-      .o_covers(served_window_covers_high)
-  );
-
-  assign served_window_covers_pc_reg = i_instr_pc_metadata_served_high ?
-      served_window_covers_high : served_window_covers_low;
-
-  // Declared here for the served-window guard and low-BRAM arm below, which
-  // excludes saved-replay cycles; defined with the stall-capture logic.
-  logic replay_saved_if_outputs;
-
-`ifndef SYNTHESIS
-  logic [XLEN-3:0] selected_served_word;
-  logic [XLEN-3:0] selected_served_last_word;
-  logic [XLEN-3:0] selected_served_prev_word;
-  logic selected_served_prev_word_valid;
-  logic served_eq_pc_word;
-  logic served_last_eq_pc_word;
-  logic served_eq_pc_word_p1;
-  logic served_window_covers_reference;
-  logic served_window_covers_low_reference;
-  logic served_window_covers_high_reference;
-  logic served_window_native_high;
-  logic served_window_native_high_low;
-  logic served_window_native_high_high;
-  logic served_window_hi_comp_low;
-  logic served_window_hi_comp_high;
-  logic aligner_use_saved_is_compressed_ref;
-  logic aligner_prev_fast_ref;
-  logic aligner_covers_low_ref;
-  logic aligner_covers_high_ref;
-  logic aligner_covers_selected_ref;
-  logic aligner_window_cannot_serve_ref;
-  logic served_contract_check_valid_q = 1'b0;
-
-  assign aligner_use_saved_is_compressed_ref =
-      if_stage_stall_registered && (saved_values_valid && !i_fence_i_flush);
-  assign aligner_prev_fast_ref = if_stage_stall_registered ?
-      prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
-  assign served_window_hi_comp_low = aligner_use_saved_is_compressed_ref ? is_compressed_saved :
-      (aligner_prev_fast_ref ? instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi] :
-       (pc_reg[2] ? i_instr_pc_metadata_by_provider_parity[5] :
-                    i_instr_pc_metadata_by_provider_parity[1]));
-  assign served_window_hi_comp_high = aligner_use_saved_is_compressed_ref ? is_compressed_saved :
-      (aligner_prev_fast_ref ? instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi] :
-       (pc_reg[2] ? i_instr_pc_metadata_by_provider_parity[13] :
-                    i_instr_pc_metadata_by_provider_parity[9]));
-  assign served_window_native_high = pc_reg[1] && !is_compressed_for_pc_advance;
-  assign served_window_native_high_low = pc_reg[1] && !served_window_hi_comp_low;
-  assign served_window_native_high_high = pc_reg[1] && !served_window_hi_comp_high;
-
-  assign selected_served_word = i_instr_pc_metadata_served_high ?
-      i_served_word_high : i_served_word_low;
-  assign selected_served_last_word = i_instr_pc_metadata_served_high ?
-      i_served_last_word_high : i_served_last_word_low;
-  assign selected_served_prev_word = i_instr_pc_metadata_served_high ?
-      i_served_prev_word_high : i_served_prev_word_low;
-  assign selected_served_prev_word_valid = i_instr_pc_metadata_served_high ?
-      i_served_prev_word_valid_high : i_served_prev_word_valid_low;
-  assign served_eq_pc_word = selected_served_word == pc_reg_word;
-  assign served_last_eq_pc_word = selected_served_last_word == pc_reg_word;
-  assign served_eq_pc_word_p1 = selected_served_prev_word_valid &&
-      (selected_served_prev_word == pc_reg_word);
-  assign served_window_covers_reference = use_instr_buffer_for_coverage_timing ?
-      (served_eq_pc_word || served_eq_pc_word_p1 ||
-       (!pc_reg[1] && served_last_eq_pc_word)) :
-      (served_eq_pc_word || (!served_window_native_high && served_last_eq_pc_word));
-  assign served_window_covers_low_reference = use_instr_buffer_for_coverage_timing ?
-      ((i_served_word_low == pc_reg_word) ||
-       (i_served_prev_word_valid_low && (i_served_prev_word_low == pc_reg_word)) ||
-       (!pc_reg[1] && (i_served_last_word_low == pc_reg_word))) :
-      ((i_served_word_low == pc_reg_word) ||
-       (!served_window_native_high_low && (i_served_last_word_low == pc_reg_word)));
-  assign served_window_covers_high_reference = use_instr_buffer_for_coverage_timing ?
-      ((i_served_word_high == pc_reg_word) ||
-       (i_served_prev_word_valid_high && (i_served_prev_word_high == pc_reg_word)) ||
-       (!pc_reg[1] && (i_served_last_word_high == pc_reg_word))) :
-      ((i_served_word_high == pc_reg_word) ||
-       (!served_window_native_high_high && (i_served_last_word_high == pc_reg_word)));
-  assign aligner_covers_low_ref = (i_served_word_low == pc_reg_word) ||
-      ((i_served_last_word_low == pc_reg_word) &&
-       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
-        no_buffer_accepts_served_last)) ||
-      (i_served_prev_word_valid_low && (i_served_prev_word_low == pc_reg_word) &&
-       use_instr_buffer_for_coverage_timing);
-  assign aligner_covers_high_ref = (i_served_word_high == pc_reg_word) ||
-      ((i_served_last_word_high == pc_reg_word) &&
-       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
-        no_buffer_accepts_served_last)) ||
-      (i_served_prev_word_valid_high && (i_served_prev_word_high == pc_reg_word) &&
-       use_instr_buffer_for_coverage_timing);
-  assign aligner_covers_selected_ref = i_instr_pc_metadata_served_high ?
-      aligner_covers_high_ref : aligner_covers_low_ref;
-  assign aligner_window_cannot_serve_ref = i_instr_valid &&
-      (!aligner_covers_selected_ref || pending_prediction_walk_past) &&
-      (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
-
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) served_contract_check_valid_q <= 1'b0;
-    else served_contract_check_valid_q <= coverage_reset_seen_q;
-  end
-
-  always_comb begin
-    if (served_contract_check_valid_q && !$isunknown(
-            {i_served_word_low,
-             i_served_last_word_low,
-             i_served_prev_word_low,
-             i_served_prev_word_valid_low,
-             i_served_word_high,
-             i_served_last_word_high,
-             i_served_prev_word_high,
-             i_served_prev_word_valid_high,
-             i_instr_pc_metadata_served_high,
-             i_served_high,
-             pc_reg_word,
-             pc_reg_high_for_coverage,
-             served_window_native_high,
-             served_window_native_high_low,
-             served_window_native_high_high,
-             no_buffer_accepts_served_last,
-             is_compressed_for_pc_advance,
-             use_instr_buffer_for_coverage_timing,
-             i_fence_i_flush,
-             use_instr_buffer,
-             i_instr_valid,
-             pending_prediction_walk_past,
-             replay_saved_if_outputs}
-        )) begin
-      p_served_low_last_word_contract :
-      assert (i_served_last_word_low == (i_served_word_low + 1'b1));
-      p_served_low_prev_word_contract :
-      assert (i_served_prev_word_low == (i_served_word_low - 1'b1));
-      p_served_low_prev_valid_contract :
-      assert (i_served_prev_word_valid_low == (|i_served_word_low));
-      p_served_high_last_word_contract :
-      assert (i_served_last_word_high == (i_served_word_high + 1'b1));
-      p_served_high_prev_word_contract :
-      assert (i_served_prev_word_high == (i_served_word_high - 1'b1));
-      p_served_high_prev_valid_contract :
-      assert (i_served_prev_word_valid_high == (|i_served_word_high));
-      p_served_provider_selectors_aligned :
-      assert (i_instr_pc_metadata_served_high == i_served_high);
-      p_served_low_coverage_equivalent :
-      assert (served_window_covers_low == served_window_covers_low_reference);
-      p_served_high_coverage_equivalent :
-      assert (served_window_covers_high == served_window_covers_high_reference);
-      p_served_window_matches_aligner_exact :
-      assert (served_window_covers_pc_reg == aligner_covers_selected_ref);
-      p_no_buffer_served_last_verdict_is_observationally_exact :
-      assert (use_instr_buffer_for_coverage_timing ||
-              (no_buffer_accepts_served_last ==
-               (!pc_reg[1] || is_compressed_for_pc_advance)));
-      p_served_window_guard_equivalent :
-      assert (served_window_covers_pc_reg == served_window_covers_reference);
-      p_window_cannot_serve_guard_exact :
-      assert (window_cannot_serve_pc_reg == aligner_window_cannot_serve_ref);
-      p_coverage_buffer_select_matches_packet_outside_fence :
-      assert (i_fence_i_flush || (use_instr_buffer_for_coverage_timing == use_instr_buffer));
-    end
-  end
-`endif
-
-  // Both providers need coverage checks: parity cannot detect an even-word
-  // slip. A mismatch squashes the packet and resteers fetch to pc_reg.
-  // A pending prediction that pc_reg has walked past does the same: its
-  // lookup already moved o_pc to the phantom target, so squashing the packet
-  // and resteering o_pc to pc_reg's word both blocks duplicate emission under
-  // post-prediction holdoff and restores the fetch lead invariant even when
-  // the phantom target's window would still cover pc_reg through the buffer.
-  //
-  // Exclude low-BRAM replay: the live window may have moved past pc_reg;
-  // squashing the saved instruction would wedge the handshake. The cached
-  // provider already holds valid low during replay. Select by the registered
-  // provider bit, not virtual pc_reg[31], which need not identify the provider.
-  (* keep = "true" *)logic window_guard_instr_valid;
-  (* keep = "true" *)logic window_guard_replay_saved;
-  assign window_guard_instr_valid  = i_instr_valid;
-  assign window_guard_replay_saved = replay_saved_if_outputs;
-  served_window_guard u_served_window_guard (
-      .i_instr_valid(window_guard_instr_valid),
-      .i_served_high(i_instr_pc_metadata_served_high),
-      .i_covers_high(served_window_covers_high),
-      .i_covers_low(served_window_covers_low),
-      .i_walk_past(pending_prediction_walk_past),
-      .i_replay_saved(window_guard_replay_saved),
-      .o_cannot_serve(window_cannot_serve_pc_reg)
-  );
-
-`ifndef SYNTHESIS
-  always_comb begin
-    if (!$isunknown(
-            {window_cannot_serve_pc_reg, prediction_used_for_pc, slot2_prediction_used_for_pc}
-        )) begin
-      p_noncovering_window_blocks_all_predictions :
-      assert (!window_cannot_serve_pc_reg ||
-              (!prediction_used_for_pc && !slot2_prediction_used_for_pc));
-    end
-  end
-`endif
-
-  // Every squash condition except the served-window guard.
-  logic sel_nop_existing;
-  logic sel_nop_existing_wcs0;
-  logic sel_nop_existing_wcs;
-  assign sel_nop_existing = i_pipeline_ctrl.flush ||
-                   flush_for_c_ext_safe || !fetch_progress ||
-                   reset_holdoff ||
-                   pending_prediction_target_holdoff ||
-                   pending_prediction_fetch_holdoff ||
-                   (control_flow_holdoff &&
-                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q));
-  // For W = WCS, squash W | E(W) equals W | E(0). Compute E(0) in
-  // parallel with the coverage check.
-  assign sel_nop_existing_wcs0 = i_pipeline_ctrl.flush ||
-                   flush_for_c_ext_safe || !fetch_progress ||
-                   reset_holdoff ||
-                   pending_prediction_target_holdoff ||
-                   pending_prediction_fetch_holdoff_wcs0 ||
-                   (control_flow_holdoff &&
-                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q));
-  // The resteer W & !E(W) uses E(1), also computed in parallel.
-  assign sel_nop_existing_wcs = i_pipeline_ctrl.flush ||
-                   flush_for_c_ext_safe || !fetch_progress ||
-                   reset_holdoff ||
-                   pending_prediction_target_holdoff ||
-                   pending_prediction_fetch_holdoff_wcs ||
-                   (control_flow_holdoff &&
-                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q));
-
-  // Resteer only when the packet would otherwise be consumed. Resteering
-  // during a holdoff would fight the existing PC control. On release, it
-  // prevents stale bytes from advancing pc_reg into an instruction.
-  assign window_resteer_pc_reg = window_cannot_serve_pc_reg && !sel_nop_existing_wcs;
-
-  assign sel_nop = sel_nop_existing_wcs0 || window_cannot_serve_pc_reg;
-  // Slot 2's prediction valid with the raw served-window guard forced low;
-  // the controller applies the guard last to the staged slot-2 select.
-  assign slot2_prediction_valid_wcs0 =
-      !(sel_nop_2_aligner || sel_nop_existing_wcs0 || pending_prediction_kills_live_slot2);
-
-  // PC-control squash affects only arms below trap, xRET, and FENCE-class
-  // redirects. Its state clears on full flush, so omit that flush term for
-  // timing. Packet consumers retain the full squash.
-  logic flush_pc_control;
-  assign flush_pc_control = (i_pipeline_ctrl.flush || flush_for_c_ext_safe) && !i_flush_all;
-  assign sel_nop_existing_pc_control = flush_pc_control || !fetch_progress ||
-                   reset_holdoff ||
-                   pending_prediction_target_holdoff ||
-                   pending_prediction_fetch_holdoff_wcs0 ||
-                   (control_flow_holdoff &&
-                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
-                     prediction_already_emitted_q));
-  assign pc_control_sel_nop = sel_nop_existing_pc_control || window_cannot_serve_pc_reg;
-
-`ifndef SYNTHESIS
-  always_comb begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
-            {
-              i_flush_all,
-              sel_nop,
-              pc_control_sel_nop,
-              i_trap_ctrl.trap_taken,
-              i_trap_ctrl.mret_taken,
-              i_fence_i_flush
-            }
-        )) begin
-      p_pc_control_sel_nop_exact_unless_kill :
-      assert (i_flush_all || (pc_control_sel_nop == sel_nop));
-      p_slot2_prediction_valid_wcs_cofactor :
-      assert (slot2_prediction_valid ==
-              (slot2_prediction_valid_wcs0 && !window_cannot_serve_pc_reg));
-      // The premise: a full-flush cycle is always a trap, xRET, or FENCE-class arm cycle.
-      p_full_flush_kill_wins_next_pc :
-      assert (!i_flush_all || i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken || i_fence_i_flush);
-    end
-  end
-`endif
-
-`ifndef SYNTHESIS
-  // Every FENCE-class flush also flushes front-end state, so the other squash
-  // causes must force a NOP and hide any comparator-driven resteer during the
-  // redirect pulse. The served-window comparators' buffer select differs from
-  // the packet's only on such a cycle.
-  always_ff @(posedge i_clk) begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
-            {i_fence_i_flush,
-             flush_for_c_ext_safe,
-             prediction_used_for_pc,
-             slot2_prediction_used_for_pc,
-             sel_nop_existing,
-             sel_nop_existing_wcs0,
-             sel_nop_existing_wcs,
-             sel_nop,
-             window_resteer_pc_reg}
-        )) begin
-      p_fence_i_masks_served_window_coverage :
-      assert (!i_fence_i_flush ||
-              (flush_for_c_ext_safe && sel_nop_existing && sel_nop_existing_wcs0 && sel_nop &&
-               !window_resteer_pc_reg && !prediction_used_for_pc &&
-               !slot2_prediction_used_for_pc));
-      p_sel_nop_wcs0_absorption_exact :
-      assert (sel_nop == (sel_nop_existing || window_cannot_serve_pc_reg));
-      p_window_resteer_wcs_cofactor_exact :
-      assert (window_resteer_pc_reg == (window_cannot_serve_pc_reg && !sel_nop_existing));
-    end
-  end
-
-  // Consumed low-BRAM packets must be covered. Keep the hardware guard:
-  // uncovered windows have occurred in hardware without appearing in
-  // simulation. This assertion detects a weakened guard.
-  always_ff @(posedge i_clk) begin
-    if (served_contract_check_valid_q && !i_pipeline_ctrl.reset && !$isunknown(
-            {pc_reg,
-             selected_served_word,
-             selected_served_last_word,
-             sel_nop,
-             replay_saved_if_outputs,
-             use_instr_buffer,
-             i_instr_valid}
-        ) && !i_served_high && i_instr_valid && !sel_nop && !replay_saved_if_outputs) begin
-      p_bram_served_window_covers_pc_reg :
-      assert (served_window_covers_pc_reg)
-      else
-        $error(
-            "if_stage: uncovered BRAM packet: pc=%h served=%h last=%h native_hi=%b buf=%b",
-            pc_reg,
-            {
-              selected_served_word, 2'b00
-            },
-            {
-              selected_served_last_word, 2'b00
-            },
-            served_window_native_high,
-            use_instr_buffer_for_coverage_timing
-        );
-    end
-  end
-`endif
-
-  // ===========================================================================
-  // Stall State Registers
-  // ===========================================================================
-  // Raw instruction data is captured when a stall begins and replayed after
-  // release, because the BRAM output moves on while IF is stalled.
-
-  logic sel_nop_saved;
-
-  // Stall-capture outputs (muxed: stall_registered ? saved : live)
-  logic sel_compressed_sc;
-
-  stall_capture_reg #(
-      .WIDTH(16)
-  ) u_raw_parcel_sc (
+  tage_predictor #(
+      .HIST_BITS(riscv_pkg::TageDirHistBits),
+      .USE_EXTERNAL_FOLD_INDEX(USE_EXTERNAL_TAGE_FOLD)
+  ) u_tage_predictor (
       .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(raw_parcel),
-      .o_data(raw_parcel_sc)
+      .i_lookup_word(pc_tage_lookup),
+      .i_lookup_hist(i_tage_hist),
+      .i_lookup_fold_index(i_tage_hist_fold),
+      .i_lookup_capture(1'b1),
+      .o_lookup_word(tage_word_live),
+      .o_lookup_word_next(tage_word_next_live),
+      .o_lookup_hist(),
+      .o_bank0(tage_bank0_live),
+      .o_bank1(tage_bank1_live),
+      .i_train_valid(i_tage_train_valid),
+      .i_train_lookup(i_tage_train_lookup),
+      .i_train_bank(i_tage_train_bank),
+      .i_train_alt_taken(i_tage_train_alt_taken),
+      .i_train_taken(i_tage_train_taken),
+      .i_train_mispredicted(i_tage_train_mispredicted)
   );
 
-  // The parcel's indirect-jump class takes the same capture and replay as
-  // raw_parcel, so it always describes the parcel PD receives.
-  logic is_indirect_sc;
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_is_indirect_sc (
+  riscv_pkg::itt_lookup_t itt_bank0_live;
+  riscv_pkg::itt_lookup_t itt_bank1_live;
+  logic [1:0] itt_hit_live;
+  logic [1:0][BackingTargetBits-1:0] itt_target_live;
+  logic [riscv_pkg::TageHistBits-1:0] itt_hist_live;
+
+  ittage_predictor u_ittage_predictor (
       .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(is_indirect),
-      .o_data(is_indirect_sc)
+      .i_lookup_word(pc_tage_lookup),
+      .i_lookup_hist(i_itt_hist),
+      .i_lookup_capture(1'b1),
+      .o_lookup_hist(itt_hist_live),
+      .o_bank0(itt_bank0_live),
+      .o_bank1(itt_bank1_live),
+      .o_hit(itt_hit_live),
+      .o_target(itt_target_live),
+      .i_train_valid(i_itt_train_valid),
+      .i_train_lookup(i_itt_train_lookup),
+      .i_train_bank(i_itt_train_bank),
+      .i_train_target(i_itt_train_target),
+      .i_train_mispredicted(i_itt_train_mispredicted)
   );
 
+  // Select live or miss-held synchronous predictor results.
+  pred_hold_t f1_pred_live;
+  pred_hold_t f1_pred;
+  assign f1_pred_live.tage_word      = tage_word_live;
+  assign f1_pred_live.tage_word_next = tage_word_next_live;
+  assign f1_pred_live.tage_bank0     = tage_bank0_live;
+  assign f1_pred_live.tage_bank1     = tage_bank1_live;
+  assign f1_pred_live.itt_bank0      = itt_bank0_live;
+  assign f1_pred_live.itt_bank1      = itt_bank1_live;
+  assign f1_pred_live.itt_hit        = itt_hit_live;
+  assign f1_pred_live.itt_target     = itt_target_live;
+  assign f1_pred_live.itt_hist       = itt_hist_live;
+  assign f1_pred_live.backing_hit    = backing_win_hit_live;
+  assign f1_pred_live.backing_comp   = backing_win_comp_live;
+  assign f1_pred_live.backing_ret    = backing_win_ret_live;
+  assign f1_pred_live.backing_target = backing_win_target_live;
+
+  assign f1_pred                     = f1_pred_fresh_q ? f1_pred_live : f1_pred_hold_q;
+
   // ===========================================================================
-  // 64-bit Spanning Assembly
+  // F1: Tag Check, Boundary Walk, False-BTB Validation, and Window Packing
   // ===========================================================================
-  // At PC[1]=1, assemble the native candidate from the current word's upper
-  // half and the next word's lower half. RVC uses predecoded fields, so this
-  // candidate is a don't-care. Select by PC[1] alone for timing.
-  logic [31:0] assembled_instr;
-  logic [15:0] spanning_second_half;
-  // Served-window parity selects word W+1, where W = pc_reg[31:2].
-  // The coverage guard rejects windows that do not contain the needed word.
-  // Examples for fetch word F:
-  //
-  //  - F=W:   next word is i_instr[63:32], halfword [47:32].
-  //  - F=W+1: next word is i_instr[31:0],  halfword [15:0].
-  //
-  // Equal bank_sel_r and pc_reg[2] select [47:32]; unequal selects [15:0].
-  // For low BRAM, IMEM's window swap and this swap cancel: word W+1 is
-  // always in physical bank !pc_reg[2]. Read that bank directly for timing.
-  (* keep = "true" *)logic [15:0] spanning_second_half_high;
-  logic [15:0] spanning_second_half_low;
-  assign spanning_second_half_high = fetch_word_swapped_for_spanning ? i_instr_high[15:0] :
-                                                                        i_instr_high[47:32];
-  assign spanning_second_half_low = pc_reg[2] ? i_instr_low_by_parity[15:0] :
-                                                i_instr_low_by_parity[47:32];
-  assign spanning_second_half = i_instr_window_high ? spanning_second_half_high :
-                                                      spanning_second_half_low;
-`ifndef SYNTHESIS
-  // Sampled at the clock so the check sees settled values; a valid window has
-  // the two bank selects equal (checked in frost_rvfi_platform).
+  // Compare both providers' 62-bit served-word tags against f1_req_q.pc in
+  // parallel 3-bit-chunk LUT trees to keep carry chains and provider_q muxing
+  // off the F1 accept/resteer cone.
+  localparam int unsigned ServedWordBits = XLEN - 2;
+  localparam int unsigned TagChunkCount  = (ServedWordBits + 2) / 3;
+  localparam int unsigned TagGroupCount  = (TagChunkCount + 5) / 6;
+  (* keep = "true" *)logic [TagChunkCount-1:0] f1_tag_low_chunk;
+  (* keep = "true" *)logic [TagChunkCount-1:0] f1_tag_high_chunk;
+  (* keep = "true" *)logic [TagGroupCount-1:0] f1_tag_low_group;
+  (* keep = "true" *)logic [TagGroupCount-1:0] f1_tag_high_group;
+  for (genvar k = 0; k < TagChunkCount; k++) begin : gen_f1_tag_chunks
+    localparam int unsigned W = (ServedWordBits - 3 * k < 3) ? (ServedWordBits - 3 * k) : 3;
+    assign f1_tag_low_chunk[k]  = ~|(i_served_word_low[3*k+:W] ^ f1_req_q.pc[2+3*k+:W]);
+    assign f1_tag_high_chunk[k] = ~|(i_served_word_high[3*k+:W] ^ f1_req_q.pc[2+3*k+:W]);
+  end
+  for (genvar k = 0; k < TagGroupCount; k++) begin : gen_f1_tag_groups
+    localparam int unsigned W = (TagChunkCount - 6 * k < 6) ? (TagChunkCount - 6 * k) : 6;
+    assign f1_tag_low_group[k]  = &f1_tag_low_chunk[6*k+:W];
+    assign f1_tag_high_group[k] = &f1_tag_high_chunk[6*k+:W];
+  end
+  // Reduce each provider's 4-bit tag group independently of i_instr_valid,
+  // then select by provider once so i_instr_valid enters at the final gate.
+  logic f1_tag_match_low;
+  logic f1_tag_match_high;
+  logic f1_tag_match;
+  assign f1_tag_match_low = &f1_tag_low_group;
+  assign f1_tag_match_high = &f1_tag_high_group;
+  assign f1_tag_match = i_instr_pc_metadata_served_high ? f1_tag_match_high : f1_tag_match_low;
+
+  assign f1_accept_raw = f1_req_valid_q && i_instr_valid && f1_tag_match;
+  // collapsed_armed_q is only set after fetch_pa_valid was observed for this
+  // PC, so keep live u_immu translation valid off the F1 accept cone.
+  assign f1_collapsed_accept_raw = !f1_req_valid_q && collapsed_armed_q && !f0_stop_fetch &&
+      i_instr_valid && f1_tag_match;
+  assign f1_tag_resteer_raw = f1_req_valid_q && i_instr_valid && !f1_tag_match;
+
+  assign f1_accept = !any_redirect && f1_accept_raw;
+  assign f1_tag_resteer = !any_redirect && f1_tag_resteer_raw;
+  assign f1_collapsed_accept = !any_redirect && f1_collapsed_accept_raw;
+
+  // Extract the four halfwords and their predecode sideband fields from i_instr.
+  logic [15:0] hw_raw[4];
+  logic [3:0] hw_comp;
+  logic [3:0] hw_allows_s2;
+  logic [3:0] hw_s2_start_valid;
+  logic [3:0] hw_is_indirect;
+  logic [3:0] hw_is_control;
+  logic [1:0] hw_rvc_src_hot[4];
+  logic [4:0] hw_rvc_b24_20[4];
+  logic [2:0] hw_rvc_rs1_rest[4];
+  logic [22:0] hw_rvc_extra[4];
+  logic [3:0] hw_fault;
+  logic [3:0] hw_fault_page;
+
+  logic [SbWidth-1:0] sb_w0;
+  logic [SbWidth-1:0] sb_w1;
+  assign sb_w0 = i_instr_sideband[SbWidth-1:0];
+  assign sb_w1 = i_instr_sideband[2*SbWidth-1:SbWidth];
+
+  assign hw_raw[0] = i_instr[15:0];
+  assign hw_raw[1] = i_instr[31:16];
+  assign hw_raw[2] = i_instr[47:32];
+  assign hw_raw[3] = i_instr[63:48];
+
+  assign hw_comp[0] = sb_w0[riscv_pkg::ImemSbIsCompressedLo];
+  assign hw_comp[1] = sb_w0[riscv_pkg::ImemSbIsCompressedHi];
+  assign hw_comp[2] = sb_w1[riscv_pkg::ImemSbIsCompressedLo];
+  assign hw_comp[3] = sb_w1[riscv_pkg::ImemSbIsCompressedHi];
+
+  assign hw_allows_s2[0] = sb_w0[riscv_pkg::ImemSbAllowsSlot2AfterLo];
+  assign hw_allows_s2[1] = sb_w0[riscv_pkg::ImemSbAllowsSlot2AfterHi];
+  assign hw_allows_s2[2] = sb_w1[riscv_pkg::ImemSbAllowsSlot2AfterLo];
+  assign hw_allows_s2[3] = sb_w1[riscv_pkg::ImemSbAllowsSlot2AfterHi];
+
+  assign hw_s2_start_valid[0] = sb_w0[riscv_pkg::ImemSbSlot2StartValidLo];
+  assign hw_s2_start_valid[1] = sb_w0[riscv_pkg::ImemSbSlot2StartValidHi];
+  assign hw_s2_start_valid[2] = sb_w1[riscv_pkg::ImemSbSlot2StartValidLo];
+  assign hw_s2_start_valid[3] = sb_w1[riscv_pkg::ImemSbSlot2StartValidHi];
+
+  assign hw_is_indirect[0] = sb_w0[riscv_pkg::ImemSbIsIndirectLo];
+  assign hw_is_indirect[1] = sb_w0[riscv_pkg::ImemSbIsIndirectHi];
+  assign hw_is_indirect[2] = sb_w1[riscv_pkg::ImemSbIsIndirectLo];
+  assign hw_is_indirect[3] = sb_w1[riscv_pkg::ImemSbIsIndirectHi];
+
+  assign hw_rvc_src_hot[0] = sb_w0[riscv_pkg::ImemSbRvcSourceHotLoLsb+:2];
+  assign hw_rvc_src_hot[1] = sb_w0[riscv_pkg::ImemSbRvcSourceHotHiLsb+:2];
+  assign hw_rvc_src_hot[2] = sb_w1[riscv_pkg::ImemSbRvcSourceHotLoLsb+:2];
+  assign hw_rvc_src_hot[3] = sb_w1[riscv_pkg::ImemSbRvcSourceHotHiLsb+:2];
+
+  assign hw_rvc_b24_20[0] = sb_w0[riscv_pkg::ImemSbRvcBits24To20LoLsb+:5];
+  assign hw_rvc_b24_20[1] = sb_w0[riscv_pkg::ImemSbRvcBits24To20HiLsb+:5];
+  assign hw_rvc_b24_20[2] = sb_w1[riscv_pkg::ImemSbRvcBits24To20LoLsb+:5];
+  assign hw_rvc_b24_20[3] = sb_w1[riscv_pkg::ImemSbRvcBits24To20HiLsb+:5];
+
+  assign hw_rvc_rs1_rest[0] = sb_w0[riscv_pkg::ImemSbRvcRs1RestLoLsb+:3];
+  assign hw_rvc_rs1_rest[1] = sb_w0[riscv_pkg::ImemSbRvcRs1RestHiLsb+:3];
+  assign hw_rvc_rs1_rest[2] = sb_w1[riscv_pkg::ImemSbRvcRs1RestLoLsb+:3];
+  assign hw_rvc_rs1_rest[3] = sb_w1[riscv_pkg::ImemSbRvcRs1RestHiLsb+:3];
+
+  assign hw_rvc_extra[0] = sb_w0[riscv_pkg::ImemSbRvcExtraLoLsb+:23];
+  assign hw_rvc_extra[1] = sb_w0[riscv_pkg::ImemSbRvcExtraHiLsb+:23];
+  assign hw_rvc_extra[2] = sb_w1[riscv_pkg::ImemSbRvcExtraLoLsb+:23];
+  assign hw_rvc_extra[3] = sb_w1[riscv_pkg::ImemSbRvcExtraHiLsb+:23];
+
+  // Propagate launch-cycle spanning-branch fault vetoes into F1 word-0 fault
+  // purely from registered f1_req_q.span_veto (captured on both F0 launch and
+  // collapsed-lead arming) so live u_immu faults never enter F1, the parcel
+  // queue, or PD.
+  logic f1_fault0_eff;
+  assign f1_fault0_eff = i_instr_fault0 || f1_req_q.span_veto;
+  assign hw_fault = {i_instr_fault1, i_instr_fault1, f1_fault0_eff, f1_fault0_eff};
+  assign hw_fault_page = {
+    i_instr_fault1_page, i_instr_fault1_page, i_instr_fault0_page, i_instr_fault0_page
+  };
+
+  // Reuse predecoded hw_is_indirect (JALR / C.JR / C.JALR) so compressed
+  // control classification depends only on bits [15:13] and [1:0].
+  for (genvar h = 0; h < 4; h++) begin : gen_hw_ctrl
+    assign hw_is_control[h] = hw_comp[h] ?
+        (hw_is_indirect[h] ||
+         ((hw_raw[h][1:0] == 2'b01) && hw_raw[h][15] && (hw_raw[h][14] || hw_raw[h][13]))) :
+        ((hw_raw[h][6:4] == 3'b110) && (hw_raw[h][3:2] != 2'b10));
+  end
+
+  // Walk instruction boundaries directly from flop-only entry state.
+  // Because f1_btb_ok requires !f1_btb_fault (which guarantees word 0 did not
+  // fault, and word 1 did not fault when btb_pos >= 2), boundary validity at
+  // f1_btb_pos depends only on 6 inputs (f1_start_at_1, f1_btb_pos[1:0], and
+  // hw_comp[2:0]) and folds into one LUT6.
+  logic f1_start_off;
+  logic f1_is_span_tail;
+  logic f1_start_at_1;
+
+  assign f1_start_off    = f1_start_off_q;
+  assign f1_is_span_tail = f1_req_valid_q ? f1_req_q.span_tail : span_btb_valid_q;
+  assign f1_start_at_1   = f1_start_off || (!f1_is_span_tail && f1_carry_hi_q);
+
+  // Validate F0's registered fast-BTB prediction against actual instruction
+  // boundaries, size, control-flow opcode class, and fetch faults. Both normal
+  // F1 accepts and collapsed-lead accepts read from f1_req_q flops so F0's
+  // BTB/dir/RAS/IMMU lookup never chains into F1, the parcel queue, or PD.
+  logic f1_collapsed_btb_en;
+  logic f1_src_btb_taken;
+  logic f1_src_btb_is_span;
+  logic [1:0] f1_src_btb_pos;
+  logic f1_src_btb_comp;
+  logic [XLEN-1:0] f1_src_btb_target;
+
+  assign f1_collapsed_btb_en = !i_disable_branch_prediction && !btb_invalidate_active;
+  assign f1_src_btb_taken   = f1_req_valid_q ?
+      f1_req_q.btb_taken : (f1_req_q.btb_taken && f1_collapsed_btb_en);
+  assign f1_src_btb_is_span = f1_req_q.btb_is_span;
+  assign f1_src_btb_pos = f1_req_q.btb_pos;
+  assign f1_src_btb_comp = f1_req_q.btb_comp;
+  assign f1_src_btb_target = f1_req_q.btb_target;
+
+  logic [1:0] f1_btb_pos;
+  logic f1_btb_fault;
+  (* keep = "true" *) logic f1_btb_valid_start;
+  logic [15:0] btb_hw_raw;
+  logic btb_hw_comp;
+  logic btb_hw_indirect;
+  logic btb_ctrl_comp;
+  logic btb_ctrl_nat;
+  logic f1_btb_ok;
+  logic f1_btb_taken_raw;
+  logic f1_valid_btb_taken;
+  logic f1_false_btb;
+
+  assign f1_btb_pos = f1_src_btb_pos;
+  assign f1_btb_fault = f1_fault0_eff ||
+      (i_instr_fault1 && (f1_btb_pos[1] || (f1_btb_pos == 2'd1 && !hw_comp[1])));
+
+  always_comb begin
+    logic vs1_nf;
+    logic vs2_nf;
+    vs1_nf = f1_start_at_1 || hw_comp[0];
+    vs2_nf = vs1_nf ? hw_comp[1] : 1'b1;
+    unique case (f1_btb_pos)
+      2'd0:    f1_btb_valid_start = !f1_start_at_1;
+      2'd1:    f1_btb_valid_start = vs1_nf;
+      2'd2:    f1_btb_valid_start = vs2_nf;
+      default: f1_btb_valid_start = (vs1_nf && !hw_comp[1]) || (vs2_nf && hw_comp[2]);
+    endcase
+  end
+
+  // Pre-select the predicted halfword by registered f1_btb_pos so control-flow
+  // validation runs in three shallow LUT levels without chaining through all
+  // four hw_is_control cones.
+  assign btb_hw_raw = hw_raw[f1_btb_pos];
+  assign btb_hw_comp = hw_comp[f1_btb_pos];
+  assign btb_hw_indirect = hw_is_indirect[f1_btb_pos];
+  assign btb_ctrl_comp   = btb_hw_indirect ||
+      ((btb_hw_raw[1:0] == 2'b01) && btb_hw_raw[15] && (btb_hw_raw[14] || btb_hw_raw[13]));
+  assign btb_ctrl_nat = (btb_hw_raw[6:4] == 3'b110) && (btb_hw_raw[3:2] != 2'b10);
+  assign f1_btb_ok       = f1_btb_valid_start && (btb_hw_comp == f1_src_btb_comp) &&
+      (f1_src_btb_comp ? btb_ctrl_comp : btb_ctrl_nat) && !f1_btb_fault;
+
+  // Redirect-free, tag-match-free, and IMMU-free taken flag for parcel packing
+  // and push count. If a spanning branch's second word faults at F0, that next
+  // window carries fault=1 on hw[0], so drain clears btb_predicted_taken via
+  // s1_fault_hi / s2_fault when the 32-bit instruction assembles.
+  assign f1_btb_taken_raw = !f1_is_span_tail && f1_src_btb_taken && f1_btb_ok;
+  assign f1_valid_btb_taken = (f1_accept || f1_collapsed_accept) && f1_btb_taken_raw;
+
+  assign f1_false_btb_raw         =
+      f1_accept_raw && !f1_req_q.span_tail && f1_req_q.btb_taken && !f1_btb_ok;
+  assign f1_cancel_span_raw = f1_false_btb_raw && f1_req_q.btb_is_span;
+  assign f1_false_btb_resteer_raw = f1_false_btb_raw && !f1_req_q.btb_is_span;
+  assign f1_false_btb = !any_redirect && f1_false_btb_raw;
+  assign f1_cancel_span = !any_redirect && f1_cancel_span_raw;
+  assign f1_false_btb_resteer = !any_redirect && f1_false_btb_resteer_raw;
+  assign f1_span_tail_fault = f1_accept && f1_req_q.span_tail && f1_fault0_eff;
+
+  assign f1_collapsed_btb_steer_raw = !span_btb_valid_q &&
+      f1_req_q.btb_taken && !f1_req_q.btb_is_span && f1_collapsed_btb_en && f1_btb_ok;
+  assign f1_collapsed_btb_steer = f1_collapsed_accept && f1_collapsed_btb_steer_raw;
+  assign f1_collapsed_btb_span_raw = f1_collapsed_accept_raw && !span_btb_valid_q &&
+      f1_req_q.btb_taken && f1_req_q.btb_is_span && f1_collapsed_btb_en && f1_btb_ok;
+  assign f1_collapsed_btb_span = !any_redirect && f1_collapsed_btb_span_raw;
+  assign f1_collapsed_span_fire_raw = span_btb_valid_q && !i_instr_fault0 && !f1_req_q.span_veto;
+  assign f1_collapsed_span_fire = f1_collapsed_accept && f1_collapsed_span_fire_raw;
+
+  logic f1_false_btb_resteer_cond;
+  assign f1_false_btb_resteer_cond =
+      !f1_req_q.span_tail && f1_req_q.btb_taken && !f1_req_q.btb_is_span && !f1_btb_ok;
+  assign f1_resteer_raw = f1_req_valid_q && i_instr_valid &&
+      (!f1_tag_match || f1_false_btb_resteer_cond);
+  assign f1_resteer = !any_redirect && f1_resteer_raw;
+  assign f1_resteer_target = f1_tag_resteer_raw ?
+      f1_req_q.pc : {f1_req_q.pc[XLEN-1:2] + (XLEN - 2)'(2), 2'b00};
+  logic [riscv_pkg::BpDirIdxBits-3:0] f1_resteer_even_dir_p1;
+  assign f1_resteer_even_dir_p1 = f1_req_q.even_dir_idx + (riscv_pkg::BpDirIdxBits - 2)'(1);
+  assign f1_resteer_even_dir_idx = f1_tag_resteer_raw ?
+      f1_req_q.even_dir_idx : f1_resteer_even_dir_p1;
+
+  // F0 launches a new fetch when memory is valid, translation is ready, the
+  // parcel queue has headroom, and no redirect, resteer, or collapsed accept
+  // is taking this cycle. Express directly in terms of f1_tag_match and
+  // i_instr_valid to avoid chaining through f1_resteer_raw and collapsed accept.
+  assign f0_launch_raw = i_instr_valid && fetch_pa_valid && !f0_stop_fetch &&
+      (f1_req_valid_q ? (f1_tag_match && !f1_false_btb_resteer_cond) :
+                        !(collapsed_armed_q && f1_tag_match));
+  assign f0_launch = !any_redirect && f0_launch_raw;
+
+  // Next f1_carry_hi_q after an accepted window: set when a non-taken (or
+  // spanning-taken, in case W+2 faults and drops span_tail) non-faulting
+  // 32-bit instruction starts at hw[3] and extends into W+2:0.
+  logic valid_start_hw3;
+  always_comb begin
+    logic c0_f, c1_f, vs1_f, vs2_f;
+    c0_f = hw_comp[0] || f1_fault0_eff;
+    c1_f = hw_comp[1] || f1_fault0_eff;
+    vs1_f = f1_start_at_1 || c0_f;
+    vs2_f = vs1_f ? c1_f : 1'b1;
+    valid_start_hw3 = (vs1_f && !c1_f) || (vs2_f && hw_comp[2]);
+  end
+
+  logic f1_next_carry_hi;
+  assign f1_next_carry_hi = !f1_is_span_tail && (!f1_btb_taken_raw || f1_src_btb_is_span) &&
+      valid_start_hw3 && !hw_comp[3] && !i_instr_fault1;
+
+  // Build the four candidate parcels and pack them left-aligned for the queue.
+  // Use scalar packed structs rather than an unpacked array of structs so
+  // Yosys resolves every field select cleanly.
+  logic [3:0] f1_dir_taken;
+  assign f1_dir_taken = f1_req_q.dir_taken;
+
+  function automatic parcel_t make_parcel(
+      input logic [15:0] p_raw, input logic p_allows_s2, input logic p_s2_start,
+      input logic p_indirect, input logic p_ctrl, input logic [1:0] p_src_hot,
+      input logic [4:0] p_b24_20, input logic [2:0] p_rs1_rest, input logic [22:0] p_extra,
+      input logic [1:0] p_hw_idx, input logic p_fault, input logic p_fault_page, input logic p_dir,
+      input logic p_btb_taken, input logic p_bk_hit, input logic p_bk_comp, input logic p_bk_ret,
+      input logic [BackingTargetBits-1:0] p_bk_tgt);
+    parcel_t res;
+    res.parcel             = p_raw;
+    res.allows_slot2_after = p_allows_s2;
+    res.slot2_start_valid  = p_s2_start;
+    res.is_indirect        = p_indirect;
+    res.is_control         = p_ctrl;
+    res.rvc_source_hot     = p_src_hot;
+    res.rvc_bits24_20      = p_b24_20;
+    res.rvc_rs1_rest       = p_rs1_rest;
+    res.rvc_extra          = p_extra;
+    res.hw_in_win          = p_hw_idx;
+    res.fault              = p_fault;
+    res.fault_page         = p_fault_page;
+    res.bp_dir_taken       = p_dir;
+    res.btb_taken          = p_btb_taken;
+    res.backing_hit        = p_bk_hit;
+    res.backing_compressed = p_bk_comp;
+    res.backing_return     = p_bk_ret;
+    res.backing_target     = p_bk_tgt;
+    make_parcel            = res;
+  endfunction
+
+  parcel_t f1_raw_p0, f1_raw_p1, f1_raw_p2, f1_raw_p3;
+  assign f1_raw_p0 = make_parcel(
+      hw_raw[0],
+      hw_allows_s2[0],
+      hw_s2_start_valid[0],
+      hw_is_indirect[0],
+      hw_is_control[0],
+      hw_rvc_src_hot[0],
+      hw_rvc_b24_20[0],
+      hw_rvc_rs1_rest[0],
+      hw_rvc_extra[0],
+      2'd0,
+      hw_fault[0],
+      hw_fault_page[0],
+      f1_dir_taken[0],
+      f1_btb_taken_raw && (f1_btb_pos == 2'd0),
+      f1_pred.backing_hit[0],
+      f1_pred.backing_comp[0],
+      f1_pred.backing_ret[0],
+      f1_pred.backing_target[0]
+  );
+  assign f1_raw_p1 = make_parcel(
+      hw_raw[1],
+      hw_allows_s2[1],
+      hw_s2_start_valid[1],
+      hw_is_indirect[1],
+      hw_is_control[1],
+      hw_rvc_src_hot[1],
+      hw_rvc_b24_20[1],
+      hw_rvc_rs1_rest[1],
+      hw_rvc_extra[1],
+      2'd1,
+      hw_fault[1],
+      hw_fault_page[1],
+      f1_dir_taken[1],
+      f1_btb_taken_raw && (f1_btb_pos == 2'd1),
+      f1_pred.backing_hit[1],
+      f1_pred.backing_comp[1],
+      f1_pred.backing_ret[1],
+      f1_pred.backing_target[1]
+  );
+  assign f1_raw_p2 = make_parcel(
+      hw_raw[2],
+      hw_allows_s2[2],
+      hw_s2_start_valid[2],
+      hw_is_indirect[2],
+      hw_is_control[2],
+      hw_rvc_src_hot[2],
+      hw_rvc_b24_20[2],
+      hw_rvc_rs1_rest[2],
+      hw_rvc_extra[2],
+      2'd2,
+      hw_fault[2],
+      hw_fault_page[2],
+      f1_dir_taken[2],
+      f1_btb_taken_raw && (f1_btb_pos == 2'd2),
+      f1_pred.backing_hit[2],
+      f1_pred.backing_comp[2],
+      f1_pred.backing_ret[2],
+      f1_pred.backing_target[2]
+  );
+  assign f1_raw_p3 = make_parcel(
+      hw_raw[3],
+      hw_allows_s2[3],
+      hw_s2_start_valid[3],
+      hw_is_indirect[3],
+      hw_is_control[3],
+      hw_rvc_src_hot[3],
+      hw_rvc_b24_20[3],
+      hw_rvc_rs1_rest[3],
+      hw_rvc_extra[3],
+      2'd3,
+      hw_fault[3],
+      hw_fault_page[3],
+      f1_dir_taken[3],
+      f1_btb_taken_raw && (f1_btb_pos == 2'd3),
+      f1_pred.backing_hit[3],
+      f1_pred.backing_comp[3],
+      f1_pred.backing_ret[3],
+      f1_pred.backing_target[3]
+  );
+
+  logic f1_push_valid;
+  logic [2:0] f1_push_count;
+  logic [3:0][ParcelBits-1:0] f1_push_parcels;
+  logic [1:0] btb_end_hw;
+  logic [2:0] f1_push_count_taken;
+  logic [2:0] f1_push_count_notaken;
+  // Pass redirect-free push valid to u_parcel_queue; u_parcel_queue resets
+  // pointers and counts synchronously when i_flush (pqueue_flush) fires.
+  assign f1_push_valid = i_instr_valid && f1_tag_match &&
+      (f1_req_valid_q || (collapsed_armed_q && !f0_stop_fetch));
+  // When f1_btb_taken_raw holds, f1_src_btb_comp matches hw_comp[f1_btb_pos],
+  // so both candidate push counts depend only on registered F1 state.
+  assign btb_end_hw = f1_src_btb_pos + (f1_src_btb_comp ? 2'd0 : 2'd1);
+  assign f1_push_count_taken = {1'b0, btb_end_hw} - {2'b00, f1_start_off} + 3'd1;
+  assign f1_push_count_notaken = f1_is_span_tail ? 3'd1 : (f1_start_off ? 3'd3 : 3'd4);
+  assign f1_push_count = (f1_btb_taken_raw && !f1_src_btb_is_span) ?
+      f1_push_count_taken : f1_push_count_notaken;
+
+  // Pass unshifted raw parcels to u_parcel_queue and fold f1_start_off into
+  // the queue's bank-write and bypass index muxes.
+  assign f1_push_parcels[0] = f1_raw_p0;
+  assign f1_push_parcels[1] = f1_raw_p1;
+  assign f1_push_parcels[2] = f1_raw_p2;
+  assign f1_push_parcels[3] = f1_raw_p3;
+
+  // Build window metadata record in window-word order (w0 = W, w1 = W+1).
+  meta_t f1_push_meta;
+  logic f1_w0_odd;
+  logic [riscv_pkg::TageLookupHiBit:2] f1_tage_w0_tag;
+  logic [riscv_pkg::TageLookupHiBit:2] f1_tage_w1_tag;
+  logic [1:0] f1_tage_cov;
+  riscv_pkg::tage_lookup_t f1_tage_w0;
+  riscv_pkg::tage_lookup_t f1_tage_w1;
+
+  assign f1_w0_odd      = f1_win_pc[2];
+  assign f1_tage_w0_tag = f1_win_pc[riscv_pkg::TageLookupHiBit:2];
+  assign f1_tage_w1_tag = (riscv_pkg::TageLookupHiBit - 1)'(f1_tage_w0_tag + 1'b1);
+  assign f1_tage_cov[0] = (f1_pred.tage_word == f1_tage_w0_tag);
+  assign f1_tage_cov[1] = (f1_pred.tage_word_next == f1_tage_w1_tag);
+  assign f1_tage_w0     = f1_w0_odd ? f1_pred.tage_bank1 : f1_pred.tage_bank0;
+  assign f1_tage_w1     = f1_w0_odd ? f1_pred.tage_bank0 : f1_pred.tage_bank1;
+
+  always_comb begin
+    f1_push_meta.word0_pc = f1_win_pc[XLEN-1:2];
+    f1_push_meta.word1_pc = f1_win_pc[XLEN-1:2] + (XLEN - 2)'(1);
+    f1_push_meta.btb_target_hi = f1_src_btb_target[XLEN-1:1];
+    f1_push_meta.ras_ckpt_tos = f1_eff_ras_ckpt_tos;
+    f1_push_meta.ras_ckpt_cnt = f1_eff_ras_ckpt_cnt;
+    f1_push_meta.ras_ckpt_top = f1_eff_ras_ckpt_top;
+    f1_push_meta.tage_cov = f1_tage_cov;
+    f1_push_meta.tage_w0 = f1_tage_w0;
+    f1_push_meta.tage_w1 = f1_tage_w1;
+    f1_push_meta.itt_w0 = f1_w0_odd ? f1_pred.itt_bank1 : f1_pred.itt_bank0;
+    f1_push_meta.itt_w1 = f1_w0_odd ? f1_pred.itt_bank0 : f1_pred.itt_bank1;
+    f1_push_meta.itt_hit[0]    =
+        f1_tage_cov[0] && (f1_w0_odd ? f1_pred.itt_hit[1] : f1_pred.itt_hit[0]);
+    f1_push_meta.itt_hit[1]    =
+        f1_tage_cov[1] && (f1_w0_odd ? f1_pred.itt_hit[0] : f1_pred.itt_hit[1]);
+    f1_push_meta.itt_target[0] = f1_w0_odd ? f1_pred.itt_target[1] : f1_pred.itt_target[0];
+    f1_push_meta.itt_target[1] = f1_w0_odd ? f1_pred.itt_target[0] : f1_pred.itt_target[1];
+    f1_push_meta.itt_hist = f1_pred.itt_hist;
+  end
+
+  // Provider claim & replay handshakes (no stall replay in decoupled front end).
+  assign o_fetch_live_claim = !any_redirect && f1_push_valid && !f0_self_loop;
+  assign o_fetch_replay_consume = 1'b0;
+
+  // ===========================================================================
+  // F0/F1 Pipeline State Registers
+  // ===========================================================================
+  // Keep wide payload registers (f1_pred_hold_q, f1_req_q, span_btb_pending_q)
+  // in separate always_ff blocks with shallow enables so tag-match and redirect
+  // trees never drive hundreds of clock-enable pins.
   always_ff @(posedge i_clk) begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
-            {i_instr, i_instr_bank_sel_r, pc_reg[2], spanning_second_half}
-        )) begin
-      p_spanning_second_half_exact :
-      assert (spanning_second_half ==
-              (fetch_word_swapped_for_spanning ? i_instr[15:0] : i_instr[47:32]));
-      // Physical-bank selection must match buffered or window data.
-      p_current_word_exact :
-      assert (effective_instr == (use_instr_buffer ? instr_buffer :
-                                  ((i_instr_bank_sel_r ^ pc_reg[2]) ? i_instr[63:32] :
-                                                                     i_instr[31:0])));
+    if (i_pipeline_ctrl.reset) begin
+      f1_req_valid_q      <= 1'b0;
+      span_btb_valid_q    <= 1'b0;
+      f1_carry_hi_q       <= 1'b0;
+      f1_pred_fresh_q     <= 1'b0;
+      collapsed_armed_q   <= 1'b0;
+      f1_resteer_nopred_q <= 1'b0;
+    end else if (any_redirect) begin
+      f1_req_valid_q      <= 1'b0;
+      span_btb_valid_q    <= 1'b0;
+      f1_carry_hi_q       <= 1'b0;
+      f1_pred_fresh_q     <= 1'b0;
+      collapsed_armed_q   <= 1'b0;
+      f1_resteer_nopred_q <= 1'b0;
+    end else if (f1_resteer_raw) begin
+      f1_req_valid_q      <= 1'b0;
+      span_btb_valid_q    <= f1_tag_resteer_raw && (f1_req_q.span_tail || f1_req_q.span_veto);
+      f1_pred_fresh_q     <= 1'b0;
+      collapsed_armed_q   <= 1'b0;
+      f1_resteer_nopred_q <= f1_tag_resteer_raw;
+      if (f1_false_btb_resteer_raw) begin
+        f1_carry_hi_q <= f1_next_carry_hi;
+      end
+    end else if (f0_launch_raw) begin
+      f1_req_valid_q      <= 1'b1;
+      f1_pred_fresh_q     <= 1'b1;
+      collapsed_armed_q   <= 1'b0;
+      f1_resteer_nopred_q <= 1'b0;
+      span_btb_valid_q    <= f0_btb_valid && btb_is_span;
+      if (f1_accept_raw) begin
+        f1_carry_hi_q <= f1_next_carry_hi;
+      end
+    end else if (f1_collapsed_accept_raw) begin
+      f1_req_valid_q      <= 1'b0;
+      f1_pred_fresh_q     <= 1'b0;
+      collapsed_armed_q   <= 1'b0;
+      f1_resteer_nopred_q <= 1'b0;
+      f1_carry_hi_q       <= f1_next_carry_hi;
+      span_btb_valid_q    <= f1_collapsed_btb_span_raw;
+    end else begin
+      if (f1_accept_raw) begin
+        f1_req_valid_q  <= 1'b0;
+        f1_pred_fresh_q <= 1'b0;
+        f1_carry_hi_q   <= f1_next_carry_hi;
+        if (f1_cancel_span_raw) span_btb_valid_q <= 1'b0;
+      end else if (f1_req_valid_q && !i_instr_valid) begin
+        if (f1_pred_fresh_q) begin
+          f1_pred_fresh_q <= 1'b0;
+        end
+      end else if (!f1_req_valid_q && !i_instr_valid && fetch_pa_valid && !f0_stop_fetch) begin
+        collapsed_armed_q <= 1'b1;
+        f1_pred_fresh_q   <= 1'b1;
+      end else if (!f1_req_valid_q && i_instr_valid && f1_pred_fresh_q) begin
+        f1_pred_fresh_q <= 1'b0;
+      end
     end
   end
-`endif
-  assign assembled_instr = pc_reg[1] ?
-      {spanning_second_half, effective_instr[31:16]} : effective_instr;
 
-  // Low PC + offset candidates for native B-type and C.BEQZ/C.BNEZ.
-  // pd_target_candidate selects the low, high, or replayed operands inside
-  // the adder for timing. They must match the packet's PC and instruction.
+  // Capture live synchronous predictor outputs whenever f1_pred_fresh_q is
+  // asserted so the hold latch is always valid if the next cycle stalls on a
+  // miss. Omit synchronous reset on data-only payload flops.
+  always_ff @(posedge i_clk) begin
+    if (f1_pred_fresh_q) begin
+      f1_pred_hold_q <= f1_pred_live;
+    end
+  end
+
+  // Load F1 request payload on F0 launch or collapsed-lead arming without
+  // gating on tag-match, resteer, or redirect (every non-launch cycle where
+  // i_instr_valid is high clears both f1_req_valid_q and collapsed_armed_q).
+  (* max_fanout = 48 *) logic f1_req_data_we;
+  assign f1_req_data_we = fetch_pa_valid && !f0_stop_fetch && (i_instr_valid || !f1_req_valid_q);
+
+  // Reset only the small control qualifiers; omit reset on wide data fields.
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      f1_start_off_q              <= 1'b0;
+      f1_req_q.span_veto          <= 1'b0;
+      f1_req_q.span_tail          <= 1'b0;
+      f1_req_q.btb_taken          <= 1'b0;
+      f1_req_q.btb_is_span        <= 1'b0;
+      f1_req_q.btb_is_call        <= 1'b0;
+      f1_req_q.btb_is_return      <= 1'b0;
+      f1_req_q.ras_ckpt_from_live <= 1'b0;
+    end else if (f1_req_data_we) begin
+      f1_start_off_q              <= pc[1];
+      f1_req_q.span_veto          <= f0_span_fault_veto;
+      f1_req_q.span_tail          <= i_instr_valid && f0_span_btb_fire;
+      f1_req_q.btb_taken          <= f0_btb_valid;
+      f1_req_q.btb_is_span        <= f0_btb_valid && btb_is_span;
+      f1_req_q.btb_is_call        <= btb_is_call;
+      f1_req_q.btb_is_return      <= btb_is_return;
+      f1_req_q.ras_ckpt_from_live <= ras_restore_pure_pop_q;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (f1_req_data_we) begin
+      f1_req_q.pc               <= pc;
+      f1_req_q.even_dir_idx     <= pc_even_dir_idx;
+      f1_req_q.btb_pos          <= btb_taken_pos;
+      f1_req_q.btb_comp         <= btb_compressed;
+      f1_req_q.btb_target       <= f0_btb_eff_target;
+      f1_req_q.btb_even_dir_idx <= f0_btb_even_dir_idx;
+      f1_req_q.btb_link         <= f0_btb_link;
+      f1_req_q.btb_link_cached  <= f0_btb_link_cached;
+      f1_req_q.dir_taken        <= dir_taken_f0;
+      f1_req_q.ras_ckpt_tos     <= eff_ras_tos;
+      f1_req_q.ras_ckpt_cnt     <= eff_ras_cnt;
+      f1_req_q.ras_ckpt_top     <= eff_ras_top;
+    end
+  end
+
+  // Load span_btb_pending_q whenever no spanning target is currently held
+  // (and no in-flight span_tail/span_veto request might still tag-resteer and
+  // re-arm span_btb_valid_q), or when a held spanning target is being
+  // cancelled at F1. Spanning branches always reside at position 3 (word W+1
+  // upper halfword, 32-bit), so the F0 arm reads word 1 directly from
+  // u_fetch_btb_2w and {pc_word_p2, 2'b10} without waiting on BTB tag compare,
+  // tier check, or f0_launch.
+  (* max_fanout = 48 *) logic span_btb_pending_we;
+  assign span_btb_pending_we =
+      (!span_btb_valid_q &&
+       !(f1_req_valid_q && (f1_req_q.span_tail || f1_req_q.span_veto) && !f1_accept_raw)) ||
+      f1_cancel_span_raw;
+
+  always_ff @(posedge i_clk) begin
+    if (span_btb_pending_we) begin
+      if (f1_collapsed_accept_raw) begin
+        span_btb_pending_q.target       <= f1_req_q.btb_target;
+        span_btb_pending_q.even_dir_idx <= f1_req_q.btb_even_dir_idx;
+        span_btb_pending_q.is_call      <= f1_req_q.btb_is_call;
+        span_btb_pending_q.is_return    <= f1_req_q.btb_is_return;
+        span_btb_pending_q.link         <= f1_req_q.btb_link;
+        span_btb_pending_q.link_cached  <= f1_req_q.btb_link_cached;
+      end else begin
+        span_btb_pending_q.target       <= btb_w1_target;
+        span_btb_pending_q.even_dir_idx <= btb_w1_even_dir_idx;
+        span_btb_pending_q.is_call      <= btb_w1_is_call;
+        span_btb_pending_q.is_return    <= btb_w1_is_return;
+        span_btb_pending_q.link         <= {pc_word_p2, 2'b10};
+        span_btb_pending_q.link_cached  <= pc_p2_cached;
+      end
+    end
+  end
+
+  // ===========================================================================
+  // Parcel Queue (16 halfwords + 8 window metadata entries, 0-cycle bypass)
+  // ===========================================================================
+  logic [2:0] q_pop_count;
+  logic [4:0] q_avail;
+  logic [3:0] q_avail_ge;
+  logic [3:0] q_count_ge;
+  logic [3:0] q_avail_ge_drain;
+  logic [3:0][ParcelBits-1:0] q_view_raw;
+  logic [3:0] q_view_last;
+  logic [1:0] q_ring_last;
+  logic q_count_eq1;
+  logic q_count_ge2;
+  logic [MetaBits-1:0] q_meta0_raw;
+  logic [MetaBits-1:0] q_meta1_raw;
+
+  fetch_parcel_queue #(
+      .PARCEL_WIDTH(ParcelBits),
+      .META_WIDTH(MetaBits),
+      .DEPTH(16),
+      .META_DEPTH(8),
+      .STOP_PARCEL_THRESH(8),
+      .STOP_META_THRESH(7)
+  ) u_parcel_queue (
+      .i_clk,
+      .i_rst(i_pipeline_ctrl.reset),
+      .i_flush(pqueue_flush),
+      .i_push_valid(f1_push_valid),
+      .i_push_count(f1_push_count),
+      .i_push_parcels(f1_push_parcels),
+      .i_push_shift(f1_start_off),
+      .i_push_meta(f1_push_meta),
+      .i_pop_count(q_pop_count),
+      .o_avail(q_avail),
+      .o_avail_ge(q_avail_ge),
+      .o_count_ge(q_count_ge),
+      .o_view_parcels(q_view_raw),
+      .o_view_last(q_view_last),
+      .o_ring_last(q_ring_last),
+      .o_count_eq1(q_count_eq1),
+      .o_count_ge2(q_count_ge2),
+      .o_meta0(q_meta0_raw),
+      .o_meta1(q_meta1_raw),
+      .o_stop_fetch(q_stop_fetch)
+  );
+
+  // Derive drain availability from registered occupancy and f1_push_valid
+  // without waiting for f1_push_count: a validated BTB hit always pushes all
+  // halfwords through the end of that control instruction (stopping slot 2 via
+  // allows_slot2_after), so push truncation never shortens a valid slot-1 or
+  // pairable slot-2 instruction.
+  assign q_avail_ge_drain[0] = q_count_ge[0] || f1_push_valid;
+  assign q_avail_ge_drain[1] = q_count_ge[1] ||
+      (f1_push_valid && (f1_is_span_tail ? q_count_ge[0] : 1'b1));
+  assign q_avail_ge_drain[2] = q_count_ge[2] ||
+      (f1_push_valid && (f1_is_span_tail ? q_count_ge[1] : 1'b1));
+  assign q_avail_ge_drain[3] = q_count_ge[3] ||
+      (f1_push_valid && (f1_is_span_tail ? q_count_ge[2] : (q_count_ge[0] || !f1_start_off)));
+
+  parcel_t view0, view1, view2, view3;
+  meta_t meta0;
+  meta_t meta1;
+  assign view0 = q_view_raw[0];
+  assign view1 = q_view_raw[1];
+  assign view2 = q_view_raw[2];
+  assign view3 = q_view_raw[3];
+  assign meta0 = q_meta0_raw;
+  assign meta1 = q_meta1_raw;
+
+  // ===========================================================================
+  // Drain: Slot 1 & Slot 2 Alignment, Pairing, Expansion, and PD Targets
+  // ===========================================================================
   function automatic logic [riscv_pkg::PdTargetSplit-1:0] native_branch_imm_low(
       input logic [31:0] instr);
     native_branch_imm_low = {instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};
   endfunction
+
   function automatic logic [riscv_pkg::PdTargetSplit-1:0] compressed_branch_imm_low(
       input logic [15:0] parcel);
     compressed_branch_imm_low = {
@@ -1849,1577 +1789,617 @@ module if_stage #(
       1'b0
     };
   endfunction
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_target_native_low;
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_target_compressed_low;
-  logic [1:0] pd_target_native_high_select;
-  logic [1:0] pd_target_compressed_high_select;
-  // Dedicated saved operands avoid stall_capture_reg's live-input mux.
-  // Match the instruction and PC capture/clear conditions so replay selects
-  // the same operands as the packet.
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_target_native_imm_saved_q;
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_target_compressed_imm_saved_q;
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_target_pc_low_saved_q;
-  logic [XLEN-1:0] instruction_pc;
-  always_ff @(posedge i_clk) begin
-    if (flush_for_c_ext_safe) begin
-      pd_target_native_imm_saved_q     <= '0;
-      pd_target_compressed_imm_saved_q <= '0;
-      pd_target_pc_low_saved_q         <= '0;
-    end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      pd_target_native_imm_saved_q     <= native_branch_imm_low(assembled_instr);
-      pd_target_compressed_imm_saved_q <= compressed_branch_imm_low(raw_parcel);
-      pd_target_pc_low_saved_q         <= instruction_pc[riscv_pkg::PdTargetSplit-1:0];
-    end
-  end
-  (* dont_touch = "yes" *) pd_target_candidate #(
-      .SPLIT(riscv_pkg::PdTargetSplit)
-  ) u_pd_target_native_candidate (
-      .i_pc_low       (pc_reg[riscv_pkg::PdTargetSplit-1:0]),
-      .i_pc_low_saved (pd_target_pc_low_saved_q),
-      .i_imm_low_lo   (native_branch_imm_low(effective_instr)),
-      .i_imm_low_hi   (native_branch_imm_low({spanning_second_half, effective_instr[31:16]})),
-      .i_imm_low_saved(pd_target_native_imm_saved_q),
-      .i_pc_high      (pc_reg[1]),
-      .i_replay       (replay_saved_if_outputs),
-      .o_target_low   (pd_target_native_low),
-      .o_high_select  (pd_target_native_high_select)
-  );
-  (* dont_touch = "yes" *) pd_target_candidate #(
-      .SPLIT(riscv_pkg::PdTargetSplit)
-  ) u_pd_target_compressed_candidate (
-      .i_pc_low       (pc_reg[riscv_pkg::PdTargetSplit-1:0]),
-      .i_pc_low_saved (pd_target_pc_low_saved_q),
-      .i_imm_low_lo   (compressed_branch_imm_low(effective_instr[15:0])),
-      .i_imm_low_hi   (compressed_branch_imm_low(effective_instr[31:16])),
-      .i_imm_low_saved(pd_target_compressed_imm_saved_q),
-      .i_pc_high      (pc_reg[1]),
-      .i_replay       (replay_saved_if_outputs),
-      .o_target_low   (pd_target_compressed_low),
-      .o_high_select  (pd_target_compressed_high_select)
-  );
-  assign o_from_if_to_pd.pd_target_native_low = pd_target_native_low;
-  assign o_from_if_to_pd.pd_target_native_high_select = pd_target_native_high_select;
-  assign o_from_if_to_pd.pd_target_compressed_low = pd_target_compressed_low;
-  assign o_from_if_to_pd.pd_target_compressed_high_select = pd_target_compressed_high_select;
 
-`ifndef SYNTHESIS
-  // Saved candidate operands and packet history are checked after reset.
-  always_comb begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
-            {
-              o_from_if_to_pd.program_counter,
-              o_from_if_to_pd.effective_instr,
-              o_from_if_to_pd.raw_parcel,
-              pd_target_native_low,
-              pd_target_compressed_low,
-              pd_target_native_high_select,
-              pd_target_compressed_high_select
-            }
-        )) begin
-      p_if_pd_target_candidates_exact :
-      assert ({pd_target_native_high_select[1], pd_target_native_high_select[0],
-               pd_target_native_low} ==
-              {o_from_if_to_pd.effective_instr[31],
-               (riscv_pkg::PdTargetSplit + 1)'(
-                   o_from_if_to_pd.program_counter[riscv_pkg::PdTargetSplit-1:0] +
-                   native_branch_imm_low(
-          o_from_if_to_pd.effective_instr
-      ))} && {pd_target_compressed_high_select[1], pd_target_compressed_high_select[0],
-              pd_target_compressed_low} ==
-          {o_from_if_to_pd.raw_parcel[12], (riscv_pkg::PdTargetSplit + 1)
-           '(o_from_if_to_pd.program_counter[riscv_pkg::PdTargetSplit-1:0] +
-             compressed_branch_imm_low(
-          o_from_if_to_pd.raw_parcel
-      ))});
-    end
-  end
-`endif
+  // ---- Slot 1 ----
+  parcel_t s1_p;
+  meta_t   s1_m;
+  assign s1_p = view0;
+  assign s1_m = meta0;
 
-  // Select {rs2[1], rs1[2:1]} from the RVC sideband or assembled native word.
-  // Slot 2's fixed candidates make this choice before their position mux.
-  logic [2:0] source_hot_predecoded_live;
-  logic [2:0] source_hot_predecoded_2_live;
-  logic [2:0] source_hot_predecoded_saved;
-  logic [2:0] source_hot_predecoded_2_saved;
-  assign source_hot_predecoded_live = sel_compressed ?
-      rvc_source_hot : {assembled_instr[21], assembled_instr[17:16]};
-  assign source_hot_predecoded_2_live = source_hot_2;
-  // Slot 1's instruction bits [24:20] by the same construction: RVC values
-  // come from the sideband, so PD's rs2 path has no decompressor.
-  logic [ 4:0] bits24_20_predecoded_live;
-  logic [ 2:0] rs1_rest_predecoded_live;
-  logic [ 4:0] bits24_20_predecoded_saved;
-  logic [ 2:0] rs1_rest_predecoded_saved;
-  logic [22:0] rvc_extra_saved;
-  logic [ 4:0] bits24_20_predecoded_2_saved;
-  logic [ 2:0] rs1_rest_predecoded_2_saved;
-  assign bits24_20_predecoded_live = sel_compressed ? rvc_bits24_20 : assembled_instr[24:20];
-  assign rs1_rest_predecoded_live = sel_compressed ? rvc_rs1_rest :
-      {assembled_instr[19:18], assembled_instr[15]};
+  logic s1_comp;
+  logic s1_fault_lo;
+  logic s1_fault_hi;
+  logic s1_fault;
+  logic s1_fault_page;
+  logic s1_need_2;
+  logic s1_have_bytes;
+  logic s1_valid_raw;
+  logic s1_valid;
 
-  // Capture on stall entry and mux only at the packet output, for timing.
-  always_ff @(posedge i_clk) begin
-    if (flush_for_c_ext_safe) begin
-      source_hot_predecoded_saved   <= '0;
-      source_hot_predecoded_2_saved <= '0;
-      bits24_20_predecoded_saved    <= '0;
-      rs1_rest_predecoded_saved    <= '0;
-      rvc_extra_saved <= '0;
-      bits24_20_predecoded_2_saved  <= '0;
-      rs1_rest_predecoded_2_saved  <= '0;
-    end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      source_hot_predecoded_saved   <= source_hot_predecoded_live;
-      source_hot_predecoded_2_saved <= source_hot_predecoded_2_live;
-      bits24_20_predecoded_saved    <= bits24_20_predecoded_live;
-      rs1_rest_predecoded_saved    <= rs1_rest_predecoded_live;
-      rvc_extra_saved <= rvc_extra;
-      bits24_20_predecoded_2_saved  <= bits24_20_2;
-      rs1_rest_predecoded_2_saved  <= rs1_rest_2;
-    end
-  end
+  assign s1_comp       = (s1_p.parcel[1:0] != 2'b11);
+  assign s1_fault_lo   = s1_p.fault;
+  assign s1_fault_hi   = !s1_fault_lo && !s1_comp && view1.fault;
+  assign s1_fault      = s1_fault_lo || s1_fault_hi;
+  assign s1_fault_page = s1_fault_lo ? s1_p.fault_page : view1.fault_page;
+  assign s1_need_2     = !s1_fault_lo && !s1_comp;
+  assign s1_have_bytes = s1_need_2 ? q_avail_ge_drain[1] : q_avail_ge_drain[0];
+  assign s1_valid_raw  = !i_fetch_trap_hold && s1_have_bytes;
+  assign s1_valid      = !pqueue_flush && s1_valid_raw;
 
-`ifndef SYNTHESIS
-  // assembled_instr must match the sideband-qualified reference whenever the
-  // native value is used. For RVC the packet uses raw_parcel, so this 32-bit
-  // value is a don't-care.
-  logic [31:0] assembled_instr_legacy;
-  always_comb begin
-    if (pc_reg[1] && !is_compressed) begin
-      assembled_instr_legacy = {spanning_second_half, effective_instr[31:16]};
-    end else begin
-      assembled_instr_legacy = effective_instr;
-    end
+  logic [XLEN-1:0] s1_pc;
+  logic [31:0] s1_instr;
+  assign s1_pc    = {s1_p.hw_in_win[1] ? s1_m.word1_pc : s1_m.word0_pc, s1_p.hw_in_win[0], 1'b0};
+  assign s1_instr = {view1.parcel, s1_p.parcel};
 
-    if (!$isunknown(
-            {pc_reg[1], is_compressed, spanning_second_half, effective_instr}
-        ) && !is_compressed) begin
-      p_native_assembly_matches_legacy : assert (assembled_instr == assembled_instr_legacy);
-    end
-  end
-`endif
+  logic [2:0] s1_source_hot;
+  logic [4:0] s1_bits24_20;
+  logic [2:0] s1_rs1_rest;
+  assign s1_source_hot = s1_comp ?
+      {s1_p.rvc_bits24_20[1], s1_p.rvc_source_hot} : {s1_instr[21], s1_instr[17:16]};
+  assign s1_bits24_20 = s1_comp ? s1_p.rvc_bits24_20 : s1_instr[24:20];
+  assign s1_rs1_rest = s1_comp ? s1_p.rvc_rs1_rest : {s1_instr[19:18], s1_instr[15]};
 
-  stall_capture_reg #(
-      .WIDTH(32)
-  ) u_assembled_instr_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(assembled_instr),
-      .o_data(assembled_instr_sc)
-  );
+  logic s1_btb_taken;
+  logic [XLEN-1:0] s1_btb_target;
+  assign s1_btb_taken  = s1_valid && s1_p.btb_taken && !s1_fault;
+  assign s1_btb_target = {s1_m.btb_target_hi, 1'b0};
 
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_sel_compressed_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(sel_compressed),
-      .o_data(sel_compressed_sc)
-  );
-
-  // Flush to a bubble, unlike stall_capture_reg's zero-filled payload.
-  always_ff @(posedge i_clk) begin
-    if (flush_for_c_ext_safe) begin
-      sel_nop_saved <= 1'b1;
-    end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      sel_nop_saved <= sel_nop;
-    end
-  end
-
-  // Reset C-extension state one cycle after either slot predicts. The
-  // slot-2 redirect bubble contains stale data; buffered state cannot survive.
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) prediction_reset_c_ext <= 1'b0;
-    else prediction_reset_c_ext <= prediction_used || slot2_prediction_used;
-  end
-
-`ifndef SYNTHESIS
-  // A slot-1 prediction never fires while slot 1 comes from the instruction
-  // buffer: prediction_common requires no registered stall and a clear buffer
-  // select, and with no registered stall the predictor's copy of the select
-  // (use_instr_buffer_for_coverage_timing) equals use_instr_buffer. A redirect
-  // therefore never needs to squash a fetch issued behind a buffered word.
-  always @(posedge i_clk) begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
-            {prediction_used, use_instr_buffer}
-        ))
-      p_no_prediction_from_buffered_word : assert (!(prediction_used && use_instr_buffer));
-  end
-`endif
-
-  // Saved IF outputs are replayed only when the stalled cycle carried a real,
-  // still-valid instruction.
-  assign replay_saved_if_outputs = if_stage_stall_registered &&
-                                   !flush_for_c_ext_safe &&
-                                   saved_values_valid &&
-                                   !sel_nop_saved;
-
-  // Replay supplies progress without a live window. PC and packet state
-  // must advance on release or the saved instruction would dispatch twice.
-  assign fetch_progress = i_instr_valid || replay_saved_if_outputs;
-  assign o_fetch_live_claim = i_instr_valid && !sel_nop && !if_stage_stall_registered;
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) o_fetch_replay_consume <= 1'b0;
-    else o_fetch_replay_consume <= replay_saved_if_outputs && !if_stage_stall;
-  end
-
-  // ===========================================================================
-  // Outputs to PD Stage
-  // ===========================================================================
-
-  assign o_pc = pc;
-
-  // Replay only real, still-valid saved packets.
-  assign o_from_if_to_pd.raw_parcel = replay_saved_if_outputs ? raw_parcel_sc : raw_parcel;
-  // Unused for slot 1: PD takes slot 1's illegal flag from the predecoded
-  // sideband (rvc_extra_predecoded), and decodes slot 1's conditional branches
-  // from raw_parcel and effective_instr.
-  assign o_from_if_to_pd.decomp_illegal = 1'b0;
-  assign o_from_if_to_pd.is_cond_branch = 1'b0;
-
-  assign o_from_if_to_pd.sel_nop = replay_saved_if_outputs ? sel_nop_saved : sel_nop;
-  assign o_from_if_to_pd.sel_compressed = replay_saved_if_outputs ? sel_compressed_sc :
-                                          sel_compressed;
-
-  // Pre-assembled instruction for PD stage (spanning already assembled in IF)
-  assign o_from_if_to_pd.effective_instr = replay_saved_if_outputs ? assembled_instr_sc :
-                                           assembled_instr;
-  assign o_from_if_to_pd.source_hot_predecoded =
-      replay_saved_if_outputs ? source_hot_predecoded_saved :
-                                source_hot_predecoded_live;
-  assign o_from_if_to_pd.bits24_20_predecoded =
-      replay_saved_if_outputs ? bits24_20_predecoded_saved : bits24_20_predecoded_live;
-  assign o_from_if_to_pd.rvc_extra_predecoded =
-      replay_saved_if_outputs ? rvc_extra_saved : rvc_extra;
-  assign o_from_if_to_pd.rs1_rest_predecoded =
-      replay_saved_if_outputs ? rs1_rest_predecoded_saved : rs1_rest_predecoded_live;
-
-  // Slot-1 fall-through PC for RAS pushes: instruction_pc + 2 for RVC,
-  // +4 for native. ID computes its own JAL/JALR link address.
-  logic [XLEN-1:0] link_address;
-
-  // Preserve the held instruction's size across flushes for the RAS link
-  // address. sel_compressed_sc clears on flush and would turn held RVC into
-  // a +4 link. Its packet consumers cannot replay after flush, because
-  // sel_nop_saved is set, so clearing their size is harmless.
-  logic is_compressed_for_link;
-  logic sel_compressed_for_link_sc;
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_sel_compressed_for_link_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(1'b0),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(sel_compressed),
-      .o_data(sel_compressed_for_link_sc)
-  );
-  assign is_compressed_for_link = sel_compressed_for_link_sc;
-
-  assign instruction_pc = pc_reg;
-  assign link_address = instruction_pc + (is_compressed_for_link ?
-                        riscv_pkg::PcIncrementCompressed : riscv_pkg::PcIncrement32bit);
-
-  stall_capture_reg #(
-      .WIDTH(XLEN)
-  ) u_instruction_pc_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(instruction_pc),
-      .o_data(instruction_pc_sc)
-  );
-
-  stall_capture_reg #(
-      .WIDTH(XLEN)
-  ) u_link_address_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(link_address),
-      .o_data(link_address_sc)
-  );
-
-  // Keep the instruction PC aligned with the same stall-replayed instruction
-  // data that PD consumes.
-  assign o_from_if_to_pd.program_counter = replay_saved_if_outputs ? instruction_pc_sc :
-                                           instruction_pc;
-
-  // ===========================================================================
-  // Fetch-fault tags
-  // ===========================================================================
-  // Map {fault, page} with the instruction bytes. The current word uses
-  // buffer flags when buffered, else window word 1 when bank parity is
-  // swapped and word 0 otherwise. The next word uses the opposite selection.
-  //
-  // A current-word fault takes priority for both slots. Slot 1 also faults
-  // on the next word when a native instruction starts in the upper parcel.
-  // Slot 2 checks the next word except when compressed in the current word's
-  // upper parcel. A native instruction straddling the two words sets
-  // fetch_fault_hi (xtval = PC + 2) for a next-word fault.
-  // Without translation, faults reflect PMA checks. Capture flags with the
-  // packet so replay preserves them.
-  assign cur_fault_pair = use_instr_buffer ? instr_buffer_fault :
-      (fetch_word_swapped_for_spanning ? {i_instr_fault1, i_instr_fault1_page} :
-                                         {i_instr_fault0, i_instr_fault0_page});
-  assign next_fault_pair = fetch_word_swapped_for_spanning ?
-      {i_instr_fault0, i_instr_fault0_page} : {i_instr_fault1, i_instr_fault1_page};
-
-  logic slot1_straddles;  // 32-bit slot 1 at the upper halfword: consumes the next word
-  assign slot1_straddles = pc_reg[1] && !is_compressed;
-  logic [2:0] fetch_fault_live;  // {fault, page, hi}
-  always_comb begin
-    if (cur_fault_pair[1]) fetch_fault_live = {1'b1, cur_fault_pair[0], 1'b0};
-    else if (slot1_straddles && next_fault_pair[1])
-      fetch_fault_live = {1'b1, next_fault_pair[0], 1'b1};
-    else fetch_fault_live = 3'b000;
-  end
-
-  logic [2:0] fetch_fault_sc;
-  stall_capture_reg #(
-      .WIDTH(3)
-  ) u_fetch_fault_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(fetch_fault_live),
-      .o_data(fetch_fault_sc)
-  );
-
-  logic [2:0] fetch_fault_effective;
-  assign fetch_fault_effective = replay_saved_if_outputs ? fetch_fault_sc : fetch_fault_live;
-  assign o_from_if_to_pd.fetch_fault = fetch_fault_effective[2];
-  assign o_from_if_to_pd.fetch_fault_page = fetch_fault_effective[1];
-  assign o_from_if_to_pd.fetch_fault_hi = fetch_fault_effective[0];
-
-`ifndef SYNTHESIS
-`ifndef FROST_RVFI_DII
-  // With translation off, a failed PMA check must set the fault flag of the
-  // packet PC. A permitted address can still report an external bus fault.
-  // Check whenever the packet is real, not replayed, and its current word
-  // came from the live window rather than the buffer. A straddle into an
-  // unmapped word is the one extra fault case, so it is excluded. TestRIG
-  // builds (hw/sim/frost_rvfi_dii.sv) drop instruction access faults on
-  // purpose, so the check does not apply there.
-  always_ff @(posedge i_clk) begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !i_fetch_translation_active &&
-        i_instr_valid && !sel_nop &&
-        !replay_saved_if_outputs && !use_instr_buffer && !slot1_straddles && !$isunknown(
-            {fetch_fault_live, pc_reg, i_instr_fault0, i_instr_fault1}
-        )) begin
-      p_bare_fetch_fault_matches_pma :
-      assert (riscv_pkg::pma_fetch_ok(pc_reg) || fetch_fault_live[2])
-      else
-        $error(
-            "if_stage: Bare fetch-fault tag %0d disagrees with PMA(pc_reg=%h)",
-            fetch_fault_live[2],
-            pc_reg
-        );
-    end
-  end
-`endif
-`endif
-
-  // ===========================================================================
-  // Backing BTB
-  // ===========================================================================
-  // The lookup reads the set of the fetch PC register's word through the
-  // tagged predictor's copy of o_pc. The next cycle compares the packet IF
-  // serves; a packet whose set was not read gets no hit. Replay keeps the
-  // result of the packet's first stalled cycle, like the packet fields.
-  // Training takes the BTB updates of JALs and JALRs, and a refresh, through
-  // a register, the entry of each PD redirect that the backing BTB served.
-  localparam int unsigned BackingIndexBits = $clog2(
-      riscv_pkg::BackingBtbEntries / riscv_pkg::BackingBtbWays
-  );
-  localparam int unsigned BackingTargetBits = riscv_pkg::PhysAddrBits - 1;
-  localparam int unsigned BackingResultBits = 6 + 2 * BackingTargetBits;
-  logic [1:0] backing_hit_live;
-  logic [1:0] backing_compressed_live;
-  logic [1:0] backing_return_live;
-  logic [1:0][BackingTargetBits-1:0] backing_target_live;
-  logic [1:0] backing_slot2_return_by_size_live;
-  logic [1:0][BackingTargetBits-1:0] backing_slot2_target_by_size_live;
-  logic backing_refresh_q;
-  logic [XLEN-1:0] backing_refresh_pc_q;
-  always_ff @(posedge i_clk) begin
-    backing_refresh_q <= i_pd_backing_refresh;
-    backing_refresh_pc_q <= i_pd_backing_refresh_pc;
-  end
-  backing_btb #(
-      .XLEN(XLEN)
-  ) u_backing_btb (
-      .i_clk,
-      .i_reset(i_pipeline_ctrl.reset),
-      .i_redirect(discard_fetch_request),
-      .i_lookup_index(pc_tage_lookup[BackingIndexBits+1:2]),
-      .i_packet_pc(pc_reg),
-      .i_packet_compressed(is_compressed),
-      .o_hit(backing_hit_live),
-      .o_compressed(backing_compressed_live),
-      .o_return(backing_return_live),
-      .o_target(backing_target_live),
-      .o_slot2_return_by_size(backing_slot2_return_by_size_live),
-      .o_slot2_target_by_size(backing_slot2_target_by_size_live),
-      .i_update(i_from_ex_comb.btb_update && i_from_ex_comb.btb_update_jump),
-      .i_update_pc(i_from_ex_comb.btb_update_pc),
-      .i_update_target(i_from_ex_comb.btb_update_target),
-      .i_update_compressed(i_from_ex_comb.btb_update_compressed),
-      .i_update_return(i_from_ex_comb.btb_update_return),
-      .i_refresh(backing_refresh_q),
-      .i_refresh_pc(backing_refresh_pc_q)
-  );
-
-  logic [BackingResultBits-1:0] backing_result_live;
-  logic [BackingResultBits-1:0] backing_result_sc;
-  assign backing_result_live = {
-    backing_hit_live, backing_compressed_live, backing_return_live, backing_target_live
+  logic [1:0] meta0_tage_pv;
+  logic [1:0] meta1_tage_pv;
+  assign meta0_tage_pv = {
+    meta0.tage_cov[1] && (|meta0.tage_w1.hit), meta0.tage_cov[0] && (|meta0.tage_w0.hit)
   };
-  stall_capture_reg #(
-      .WIDTH(BackingResultBits)
-  ) u_backing_result_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(backing_result_live),
-      .o_data(backing_result_sc)
-  );
-  assign {o_backing_hit, o_backing_compressed, o_backing_return, o_backing_target} =
-      replay_saved_if_outputs ? backing_result_sc : backing_result_live;
+  assign meta1_tage_pv = {
+    meta1.tage_cov[1] && (|meta1.tage_w1.hit), meta1.tage_cov[0] && (|meta1.tage_w0.hit)
+  };
 
-  // Slot 2's return type and target for each size of slot 1: the live
-  // result formed for that size, or during replay the captured slot-2 result
-  // for both sizes. With the packet's sel_compressed (is_compressed when
-  // live) as the select they are o_backing_return[1] and o_backing_target[1].
-  logic [1:0] backing_hit_sc;
-  logic [1:0] backing_compressed_sc;
-  logic [1:0] backing_return_sc;
-  logic [1:0][BackingTargetBits-1:0] backing_target_sc;
-  assign {backing_hit_sc, backing_compressed_sc, backing_return_sc, backing_target_sc} =
-      backing_result_sc;
-  for (genvar size = 0; size < 2; size++) begin : gen_backing_slot2_by_size
-    assign o_backing_slot2_return_by_size[size] = replay_saved_if_outputs ?
-        backing_return_sc[1] : backing_slot2_return_by_size_live[size];
-    assign o_backing_slot2_target_by_size[size] = replay_saved_if_outputs ?
-        backing_target_sc[1] : backing_slot2_target_by_size_live[size];
-  end
-`ifndef SYNTHESIS
-  always_comb begin
-    if (coverage_reset_seen_q && !$isunknown(
-            {
-              o_from_if_to_pd.sel_compressed,
-              o_backing_return[1],
-              o_backing_target[1],
-              o_backing_slot2_return_by_size,
-              o_backing_slot2_target_by_size
-            }
-        )) begin
-      p_backing_slot2_by_size_select :
-      assert ({o_backing_return[1], o_backing_target[1]} ==
-              {o_backing_slot2_return_by_size[o_from_if_to_pd.sel_compressed],
-               o_backing_slot2_target_by_size[o_from_if_to_pd.sel_compressed]});
-    end
-  end
-`endif
+  logic s1_tage_cov;
+  logic s1_tage_pred_valid;
+  riscv_pkg::tage_lookup_t s1_tage_lookup;
+  riscv_pkg::itt_lookup_t s1_itt_lookup;
+  logic s1_itt_hit;
+  logic [BackingTargetBits-1:0] s1_itt_target;
+  assign s1_tage_cov = s1_p.hw_in_win[1] ? s1_m.tage_cov[1] : s1_m.tage_cov[0];
+  assign s1_tage_pred_valid = s1_p.hw_in_win[1] ? meta0_tage_pv[1] : meta0_tage_pv[0];
+  assign s1_tage_lookup = s1_p.hw_in_win[1] ? s1_m.tage_w1 : s1_m.tage_w0;
+  assign s1_itt_lookup = s1_p.hw_in_win[1] ? s1_m.itt_w1 : s1_m.itt_w0;
+  assign s1_itt_hit     = s1_tage_cov && !s1_fault &&
+      (s1_p.hw_in_win[1] ? s1_m.itt_hit[1] : s1_m.itt_hit[0]);
+  assign s1_itt_target = s1_p.hw_in_win[1] ? s1_m.itt_target[1] : s1_m.itt_target[0];
 
-  // ===========================================================================
-  // Return Address Stack Operation and Recovery Point
-  // ===========================================================================
-  // Packets accepted by PD update the RAS: stalls, flushes, and PD redirects
-  // block their operations. Used predictions typed as calls push their link;
-  // returns pop; coroutine swaps do both. A taken instruction ends the
-  // bundle, so at most one slot operates on the stack. A backing BTB
-  // redirect's operation from PD takes the same registers below, in the
-  // redirect's first cycle, stall or not.
-  //
-  // No younger prediction may use the old stack top during an operation.
-  // Registered metadata, pending handoffs, and stall replay block live prediction;
-  // slot-2 prediction kills the slot-1 prediction; a collapsed-lead packet
-  // carries its own lookup.
-  //
-  // Both packets checkpoint the stack before their operation. Only a backing
-  // BTB redirect's operation changes the state during a stall, and the
-  // packet IF holds then is a wrong-path one that the redirect drops, so
-  // replay retains the original recovery point.
-  logic ras_packet_accepted;
-  logic ras_op_slot1;
-  logic ras_op_slot2;
-  logic [XLEN-1:0] slot2_link_address;
-  assign ras_packet_accepted = !if_stage_stall && !i_pipeline_ctrl.flush && !i_pd_redirect;
-  assign ras_op_slot1 = ras_packet_accepted && o_from_if_to_pd.btb_predicted_taken &&
-                        (slot1_packet_is_call || slot1_packet_is_return);
-  assign ras_op_slot2 = ras_packet_accepted && o_from_if_to_pd_2.btb_predicted_taken &&
-                        (slot2_packet_is_call || slot2_packet_is_return);
-  assign slot2_link_address = o_from_if_to_pd_2.program_counter +
-      (o_from_if_to_pd_2.sel_compressed ? riscv_pkg::PcIncrementCompressed :
-                                          riscv_pkg::PcIncrement32bit);
-  assign ras_push = (ras_op_slot1 && slot1_packet_is_call) ||
-                    (ras_op_slot2 && slot2_packet_is_call);
-  assign ras_pop = (ras_op_slot1 && slot1_packet_is_return) ||
-                   (ras_op_slot2 && slot2_packet_is_return);
+  logic [riscv_pkg::PdTargetSplit:0] s1_native_sum;
+  logic [riscv_pkg::PdTargetSplit:0] s1_comp_sum;
+  assign s1_native_sum = (riscv_pkg::PdTargetSplit + 1)'(s1_pc[riscv_pkg::PdTargetSplit-1:0]) +
+      (riscv_pkg::PdTargetSplit + 1)'(native_branch_imm_low(
+      s1_instr
+  ));
+  assign s1_comp_sum = (riscv_pkg::PdTargetSplit + 1)'(s1_pc[riscv_pkg::PdTargetSplit-1:0]) +
+      (riscv_pkg::PdTargetSplit + 1)'(compressed_branch_imm_low(
+      s1_p.parcel
+  ));
 
-  // A backing BTB prediction from PD operates the stack in the redirect's
-  // first cycle, when IF accepts no packet of its own, and takes the slot-1
-  // operation registers. A stall holds the redirect, and the operation
-  // happens once, in that first cycle. A flush in that cycle, which precedes
-  // every stack restore, drops it; a later flush leaves the restore to undo
-  // it.
-  logic pd_ras_operation;
-  logic pd_ras_operation_done_q;
-  assign pd_ras_operation = (i_pd_redirect_ras_push || i_pd_redirect_ras_pop) &&
-                            !pd_ras_operation_done_q && !i_pipeline_ctrl.flush;
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) pd_ras_operation_done_q <= 1'b0;
-    else pd_ras_operation_done_q <= (pd_ras_operation || pd_ras_operation_done_q) && if_stage_stall;
-  end
+  // ---- Slot 2 (precompute +2 and +4 candidates in parallel, select by s1_comp) ----
+  logic [XLEN-1:0] s2_pc_p2;
+  logic [XLEN-1:0] s2_pc_p4;
+  logic [XLEN-1:0] s2_pc;
+  assign s2_pc_p2 = s1_pc + riscv_pkg::PcIncrementCompressed;
+  assign s2_pc_p4 = s1_pc + riscv_pkg::PcIncrement32bit;
+  assign s2_pc    = s1_comp ? s2_pc_p2 : s2_pc_p4;
 
-  // Register the operation's parts for timing; the stack applies them next
-  // cycle. Reset drops the operation of its own cycle.
-  logic ras_packet_accepted_q;
-  logic ras_slot1_taken_q, ras_slot1_call_q, ras_slot1_return_q;
-  logic ras_slot2_taken_q, ras_slot2_call_q, ras_slot2_return_q;
-  logic [XLEN-1:0] ras_link_address_q;
-  logic [XLEN-1:0] ras_link_address_2_q;
-  logic ras_op_slot1_q;
-  logic ras_op_slot2_q;
-  always_ff @(posedge i_clk) begin
-    ras_packet_accepted_q <= !i_pipeline_ctrl.reset && (ras_packet_accepted || pd_ras_operation);
-    ras_slot1_taken_q     <= pd_ras_operation || o_from_if_to_pd.btb_predicted_taken;
-    ras_slot1_call_q      <= pd_ras_operation ? i_pd_redirect_ras_push : slot1_packet_is_call;
-    ras_slot1_return_q    <= pd_ras_operation ? i_pd_redirect_ras_pop : slot1_packet_is_return;
-    ras_slot2_taken_q     <= !pd_ras_operation && o_from_if_to_pd_2.btb_predicted_taken;
-    ras_slot2_call_q      <= slot2_packet_is_call;
-    ras_slot2_return_q    <= slot2_packet_is_return;
-    ras_link_address_q    <= pd_ras_operation ? i_pd_redirect_ras_link : link_address_sc;
-    ras_link_address_2_q  <= slot2_link_address;
-  end
-  assign ras_op_slot1_q = ras_packet_accepted_q && ras_slot1_taken_q &&
-                          (ras_slot1_call_q || ras_slot1_return_q);
-  assign ras_op_slot2_q = ras_packet_accepted_q && ras_slot2_taken_q &&
-                          (ras_slot2_call_q || ras_slot2_return_q);
-  assign ras_push_q = (ras_op_slot1_q && ras_slot1_call_q) || (ras_op_slot2_q && ras_slot2_call_q);
-  assign ras_pop_q = (ras_op_slot1_q && ras_slot1_return_q) ||
-                     (ras_op_slot2_q && ras_slot2_return_q);
-  assign ras_pending_push_address = ras_op_slot2_q ? ras_link_address_2_q : ras_link_address_q;
+  parcel_t s2_p;
+  logic [15:0] s2_hi_parcel;
+  logic s2_hi_fault;
+  logic s2_uses_meta1;
+  meta_t s2_m;
 
-`ifndef SYNTHESIS
-  always_ff @(posedge i_clk) begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
-            {ras_op_slot1, ras_op_slot2, live_prediction_emits_with_output,
-             prediction_used, slot2_prediction_used}
-        )) begin
-      p_ras_one_operation_per_bundle : assert (!(ras_op_slot1 && ras_op_slot2));
-      p_pd_ras_operation_has_no_if_operation :
-      assert (!(pd_ras_operation && (ras_op_slot1 || ras_op_slot2)));
-      p_ras_operation_has_no_younger_live_prediction :
-      assert (!(ras_op_slot1 && !live_prediction_emits_with_output &&
-                prediction_used && !slot2_prediction_used));
-    end
-  end
-`endif
+  assign s2_p = s1_comp ? view1 : view2;
+  assign s2_hi_parcel = s1_comp ? view2.parcel : view3.parcel;
+  assign s2_hi_fault = s1_comp ? view2.fault : view3.fault;
+  // Use ring-only last flags and occupancy: when count_q == 0 both meta0 and
+  // meta1 equal i_push_meta; when count_q == 1 view0 ends window 0 so slot 2
+  // always belongs to meta1; when count_q >= 2 both view0 and view1 come from
+  // the ring. This keeps F1's push count off PD's slot-2 metadata mux.
+  assign s2_uses_meta1 = q_count_ge2 ?
+      (s1_comp ? q_ring_last[0] : (q_ring_last[0] || q_ring_last[1])) : q_count_eq1;
+  assign s2_m = s2_uses_meta1 ? meta1 : meta0;
 
-  // Output-NOP selection follows the same stall replay as the packet fields.
-  logic sel_nop_effective;
-  assign sel_nop_effective = replay_saved_if_outputs ? sel_nop_saved : sel_nop;
+  logic s2_comp;
+  logic s2_fault;
+  logic s2_have_bytes;
+  logic s2_valid_raw;
+  logic s2_valid;
 
-  // Keep direction and index with their instruction across replay. While
-  // a prediction is pending, only its compressed predecessor can also be
-  // emitted. Arming the prediction overwrites the predictor's snapshot with
-  // the branch's lookup. Save the preceding bit and index on every unstalled
-  // delivery edge with nothing pending; arming occurs only on such an edge.
-  // Keep the saved index with its bit, even if it differs from the PC's index.
-  logic bp_dir_taken_aligned;
-  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_aligned;
-  // High-half recovery looks up the containing word's low parcel. There is
-  // no direction result for the real packet at P+2; use not-taken and its own
-  // index so later training does not update the P or P+6 row.
-  assign bp_dir_taken_aligned = fetch_lookup_is_lower_parcel ? 1'b0 :
-      (lookup_pc_matches_packet_pc ? bp_dir_taken_live_cofactor : bp_dir_taken);
-  assign bp_dir_idx_aligned = fetch_lookup_is_lower_parcel ?
-      pc_reg[riscv_pkg::BpDirIdxBits:1] :
-      (lookup_pc_matches_packet_pc ? bp_dir_idx_live : bp_dir_idx);
-`ifndef SYNTHESIS
-  logic bp_dir_taken_aligned_legacy;
-  assign bp_dir_taken_aligned_legacy = fetch_lookup_is_lower_parcel ? 1'b0 :
-      (lookup_pc_matches_packet_pc ? bp_dir_taken_live : bp_dir_taken);
-  always_comb begin
-    if (!$isunknown({bp_dir_taken_aligned, bp_dir_taken_aligned_legacy})) begin
-      p_live_direction_output_cofactor_is_exact :
-      assert (bp_dir_taken_aligned == bp_dir_taken_aligned_legacy);
-    end
-  end
-`endif
-  logic bp_dir_taken_before_pending_q;
-  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_before_pending_q;
-  always_ff @(posedge i_clk) begin
-    if (!if_stage_stall && fetch_progress && !pending_prediction_active) begin
-      bp_dir_taken_before_pending_q <= bp_dir_taken_aligned;
-      bp_dir_idx_before_pending_q   <= bp_dir_idx_aligned;
-    end
-  end
-  logic pending_prediction_metadata_owner;
-  logic pending_prediction_metadata_predecessor;
-  logic pending_prediction_real_nonowner;
-  // Classify by PC for timing. The pending branch must carry taken metadata;
-  // the immediate predecessor is the only other real packet permitted while
-  // pending, and uses the saved direction.
-  assign pending_prediction_metadata_owner =
-      pending_prediction_active && !sel_nop_effective &&
-      (o_from_if_to_pd.program_counter == pending_prediction_pc);
-  assign pending_prediction_metadata_predecessor =
-      pending_prediction_active && !sel_nop_effective &&
-      (o_from_if_to_pd.program_counter == pending_prediction_prev_pc);
-  assign pending_prediction_real_nonowner =
-      pending_prediction_active && !sel_nop_effective &&
-      !pending_prediction_metadata_owner;
-  logic bp_dir_taken_pending_aligned;
-  // The direction is payload: PD discards it for bubbles through its
-  // registered inject_nop, and replay never presents a saved NOP, so this
-  // select does not need the late sel_nop.
-  assign bp_dir_taken_pending_aligned = (pending_prediction_active &&
-      o_from_if_to_pd.program_counter == pending_prediction_prev_pc) ?
-      bp_dir_taken_before_pending_q : bp_dir_taken_aligned;
-  logic bp_dir_taken_sc;
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_bp_dir_taken_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(bp_dir_taken_pending_aligned),
-      .o_data(bp_dir_taken_sc)
-  );
+  assign s2_comp  = (s2_p.parcel[1:0] != 2'b11);
+  assign s2_fault = s2_p.fault || (!s2_comp && s2_hi_fault);
 
-`ifndef SYNTHESIS
-  logic bp_dir_taken_pending_legacy, bp_dir_taken_legacy_sc;
-  logic bp_dir_taken_legacy_output;
-  assign bp_dir_taken_pending_legacy = pending_prediction_metadata_predecessor ?
-      bp_dir_taken_before_pending_q : bp_dir_taken_aligned;
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_bp_dir_taken_legacy_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(bp_dir_taken_pending_legacy),
-      .o_data(bp_dir_taken_legacy_sc)
-  );
-  assign bp_dir_taken_legacy_output = replay_saved_if_outputs ?
-      bp_dir_taken_legacy_sc : bp_dir_taken_pending_legacy;
-  always @(posedge i_clk) begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !o_from_if_to_pd.sel_nop)
-      assert (o_from_if_to_pd.bp_dir_taken == bp_dir_taken_legacy_output);
-  end
-`endif
-
-  // Replay the direction index with the packet. While prediction is
-  // pending, recompute the branch's index from pending_prediction_pc and use
-  // the predecessor's saved index; the predictor snapshot is overwritten.
-  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_pending_aligned;
-  assign bp_dir_idx_pending_aligned = pending_prediction_metadata_owner ?
-      pending_prediction_pc[riscv_pkg::BpDirIdxBits:1] :
-      (pending_prediction_metadata_predecessor ? bp_dir_idx_before_pending_q : bp_dir_idx_aligned);
-  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_sc;
-  stall_capture_reg #(
-      .WIDTH(riscv_pkg::BpDirIdxBits)
-  ) u_bp_dir_idx_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(bp_dir_idx_pending_aligned),
-      .o_data(bp_dir_idx_sc)
-  );
-  // Slot-2 predict-time index (combinational from the slot-2 lookup PC), captured
-  // on stall entry like the other slot-2 metadata.
-  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_2_sc;
-  stall_capture_reg #(
-      .WIDTH(riscv_pkg::BpDirIdxBits)
-  ) u_bp_dir_idx_2_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(bp_dir_idx_2),
-      .o_data(bp_dir_idx_2_sc)
-  );
-
-  // Recovery point: the stack state before this bundle's operation (see the
-  // stack operation block above).
-  assign o_from_if_to_pd.ras_checkpoint_tos = ras_checkpoint_tos;
-  assign o_from_if_to_pd.ras_checkpoint_valid_count = ras_checkpoint_valid_count;
-  assign o_from_if_to_pd.ras_checkpoint_top = ras_checkpoint_top;
-  // Bimodal direction carried with the slot-1 instruction (replay-aware). A
-  // collapsed-lead delivery (pc == pc_reg) uses the live lookup, including
-  // for a branch without a taken BTB prediction that PD may then redirect on.
-  assign o_from_if_to_pd.bp_dir_taken = replay_saved_if_outputs ? bp_dir_taken_sc :
-                                        bp_dir_taken_pending_aligned;
-  // Predict-time index carried with the slot-1 instruction (replay-aware).
-  assign o_from_if_to_pd.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_sc :
-                                      bp_dir_idx_pending_aligned;
-  // ===========================================================================
-  // Tagged Direction Predictor
-  // ===========================================================================
-  // The lookup reads both words of the fetch window at the fetch PC copy, and
-  // the predictor presents the newest lookup made under the bimodal
-  // snapshot's capture condition, so a stall replay finds the lookup made for
-  // its window. The next cycle each slot
-  // takes its word's bank and checks that the registered lookup covered that
-  // word; a packet whose word was looked up elsewhere (a replay after newer
-  // fetches, a pending handoff, a resteer) gets no tagged direction.
-  logic [riscv_pkg::TageLookupHiBit:2] tage_lookup_word;
-  logic [riscv_pkg::TageLookupHiBit:2] tage_lookup_word_next;
-  assign o_tage_fetch_path_bits = pc_tage_lookup[3:2];
-  riscv_pkg::tage_lookup_t tage_bank0;
-  riscv_pkg::tage_lookup_t tage_bank1;
-  tage_predictor #(
-      .HIST_BITS(riscv_pkg::TageDirHistBits),
-      .USE_EXTERNAL_FOLD_INDEX(USE_EXTERNAL_TAGE_FOLD)
-  ) u_tage_predictor (
-      .i_clk,
-      .i_lookup_word(pc_tage_lookup),
-      .i_lookup_hist(i_tage_hist),
-      .i_lookup_fold_index(i_tage_hist_fold),
-      .i_lookup_capture(!if_stage_stall && fetch_progress),
-      .o_lookup_word(tage_lookup_word),
-      .o_lookup_word_next(tage_lookup_word_next),
-      .o_lookup_hist(),
-      .o_bank0(tage_bank0),
-      .o_bank1(tage_bank1),
-      .i_train_valid(i_tage_train_valid),
-      .i_train_lookup(i_tage_train_lookup),
-      .i_train_bank(i_tage_train_bank),
-      .i_train_alt_taken(i_tage_train_alt_taken),
-      .i_train_taken(i_tage_train_taken),
-      .i_train_mispredicted(i_tage_train_mispredicted)
-  );
-
-  // A slot's bank is its word's parity. The registered lookup covered the
-  // slot when that bank's looked-up word is the slot's word. Slot 2's live
-  // word is either pc_reg's word (compressed slot 1 at pc_reg[1] = 0) or the
-  // next word (pc_reg[1] || !is_compressed); precompute coverage and bank hits
-  // for both live candidates and the stall-saved word ahead of slot 1's size
-  // and the slot-2 PC adder.
-  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_word;
-  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_bank_word;
-  logic [riscv_pkg::TageLookupHiBit:2] tage_word_cur_live;
-  logic [riscv_pkg::TageLookupHiBit:2] tage_word_next_live;
-  logic [riscv_pkg::TageLookupHiBit:2] tage_slot2_word_saved_q;
-  logic tage_slot2_uses_next_word_live;
-  logic tage_cov_cur_live;
-  logic tage_cov_next_live;
-  logic tage_cov_saved;
-  logic tage_bank0_hit;
-  logic tage_bank1_hit;
-  logic tage_slot2_bank_sel;
-  (* keep = "true" *) logic tage_slot2_hit_cur_live;
-  (* keep = "true" *) logic tage_slot2_hit_next_live;
-  (* keep = "true" *) logic tage_slot2_hit_saved;
-
-  assign tage_slot_word = o_from_if_to_pd.program_counter[riscv_pkg::TageLookupHiBit:2];
-  assign tage_slot_bank_word = (tage_lookup_word[2] == tage_slot_word[2]) ?
-                               tage_lookup_word : tage_lookup_word_next;
-  assign o_tage_slot_valid[0] = tage_slot_bank_word == tage_slot_word;
-  assign o_tage_slot_lookup = tage_slot_word[2] ? tage_bank1 : tage_bank0;
-
-  assign tage_word_cur_live = pc_reg[riscv_pkg::TageLookupHiBit:2];
-  assign tage_word_next_live = (riscv_pkg::TageLookupHiBit - 1)'(tage_word_cur_live + 1'b1);
-  assign tage_slot2_uses_next_word_live = pc_reg[1] || !is_compressed;
-
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) begin
-      tage_slot2_word_saved_q <= '0;
-    end else if (flush_for_c_ext_safe) begin
-      tage_slot2_word_saved_q <= '0;
-    end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      tage_slot2_word_saved_q <= tage_slot2_uses_next_word_live ?
-          tage_word_next_live : tage_word_cur_live;
-    end
-  end
-
-  assign tage_cov_cur_live =
-      ((tage_lookup_word[2] == tage_word_cur_live[2]) ?
-       tage_lookup_word : tage_lookup_word_next) == tage_word_cur_live;
-  assign tage_cov_next_live =
-      ((tage_lookup_word[2] == tage_word_next_live[2]) ?
-       tage_lookup_word : tage_lookup_word_next) == tage_word_next_live;
-  assign tage_cov_saved =
-      ((tage_lookup_word[2] == tage_slot2_word_saved_q[2]) ?
-       tage_lookup_word : tage_lookup_word_next) == tage_slot2_word_saved_q;
-
-  assign tage_bank0_hit = |tage_bank0.hit;
-  assign tage_bank1_hit = |tage_bank1.hit;
-  assign tage_slot2_hit_cur_live = tage_cov_cur_live &&
-      (pc_reg[2] ? tage_bank1_hit : tage_bank0_hit);
-  assign tage_slot2_hit_next_live = tage_cov_next_live &&
-      (pc_reg[2] ? tage_bank0_hit : tage_bank1_hit);
-  assign tage_slot2_hit_saved = tage_cov_saved &&
-      (tage_slot2_word_saved_q[2] ? tage_bank1_hit : tage_bank0_hit);
-
-  assign tage_slot2_bank_sel = replay_saved_if_outputs ?
-      tage_slot2_word_saved_q[2] : (tage_slot2_uses_next_word_live ^ pc_reg[2]);
-  assign o_tage_slot_valid[1] = replay_saved_if_outputs ? tage_cov_saved :
-      (tage_slot2_uses_next_word_live ? tage_cov_next_live : tage_cov_cur_live);
-  assign o_tage_slot_lookup_2 = tage_slot2_bank_sel ? tage_bank1 : tage_bank0;
-
-  // Slot-1 tagged-predictor direction. A fetch fault's bytes carry no branch.
-  assign o_from_if_to_pd.tage_valid = o_tage_slot_valid[0] &&
-      (|o_tage_slot_lookup.hit) && !o_from_if_to_pd.fetch_fault;
-  assign o_from_if_to_pd.tage_taken = o_tage_slot_lookup.taken;
-
-  // ===========================================================================
-  // Indirect Target Predictor
-  // ===========================================================================
-  // Looked up with the tagged predictor's word, on the path history, and
-  // captured under the same condition, so the tagged predictor's coverage
-  // check applies to it. Its registered path history is the packet's, saved
-  // with each branch for path-history restores. Each slot takes its word's bank. A fetch fault's bytes carry no JALR.
-  riscv_pkg::itt_lookup_t itt_bank0;
-  riscv_pkg::itt_lookup_t itt_bank1;
-  logic [1:0] itt_bank_hit;
-  logic [1:0][riscv_pkg::PhysAddrBits-2:0] itt_bank_target;
-  ittage_predictor u_ittage_predictor (
-      .i_clk,
-      .i_lookup_word(pc_tage_lookup),
-      .i_lookup_hist(i_itt_hist),
-      .i_lookup_capture(!if_stage_stall && fetch_progress),
-      .o_lookup_hist(o_tage_lookup_hist),
-      .o_bank0(itt_bank0),
-      .o_bank1(itt_bank1),
-      .o_hit(itt_bank_hit),
-      .o_target(itt_bank_target),
-      .i_train_valid(i_itt_train_valid),
-      .i_train_lookup(i_itt_train_lookup),
-      .i_train_bank(i_itt_train_bank),
-      .i_train_target(i_itt_train_target),
-      .i_train_mispredicted(i_itt_train_mispredicted)
-  );
-  assign o_itt_slot_lookup = tage_slot_word[2] ? itt_bank1 : itt_bank0;
-  assign o_itt_slot_lookup_2 = tage_slot2_bank_sel ? itt_bank1 : itt_bank0;
-  assign o_itt_hit[0] = o_tage_slot_valid[0] && itt_bank_hit[tage_slot_word[2]] &&
-      !o_from_if_to_pd.fetch_fault;
-  assign o_itt_hit[1] = o_tage_slot_valid[1] && itt_bank_hit[tage_slot2_bank_sel] &&
-      !o_from_if_to_pd_2.fetch_fault;
-  assign o_itt_target[0] = itt_bank_target[tage_slot_word[2]];
-  assign o_itt_target[1] = itt_bank_target[tage_slot2_bank_sel];
-
-  // ===========================================================================
-  // Prediction Metadata Tracker
-  // ===========================================================================
-  // Carries the BTB prediction metadata across stalls.  When the output is a
-  // NOP (holdoff) it clears prediction validity; the target payload is not
-  // cleared and is ignored while taken is low.  Otherwise it uses the
-  // registered prediction with stall handling, except that a collapsed-lead
-  // packet takes the metadata of its own live lookup.
-
-  prediction_metadata_tracker #(
-      .XLEN(XLEN)
-  ) prediction_metadata_tracker_inst (
-      .i_clk,
-      .i_reset(i_pipeline_ctrl.reset),
-      .i_stall(if_stage_stall),
-      // Flush with registered trap and xRET terms; see flush_for_c_ext_safe.
-      .i_flush(flush_for_c_ext_safe),
-      // A flush or redirect, a slot-2 prediction, or pc_reg passing the
-      // pending PC kills the pending prediction without a handoff, and the
-      // tracker's saved metadata for it must die too (see
-      // o_pending_prediction_redirect_kill in pc_controller).
-      .i_pending_prediction_kill(pending_prediction_redirect_kill),
-      .i_pending_prediction_walk_past(pending_prediction_walk_past),
-      .i_stall_registered(if_stage_stall_registered),
-
-      // Registered prediction from branch_prediction_controller
-      .i_prediction_used_r(prediction_used_r),
-      .i_predicted_target_r(btb_predicted_target_r),
-      .i_predicted_is_call_r(btb_predicted_is_call_r),
-      .i_predicted_is_return_r(btb_predicted_is_return_r),
-      // Pending metadata belongs to one exact instruction. The effective
-      // output PC follows the same live/stall-replay mux as the packet itself.
-      .i_pending_prediction_active(pending_prediction_active),
-      .i_pending_prediction_pc(pending_prediction_pc),
-      .i_output_pc(o_from_if_to_pd.program_counter),
-      .i_live_prediction_for_output(live_prediction_emits_with_output),
-      // Assertion input only: the lookup must align with the packet.
-      // Hit and taken still determine whether its target is valid.
-      .i_live_target_aligned_with_output(lookup_pc_matches_packet_pc),
-      .i_live_predicted_target(btb_predicted_target),
-      .i_live_predicted_is_call(btb_predicted_is_call),
-      .i_live_predicted_is_return(btb_predicted_is_return),
-      .i_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
-      .i_pending_prediction_target_handoff(pending_prediction_target_handoff),
-
-      // Instruction type signals
-      .i_sel_nop(sel_nop),
-      .i_sel_nop_saved(sel_nop_saved),
-      .i_use_saved_values(replay_saved_if_outputs),
-
-      // Outputs to PD stage. A faulted packet's bytes carry no executable
-      // control-flow instruction, so clear its taken marker before PD and RAS.
-      .o_btb_predicted_taken(slot1_btb_predicted_taken_raw),
-      .o_btb_predicted_target(o_from_if_to_pd.btb_predicted_target),
-      .o_btb_predicted_is_call(slot1_packet_is_call),
-      .o_btb_predicted_is_return(slot1_packet_is_return)
-  );
-  assign o_from_if_to_pd.btb_predicted_taken =
-      slot1_btb_predicted_taken_raw && !o_from_if_to_pd.fetch_fault;
-
-`ifndef SYNTHESIS
-  logic bp_dir_taken_before_pending_valid_q;
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) bp_dir_taken_before_pending_valid_q <= 1'b0;
-    else if (!pending_prediction_active)
-      bp_dir_taken_before_pending_valid_q <= !if_stage_stall && fetch_progress;
-  end
-
-  // A real packet in the cycle after a slot-1 prediction moves pc_reg: on
-  // the branch's handoff, on its predecessor's release, or sequentially. If
-  // pc_reg held, the packet's bytes would be fetched and dispatched again.
-  // A branch may target itself, so a handoff to pc_reg is left out, as are
-  // redirect cycles. While pc_reg has walked past a pending prediction (an
-  // instruction overlapping the predicted PC), the controller holds pc_reg
-  // and the packet must be a bubble.
-  logic held_pc_check_q = 1'b0;
-  logic held_pc_sel_nop_q;
-  logic [XLEN-1:0] held_pc_reg_q;
-  always_ff @(posedge i_clk) begin
-    held_pc_check_q <= coverage_reset_seen_q && !i_pipeline_ctrl.reset && !if_stage_stall &&
-        fetch_progress && control_flow_holdoff && prediction_holdoff &&
-        !i_from_ex_comb.branch_taken && !i_pd_redirect && !i_trap_ctrl.trap_taken &&
-        !i_trap_ctrl.mret_taken && !i_fence_i_flush &&
-        !(pending_prediction_target_handoff &&
-          pc_controller_inst.pending_prediction_target == pc_reg) &&
-        !(sel_prediction_r && btb_predicted_target_r == pc_reg);
-    held_pc_sel_nop_q <= sel_nop_effective;
-    held_pc_reg_q <= pc_reg;
-    if (held_pc_check_q && !i_pipeline_ctrl.reset && pc_reg == held_pc_reg_q && !$isunknown(
-            held_pc_sel_nop_q
-        )) begin
-      p_held_post_prediction_pc_emits_no_real_packet : assert (held_pc_sel_nop_q);
-    end
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && control_flow_holdoff &&
-        prediction_holdoff && pending_prediction_walk_past && !if_stage_stall &&
-        fetch_progress) begin
-      p_held_walk_past_packet_is_not_real : assert (sel_nop_effective && !slot2_valid);
-    end
-  end
-
-  // pc_controller may consume a pending prediction only on a real packet at
-  // the pending PC. The BTB metadata tracker and the direction-index recovery
-  // above both rely on this; in particular, a served-window mismatch must
-  // retry rather than consume the branch as a NOP.
-  always_ff @(posedge i_clk) begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_target_handoff &&
-        !$isunknown(
-            {sel_nop_effective, o_from_if_to_pd.program_counter,
-             pending_prediction_pc, if_stage_stall}
-        )) begin
-      p_pending_prediction_handoff_has_exact_real_owner :
-      assert (!sel_nop_effective &&
-              o_from_if_to_pd.program_counter == pending_prediction_pc &&
-              !if_stage_stall);
-    end
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_real_nonowner &&
-        !$isunknown(
-            {bp_dir_taken_before_pending_valid_q, bp_dir_idx_before_pending_q,
-             o_from_if_to_pd.program_counter, pending_prediction_pc}
-        )) begin
-      p_pending_prediction_only_real_nonowner_is_predecessor :
-      assert (o_from_if_to_pd.program_counter ==
-              pending_prediction_pc - riscv_pkg::PcIncrementCompressed);
-      p_pending_prediction_predecessor_direction_was_captured :
-      assert (bp_dir_taken_before_pending_valid_q);
-    end
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_active &&
-        !sel_nop_effective && !o_from_if_to_pd.fetch_fault &&
-        (o_from_if_to_pd.program_counter == pending_prediction_pc) && !$isunknown(
-            o_from_if_to_pd.btb_predicted_taken
-        )) begin
-      p_pending_prediction_real_owner_has_taken_metadata :
-      assert (o_from_if_to_pd.btb_predicted_taken);
-    end
-
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_active &&
-        slot2_valid &&
-        !$isunknown(
-            {o_from_if_to_pd_2.program_counter, pending_prediction_pc}
-        )) begin
-      p_pending_prediction_owner_never_dispatches_in_slot2 :
-      assert (o_from_if_to_pd_2.program_counter != pending_prediction_pc);
-    end
-
-    // The timing-only slot-2 candidate selects are formed before the full
-    // packet-valid gate. If one suppresses a live slot-1 lookup while
-    // prediction is otherwise enabled, either slot 2 really exists or the
-    // pending-prediction one-wide rule is withholding it. Stall replay and
-    // the registered F/H/R squashes fall outside prediction_common, and there
-    // the live aligner may differ from the saved packet.
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
-            {
-              branch_prediction_controller_inst.slot1_prediction_owned_by_slot2,
-              slot2_prediction_valid,
-              branch_prediction_controller_inst.prediction_common,
-              pending_prediction_kills_live_slot2,
-              pending_prediction_owns_live_slot1,
-              pending_prediction_owns_live_slot2,
-              pc,
-              pc_reg,
-              pending_prediction_pc
-            }
-        )) begin
-      p_unemitted_slot2_candidate_owner_is_masked_or_pending :
-      assert (!branch_prediction_controller_inst.slot1_prediction_owned_by_slot2 ||
-              slot2_prediction_valid ||
-              !branch_prediction_controller_inst.prediction_common ||
-              pending_prediction_kills_live_slot2);
-      if (branch_prediction_controller_inst.slot1_prediction_owned_by_slot2 &&
-          branch_prediction_controller_inst.prediction_common &&
-          !slot2_prediction_valid) begin
-        p_unemitted_enabled_slot2_candidate_has_exact_pending_owner :
-        assert ($onehot(
-            {pending_prediction_owns_live_slot1, pending_prediction_owns_live_slot2}
-        ) && ((pending_prediction_owns_live_slot1 && (pc_reg == pending_prediction_pc)) ||
-              (pending_prediction_owns_live_slot2 && (pc == pending_prediction_pc))));
-      end
-    end
-
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && !$isunknown(
-            {
-              pending_prediction_owns_live_slot2,
-              pending_prediction_active,
-              sel_nop_2_aligner,
-              is_compressed,
-              pc_reg,
-              pending_prediction_pc
-            }
-        )) begin
-      p_pending_prediction_slot2_owner_predecode_exact :
-      assert (pending_prediction_owns_live_slot2 ==
-              (pending_prediction_active && !sel_nop_2_aligner &&
-               ((pc_reg + (is_compressed ? riscv_pkg::PcIncrementCompressed :
-                                           riscv_pkg::PcIncrement32bit)) ==
-                pending_prediction_pc)));
-    end
-
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_kills_live_slot2 &&
-        !$isunknown(
-            {
-              sel_nop_2,
-              slot2_valid_for_pc_live_effective,
-              pc_advance_sel_run_live,
-              pc_advance_sel_base_live
-            }
-        )) begin
-      p_pending_owner_slot2_kill_is_one_wide_everywhere :
-      assert (sel_nop_2 && !slot2_valid_for_pc_live_effective &&
-              (pc_advance_sel_run_live == pc_advance_sel_base_live));
-    end
-
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && pending_prediction_target_handoff &&
-        !$isunknown(
-            slot2_valid
-        )) begin
-      p_pending_owner_handoff_is_single_width : assert (!slot2_valid);
-    end
-  end
-`endif
-
-  // ===========================================================================
-  // Slot-2 IF to PD Packet
-  // ===========================================================================
-  // Slot 2 follows slot 1 by its instruction size and shares its RAS
-  // recovery point. Replay captures both slots together; flush sets
-  // sel_nop_2_saved. Live slot-2 validity includes the slot-1 bubble, pending
-  // prediction kill, AllowsSlot2After and Slot2StartValid sideband bits,
-  // window coverage, and stale-next-word gate (slot2_bram_unsafe).
-
-  logic [15:0] raw_parcel_2_saved;
-  logic [31:0] effective_instr_2_sc;
-  logic        sel_compressed_2_sc;
-  logic        sel_nop_2_saved;
-  logic        slot2_decomp_illegal_sc;
-
-  // PD uses the expanded instruction; the raw parcel is its simulation
-  // reference. Capture directly to avoid a redundant live-data mux.
-  always_ff @(posedge i_clk) begin
-    if (flush_for_c_ext_safe) begin
-      raw_parcel_2_saved <= '0;
-    end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      raw_parcel_2_saved <= raw_parcel_2;
-    end
-  end
-
-  stall_capture_reg #(
-      .WIDTH(32)
-  ) u_effective_instr_2_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(effective_instr_2),
-      .o_data(effective_instr_2_sc)
-  );
-
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_sel_compressed_2_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(sel_compressed_2),
-      .o_data(sel_compressed_2_sc)
-  );
-
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_slot2_decomp_illegal_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(slot2_decomp_illegal),
-      .o_data(slot2_decomp_illegal_sc)
-  );
-
-  // Mirror sel_nop_saved: flush forces 1, stall-entry latches the live value.
-  always_ff @(posedge i_clk) begin
-    if (flush_for_c_ext_safe) begin
-      sel_nop_2_saved <= 1'b1;
-    end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      sel_nop_2_saved <= sel_nop_2;
-    end
-  end
-
-  // Bundle advance = slot-1 size + slot-2 size: {RVC,RVC}=+4, {RVC,32b} and
-  // {32b,RVC}=+6, {32b,32b}=+8.
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] bundle_advance_sel_live;
   always_comb begin
     unique case ({
-      is_compressed_for_pc_advance, slot2_is_compressed_for_pc_live
+      s1_comp, s2_comp
     })
-      2'b11:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus4;
-      2'b10:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus6;
-      2'b01:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus6;
-      default: bundle_advance_sel_live = riscv_pkg::PcAdvancePlus8;
+      2'b11:   s2_have_bytes = q_avail_ge_drain[1];
+      2'b10:   s2_have_bytes = q_avail_ge_drain[2];
+      2'b01:   s2_have_bytes = q_avail_ge_drain[2];
+      default: s2_have_bytes = q_avail_ge_drain[3];
     endcase
   end
 
-  // Export advances by bundle shape for timing: one-wide, two-wide, and
-  // pc_reg's NOP advance. The fetch PC uses the one-wide advance for NOPs.
-  // Merged selects feed stall capture and the reference checks.
-  assign pc_advance_sel_base_live = is_compressed_for_pc_advance ? riscv_pkg::PcAdvancePlus2 :
-                                                                   riscv_pkg::PcAdvancePlus4;
-  assign pc_advance_sel_run_live = slot2_valid_for_pc_live_effective ? bundle_advance_sel_live :
-                                                                       pc_advance_sel_base_live;
-  assign pc_fetch_advance_sel_live =
-      pc_control_sel_nop ? pc_advance_sel_base_live : pc_advance_sel_run_live;
-  assign pc_reg_advance_sel_live =
-      pc_control_sel_nop ? riscv_pkg::PcAdvancePlus2 : pc_advance_sel_run_live;
+  // s2_have_bytes already implies s1_have_bytes, and s1_p.allows_slot2_after
+  // already excludes control-flow instructions (hence any BTB-taken slot 1).
+  // Keep pqueue_flush off the raw slot-2 qualifier so queue pop counts stay
+  // decoupled from redirects.
+  assign s2_valid_raw = !i_fetch_trap_hold && !s1_fault &&
+      s1_p.allows_slot2_after && s2_have_bytes && !s2_fault && s2_p.slot2_start_valid;
+  assign s2_valid = !pqueue_flush && s2_valid_raw;
 
-  // Capture PC advances directly for timing.
+  // Build +2 (view1) and +4 (view2) expanded instructions and target sums in parallel.
+  logic [31:0] s2_rvc_exp_p2;
+  logic [31:0] s2_rvc_exp_p4;
+  logic [31:0] s2_nat_p2;
+  logic [31:0] s2_nat_p4;
+  logic [31:0] s2_instr_p2;
+  logic [31:0] s2_instr_p4;
+  logic [31:0] s2_instr;
+
+  assign s2_rvc_exp_p2 = {
+    view1.rvc_extra[21:15],
+    view1.rvc_bits24_20,
+    view1.rvc_rs1_rest[2:1],
+    view1.rvc_source_hot,
+    view1.rvc_rs1_rest[0],
+    view1.rvc_extra[14:0]
+  };
+  assign s2_rvc_exp_p4 = {
+    view2.rvc_extra[21:15],
+    view2.rvc_bits24_20,
+    view2.rvc_rs1_rest[2:1],
+    view2.rvc_source_hot,
+    view2.rvc_rs1_rest[0],
+    view2.rvc_extra[14:0]
+  };
+  assign s2_nat_p2 = {view2.parcel, view1.parcel};
+  assign s2_nat_p4 = {view3.parcel, view2.parcel};
+  assign s2_instr_p2 = (view1.parcel[1:0] != 2'b11) ? s2_rvc_exp_p2 : s2_nat_p2;
+  assign s2_instr_p4 = (view2.parcel[1:0] != 2'b11) ? s2_rvc_exp_p4 : s2_nat_p4;
+  assign s2_instr = s1_comp ? s2_instr_p2 : s2_instr_p4;
+
+  logic [2:0] s2_source_hot;
+  logic [4:0] s2_bits24_20;
+  logic [2:0] s2_rs1_rest;
+  logic s2_decomp_illegal;
+  logic s2_is_cond_branch;
+
+  assign s2_source_hot = s2_comp ?
+      {s2_p.rvc_bits24_20[1], s2_p.rvc_source_hot} : {s2_instr[21], s2_instr[17:16]};
+  assign s2_bits24_20 = s2_comp ? s2_p.rvc_bits24_20 : s2_instr[24:20];
+  assign s2_rs1_rest = s2_comp ? s2_p.rvc_rs1_rest : {s2_instr[19:18], s2_instr[15]};
+  assign s2_decomp_illegal = s2_comp && s2_p.rvc_extra[22];
+  assign s2_is_cond_branch = (s2_instr[6:0] == riscv_pkg::OPC_BRANCH) && (s2_instr[14:13] != 2'b01);
+
+  logic [riscv_pkg::PdTargetSplit:0] s2_nat_sum_p2, s2_nat_sum_p4;
+  logic [riscv_pkg::PdTargetSplit:0] s2_cmp_sum_p2, s2_cmp_sum_p4;
+  assign s2_nat_sum_p2 = (riscv_pkg::PdTargetSplit + 1)'(s2_pc_p2[riscv_pkg::PdTargetSplit-1:0]) +
+      (riscv_pkg::PdTargetSplit + 1)'(native_branch_imm_low(
+      s2_instr_p2
+  ));
+  assign s2_nat_sum_p4 = (riscv_pkg::PdTargetSplit + 1)'(s2_pc_p4[riscv_pkg::PdTargetSplit-1:0]) +
+      (riscv_pkg::PdTargetSplit + 1)'(native_branch_imm_low(
+      s2_instr_p4
+  ));
+  assign s2_cmp_sum_p2 = (riscv_pkg::PdTargetSplit + 1)'(s2_pc_p2[riscv_pkg::PdTargetSplit-1:0]) +
+      (riscv_pkg::PdTargetSplit + 1)'(compressed_branch_imm_low(
+      view1.parcel
+  ));
+  assign s2_cmp_sum_p4 = (riscv_pkg::PdTargetSplit + 1)'(s2_pc_p4[riscv_pkg::PdTargetSplit-1:0]) +
+      (riscv_pkg::PdTargetSplit + 1)'(compressed_branch_imm_low(
+      view2.parcel
+  ));
+
+  // Precompute slot-2 TAGE valid and direction for +2 (view1) and +4 (view2)
+  // in parallel with s1_comp so s1_comp selects at the final mux before PD.
+  logic s2_uses_meta1_p2;
+  logic s2_uses_meta1_p4;
+  logic [1:0] s2_tage_pv_p2;
+  logic [1:0] s2_tage_pv_p4;
+  logic [1:0] s2_tage_tk_p2;
+  logic [1:0] s2_tage_tk_p4;
+  logic s2_tage_pv_sel_p2;
+  logic s2_tage_pv_sel_p4;
+  logic s2_tage_tk_sel_p2;
+  logic s2_tage_tk_sel_p4;
+  logic s2_fault_p2;
+  logic s2_fault_p4;
+  logic s2_tage_valid_p2;
+  logic s2_tage_valid_p4;
+  assign s2_uses_meta1_p2 = q_count_ge2 ? q_ring_last[0] : q_count_eq1;
+  assign s2_uses_meta1_p4 = q_count_ge2 ? (q_ring_last[0] || q_ring_last[1]) : q_count_eq1;
+  assign s2_tage_pv_p2 = s2_uses_meta1_p2 ? meta1_tage_pv : meta0_tage_pv;
+  assign s2_tage_pv_p4 = s2_uses_meta1_p4 ? meta1_tage_pv : meta0_tage_pv;
+  assign s2_tage_tk_p2 = s2_uses_meta1_p2 ?
+      {meta1.tage_w1.taken, meta1.tage_w0.taken} : {meta0.tage_w1.taken, meta0.tage_w0.taken};
+  assign s2_tage_tk_p4 = s2_uses_meta1_p4 ?
+      {meta1.tage_w1.taken, meta1.tage_w0.taken} : {meta0.tage_w1.taken, meta0.tage_w0.taken};
+  assign s2_tage_pv_sel_p2 = view1.hw_in_win[1] ? s2_tage_pv_p2[1] : s2_tage_pv_p2[0];
+  assign s2_tage_pv_sel_p4 = view2.hw_in_win[1] ? s2_tage_pv_p4[1] : s2_tage_pv_p4[0];
+  assign s2_tage_tk_sel_p2 = view1.hw_in_win[1] ? s2_tage_tk_p2[1] : s2_tage_tk_p2[0];
+  assign s2_tage_tk_sel_p4 = view2.hw_in_win[1] ? s2_tage_tk_p4[1] : s2_tage_tk_p4[0];
+  assign s2_fault_p2 = view1.fault || ((view1.parcel[1:0] == 2'b11) && view2.fault);
+  assign s2_fault_p4 = view2.fault || ((view2.parcel[1:0] == 2'b11) && view3.fault);
+  assign s2_tage_valid_p2 = s2_tage_pv_sel_p2 && !s2_fault_p2;
+  assign s2_tage_valid_p4 = s2_tage_pv_sel_p4 && !s2_fault_p4;
+
+  logic s2_tage_cov;
+  riscv_pkg::tage_lookup_t s2_tage_lookup;
+  riscv_pkg::itt_lookup_t s2_itt_lookup;
+  logic s2_itt_hit;
+  logic [BackingTargetBits-1:0] s2_itt_target;
+
+  assign s2_tage_cov = s2_p.hw_in_win[1] ? s2_m.tage_cov[1] : s2_m.tage_cov[0];
+  assign s2_tage_lookup = s2_p.hw_in_win[1] ? s2_m.tage_w1 : s2_m.tage_w0;
+  assign s2_itt_lookup = s2_p.hw_in_win[1] ? s2_m.itt_w1 : s2_m.itt_w0;
+  assign s2_itt_hit     = s2_tage_cov && !s2_fault &&
+      (s2_p.hw_in_win[1] ? s2_m.itt_hit[1] : s2_m.itt_hit[0]);
+  assign s2_itt_target = s2_p.hw_in_win[1] ? s2_m.itt_target[1] : s2_m.itt_target[0];
+
+  logic s2_btb_taken;
+  logic [XLEN-1:0] s2_btb_target;
+  assign s2_btb_taken  = s2_valid && s2_p.btb_taken;
+  assign s2_btb_target = {s2_m.btb_target_hi, 1'b0};
+
+  // Parcel queue pop count: keep pqueue_flush off q_pop_count (u_parcel_queue
+  // synchronously resets all pointers and counts when pqueue_flush fires).
+  logic [2:0] s1_pop_hw;
+  logic [2:0] s2_pop_hw;
+  assign s1_pop_hw   = s1_need_2 ? 3'd2 : 3'd1;
+  assign s2_pop_hw   = s2_valid_raw ? (s2_comp ? 3'd1 : 3'd2) : 3'd0;
+  assign q_pop_count = (!i_pipeline_ctrl.stall && s1_valid_raw) ? (s1_pop_hw + s2_pop_hw) : 3'd0;
+
+  // ===========================================================================
+  // Outputs to PD Stage & Predictor Metadata
+  // ===========================================================================
+  always_comb begin
+    o_from_if_to_pd.program_counter = s1_pc;
+    o_from_if_to_pd.raw_parcel = s1_p.parcel;
+    o_from_if_to_pd.sel_nop = !s1_valid;
+    o_from_if_to_pd.sel_compressed = s1_comp;
+    o_from_if_to_pd.effective_instr = s1_instr;
+    o_from_if_to_pd.source_hot_predecoded = s1_source_hot;
+    o_from_if_to_pd.bits24_20_predecoded = s1_bits24_20;
+    o_from_if_to_pd.rs1_rest_predecoded = s1_rs1_rest;
+    o_from_if_to_pd.rvc_extra_predecoded = s1_p.rvc_extra;
+    o_from_if_to_pd.btb_predicted_taken = s1_btb_taken;
+    o_from_if_to_pd.btb_predicted_target = s1_btb_target;
+    o_from_if_to_pd.ras_checkpoint_tos = s1_m.ras_ckpt_tos;
+    o_from_if_to_pd.ras_checkpoint_valid_count = s1_m.ras_ckpt_cnt;
+    o_from_if_to_pd.ras_checkpoint_top = s1_m.ras_ckpt_top;
+    o_from_if_to_pd.bp_dir_taken = s1_p.bp_dir_taken;
+    o_from_if_to_pd.bp_dir_idx = s1_pc[riscv_pkg::BpDirIdxBits:1];
+    o_from_if_to_pd.tage_valid = s1_tage_pred_valid && !s1_fault;
+    o_from_if_to_pd.tage_taken = s1_tage_lookup.taken;
+    o_from_if_to_pd.fetch_fault = s1_fault;
+    o_from_if_to_pd.fetch_fault_page = s1_fault_page;
+    o_from_if_to_pd.fetch_fault_hi = s1_fault_hi;
+    o_from_if_to_pd.decomp_illegal = 1'b0;
+    o_from_if_to_pd.is_cond_branch = 1'b0;
+    o_from_if_to_pd.pd_target_native_low = s1_native_sum[riscv_pkg::PdTargetSplit-1:0];
+    o_from_if_to_pd.pd_target_native_high_select = {
+      s1_instr[31], s1_native_sum[riscv_pkg::PdTargetSplit]
+    };
+    o_from_if_to_pd.pd_target_compressed_low = s1_comp_sum[riscv_pkg::PdTargetSplit-1:0];
+    o_from_if_to_pd.pd_target_compressed_high_select = {
+      s1_p.parcel[12], s1_comp_sum[riscv_pkg::PdTargetSplit]
+    };
+  end
+
+  always_comb begin
+    o_from_if_to_pd_2.program_counter = s2_pc;
+    o_from_if_to_pd_2.raw_parcel = s2_p.parcel;
+    o_from_if_to_pd_2.sel_nop = !s2_valid;
+    o_from_if_to_pd_2.sel_compressed = s2_comp;
+    o_from_if_to_pd_2.effective_instr = s2_instr;
+    o_from_if_to_pd_2.source_hot_predecoded = s2_source_hot;
+    o_from_if_to_pd_2.bits24_20_predecoded = s2_bits24_20;
+    o_from_if_to_pd_2.rs1_rest_predecoded = s2_rs1_rest;
+    o_from_if_to_pd_2.rvc_extra_predecoded = '0;
+    o_from_if_to_pd_2.btb_predicted_taken = s2_btb_taken;
+    o_from_if_to_pd_2.btb_predicted_target = s2_btb_target;
+    o_from_if_to_pd_2.ras_checkpoint_tos = s1_m.ras_ckpt_tos;
+    o_from_if_to_pd_2.ras_checkpoint_valid_count = s1_m.ras_ckpt_cnt;
+    o_from_if_to_pd_2.ras_checkpoint_top = s1_m.ras_ckpt_top;
+    o_from_if_to_pd_2.bp_dir_taken = 1'b0;
+    o_from_if_to_pd_2.bp_dir_idx = s2_pc[riscv_pkg::BpDirIdxBits:1];
+    o_from_if_to_pd_2.tage_valid = s1_comp ? s2_tage_valid_p2 : s2_tage_valid_p4;
+    o_from_if_to_pd_2.tage_taken = s1_comp ? s2_tage_tk_sel_p2 : s2_tage_tk_sel_p4;
+    o_from_if_to_pd_2.fetch_fault = 1'b0;
+    o_from_if_to_pd_2.fetch_fault_page = 1'b0;
+    o_from_if_to_pd_2.fetch_fault_hi = 1'b0;
+    o_from_if_to_pd_2.decomp_illegal = s2_decomp_illegal;
+    o_from_if_to_pd_2.is_cond_branch = s2_is_cond_branch;
+    o_from_if_to_pd_2.pd_target_native_low             = s1_comp ?
+        s2_nat_sum_p2[riscv_pkg::PdTargetSplit-1:0] : s2_nat_sum_p4[riscv_pkg::PdTargetSplit-1:0];
+    o_from_if_to_pd_2.pd_target_native_high_select     = s1_comp ?
+        {s2_instr_p2[31], s2_nat_sum_p2[riscv_pkg::PdTargetSplit]} :
+        {s2_instr_p4[31], s2_nat_sum_p4[riscv_pkg::PdTargetSplit]};
+    o_from_if_to_pd_2.pd_target_compressed_low         = s1_comp ?
+        s2_cmp_sum_p2[riscv_pkg::PdTargetSplit-1:0] : s2_cmp_sum_p4[riscv_pkg::PdTargetSplit-1:0];
+    o_from_if_to_pd_2.pd_target_compressed_high_select = s1_comp ?
+        {view1.parcel[12], s2_cmp_sum_p2[riscv_pkg::PdTargetSplit]} :
+        {view2.parcel[12], s2_cmp_sum_p4[riscv_pkg::PdTargetSplit]};
+  end
+
+  // Capture PD's accepted bundle RAS checkpoint for restoring on a PD redirect.
+  // Only consumed after an unstalled valid packet reaches PD; omit reset.
   always_ff @(posedge i_clk) begin
-    if (flush_for_c_ext_safe) begin
-      pc_fetch_advance_sel_saved <= riscv_pkg::PcAdvancePlus2;
-      pc_reg_advance_sel_saved   <= riscv_pkg::PcAdvancePlus2;
-    end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      pc_fetch_advance_sel_saved <= pc_fetch_advance_sel_live;
-      pc_reg_advance_sel_saved   <= pc_reg_advance_sel_live;
+    if (!i_pipeline_ctrl.stall) begin
+      pd_ras_ckpt_tos_q <= s1_m.ras_ckpt_tos;
+      pd_ras_ckpt_cnt_q <= s1_m.ras_ckpt_cnt;
+      pd_ras_ckpt_top_q <= s1_m.ras_ckpt_top;
     end
   end
 
-  assign pc_fetch_advance_sel =
-      replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_fetch_advance_sel_live;
-  assign pc_reg_advance_sel =
-      replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_reg_advance_sel_live;
-  // During replay every shape uses the saved advance, making the final
-  // squash and slot-2 selects irrelevant.
-  assign pc_fetch_advance_sel_one =
-      replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_advance_sel_base_live;
-  assign pc_fetch_advance_sel_two =
-      replay_saved_if_outputs ? pc_fetch_advance_sel_saved : bundle_advance_sel_live;
-  assign pc_reg_advance_sel_one =
-      replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_advance_sel_base_live;
-  assign pc_reg_advance_sel_two =
-      replay_saved_if_outputs ? pc_reg_advance_sel_saved : bundle_advance_sel_live;
-  assign pc_reg_advance_sel_nop =
-      replay_saved_if_outputs ? pc_reg_advance_sel_saved : riscv_pkg::PcAdvancePlus2;
+  // Backing BTB outputs (keep slot-2 by-size contract for PD target muxing;
+  // gate slot-2 hit on staying within slot 1's physical-address region by
+  // checking whether s1_pc + (2 or 4) carries out of bit PhysAddrBits-1,
+  // avoiding a 64-bit carry chain and upper-bit compare behind s2_pc).
+  logic s2_same_region;
+  assign s2_same_region = !((&s1_pc[riscv_pkg::PhysAddrBits-1:2]) && (s1_pc[1] || !s1_comp));
 
-  // Slot-2 PC is slot-1 PC plus its size, both from the same live or saved
-  // packet.
-  logic [XLEN-1:0] slot2_pc_live;
-  assign slot2_pc_live   = instruction_pc +
-                           (is_compressed ? riscv_pkg::PcIncrementCompressed :
-                                            riscv_pkg::PcIncrement32bit);
+  assign o_backing_hit[0] = s1_valid && !s1_fault && s1_p.backing_hit;
+  assign o_backing_compressed[0] = s1_p.backing_compressed;
+  assign o_backing_return[0] = s1_p.backing_return;
+  assign o_backing_target[0] = s1_p.backing_target;
+  assign o_backing_slot2_return_by_size[0] = view2.backing_return;
+  assign o_backing_slot2_return_by_size[1] = view1.backing_return;
+  assign o_backing_slot2_target_by_size[0] = view2.backing_target;
+  assign o_backing_slot2_target_by_size[1] = view1.backing_target;
+  assign o_backing_hit[1] = s2_valid && s2_same_region && s2_p.backing_hit;
+  assign o_backing_compressed[1] = s2_p.backing_compressed;
+  assign o_backing_return[1] = s1_comp ? view1.backing_return : view2.backing_return;
+  assign o_backing_target[1] = s1_comp ? view1.backing_target : view2.backing_target;
 
-  logic [XLEN-1:0] slot2_pc_sc;
-  assign slot2_pc_sc   = instruction_pc_sc +
-                         (sel_compressed_sc ? riscv_pkg::PcIncrementCompressed :
-                                              riscv_pkg::PcIncrement32bit);
+  // TAGE and ITTAGE outputs
+  assign o_tage_slot_valid[0] = s1_tage_cov;
+  assign o_tage_slot_valid[1] = s2_tage_cov;
+  assign o_tage_slot_lookup = s1_tage_lookup;
+  assign o_tage_slot_lookup_2 = s2_tage_lookup;
+  // When slot 2 is valid, slot 1 is non-control-flow, so any branch/jump in
+  // the bundle belongs to slot 2's window. Use s2_valid_raw so pqueue_flush
+  // does not drive the 64-bit lookup history bus (bubbles are ignored by PD).
+  assign o_tage_lookup_hist = s2_valid_raw ? s2_m.itt_hist : s1_m.itt_hist;
+  assign o_itt_slot_lookup = s1_itt_lookup;
+  assign o_itt_slot_lookup_2 = s2_itt_lookup;
+  assign o_itt_hit[0] = s1_itt_hit;
+  assign o_itt_hit[1] = s2_itt_hit;
+  assign o_itt_target[0] = s1_itt_target;
+  assign o_itt_target[1] = s2_itt_target;
 
-  // Precompute slot 2's branch target candidates ahead of slot 1's size and
-  // the aligner's position mux. A +2 slot 2 sits at CURRENT_HI (pc_reg[1] = 0)
-  // or NEXT_LO (pc_reg[1] = 1); a +4 slot 2 sits at NEXT_LO (pc_reg[1] = 0) or
-  // NEXT_HI (pc_reg[1] = 1, where a native candidate is NOP).
-  logic [31:0] slot2_cur_word;
-  logic [31:0] slot2_next_word;
-  logic [riscv_pkg::PdTargetSplit-1:0] pc_plus2_low;
-  logic [riscv_pkg::PdTargetSplit-1:0] pc_plus4_low;
-  logic slot2_is_cond_branch_saved_q;
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_native_imm_saved_q;
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_compressed_imm_saved_q;
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_pc_low_saved_q;
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_native_plus2_low;
-  logic [1:0] pd_slot2_target_native_plus2_high_select;
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_native_plus4_low;
-  logic [1:0] pd_slot2_target_native_plus4_high_select;
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_compressed_plus2_low;
-  logic [1:0] pd_slot2_target_compressed_plus2_high_select;
-  logic [riscv_pkg::PdTargetSplit-1:0] pd_slot2_target_compressed_plus4_low;
-  logic [1:0] pd_slot2_target_compressed_plus4_high_select;
+  // Frontend validity tracker control taps
+  assign o_slot1_has_control_flow = s1_valid && s1_p.is_control;
+  assign o_slot1_is_indirect = s1_p.is_indirect;
 
-  assign slot2_cur_word = fetch_word_swapped_for_spanning ? i_instr[63:32] : i_instr[31:0];
-  assign slot2_next_word = fetch_word_swapped_for_spanning ? i_instr[31:0] : i_instr[63:32];
-  assign pc_plus2_low = pc_reg[riscv_pkg::PdTargetSplit-1:0] +
-      riscv_pkg::PdTargetSplit'(riscv_pkg::PcIncrementCompressed);
-  assign pc_plus4_low = pc_reg[riscv_pkg::PdTargetSplit-1:0] +
-      riscv_pkg::PdTargetSplit'(riscv_pkg::PcIncrement32bit);
+  // ===========================================================================
+  // Width-Funnel Profiling Events (registered)
+  // ===========================================================================
+  logic width_deliver1;
+  logic width_deliver2;
+  logic width_slot2_killed;
+  logic kill_s1_native_ctrl;
+  logic kill_s1_native_serialize;
+  logic kill_s1_comp_ctrl;
+  logic kill_class;
+  logic kill_window_limit;
+  logic kill_transient;
+
+  assign width_deliver1 = !i_pipeline_ctrl.stall && s1_valid;
+  assign width_deliver2 = width_deliver1 && s2_valid;
+  assign width_slot2_killed = width_deliver1 && !s2_valid;
+
+  assign kill_s1_native_ctrl = !s1_fault && !s1_comp && s1_p.is_control;
+  assign kill_s1_native_serialize = !s1_fault && !s1_comp && !s1_p.is_control &&
+      !s1_p.allows_slot2_after;
+  assign kill_s1_comp_ctrl = !s1_fault && s1_comp && s1_p.is_control;
+  assign kill_class               = !s1_fault && s1_p.allows_slot2_after &&
+      s2_have_bytes && !s2_fault && !s2_p.slot2_start_valid;
+  assign kill_window_limit = !s1_fault && s1_p.allows_slot2_after && !s2_have_bytes;
+  assign kill_transient = s1_fault || (s1_p.allows_slot2_after && s2_have_bytes && s2_fault);
+
+  riscv_pkg::if_width_events_t width_events_q;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      width_events_q <= '0;
+    end else begin
+      width_events_q.deliver1                 <= width_deliver1;
+      width_events_q.deliver2                 <= width_deliver2;
+      width_events_q.kill_s1_native_ctrl      <= width_slot2_killed && kill_s1_native_ctrl;
+      width_events_q.kill_s1_native_serialize <= width_slot2_killed && kill_s1_native_serialize;
+      width_events_q.kill_slot1_ctrl          <= width_slot2_killed && kill_s1_comp_ctrl;
+      width_events_q.kill_class               <= width_slot2_killed && kill_class;
+      width_events_q.kill_window_limit        <= width_slot2_killed && kill_window_limit;
+      width_events_q.kill_transient           <= width_slot2_killed && kill_transient;
+      width_events_q.slot2_pred_taken         <= width_deliver2 && s2_btb_taken;
+    end
+  end
+  assign o_width_events = width_events_q;
+
+  // Unused provider-replica inputs kept for interface stability.
+  wire _unused_if = &{
+    1'b0,
+    i_instr_low_by_parity,
+    i_instr_high,
+    i_instr_window_high,
+    i_instr_pc_metadata,
+    i_instr_pc_metadata_by_provider_parity,
+    i_pc_pairability_by_provider_parity,
+    i_slot2_start_valid_lo_by_provider_parity,
+    i_instr_bank_sel_r,
+    i_served_last_word_low,
+    i_served_prev_word_low,
+    i_served_prev_word_valid_low,
+    i_served_last_word_high,
+    i_served_prev_word_high,
+    i_served_prev_word_valid_high,
+    i_served_high,
+    i_pd_redirect_taken,
+    next_pc,
+    pc_update_en,
+    ras_nonempty,
+    q_avail,
+    q_avail_ge,
+    q_view_last
+  };
+
+`ifdef FROST_DEBUG_FETCH_ILA
+  // Fetch debug probes (optional debug probe tap): mark_debug copies for the debug
+  // core; nothing here feeds the design.
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pc;
+  (* mark_debug = "true" *) logic dbg_ila_if_instr_valid;
+  (* mark_debug = "true" *) logic dbg_ila_if_f0_launch;
+  (* mark_debug = "true" *) logic dbg_ila_if_f1_accept;
+  (* mark_debug = "true" *) logic dbg_ila_if_stop_fetch;
+  (* mark_debug = "true" *) logic dbg_ila_if_flush;
+  (* mark_debug = "true" *) logic dbg_ila_if_stall;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd_redirect;
+  (* mark_debug = "true" *) logic dbg_ila_if_instr_fault0;
+  (* mark_debug = "true" *) logic dbg_ila_if_instr_fault1;
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pd_pc;
+  (* mark_debug = "true" *) logic [31:0] dbg_ila_if_pd_instr;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd_sel_nop;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd_fetch_fault;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd_fetch_fault_hi;
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pd2_pc;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd2_sel_nop;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd2_fetch_fault;
+
+  assign dbg_ila_if_pc                = o_pc[15:0];
+  assign dbg_ila_if_instr_valid       = i_instr_valid;
+  assign dbg_ila_if_f0_launch         = f0_launch;
+  assign dbg_ila_if_f1_accept         = f1_accept;
+  assign dbg_ila_if_stop_fetch        = q_stop_fetch;
+  assign dbg_ila_if_flush             = i_pipeline_ctrl.flush;
+  assign dbg_ila_if_stall             = i_pipeline_ctrl.stall;
+  assign dbg_ila_if_pd_redirect       = i_pd_redirect;
+  assign dbg_ila_if_instr_fault0      = i_instr_fault0;
+  assign dbg_ila_if_instr_fault1      = i_instr_fault1;
+  assign dbg_ila_if_pd_pc             = o_from_if_to_pd.program_counter[15:0];
+  assign dbg_ila_if_pd_instr          = o_from_if_to_pd.effective_instr;
+  assign dbg_ila_if_pd_sel_nop        = o_from_if_to_pd.sel_nop;
+  assign dbg_ila_if_pd_fetch_fault    = o_from_if_to_pd.fetch_fault;
+  assign dbg_ila_if_pd_fetch_fault_hi = o_from_if_to_pd.fetch_fault_hi;
+  assign dbg_ila_if_pd2_pc            = o_from_if_to_pd_2.program_counter[15:0];
+  assign dbg_ila_if_pd2_sel_nop       = o_from_if_to_pd_2.sel_nop;
+  assign dbg_ila_if_pd2_fetch_fault   = o_from_if_to_pd_2.fetch_fault;
+`endif
+
+`ifndef SYNTHESIS
+  logic sim_reset_seen_q = 1'b0;
+  parcel_t check_parcel;
+  meta_t check_meta;
+
+  // Simulation-only shadow trackers for independent IF-stage contract checks:
+  // 1) first emitted PC after any redirect matches the redirect target;
+  // 2) forwarded eff_ras_* on non-pure-pop restores equals u_ras next cycle;
+  // 3) independent queue occupancy / headroom shadow against u_parcel_queue.
+  logic sim_redir_has_target;
+  logic [XLEN-1:0] sim_redir_target;
+  logic sim_redir_expect_valid_q;
+  logic [XLEN-1:0] sim_redir_expect_pc_q;
+
+  logic [3:0] sim_f0_ras_srcs;
+  logic sim_prev_ras_fwd_q;
+  logic sim_prev_eff_ras_nonempty_q;
+  logic [RasPtrBits-1:0] sim_prev_eff_ras_tos_q;
+  logic [RasPtrBits:0] sim_prev_eff_ras_cnt_q;
+  logic [XLEN-1:0] sim_prev_eff_ras_top_q;
+  logic sim_prev_eff_ras_top_cached_q;
+
+  logic [4:0] sim_q_cnt_q;
+  logic [3:0] sim_m_cnt_q;
+  logic [5:0] sim_q_avail;
+  logic [4:0] sim_m_avail;
+  logic [2:0] sim_m_pop;
+  logic [XLEN-3:0] sim_served_word;
+  logic [XLEN-1:0] sim_prev_pc_q;
+  logic sim_prev_pred_capture_q;
+  logic sim_pred_capture_comb;
+  logic sim_pred_retain_comb;
+
+  assign sim_pred_capture_comb = !any_redirect && !f1_resteer_raw && !(|npc_sel[5:1]) &&
+      ((i_instr_valid && fetch_pa_valid && !f0_stop_fetch && !f1_collapsed_accept_raw) ||
+       (!f1_req_valid_q && !i_instr_valid && fetch_pa_valid && !f0_stop_fetch));
+  assign sim_pred_retain_comb = sim_prev_pred_capture_q && !any_redirect && !f1_resteer_raw &&
+      !(|npc_sel[5:1]) && !pc_update_en && !f1_req_valid_q && collapsed_armed_q &&
+      !i_instr_valid && (!fetch_pa_valid || f0_stop_fetch) && (pc == f1_req_q.pc);
+
+  always_comb begin
+    sim_redir_has_target = 1'b0;
+    sim_redir_target     = '0;
+    if (i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken) begin
+      sim_redir_has_target = 1'b1;
+      sim_redir_target     = {i_trap_ctrl.trap_target[XLEN-1:1], 1'b0};
+    end else if (i_fence_i_flush) begin
+      sim_redir_has_target = 1'b1;
+      sim_redir_target     = {i_fence_i_target[XLEN-1:1], 1'b0};
+    end else if (i_from_ex_comb.branch_taken) begin
+      sim_redir_has_target = 1'b1;
+      sim_redir_target     = {i_from_ex_comb.branch_target_address[XLEN-1:1], 1'b0};
+    end else if (i_pd_redirect && !i_pipeline_ctrl.stall) begin
+      sim_redir_has_target = 1'b1;
+      sim_redir_target     = {i_pd_redirect_target[XLEN-1:1], 1'b0};
+    end
+
+    sim_f0_ras_srcs = {
+      f0_launch && f0_btb_steer_now && (btb_is_call || btb_is_return),
+      f0_launch && f0_span_btb_fire && (span_btb_pending_q.is_call || span_btb_pending_q.is_return),
+      f1_collapsed_btb_steer && (f1_req_q.btb_is_call || f1_req_q.btb_is_return),
+      f1_collapsed_span_fire && (span_btb_pending_q.is_call || span_btb_pending_q.is_return)
+    };
+
+    sim_served_word = i_served_high ? i_served_word_high : i_served_word_low;
+    sim_q_avail = {1'b0, sim_q_cnt_q} + (f1_push_valid ? {3'b0, f1_push_count} : 6'd0);
+    sim_m_avail = {1'b0, sim_m_cnt_q} + (f1_push_valid ? 5'd1 : 5'd0);
+    sim_m_pop = 3'd0;
+    for (int k = 0; k < 4; k++) begin
+      if ((3'(k) < q_pop_count) && q_view_last[k]) begin
+        sim_m_pop = sim_m_pop + 3'd1;
+      end
+    end
+  end
+
+  initial begin
+    if ($bits(check_parcel) != ParcelBits)
+      $fatal(
+          1, "if_stage: ParcelBits (%0d) != $bits(parcel_t) (%0d)", ParcelBits, $bits(check_parcel)
+      );
+    if ($bits(check_meta) != MetaBits)
+      $fatal(1, "if_stage: MetaBits (%0d) != $bits(meta_t) (%0d)", MetaBits, $bits(check_meta));
+  end
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
-      slot2_is_cond_branch_saved_q           <= 1'b0;
-      pd_slot2_target_native_imm_saved_q     <= '0;
-      pd_slot2_target_compressed_imm_saved_q <= '0;
-      pd_slot2_target_pc_low_saved_q         <= '0;
-    end else if (flush_for_c_ext_safe) begin
-      slot2_is_cond_branch_saved_q           <= 1'b0;
-      pd_slot2_target_native_imm_saved_q     <= '0;
-      pd_slot2_target_compressed_imm_saved_q <= '0;
-      pd_slot2_target_pc_low_saved_q         <= '0;
-    end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      slot2_is_cond_branch_saved_q           <= slot2_is_cond_branch_live;
-      pd_slot2_target_native_imm_saved_q     <= native_branch_imm_low(effective_instr_2);
-      pd_slot2_target_compressed_imm_saved_q <= compressed_branch_imm_low(raw_parcel_2);
-      pd_slot2_target_pc_low_saved_q         <= slot2_pc_live[riscv_pkg::PdTargetSplit-1:0];
-    end
-  end
-
-  (* dont_touch = "yes" *) pd_target_candidate #(
-      .SPLIT(riscv_pkg::PdTargetSplit)
-  ) u_pd_slot2_target_native_plus2 (
-      .i_pc_low       (pc_plus2_low),
-      .i_pc_low_saved (pd_slot2_target_pc_low_saved_q),
-      .i_imm_low_lo   (native_branch_imm_low({slot2_next_word[15:0], slot2_cur_word[31:16]})),
-      .i_imm_low_hi   (native_branch_imm_low(slot2_next_word)),
-      .i_imm_low_saved(pd_slot2_target_native_imm_saved_q),
-      .i_pc_high      (pc_reg[1]),
-      .i_replay       (replay_saved_if_outputs),
-      .o_target_low   (pd_slot2_target_native_plus2_low),
-      .o_high_select  (pd_slot2_target_native_plus2_high_select)
-  );
-  (* dont_touch = "yes" *) pd_target_candidate #(
-      .SPLIT(riscv_pkg::PdTargetSplit)
-  ) u_pd_slot2_target_native_plus4 (
-      .i_pc_low       (pc_plus4_low),
-      .i_pc_low_saved (pd_slot2_target_pc_low_saved_q),
-      .i_imm_low_lo   (native_branch_imm_low(slot2_next_word)),
-      .i_imm_low_hi   ('0),
-      .i_imm_low_saved(pd_slot2_target_native_imm_saved_q),
-      .i_pc_high      (pc_reg[1]),
-      .i_replay       (replay_saved_if_outputs),
-      .o_target_low   (pd_slot2_target_native_plus4_low),
-      .o_high_select  (pd_slot2_target_native_plus4_high_select)
-  );
-  (* dont_touch = "yes" *) pd_target_candidate #(
-      .SPLIT(riscv_pkg::PdTargetSplit)
-  ) u_pd_slot2_target_compressed_plus2 (
-      .i_pc_low       (pc_plus2_low),
-      .i_pc_low_saved (pd_slot2_target_pc_low_saved_q),
-      .i_imm_low_lo   (compressed_branch_imm_low(slot2_cur_word[31:16])),
-      .i_imm_low_hi   (compressed_branch_imm_low(slot2_next_word[15:0])),
-      .i_imm_low_saved(pd_slot2_target_compressed_imm_saved_q),
-      .i_pc_high      (pc_reg[1]),
-      .i_replay       (replay_saved_if_outputs),
-      .o_target_low   (pd_slot2_target_compressed_plus2_low),
-      .o_high_select  (pd_slot2_target_compressed_plus2_high_select)
-  );
-  (* dont_touch = "yes" *) pd_target_candidate #(
-      .SPLIT(riscv_pkg::PdTargetSplit)
-  ) u_pd_slot2_target_compressed_plus4 (
-      .i_pc_low       (pc_plus4_low),
-      .i_pc_low_saved (pd_slot2_target_pc_low_saved_q),
-      .i_imm_low_lo   (compressed_branch_imm_low(slot2_next_word[15:0])),
-      .i_imm_low_hi   (compressed_branch_imm_low(slot2_next_word[31:16])),
-      .i_imm_low_saved(pd_slot2_target_compressed_imm_saved_q),
-      .i_pc_high      (pc_reg[1]),
-      .i_replay       (replay_saved_if_outputs),
-      .o_target_low   (pd_slot2_target_compressed_plus4_low),
-      .o_high_select  (pd_slot2_target_compressed_plus4_high_select)
-  );
-
-  // Slot-2 packet assembly.
-  assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_saved : raw_parcel_2;
-  assign o_from_if_to_pd_2.decomp_illegal = replay_saved_if_outputs ? slot2_decomp_illegal_sc :
-                                            slot2_decomp_illegal;
-  assign o_from_if_to_pd_2.is_cond_branch = replay_saved_if_outputs ?
-      slot2_is_cond_branch_saved_q : slot2_is_cond_branch_live;
-  assign o_from_if_to_pd_2.pd_target_native_low =
-      is_compressed ? pd_slot2_target_native_plus2_low : pd_slot2_target_native_plus4_low;
-  assign o_from_if_to_pd_2.pd_target_native_high_select =
-      is_compressed ? pd_slot2_target_native_plus2_high_select :
-                      pd_slot2_target_native_plus4_high_select;
-  assign o_from_if_to_pd_2.pd_target_compressed_low =
-      is_compressed ? pd_slot2_target_compressed_plus2_low :
-                      pd_slot2_target_compressed_plus4_low;
-  assign o_from_if_to_pd_2.pd_target_compressed_high_select =
-      is_compressed ? pd_slot2_target_compressed_plus2_high_select :
-                      pd_slot2_target_compressed_plus4_high_select;
-  assign o_from_if_to_pd_2.sel_nop = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
-  assign o_from_if_to_pd_2.sel_compressed = replay_saved_if_outputs ? sel_compressed_2_sc :
-                                            sel_compressed_2;
-  // Derive slot2_valid from the replay-aware output, not the live aligner.
-  assign slot2_valid = !o_from_if_to_pd_2.sel_nop;
-  assign o_from_if_to_pd_2.effective_instr = replay_saved_if_outputs ? effective_instr_2_sc :
-                                             effective_instr_2;
-  assign o_from_if_to_pd_2.source_hot_predecoded =
-      replay_saved_if_outputs ? source_hot_predecoded_2_saved :
-                                source_hot_predecoded_2_live;
-  assign o_from_if_to_pd_2.bits24_20_predecoded =
-      replay_saved_if_outputs ? bits24_20_predecoded_2_saved : bits24_20_2;
-  assign o_from_if_to_pd_2.rvc_extra_predecoded = '0;
-  assign o_from_if_to_pd_2.rs1_rest_predecoded =
-      replay_saved_if_outputs ? rs1_rest_predecoded_2_saved : rs1_rest_2;
-  assign o_from_if_to_pd_2.program_counter = replay_saved_if_outputs ? slot2_pc_sc : slot2_pc_live;
-  // Slot-2 fault tag (see the slot-1 block): current word, plus the next
-  // word for every position that reads it.
-  logic slot2_cur_hi_compressed;  // compressed slot 2 entirely in the current word
-  logic slot2_cur_hi_native;  // native slot 2 straddling current[31:16] / next[15:0]
-  assign slot2_cur_hi_compressed = !use_instr_buffer && !pc_reg[1] && is_compressed &&
-      is_compressed_2;
-  assign slot2_cur_hi_native = !use_instr_buffer && !pc_reg[1] && is_compressed && !is_compressed_2;
-  logic [2:0] fetch_fault_2_live;  // {fault, page, hi}
-  always_comb begin
-    if (cur_fault_pair[1]) fetch_fault_2_live = {1'b1, cur_fault_pair[0], 1'b0};
-    else if (!slot2_cur_hi_compressed && next_fault_pair[1])
-      fetch_fault_2_live = {1'b1, next_fault_pair[0], slot2_cur_hi_native};
-    else fetch_fault_2_live = 3'b000;
-  end
-
-  logic [2:0] fetch_fault_2_sc;
-  stall_capture_reg #(
-      .WIDTH(3)
-  ) u_fetch_fault_2_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(fetch_fault_2_live),
-      .o_data(fetch_fault_2_sc)
-  );
-
-  logic [2:0] fetch_fault_2_effective;
-  assign fetch_fault_2_effective = replay_saved_if_outputs ? fetch_fault_2_sc : fetch_fault_2_live;
-  assign o_from_if_to_pd_2.fetch_fault = fetch_fault_2_effective[2];
-  assign o_from_if_to_pd_2.fetch_fault_page = fetch_fault_2_effective[1];
-  assign o_from_if_to_pd_2.fetch_fault_hi = fetch_fault_2_effective[0];
-
-  // Capture the validated staged candidate with its packet before live stall
-  // suppresses consumption. Its target, type, and pending-PC relations stay
-  // together while the BTB reads other rows. Replay owns the saved packet;
-  // every redirect cancels the candidate even while the front end is held.
-  logic slot2_capture_kill;
-  assign slot2_capture_kill = flush_for_c_ext_safe || i_pipeline_ctrl.flush ||
-      i_pd_redirect || i_from_ex_comb.branch_taken || i_trap_ctrl.trap_taken ||
-      i_trap_ctrl.mret_taken || i_fence_i_flush;
-  slot2_prediction_capture #(
-      .WIDTH(XLEN + 2 + $bits(slot2_staged_target_rel_pending))
-  ) u_slot2_prediction_capture (
-      .i_clk,
-      .i_reset(i_pipeline_ctrl.reset),
-      .i_kill(slot2_capture_kill),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_replay(replay_saved_if_outputs && !sel_nop_2_saved),
-      .i_disable(i_disable_branch_prediction || any_holdoff_safe ||
-                 prediction_holdoff || pending_prediction_holdoff_wcs0 ||
-                 window_cannot_serve_pc_reg),
-      .i_candidate(slot2_staged_prediction_used_for_capture),
-      .i_payload({
-        slot2_predicted_target,
-        slot2_predicted_is_call,
-        slot2_predicted_is_return,
-        slot2_staged_target_rel_pending_live
-      }),
-      .o_request(slot2_replay_request),
-      .o_consumed(slot2_replay_consumed),
-      .o_payload({
-        slot2_predicted_target_sc, slot2_predicted_kind_sc, slot2_staged_target_rel_pending_sc
-      })
-  );
-
-`ifndef SYNTHESIS
-  logic [XLEN-1:0] slot2_candidate_pc_saved;
-  always_ff @(posedge i_clk) begin
-    if (if_stage_stall && !if_stage_stall_registered) slot2_candidate_pc_saved <= slot2_pc_live;
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset && slot2_replay_request) begin
-      p_slot2_replay_has_exact_packet_owner :
-      assert (replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop &&
-              o_from_if_to_pd_2.program_counter == slot2_candidate_pc_saved);
-      p_slot2_replay_has_no_live_prediction :
-      assert (!slot2_prediction_used_live && !prediction_used && !prediction_used_r);
-      p_slot2_replay_target_matches_redirect :
-      assert (o_from_if_to_pd_2.btb_predicted_target == slot2_staged_predicted_target);
-      p_slot2_replay_pending_relations_match :
-      assert (slot2_staged_target_rel_pending == {
-        slot2_staged_predicted_target == pending_prediction_pc,
-        slot2_staged_predicted_target[XLEN-1:1] < pending_prediction_pc[XLEN-1:1],
-        slot2_staged_predicted_target[XLEN-1:1] > pending_prediction_pc[XLEN-1:1],
-        slot2_staged_predicted_target == pending_prediction_prev_pc,
-        slot2_staged_predicted_target == pending_prediction_prev_native_pc
-      });
-    end
-  end
-`endif
-
-  // Clear the slot-2 taken flag when slot 2 is a NOP or carries a fetch fault.
-  logic slot2_sel_nop_effective;
-  assign slot2_sel_nop_effective = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
-  assign o_from_if_to_pd_2.btb_predicted_taken =
-      (slot2_sel_nop_effective || o_from_if_to_pd_2.fetch_fault) ? 1'b0 :
-      (replay_saved_if_outputs ? slot2_replay_consumed : slot2_predicted_taken);
-  assign o_from_if_to_pd_2.btb_predicted_target = replay_saved_if_outputs ?
-                                                  slot2_predicted_target_sc :
-                                                  slot2_predicted_target;
-  // Types of the entry behind the slot-2 target, for the stack operation.
-  assign slot2_packet_is_call = replay_saved_if_outputs ? slot2_predicted_kind_sc[1] :
-                                                          slot2_predicted_is_call;
-  assign slot2_packet_is_return = replay_saved_if_outputs ? slot2_predicted_kind_sc[0] :
-                                                            slot2_predicted_is_return;
-
-  // Return address stack metadata: slot 2 shares slot 1's recovery point.
-  // Slot 1 cannot push or pop when slot 2 is valid: an instruction predicted
-  // taken ends the bundle.
-  assign o_from_if_to_pd_2.ras_checkpoint_tos = o_from_if_to_pd.ras_checkpoint_tos;
-  assign o_from_if_to_pd_2.ras_checkpoint_valid_count = o_from_if_to_pd.ras_checkpoint_valid_count;
-  assign o_from_if_to_pd_2.ras_checkpoint_top = o_from_if_to_pd.ras_checkpoint_top;
-  // Slot 2 has no bimodal PD redirect, so its direction bit is zero.
-  // Carry its PC's index for conditional-branch training at commit.
-  assign o_from_if_to_pd_2.bp_dir_taken = 1'b0;
-  assign o_from_if_to_pd_2.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_2_sc : bp_dir_idx_2;
-  // Slot-2 tagged-predictor direction, from the precomputed coverage and bank
-  // hits above.
-  assign o_from_if_to_pd_2.tage_valid =
-      (replay_saved_if_outputs ? tage_slot2_hit_saved :
-       (tage_slot2_uses_next_word_live ? tage_slot2_hit_next_live :
-                                         tage_slot2_hit_cur_live)) &&
-      !o_from_if_to_pd_2.fetch_fault;
-  assign o_from_if_to_pd_2.tage_taken = tage_slot2_bank_sel ? tage_bank1.taken : tage_bank0.taken;
-
-`ifndef SYNTHESIS
-  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_word_2_ref;
-  logic [riscv_pkg::TageLookupHiBit:2] tage_slot_bank_word_2_ref;
-  riscv_pkg::tage_lookup_t tage_slot_lookup_2_ref;
-  logic tage_slot2_cov_ref;
-  assign tage_slot_word_2_ref = o_from_if_to_pd_2.program_counter[riscv_pkg::TageLookupHiBit:2];
-  assign tage_slot_bank_word_2_ref = (tage_lookup_word[2] == tage_slot_word_2_ref[2]) ?
-                                     tage_lookup_word : tage_lookup_word_next;
-  assign tage_slot2_cov_ref = tage_slot_bank_word_2_ref == tage_slot_word_2_ref;
-  assign tage_slot_lookup_2_ref = tage_slot_word_2_ref[2] ? tage_bank1 : tage_bank0;
-
-  logic [riscv_pkg::TageTables-1:0][riscv_pkg::TageIndexBits-1:0] tage_fold_index_ref;
-  always_comb begin
-    for (int t = 0; t < riscv_pkg::TageTables; t++) begin
-      int unsigned table_hist;
-      logic [riscv_pkg::TageIndexBits-1:0] folded;
-      table_hist = (t == 0) ? riscv_pkg::TageHist1Bits :
-          (t == 1) ? riscv_pkg::TageHist2Bits : (t == 2) ? riscv_pkg::TageHist3Bits :
-          riscv_pkg::TageHist4Bits;
-      folded = '0;
-      for (int b = 0; b < riscv_pkg::TageDirHistBits; b++) begin
-        if (b < int'(table_hist))
-          folded[b%riscv_pkg::TageIndexBits] = folded[b%riscv_pkg::TageIndexBits] ^ i_tage_hist[b];
-      end
-      tage_fold_index_ref[t] = folded;
-    end
-  end
-
-  // Sampled at the clock so the check sees settled values on kept nets.
-  always_ff @(posedge i_clk) begin
-    if (coverage_reset_seen_q && !i_pipeline_ctrl.reset) begin
-      // Consumer-side fold contract on the external pre-folded TAGE indices
-      // supplied to u_tage_predictor (USE_EXTERNAL_FOLD_INDEX=1).
-      if (USE_EXTERNAL_TAGE_FOLD && !if_stage_stall && fetch_progress && !$isunknown(
-              {i_tage_hist, i_tage_hist_fold}
-          )) begin
-        for (int t = 0; t < riscv_pkg::TageTables; t++) begin
-          p_lookup_fold_index_matches_hist : assert (i_tage_hist_fold[t] == tage_fold_index_ref[t]);
-        end
-      end
-      // PD derives slot 1's size from its raw parcel and shares its high PC
-      // with slot 2. Check the memory-sideband and fetch-to-PD contracts on
-      // the final packet, including stall replay, before PD consumes it.
+      sim_reset_seen_q              <= 1'b1;
+      sim_redir_expect_valid_q      <= 1'b0;
+      sim_redir_expect_pc_q         <= '0;
+      sim_prev_ras_fwd_q            <= 1'b0;
+      sim_prev_eff_ras_nonempty_q   <= 1'b0;
+      sim_prev_eff_ras_tos_q        <= '0;
+      sim_prev_eff_ras_cnt_q        <= '0;
+      sim_prev_eff_ras_top_q        <= '0;
+      sim_prev_eff_ras_top_cached_q <= 1'b0;
+      sim_q_cnt_q                   <= '0;
+      sim_m_cnt_q                   <= '0;
+      sim_prev_pc_q                 <= '0;
+      sim_prev_pred_capture_q       <= 1'b0;
+    end else if (sim_reset_seen_q) begin
       if (!$isunknown({o_from_if_to_pd.sel_nop, o_from_if_to_pd_2.sel_nop})) begin
         p_if_slot1_nop_implies_slot2_nop :
         assert (!o_from_if_to_pd.sel_nop || o_from_if_to_pd_2.sel_nop);
       end
-      if (!$isunknown(
-              {
-                o_from_if_to_pd.fetch_fault,
-                o_from_if_to_pd_2.sel_nop,
-                o_from_if_to_pd_2.fetch_fault
-              }
-          )) begin
-        p_if_slot1_fault_implies_slot2_fault_or_nop :
-        assert (o_from_if_to_pd_2.sel_nop || !o_from_if_to_pd.fetch_fault ||
-                o_from_if_to_pd_2.fetch_fault);
+      if (!$isunknown({o_from_if_to_pd.fetch_fault, o_from_if_to_pd.btb_predicted_taken})) begin
+        p_if_fault_clears_slot1_taken :
+        assert (!o_from_if_to_pd.fetch_fault || !o_from_if_to_pd.btb_predicted_taken);
       end
-      if (!$isunknown(
-              {
-                o_from_if_to_pd.program_counter,
-                o_from_if_to_pd.sel_compressed,
-                o_from_if_to_pd_2.program_counter
-              }
+      if (!$isunknown({o_from_if_to_pd_2.fetch_fault, o_from_if_to_pd_2.btb_predicted_taken})) begin
+        p_if_fault_clears_slot2_taken :
+        assert (!o_from_if_to_pd_2.fetch_fault || !o_from_if_to_pd_2.btb_predicted_taken);
+      end
+      if (!o_from_if_to_pd.sel_nop && !$isunknown(
+              {o_from_if_to_pd.program_counter, o_from_if_to_pd.sel_compressed,
+               o_from_if_to_pd_2.program_counter}
           )) begin
         p_if_slot2_pc_step_exact :
         assert (o_from_if_to_pd_2.program_counter ==
                 (o_from_if_to_pd.program_counter +
                  (o_from_if_to_pd.sel_compressed ? riscv_pkg::PcIncrementCompressed :
                                                    riscv_pkg::PcIncrement32bit)));
-      end
-      if (!$isunknown(
-              {
-                o_backing_hit[1],
-                o_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
-                o_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]
-              }
-          )) begin
-        p_if_slot2_backing_hit_same_region :
-        assert (!o_backing_hit[1] ||
-                (o_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits] ==
-                 o_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]));
       end
       if (!$isunknown(
               {
@@ -3435,9 +2415,6 @@ module if_stage #(
                 {o_backing_slot2_return_by_size[o_from_if_to_pd.sel_compressed],
                  o_backing_slot2_target_by_size[o_from_if_to_pd.sel_compressed]});
       end
-      if (!$isunknown(o_from_if_to_pd.is_cond_branch)) begin
-        p_if_slot1_is_cond_branch_clear : assert (!o_from_if_to_pd.is_cond_branch);
-      end
       if (!o_from_if_to_pd_2.sel_nop && !o_from_if_to_pd.fetch_fault && !$isunknown(
               {o_from_if_to_pd.sel_compressed, o_from_if_to_pd.raw_parcel,
                o_from_if_to_pd.effective_instr[6:0]}
@@ -3451,7 +2428,7 @@ module if_stage #(
             o_from_if_to_pd.effective_instr[6:0]
         ));
       end
-      if (!o_from_if_to_pd_2.sel_nop && !o_from_if_to_pd_2.fetch_fault && !$isunknown(
+      if (!o_from_if_to_pd_2.sel_nop && !$isunknown(
               {o_from_if_to_pd_2.sel_compressed, o_from_if_to_pd_2.raw_parcel[1:0]}
           )) begin
         p_if_slot2_size_matches_raw_parcel :
@@ -3459,137 +2436,222 @@ module if_stage #(
       end
       if (!$isunknown(
               {
-                o_from_if_to_pd.program_counter,
-                o_from_if_to_pd.effective_instr,
-                o_from_if_to_pd.pd_target_native_low,
-                o_from_if_to_pd.pd_target_native_high_select
+                o_backing_hit[1],
+                o_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits],
+                o_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]
               }
           )) begin
-        p_if_slot1_pd_target_native_exact :
-        assert ({o_from_if_to_pd.pd_target_native_high_select[1],
-                 o_from_if_to_pd.pd_target_native_high_select[0],
-                 o_from_if_to_pd.pd_target_native_low} ==
-                {o_from_if_to_pd.effective_instr[31],
-                 (riscv_pkg::PdTargetSplit + 1)'(
-                     o_from_if_to_pd.program_counter[riscv_pkg::PdTargetSplit-1:0] +
-                     native_branch_imm_low(
-            o_from_if_to_pd.effective_instr
-        ))});
+        p_if_slot2_backing_hit_same_region :
+        assert (!o_backing_hit[1] ||
+                (o_from_if_to_pd_2.program_counter[XLEN-1:riscv_pkg::PhysAddrBits] ==
+                 o_from_if_to_pd.program_counter[XLEN-1:riscv_pkg::PhysAddrBits]));
       end
+      if (!$isunknown({ras_top_cached_q, ras_below_cached_q, ras_cached_q, ras_cached_tos_q})) begin
+        p_if_ras_top_below_cached_exact :
+        assert ((ras_top_cached_q == ras_cached_q[ras_cached_tos_q]) &&
+                (ras_below_cached_q == ras_cached_q[ras_sh_below_tos]));
+      end
+      if (f1_req_valid_q && !$isunknown(
+              {f1_req_q.pc, f1_req_q.even_dir_idx, f1_resteer_target, f1_resteer_even_dir_idx}
+          )) begin
+        p_if_f1_resteer_even_dir_exact :
+        assert ((f1_req_q.even_dir_idx == (f1_req_q.pc[riscv_pkg::BpDirIdxBits:3] +
+                                           (riscv_pkg::BpDirIdxBits - 2)'(f1_req_q.pc[2]))) &&
+                (f1_resteer_even_dir_idx ==
+                 (f1_resteer_target[riscv_pkg::BpDirIdxBits:3] +
+                  (riscv_pkg::BpDirIdxBits - 2)'(f1_resteer_target[2]))));
+      end
+      if (f1_pred_fresh_q && !$isunknown(
+              {f1_req_q.pc, sim_prev_pc_q, sim_prev_pred_capture_q}
+          )) begin
+        p_if_backing_win_pc_matches : assert (f1_req_q.pc == sim_prev_pc_q);
+        p_if_pred_capture_matches_fresh : assert (sim_prev_pred_capture_q);
+      end
+      if (ras_nonempty && !$isunknown({ras_top, ras_top_is_cached})) begin
+        p_if_ras_cached_shadow_exact :
+        assert (ras_top_is_cached == riscv_pkg::pma_cached_ok(ras_top));
+      end
+      if (eff_ras_nonempty && !ras_restore_pure_pop_q && !$isunknown(
+              {eff_ras_top, eff_ras_top_cached}
+          )) begin
+        p_if_eff_ras_cached_exact :
+        assert (eff_ras_top_cached == riscv_pkg::pma_cached_ok(eff_ras_top));
+      end
+      if (!$isunknown({eff_ras_nonempty, ras_restore_q, ras_sh_cnt_next, ras_nonempty})) begin
+        p_if_eff_ras_nonempty_exact :
+        assert (eff_ras_nonempty == (ras_restore_q ? (ras_sh_cnt_next != '0) : ras_nonempty));
+      end
+      if (!pqueue_flush && !$isunknown({s1_have_bytes, s1_need_2, q_avail_ge})) begin
+        p_if_drain_avail_s1_exact :
+        assert (s1_have_bytes == (s1_need_2 ? q_avail_ge[1] : q_avail_ge[0]));
+      end
+      if (!pqueue_flush && !i_fetch_trap_hold && !s1_fault && s1_p.allows_slot2_after &&
+          !s2_fault && s2_p.slot2_start_valid &&
+          !$isunknown(
+              {s2_have_bytes, s1_comp, s2_comp, q_avail_ge}
+          )) begin
+        p_if_drain_avail_s2_exact :
+        assert (s2_have_bytes ==
+                (s1_comp ? (s2_comp ? q_avail_ge[1] : q_avail_ge[2]) :
+                           (s2_comp ? q_avail_ge[2] : q_avail_ge[3])));
+      end
+
+      // 1) First emitted PC after a redirect equals the redirect target.
+      if (!any_redirect && sim_redir_expect_valid_q && !o_from_if_to_pd.sel_nop && !$isunknown(
+              {o_from_if_to_pd.program_counter, sim_redir_expect_pc_q}
+          )) begin
+        p_if_first_pc_after_redirect_matches_target :
+        assert (o_from_if_to_pd.program_counter == sim_redir_expect_pc_q);
+      end
+
+      // 2) An accepted window's served-word tag matches independently of the
+      //    chunked/grouped comparator tree.
+      if (!pqueue_flush && f1_push_valid && !$isunknown(
+              {i_instr_valid, i_served_high, i_instr_pc_metadata_served_high, sim_served_word,
+               f1_req_q.pc, f1_push_meta.word0_pc, f1_req_valid_q, collapsed_armed_q,
+               f0_stop_fetch}
+          )) begin
+        p_if_accepted_window_tag_matches :
+        assert (i_instr_valid && (i_served_high == i_instr_pc_metadata_served_high) &&
+                (sim_served_word == f1_req_q.pc[XLEN-1:2]) &&
+                (f1_push_meta.word0_pc == sim_served_word) &&
+                (f1_req_valid_q || (collapsed_armed_q && !f0_stop_fetch)));
+      end
+
+      // 3) A bare-mode fetch outside executable PMA carries a fetch fault at
+      //    both F0 (IMMU) and the emitted slot-1 packet.
+      if (!i_fetch_translation_active && fetch_pa_valid && !$isunknown(
+              {pc, pc_word_p1, fetch_fault0_live, o_fetch_fault1}
+          )) begin
+        p_if_bare_f0_pma_bad_faults : assert (riscv_pkg::pma_fetch_ok(pc) || fetch_fault0_live);
+        p_if_bare_f0_word1_pma_bad_faults :
+        assert (riscv_pkg::pma_fetch_ok({pc_word_p1, 2'b00}) || o_fetch_fault1);
+      end
+`ifndef FROST_RVFI_DII
+      // TestRIG builds (hw/sim/frost_rvfi_dii.sv) drop instruction access
+      // faults on purpose when injecting DII instructions, so skip the
+      // emitted-packet check there while keeping the F0 IMMU check above.
+      if (!i_fetch_translation_active && !o_from_if_to_pd.sel_nop && !$isunknown(
+              {o_from_if_to_pd.program_counter, o_from_if_to_pd.sel_compressed,
+               o_from_if_to_pd.fetch_fault}
+          )) begin
+        p_if_bare_fetch_fault_matches_pma :
+        assert ((riscv_pkg::pma_fetch_ok(
+            o_from_if_to_pd.program_counter
+        ) && (o_from_if_to_pd.sel_compressed || riscv_pkg::pma_fetch_ok(
+            o_from_if_to_pd.program_counter + XLEN'(2)
+        ))) || o_from_if_to_pd.fetch_fault);
+      end
+`endif
+
+      // 4) At most one speculative RAS op per window, never on a fault/stall/
+      //    redirect, and never colliding with a registered restore at u_ras.
       if (!$isunknown(
               {
-                o_from_if_to_pd.program_counter,
-                o_from_if_to_pd.raw_parcel,
-                o_from_if_to_pd.pd_target_compressed_low,
-                o_from_if_to_pd.pd_target_compressed_high_select
+                sim_f0_ras_srcs,
+                f0_ras_push,
+                f0_ras_pop,
+                f0_launch,
+                f1_collapsed_accept,
+                f0_stop_fetch,
+                fetch_fault0_live,
+                any_redirect,
+                i_from_ex_comb.ras_misprediction,
+                f1_ras_restore_comb,
+                ras_restore_q,
+                f0_ras_push_q,
+                f0_ras_pop_q,
+                pd_ras_restore,
+                i_pipeline_ctrl.stall,
+                frontend_flush
               }
           )) begin
-        p_if_slot1_pd_target_compressed_exact :
-        assert ({o_from_if_to_pd.pd_target_compressed_high_select[1],
-                 o_from_if_to_pd.pd_target_compressed_high_select[0],
-                 o_from_if_to_pd.pd_target_compressed_low} ==
-                {o_from_if_to_pd.raw_parcel[12],
-                 (riscv_pkg::PdTargetSplit + 1)'(
-                     o_from_if_to_pd.program_counter[riscv_pkg::PdTargetSplit-1:0] +
-                     compressed_branch_imm_low(
-            o_from_if_to_pd.raw_parcel
-        ))});
+        p_if_ras_one_op_per_window :
+        assert ($onehot0(
+            sim_f0_ras_srcs
+        ) && (!(f0_ras_push || f0_ras_pop) ||
+              ((f0_launch || f1_collapsed_accept) && !f0_stop_fetch && !fetch_fault0_live &&
+               !any_redirect && !i_from_ex_comb.ras_misprediction && !f1_ras_restore_comb)));
+        p_if_ras_no_restore_collision :
+        assert (!(ras_restore_q && (f0_ras_push_q || f0_ras_pop_q)));
+        p_if_pd_ras_restore_unstalled :
+        assert (!pd_ras_restore || (!i_pipeline_ctrl.stall && !frontend_flush &&
+                                    !i_from_ex_comb.ras_misprediction));
       end
-      if (!$isunknown({o_tage_slot_valid[1], tage_slot2_cov_ref})) begin
-        p_if_slot2_tage_cov_exact : assert (o_tage_slot_valid[1] == tage_slot2_cov_ref);
-      end
-      if (!$isunknown({o_tage_slot_lookup_2, tage_slot_lookup_2_ref})) begin
-        p_if_slot2_tage_lookup_exact : assert (o_tage_slot_lookup_2 == tage_slot_lookup_2_ref);
-      end
-      if (!$isunknown(
-              {
-                o_from_if_to_pd_2.tage_valid,
-                tage_slot2_cov_ref,
-                tage_slot_lookup_2_ref.hit,
-                o_from_if_to_pd_2.fetch_fault
-              }
+
+      // 5) Forwarded eff_ras_* on a non-pure-pop restore matches u_ras one
+      //    cycle later (both u_ras stored state and live outputs when idle).
+      if (sim_prev_ras_fwd_q && !$isunknown(
+              {u_ras.tos, u_ras.valid_count, sim_prev_eff_ras_tos_q, sim_prev_eff_ras_cnt_q,
+               sim_prev_eff_ras_nonempty_q, f0_ras_push_q, f0_ras_pop_q, ras_nonempty, ras_tos,
+               ras_valid_count}
           )) begin
-        p_if_slot2_tage_valid_exact :
-        assert (o_from_if_to_pd_2.tage_valid ==
-                (tage_slot2_cov_ref &&
-                 (|tage_slot_lookup_2_ref.hit) &&
-                 !o_from_if_to_pd_2.fetch_fault));
+        p_if_eff_ras_matches_u_ras_next_cycle :
+        assert ((u_ras.tos == sim_prev_eff_ras_tos_q) &&
+                (u_ras.valid_count == sim_prev_eff_ras_cnt_q) &&
+                ((u_ras.valid_count != '0) == sim_prev_eff_ras_nonempty_q) &&
+                (!sim_prev_eff_ras_nonempty_q ||
+                 (!$isunknown(
+            {u_ras.stored_top, sim_prev_eff_ras_top_q}
+        ) && (u_ras.stored_top == sim_prev_eff_ras_top_q))) &&
+            ((f0_ras_push_q || f0_ras_pop_q) ||
+             ((ras_nonempty == sim_prev_eff_ras_nonempty_q) &&
+              (ras_tos == sim_prev_eff_ras_tos_q) && (ras_valid_count == sim_prev_eff_ras_cnt_q) &&
+              (!sim_prev_eff_ras_nonempty_q || (!$isunknown(
+            {ras_top, ras_top_is_cached, sim_prev_eff_ras_top_q, sim_prev_eff_ras_top_cached_q}
+        ) && (ras_top == sim_prev_eff_ras_top_q) &&
+            (ras_top_is_cached == sim_prev_eff_ras_top_cached_q))))));
       end
-      if (!$isunknown({o_from_if_to_pd_2.tage_taken, tage_slot_lookup_2_ref.taken})) begin
-        p_if_slot2_tage_taken_exact :
-        assert (o_from_if_to_pd_2.tage_taken == tage_slot_lookup_2_ref.taken);
-      end
-      if (!$isunknown(
-              {
-                o_from_if_to_pd_2.is_cond_branch,
-                o_from_if_to_pd_2.effective_instr[14:13],
-                o_from_if_to_pd_2.effective_instr[6:0]
-              }
+
+      // 6) if_stage-level parcel-queue headroom check (no parcel/meta
+      //    overflow, pop <= avail, F0 launch respects headroom).
+      if (!pqueue_flush && !$isunknown(
+              {sim_q_cnt_q, sim_m_cnt_q, f1_push_valid, f1_push_count, q_pop_count, q_avail,
+               sim_m_pop, f0_launch}
           )) begin
-        p_if_slot2_is_cond_branch_exact :
-        assert (o_from_if_to_pd_2.is_cond_branch ==
-                ((o_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_BRANCH) &&
-                 (o_from_if_to_pd_2.effective_instr[14:13] != 2'b01)));
+        p_if_queue_no_parcel_overflow : assert (sim_q_avail <= 6'd16);
+        p_if_queue_pop_le_avail : assert ({3'b0, q_pop_count} <= sim_q_avail);
+        p_if_queue_no_meta_overflow : assert (sim_m_avail <= 5'd8);
+        p_if_queue_avail_matches_shadow : assert ({1'b0, q_avail} == sim_q_avail);
+        p_if_f0_launch_has_headroom :
+        assert (!f0_launch || ((sim_q_cnt_q <= 5'd7) && (sim_m_cnt_q <= 4'd6)));
       end
-      if (!o_from_if_to_pd_2.sel_compressed && !$isunknown(
-              {
-                o_from_if_to_pd_2.program_counter,
-                o_from_if_to_pd_2.effective_instr,
-                o_from_if_to_pd_2.pd_target_native_low,
-                o_from_if_to_pd_2.pd_target_native_high_select
-              }
-          )) begin
-        p_if_slot2_pd_target_native_exact :
-        assert ({o_from_if_to_pd_2.pd_target_native_high_select[1],
-                 o_from_if_to_pd_2.pd_target_native_high_select[0],
-                 o_from_if_to_pd_2.pd_target_native_low} ==
-                {o_from_if_to_pd_2.effective_instr[31],
-                 (riscv_pkg::PdTargetSplit + 1)'(
-                     o_from_if_to_pd_2.program_counter[riscv_pkg::PdTargetSplit-1:0] +
-                     native_branch_imm_low(
-            o_from_if_to_pd_2.effective_instr
-        ))});
+
+      // Advance simulation-only shadow trackers.
+      if (any_redirect) begin
+        sim_redir_expect_valid_q <= sim_redir_has_target;
+        sim_redir_expect_pc_q    <= sim_redir_target;
+      end else if (sim_redir_expect_valid_q && !o_from_if_to_pd.sel_nop &&
+                   !i_pipeline_ctrl.stall) begin
+        sim_redir_expect_valid_q <= 1'b0;
       end
-      if (!$isunknown(
-              {
-                o_from_if_to_pd_2.program_counter,
-                o_from_if_to_pd_2.raw_parcel,
-                o_from_if_to_pd_2.pd_target_compressed_low,
-                o_from_if_to_pd_2.pd_target_compressed_high_select
-              }
-          )) begin
-        p_if_slot2_pd_target_compressed_exact :
-        assert ({o_from_if_to_pd_2.pd_target_compressed_high_select[1],
-                 o_from_if_to_pd_2.pd_target_compressed_high_select[0],
-                 o_from_if_to_pd_2.pd_target_compressed_low} ==
-                {o_from_if_to_pd_2.raw_parcel[12],
-                 (riscv_pkg::PdTargetSplit + 1)'(
-                     o_from_if_to_pd_2.program_counter[riscv_pkg::PdTargetSplit-1:0] +
-                     compressed_branch_imm_low(
-            o_from_if_to_pd_2.raw_parcel
-        ))});
+
+      sim_prev_ras_fwd_q            <= ras_restore_q && !ras_restore_pure_pop_q;
+      sim_prev_eff_ras_nonempty_q   <= eff_ras_nonempty;
+      sim_prev_eff_ras_tos_q        <= eff_ras_tos;
+      sim_prev_eff_ras_cnt_q        <= eff_ras_cnt;
+      sim_prev_eff_ras_top_q        <= eff_ras_top;
+      sim_prev_eff_ras_top_cached_q <= eff_ras_top_cached;
+
+      if (pqueue_flush) begin
+        sim_q_cnt_q <= '0;
+        sim_m_cnt_q <= '0;
+      end else begin
+        sim_q_cnt_q <= 5'(sim_q_avail - {3'b0, q_pop_count});
+        sim_m_cnt_q <= 4'(sim_m_avail - {2'b0, sim_m_pop});
       end
+      sim_prev_pc_q           <= pc;
+      sim_prev_pred_capture_q <= sim_pred_capture_comb || sim_pred_retain_comb;
     end
   end
 `endif
 
 `ifdef IF_SLOT2_PRECOMPUTE_FORMAL
   // Formal model (formal/if_slot2_precompute.sby): proves that IF's precomputed
-  // slot-2 TAGE coverage, lookup select, direction flags, conditional-branch
-  // flag, target candidates, PC step, and bubble/fault pairing invariants match
-  // direct architectural references across live and stall-replayed packets.
+  // slot-2 TAGE/ITTAGE lookup selection, conditional-branch flag, target
+  // candidates, PC step, bubble/fault pairing, and per-size backing outputs
+  // match direct references across empty-bypass and queued packets.
   logic f_slot2_past_valid = 1'b0;
-  logic [riscv_pkg::TageLookupHiBit:2] f_tage_slot_word_2_ref;
-  logic [riscv_pkg::TageLookupHiBit:2] f_tage_slot_bank_word_2_ref;
-  riscv_pkg::tage_lookup_t f_tage_slot_lookup_2_ref;
-  logic f_tage_slot2_cov_ref;
-
-  assign f_tage_slot_word_2_ref = o_from_if_to_pd_2.program_counter[riscv_pkg::TageLookupHiBit:2];
-  assign f_tage_slot_bank_word_2_ref =
-      (tage_lookup_word[2] == f_tage_slot_word_2_ref[2]) ?
-      tage_lookup_word : tage_lookup_word_next;
-  assign f_tage_slot2_cov_ref = f_tage_slot_bank_word_2_ref == f_tage_slot_word_2_ref;
-  assign f_tage_slot_lookup_2_ref = f_tage_slot_word_2_ref[2] ? tage_bank1 : tage_bank0;
 
   always_ff @(posedge i_clk) begin
     f_slot2_past_valid <= 1'b1;
@@ -3600,25 +2662,25 @@ module if_stage #(
     if (f_slot2_past_valid && !i_pipeline_ctrl.reset) begin
       f_if_slot1_itt_hit_exact :
       assert (o_itt_hit[0] == (o_tage_slot_valid[0] && !o_from_if_to_pd.fetch_fault &&
-                               itt_bank_hit[o_from_if_to_pd.program_counter[2]]));
+                               (s1_p.hw_in_win[1] ? s1_m.itt_hit[1] : s1_m.itt_hit[0])));
       f_if_slot2_itt_hit_exact :
-      assert (o_itt_hit[1] == (f_tage_slot2_cov_ref && !o_from_if_to_pd_2.fetch_fault &&
-                               itt_bank_hit[o_from_if_to_pd_2.program_counter[2]]));
+      assert (o_itt_hit[1] == (o_tage_slot_valid[1] && !s2_fault &&
+                               (s2_p.hw_in_win[1] ? s2_m.itt_hit[1] : s2_m.itt_hit[0])));
       f_if_slot1_itt_payload_exact :
-      assert ({o_itt_target[0], o_itt_slot_lookup} == (o_from_if_to_pd.program_counter[2] ?
-          {itt_bank_target[1], itt_bank1} : {itt_bank_target[0], itt_bank0}));
+      assert ({o_itt_target[0], o_itt_slot_lookup} == (s1_p.hw_in_win[1] ?
+          {s1_m.itt_target[1], s1_m.itt_w1} : {s1_m.itt_target[0], s1_m.itt_w0}));
       f_if_slot2_itt_payload_exact :
-      assert ({o_itt_target[1], o_itt_slot_lookup_2} == (o_from_if_to_pd_2.program_counter[2] ?
-          {itt_bank_target[1], itt_bank1} : {itt_bank_target[0], itt_bank0}));
-      f_if_slot2_tage_cov_exact : assert (o_tage_slot_valid[1] == f_tage_slot2_cov_ref);
-      f_if_slot2_tage_lookup_exact : assert (o_tage_slot_lookup_2 == f_tage_slot_lookup_2_ref);
+      assert ({o_itt_target[1], o_itt_slot_lookup_2} == (s2_p.hw_in_win[1] ?
+          {s2_m.itt_target[1], s2_m.itt_w1} : {s2_m.itt_target[0], s2_m.itt_w0}));
+      f_if_slot2_tage_cov_exact :
+      assert (o_tage_slot_valid[1] == (s2_p.hw_in_win[1] ? s2_m.tage_cov[1] : s2_m.tage_cov[0]));
+      f_if_slot2_tage_lookup_exact :
+      assert (o_tage_slot_lookup_2 == (s2_p.hw_in_win[1] ? s2_m.tage_w1 : s2_m.tage_w0));
       f_if_slot2_tage_valid_exact :
       assert (o_from_if_to_pd_2.tage_valid ==
-              (f_tage_slot2_cov_ref &&
-               (|f_tage_slot_lookup_2_ref.hit) &&
-               !o_from_if_to_pd_2.fetch_fault));
+              (o_tage_slot_valid[1] && (|o_tage_slot_lookup_2.hit) && !s2_fault));
       f_if_slot2_tage_taken_exact :
-      assert (o_from_if_to_pd_2.tage_taken == f_tage_slot_lookup_2_ref.taken);
+      assert (o_from_if_to_pd_2.tage_taken == o_tage_slot_lookup_2.taken);
       f_if_slot2_is_cond_branch_exact :
       assert (o_from_if_to_pd_2.is_cond_branch ==
               ((o_from_if_to_pd_2.effective_instr[6:0] == riscv_pkg::OPC_BRANCH) &&
@@ -3650,8 +2712,6 @@ module if_stage #(
               (o_from_if_to_pd.program_counter +
                (o_from_if_to_pd.sel_compressed ? riscv_pkg::PcIncrementCompressed :
                                                  riscv_pkg::PcIncrement32bit)));
-      cover (replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && o_itt_hit[1]);
-      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && o_itt_hit[1]);
       f_if_slot1_nop_implies_slot2_nop :
       assert (!o_from_if_to_pd.sel_nop || o_from_if_to_pd_2.sel_nop);
       f_if_slot1_fault_implies_slot2_fault_or_nop :
@@ -3660,457 +2720,40 @@ module if_stage #(
     end
   end
 
-  // The backing BTB, removed from this model, outputs slot 2's fields of the
-  // size it is given from the fields it forms for each size
-  // (formal/backing_btb.sby, size_select tasks). Given that, the per-size
-  // outputs select to the slot-2 result by the packet's size, live or
-  // replayed. No reset qualifier: the first step covers every register value.
+  // Unconditional check of slot-2 per-size backing selection (no reset qualifier).
   always_comb begin
-    assume ({backing_return_live[1], backing_target_live[1]} ==
-            {backing_slot2_return_by_size_live[is_compressed],
-             backing_slot2_target_by_size_live[is_compressed]});
     f_if_backing_slot2_by_size_exact :
     assert ({o_backing_return[1], o_backing_target[1]} ==
             {o_backing_slot2_return_by_size[o_from_if_to_pd.sel_compressed],
              o_backing_slot2_target_by_size[o_from_if_to_pd.sel_compressed]});
   end
 
-  // Direct check of if_stage's per-provider coverage wiring and guard
-  // against instruction_aligner's served-last output. No reset qualifier:
-  // the first step covers every register and input combination, including
-  // provider-parity bit wiring, fence.i cycles, and stall/buffer edge cases.
-  logic f_s2_aligner_cov_low, f_s2_aligner_cov_high;
-  logic f_s2_aligner_cov_sel, f_s2_aligner_wcs;
-  assign f_s2_aligner_cov_low = (i_served_word_low == pc_reg_word) ||
-      ((i_served_last_word_low == pc_reg_word) &&
-       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
-        no_buffer_accepts_served_last)) ||
-      (i_served_prev_word_valid_low && (i_served_prev_word_low == pc_reg_word) &&
-       use_instr_buffer_for_coverage_timing);
-  assign f_s2_aligner_cov_high = (i_served_word_high == pc_reg_word) ||
-      ((i_served_last_word_high == pc_reg_word) &&
-       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
-        no_buffer_accepts_served_last)) ||
-      (i_served_prev_word_valid_high && (i_served_prev_word_high == pc_reg_word) &&
-       use_instr_buffer_for_coverage_timing);
-  assign f_s2_aligner_cov_sel =
-      i_instr_pc_metadata_served_high ? f_s2_aligner_cov_high : f_s2_aligner_cov_low;
-  assign f_s2_aligner_wcs = i_instr_valid &&
-      (!f_s2_aligner_cov_sel || pending_prediction_walk_past) &&
-      (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
-  always_comb begin
-    f_if_served_window_wiring_matches_aligner :
-    assert (served_window_covers_pc_reg == f_s2_aligner_cov_sel);
-    f_if_window_cannot_serve_matches_aligner :
-    assert (window_cannot_serve_pc_reg == f_s2_aligner_wcs);
-  end
-
   always_ff @(posedge i_clk) begin
     if (f_slot2_past_valid && !i_pipeline_ctrl.reset) begin
-      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && !pc_reg[1] &&
-             is_compressed && o_from_if_to_pd_2.sel_compressed &&
-             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid &&
-             o_from_if_to_pd_2.tage_taken);
-      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && !pc_reg[1] &&
-             is_compressed && !o_from_if_to_pd_2.sel_compressed &&
-             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid &&
-             !o_from_if_to_pd_2.tage_taken);
-      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && !pc_reg[1] &&
-             !is_compressed && !o_from_if_to_pd_2.sel_compressed &&
-             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid);
-      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && use_instr_buffer &&
-             pc_reg[1] && is_compressed && o_from_if_to_pd_2.sel_compressed &&
-             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid);
-      cover (!replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop && pc_reg[1] &&
-             !is_compressed && o_from_if_to_pd_2.sel_compressed &&
-             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid);
-      cover (replay_saved_if_outputs && !o_from_if_to_pd_2.sel_nop &&
-             o_from_if_to_pd_2.is_cond_branch && o_from_if_to_pd_2.tage_valid);
+      cover (!o_from_if_to_pd_2.sel_nop && o_itt_hit[1]);
+      cover (!o_from_if_to_pd_2.sel_nop && o_from_if_to_pd.sel_compressed &&
+             o_from_if_to_pd_2.sel_compressed && o_from_if_to_pd_2.is_cond_branch &&
+             o_from_if_to_pd_2.tage_valid && o_from_if_to_pd_2.tage_taken);
+      cover (!o_from_if_to_pd_2.sel_nop && o_from_if_to_pd.sel_compressed &&
+             !o_from_if_to_pd_2.sel_compressed && o_from_if_to_pd_2.is_cond_branch &&
+             o_from_if_to_pd_2.tage_valid && !o_from_if_to_pd_2.tage_taken);
+      cover (!o_from_if_to_pd_2.sel_nop && !o_from_if_to_pd.sel_compressed &&
+             !o_from_if_to_pd_2.sel_compressed && o_from_if_to_pd_2.is_cond_branch &&
+             o_from_if_to_pd_2.tage_valid);
+      cover (!o_from_if_to_pd_2.sel_nop && s2_uses_meta1);
+      cover (!o_from_if_to_pd_2.sel_nop && i_pipeline_ctrl.stall);
     end
-  end
-`endif
-
-  // ===========================================================================
-  // Slot-1 Control Classification and Width Events
-  // ===========================================================================
-  // Count unstalled, non-bubble IF presentations, including stall-release
-  // replay. Kill causes follow the same replay selection as the packet.
-  // PD's redirect squash is not gated here. Control-class taps also supply
-  // the frontend tracker.
-  logic [5:0] slot2_kill_causes_live;
-  logic [5:0] slot2_kill_causes_sc;
-  logic [5:0] slot2_kill_causes_effective;
-  assign slot2_kill_causes_live = {
-    slot2_kill_transient_live,
-    slot2_kill_window_limit_live,
-    slot2_kill_class_live,
-    slot2_kill_slot1_ctrl_live,
-    slot2_kill_s1_native_serialize_live,
-    slot2_kill_s1_native_ctrl_live
-  };
-
-  stall_capture_reg #(
-      .WIDTH(6)
-  ) u_slot2_kill_causes_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(slot2_kill_causes_live),
-      .o_data(slot2_kill_causes_sc)
-  );
-
-  assign slot2_kill_causes_effective = replay_saved_if_outputs ? slot2_kill_causes_sc :
-                                                                 slot2_kill_causes_live;
-
-  // Indices 0 and 2 are native and compressed slot-1 control flow. The taps
-  // classify slot 1 even when no slot 2 is deliverable; the replay-aware
-  // slot-1 sel_nop masks invalid IF output.
-  logic slot1_native_control_flow_effective;
-  logic slot1_compressed_control_flow_effective;
-  assign slot1_native_control_flow_effective = slot2_kill_causes_effective[0];
-  assign slot1_compressed_control_flow_effective = slot2_kill_causes_effective[2];
-  assign o_slot1_is_indirect = replay_saved_if_outputs ? is_indirect_sc : is_indirect;
-  assign o_slot1_has_control_flow = !o_from_if_to_pd.sel_nop &&
-                                    (slot1_native_control_flow_effective ||
-                                     slot1_compressed_control_flow_effective);
-
-  logic width_deliver1;
-  logic width_deliver2;
-  logic width_slot2_killed;
-  assign width_deliver1 = !if_stage_stall && !o_from_if_to_pd.sel_nop;
-  assign width_deliver2 = width_deliver1 && !o_from_if_to_pd_2.sel_nop;
-  assign width_slot2_killed = width_deliver1 && o_from_if_to_pd_2.sel_nop;
-
-  // Register profiling taps for timing. The uniform one-cycle delay keeps
-  // delivery and kill events aligned and leaves free-running counts intact.
-  riscv_pkg::if_width_events_t width_events_q;
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) begin
-      width_events_q <= '0;
-    end else begin
-      width_events_q.deliver1 <= width_deliver1;
-      width_events_q.deliver2 <= width_deliver2;
-      width_events_q.kill_s1_native_ctrl <= width_slot2_killed && slot2_kill_causes_effective[0];
-      width_events_q.kill_s1_native_serialize <= width_slot2_killed &&
-                                                 slot2_kill_causes_effective[1];
-      width_events_q.kill_slot1_ctrl <= width_slot2_killed && slot2_kill_causes_effective[2];
-      width_events_q.kill_class <= width_slot2_killed && slot2_kill_causes_effective[3];
-      width_events_q.kill_window_limit <= width_slot2_killed && slot2_kill_causes_effective[4];
-      width_events_q.kill_transient <= width_slot2_killed && slot2_kill_causes_effective[5];
-      // Slot-2 BTB predicted-taken accepted (already !stall-qualified inside
-      // branch_prediction_controller, so it pulses once per event).  Each
-      // occurrence costs one fetch bubble, which slot2_redirect_q marks on the
-      // following cycle.
-      width_events_q.slot2_pred_taken <= slot2_prediction_used;
-    end
-  end
-  assign o_width_events = width_events_q;
-
-`ifdef FROST_DEBUG_FETCH_ILA
-  // Fetch ILA probes (build.py --debug-ila): mark_debug copies for the debug
-  // core; nothing here feeds the design. The low 16 address bits are enough
-  // because the capture is keyed on a page offset.
-  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pc_reg;
-  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pc;
-  (* mark_debug = "true" *) logic dbg_ila_if_instr_valid;
-  (* mark_debug = "true" *) logic dbg_ila_if_fetch_progress;
-  (* mark_debug = "true" *) logic dbg_ila_if_sel_nop;
-  (* mark_debug = "true" *) logic dbg_ila_if_use_instr_buffer;
-  (* mark_debug = "true" *) logic dbg_ila_if_replay_saved;
-  (* mark_debug = "true" *) logic dbg_ila_if_control_flow_holdoff;
-  (* mark_debug = "true" *) logic dbg_ila_if_prediction_holdoff;
-  (* mark_debug = "true" *) logic dbg_ila_if_prediction_used;
-  (* mark_debug = "true" *) logic dbg_ila_if_ras_op;
-  (* mark_debug = "true" *) logic dbg_ila_if_pending_prediction_active;
-  (* mark_debug = "true" *) logic dbg_ila_if_flush;
-  (* mark_debug = "true" *) logic dbg_ila_if_stall;
-  (* mark_debug = "true" *) logic dbg_ila_if_frontend_state_flush;
-  (* mark_debug = "true" *) logic dbg_ila_if_pd_redirect;
-  (* mark_debug = "true" *) logic dbg_ila_if_covers;
-  (* mark_debug = "true" *) logic dbg_ila_if_cannot_serve;
-  (* mark_debug = "true" *) logic [1:0] dbg_ila_if_cur_fault_pair;
-  (* mark_debug = "true" *) logic [1:0] dbg_ila_if_next_fault_pair;
-  (* mark_debug = "true" *) logic [2:0] dbg_ila_if_fetch_fault_effective;
-  (* mark_debug = "true" *) logic dbg_ila_if_instr_fault0;
-  (* mark_debug = "true" *) logic dbg_ila_if_instr_fault1;
-  (* mark_debug = "true" *) logic [13:0] dbg_ila_if_served_word_high;
-  (* mark_debug = "true" *) logic dbg_ila_if_bank_sel;
-  (* mark_debug = "true" *) logic [31:0] dbg_ila_if_instr_buffer;
-  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pd_pc;
-  (* mark_debug = "true" *) logic [31:0] dbg_ila_if_pd_instr;
-  (* mark_debug = "true" *) logic dbg_ila_if_pd_sel_nop;
-  (* mark_debug = "true" *) logic dbg_ila_if_pd_fetch_fault;
-  (* mark_debug = "true" *) logic dbg_ila_if_pd_fetch_fault_hi;
-  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pd2_pc;
-  (* mark_debug = "true" *) logic dbg_ila_if_pd2_sel_nop;
-  (* mark_debug = "true" *) logic dbg_ila_if_pd2_fetch_fault;
-  assign dbg_ila_if_pc_reg = pc_reg[15:0];
-  assign dbg_ila_if_pc = o_pc[15:0];
-  assign dbg_ila_if_instr_valid = i_instr_valid;
-  assign dbg_ila_if_fetch_progress = fetch_progress;
-  assign dbg_ila_if_sel_nop = sel_nop;
-  assign dbg_ila_if_use_instr_buffer = use_instr_buffer;
-  assign dbg_ila_if_replay_saved = replay_saved_if_outputs;
-  assign dbg_ila_if_control_flow_holdoff = control_flow_holdoff;
-  assign dbg_ila_if_prediction_holdoff = prediction_holdoff;
-  assign dbg_ila_if_prediction_used = prediction_used;
-  assign dbg_ila_if_ras_op = ras_push || ras_pop;
-  assign dbg_ila_if_pending_prediction_active = pending_prediction_active;
-  assign dbg_ila_if_flush = i_pipeline_ctrl.flush;
-  assign dbg_ila_if_stall = i_pipeline_ctrl.stall;
-  assign dbg_ila_if_frontend_state_flush = i_frontend_state_flush;
-  assign dbg_ila_if_pd_redirect = i_pd_redirect;
-  assign dbg_ila_if_covers = served_window_covers_pc_reg;
-  assign dbg_ila_if_cannot_serve = window_cannot_serve_pc_reg;
-  assign dbg_ila_if_cur_fault_pair = cur_fault_pair;
-  assign dbg_ila_if_next_fault_pair = next_fault_pair;
-  assign dbg_ila_if_fetch_fault_effective = fetch_fault_effective;
-  assign dbg_ila_if_instr_fault0 = i_instr_fault0;
-  assign dbg_ila_if_instr_fault1 = i_instr_fault1;
-  assign dbg_ila_if_served_word_high = i_served_word_high[13:0];
-  assign dbg_ila_if_bank_sel = i_instr_bank_sel_r;
-  assign dbg_ila_if_instr_buffer = instr_buffer;
-  assign dbg_ila_if_pd_pc = o_from_if_to_pd.program_counter[15:0];
-  assign dbg_ila_if_pd_instr = o_from_if_to_pd.effective_instr;
-  assign dbg_ila_if_pd_sel_nop = o_from_if_to_pd.sel_nop;
-  assign dbg_ila_if_pd_fetch_fault = o_from_if_to_pd.fetch_fault;
-  assign dbg_ila_if_pd_fetch_fault_hi = o_from_if_to_pd.fetch_fault_hi;
-  assign dbg_ila_if_pd2_pc = o_from_if_to_pd_2.program_counter[15:0];
-  assign dbg_ila_if_pd2_sel_nop = o_from_if_to_pd_2.sel_nop;
-  assign dbg_ila_if_pd2_fetch_fault = o_from_if_to_pd_2.fetch_fault;
-`endif
-
-
-`ifdef IF_WALK_PAST_PROOF
-  // Direct check of if_stage's per-provider coverage wiring and guard against
-  // instruction_aligner's served-last output on every cycle.
-  logic f_wp_aligner_cov_low, f_wp_aligner_cov_high;
-  logic f_wp_aligner_cov_sel, f_wp_aligner_wcs;
-  assign f_wp_aligner_cov_low = (i_served_word_low == pc_reg_word) ||
-      ((i_served_last_word_low == pc_reg_word) &&
-       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
-        no_buffer_accepts_served_last)) ||
-      (i_served_prev_word_valid_low && (i_served_prev_word_low == pc_reg_word) &&
-       use_instr_buffer_for_coverage_timing);
-  assign f_wp_aligner_cov_high = (i_served_word_high == pc_reg_word) ||
-      ((i_served_last_word_high == pc_reg_word) &&
-       (use_instr_buffer_for_coverage_timing ? !pc_reg_high_for_coverage :
-        no_buffer_accepts_served_last)) ||
-      (i_served_prev_word_valid_high && (i_served_prev_word_high == pc_reg_word) &&
-       use_instr_buffer_for_coverage_timing);
-  assign f_wp_aligner_cov_sel =
-      i_instr_pc_metadata_served_high ? f_wp_aligner_cov_high : f_wp_aligner_cov_low;
-  assign f_wp_aligner_wcs = i_instr_valid &&
-      (!f_wp_aligner_cov_sel || pending_prediction_walk_past) &&
-      (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
-  always_comb begin
-    f_wp_served_window_wiring_matches_aligner :
-    assert (served_window_covers_pc_reg == f_wp_aligner_cov_sel);
-    f_wp_window_cannot_serve_matches_aligner :
-    assert (window_cannot_serve_pc_reg == f_wp_aligner_wcs);
-`ifndef IF_CONTINUITY_PROOF
-    if (!i_pipeline_ctrl.reset) begin
-      cover_if_served_window_fence_override :
-      cover (i_fence_i_flush && if_stage_stall_registered && saved_values_valid &&
-             pc_reg[1] && !use_instr_buffer_for_coverage_timing);
-      cover_if_served_window_stall_unsaved_prev_saved :
-      cover (if_stage_stall_registered && !saved_values_valid &&
-             prev_was_compressed_at_lo_saved && !prev_was_compressed_at_lo &&
-             pc_reg[1] && i_instr_valid);
-    end
-`endif
-  end
-
-  logic f_wp_past_valid = 1'b0;
-  logic f_wp_held_pc_check_q = 1'b0;
-  logic f_wp_held_pc_sel_nop_q;
-  logic [XLEN-1:0] f_wp_held_pc_reg_q;
-
-  logic f_wp_any_redirect;
-  logic f_wp_s1_real, f_wp_s2_real;
-  assign f_wp_any_redirect =
-      i_pipeline_ctrl.flush || i_frontend_state_flush ||
-      i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken ||
-      i_fence_i_flush || i_from_ex_comb.branch_taken || i_pd_redirect;
-  assign f_wp_s1_real = !o_from_if_to_pd.sel_nop;
-  assign f_wp_s2_real = !o_from_if_to_pd_2.sel_nop;
-
-  // The walk-past harness derives both providers' pairing metadata from
-  // their instruction words. Check the presented parcel as well as the
-  // control-flow sideband, including packets replayed from a stall.
-  logic f_wp_slot1_control;
-  assign f_wp_slot1_control = o_from_if_to_pd.raw_parcel[1:0] == 2'b11 ?
-      riscv_pkg::imem_native_control(
-      o_from_if_to_pd.effective_instr[6:0]
-  ) : riscv_pkg::imem_compressed_control(
-      o_from_if_to_pd.raw_parcel[15:0]
-  );
-  always_comb begin
-    if (f_wp_past_valid && !i_pipeline_ctrl.reset) begin
-      f_cover_slot2_itt_crosses_region :
-      cover (f_wp_s1_real && f_wp_s2_real && !f_wp_any_redirect && !i_pipeline_ctrl.stall &&
-          !o_from_if_to_pd.fetch_fault && !o_from_if_to_pd_2.fetch_fault &&
-          o_from_if_to_pd.program_counter == (XLEN'(1) << riscv_pkg::PhysAddrBits) - 4 &&
-          o_from_if_to_pd_2.program_counter == (XLEN'(1) << riscv_pkg::PhysAddrBits) &&
-          !o_from_if_to_pd.sel_compressed && o_from_if_to_pd.effective_instr == 32'h0015_0513 &&
-          !o_from_if_to_pd_2.sel_compressed && !o_from_if_to_pd_2.btb_predicted_taken &&
-          o_from_if_to_pd_2.effective_instr == 32'h0005_80e7 && o_itt_hit == 2'b10);
-      f_cover_slot2_itt_behind_reserved :
-      cover (f_wp_s1_real && f_wp_s2_real && !f_wp_any_redirect && !i_pipeline_ctrl.stall &&
-          !o_from_if_to_pd.fetch_fault && !o_from_if_to_pd_2.fetch_fault &&
-          o_from_if_to_pd.raw_parcel == 16'h8002 &&
-          !o_from_if_to_pd_2.sel_compressed && !o_from_if_to_pd_2.btb_predicted_taken &&
-          o_from_if_to_pd_2.effective_instr == 32'h0005_80e7 && o_itt_hit == 2'b10);
-      if (f_wp_s2_real && !o_from_if_to_pd_2.fetch_fault) begin
-        f_if_slot2_live_follows_noncontrol : assert (!o_slot1_has_control_flow);
-        f_if_slot2_follows_noncontrol_parcel : assert (!f_wp_slot1_control);
-        f_if_slot1_size_matches_parcel :
-        assert (o_from_if_to_pd.sel_compressed == (o_from_if_to_pd.raw_parcel[1:0] != 2'b11));
-        cover (!replay_saved_if_outputs);
-        cover (replay_saved_if_outputs);
-      end
-      cover (f_wp_s1_real && !o_from_if_to_pd.fetch_fault &&
-             o_from_if_to_pd.raw_parcel[6:0] == riscv_pkg::OPC_JALR &&
-             o_slot1_has_control_flow && !f_wp_s2_real);
-    end
-  end
-
-`ifdef IF_CONTINUITY_PROOF
-  logic [XLEN-1:0] f_wp_s1_step, f_wp_s2_step, f_wp_bundle_bytes;
-  logic f_wp_deferred_s1_redirect_q = 1'b0;
-  logic [XLEN-1:0] f_wp_deferred_s1_target_q = '0;
-  logic [XLEN-1:0] f_wp_reg_pred_pc_q = '0;
-  logic [XLEN-1:0] f_wp_reg_pred_pc_saved_q = '0;
-  logic f_wp_s1_pred_matches_pc;
-  logic f_wp_continuity_check_q = 1'b0;
-  logic [XLEN-1:0] f_wp_expected_pc_reg_q = '0;
-
-  assign f_wp_s1_step = o_from_if_to_pd.sel_compressed ? 64'd2 : 64'd4;
-  assign f_wp_s2_step = o_from_if_to_pd_2.sel_compressed ? 64'd2 : 64'd4;
-  assign f_wp_bundle_bytes =
-      (f_wp_s1_real ? f_wp_s1_step : 64'd0) + (f_wp_s2_real ? f_wp_s2_step : 64'd0);
-  assign f_wp_s1_pred_matches_pc =
-      live_prediction_emits_with_output || pending_prediction_active ||
-      (o_from_if_to_pd.program_counter ==
-       (replay_saved_if_outputs ? f_wp_reg_pred_pc_saved_q : f_wp_reg_pred_pc_q));
-
-  // pc_controller orders pc_reg and pending_prediction_pc as unsigned
-  // addresses; exclude sequential wraparound across 2^XLEN -> 0.
-  always_comb begin
-    assume (!(&pc_reg[XLEN-1:4]));
-    assume (!(&pc[XLEN-1:4]));
-  end
-`endif
-
-  always_ff @(posedge i_clk) begin
-    f_wp_past_valid <= 1'b1;
-    f_wp_held_pc_check_q <= !i_pipeline_ctrl.reset && !if_stage_stall && fetch_progress &&
-        control_flow_holdoff && prediction_holdoff && !i_from_ex_comb.branch_taken &&
-        !i_pd_redirect && !i_trap_ctrl.trap_taken && !i_trap_ctrl.mret_taken &&
-        !i_fence_i_flush && !pending_prediction_target_handoff &&
-        !(sel_prediction_r && !pending_prediction_active && !pending_prediction_walk_past &&
-          !pending_prediction_redirect_kill && !slot2_redirect_q &&
-          btb_predicted_target_r == pc_reg);
-    f_wp_held_pc_sel_nop_q <= sel_nop_effective;
-    f_wp_held_pc_reg_q <= pc_reg;
-`ifdef IF_CONTINUITY_PROOF
-    if (!if_stage_stall && fetch_progress) begin
-      f_wp_reg_pred_pc_q <= pc;
-    end
-    if (if_stage_stall && !if_stage_stall_registered) begin
-      f_wp_reg_pred_pc_saved_q <= f_wp_reg_pred_pc_q;
-    end
-`endif
-
-    if (!i_pipeline_ctrl.reset && f_wp_past_valid) begin
-`ifndef IF_CONTINUITY_PROOF
-      if (f_wp_held_pc_check_q && pc_reg == f_wp_held_pc_reg_q) begin
-        p_formal_held_post_prediction_pc_emits_no_real_packet : assert (f_wp_held_pc_sel_nop_q);
-      end
-      if (pending_prediction_walk_past && !if_stage_stall && fetch_progress) begin
-        p_formal_held_walk_past_packet_is_not_real :
-        assert (sel_nop_effective && !slot2_valid && o_from_if_to_pd.sel_nop &&
-                o_from_if_to_pd_2.sel_nop);
-      end
-
-      cover_if_walk_past_odd : cover (pending_prediction_walk_past && pending_prediction_pc[1]);
-      cover_if_walk_past_even : cover (pending_prediction_walk_past && !pending_prediction_pc[1]);
-      cover_if_walk_past_post_prediction_holdoff_squashed :
-      cover (control_flow_holdoff && prediction_holdoff && pending_prediction_walk_past &&
-             !if_stage_stall && fetch_progress && sel_nop_effective);
-      cover_if_walk_past_stalled : cover (pending_prediction_walk_past && if_stage_stall);
-      cover_if_walk_past_release_after_stall_squashed :
-      cover ($past(
-          !i_pipeline_ctrl.reset && pending_prediction_walk_past && if_stage_stall &&
-                   control_flow_holdoff && prediction_holdoff
-      ) && !if_stage_stall && fetch_progress && pending_prediction_walk_past && sel_nop_effective &&
-          !slot2_valid && o_from_if_to_pd.sel_nop && o_from_if_to_pd_2.sel_nop);
-      cover_if_native_predecessor_slot2_redirect_below :
-      cover (!if_stage_stall && !f_wp_any_redirect && pending_prediction_active &&
-             pc_reg_at_pending_predecessor && !o_from_if_to_pd.sel_compressed &&
-             f_wp_s2_real && o_from_if_to_pd_2.btb_predicted_taken &&
-             (o_from_if_to_pd_2.btb_predicted_target[XLEN-1:1] <
-              pending_prediction_pc[XLEN-1:1]));
-      cover_if_native_predecessor_slot2_redirect_at :
-      cover (!if_stage_stall && !f_wp_any_redirect && pending_prediction_active &&
-             pc_reg_at_pending_predecessor && !o_from_if_to_pd.sel_compressed &&
-             f_wp_s2_real && o_from_if_to_pd_2.btb_predicted_taken &&
-             (o_from_if_to_pd_2.btb_predicted_target == pending_prediction_pc));
-`endif
-    end
-
-`ifdef IF_CONTINUITY_PROOF
-    if (i_pipeline_ctrl.reset) begin
-      f_wp_continuity_check_q     <= 1'b0;
-      f_wp_deferred_s1_redirect_q <= 1'b0;
-    end else begin
-      if (f_wp_past_valid) begin
-        if (f_wp_continuity_check_q) begin
-          p_formal_pc_reg_continuity : assert (pc_reg == f_wp_expected_pc_reg_q);
-        end
-        if (!f_wp_any_redirect && !if_stage_stall && f_wp_s1_real) begin
-          p_formal_slot1_pc_matches_pc_reg : assert (o_from_if_to_pd.program_counter == pc_reg);
-        end
-      end
-
-      if (f_wp_any_redirect) begin
-        f_wp_continuity_check_q     <= 1'b0;
-        f_wp_deferred_s1_redirect_q <= 1'b0;
-      end else begin
-        f_wp_continuity_check_q <= 1'b1;
-        if (if_stage_stall) begin
-          f_wp_expected_pc_reg_q <= pc_reg;
-        end else if (f_wp_s2_real && o_from_if_to_pd_2.btb_predicted_taken) begin
-          f_wp_expected_pc_reg_q      <= o_from_if_to_pd_2.btb_predicted_target;
-          f_wp_deferred_s1_redirect_q <= 1'b0;
-        end else if (f_wp_s1_real && slot1_btb_predicted_taken_raw && f_wp_s1_pred_matches_pc) begin
-          if (live_prediction_emits_with_output) begin
-            f_wp_expected_pc_reg_q      <= pc_reg + f_wp_bundle_bytes;
-            f_wp_deferred_s1_redirect_q <= 1'b1;
-            f_wp_deferred_s1_target_q   <= o_from_if_to_pd.btb_predicted_target;
-          end else begin
-            f_wp_expected_pc_reg_q      <= o_from_if_to_pd.btb_predicted_target;
-            f_wp_deferred_s1_redirect_q <= 1'b0;
-          end
-        end else if (!f_wp_s1_real && f_wp_deferred_s1_redirect_q && fetch_progress) begin
-          f_wp_expected_pc_reg_q      <= f_wp_deferred_s1_target_q;
-          f_wp_deferred_s1_redirect_q <= 1'b0;
-        end else begin
-          f_wp_expected_pc_reg_q <= pc_reg + f_wp_bundle_bytes;
-        end
-      end
-    end
-`endif
   end
 `endif
 
 `ifdef IF_FAULT_RAS_VETO_PROOF
+  // Formal model (formal/if_fault_ras_veto.sby): fetch-faulted IF packets never
+  // carry a predicted-taken flag, faulted F0 fetches never trigger live or
+  // spanning RAS ops, and spanning second-word faults restore RAS and cancel
+  // pending speculative F0 RAS ops.
   logic f_fault_past_valid = 1'b0;
-  logic f_prev_slot1_fault_no_pd_ras_q;
-  logic f_prev_slot2_fault_q;
-  logic f_prev_slot2_nop_q;
+  logic f_prev_fault0_q;
+  logic f_prev_span_tail_fault_q;
   initial assume (i_pipeline_ctrl.reset);
 
   always_comb begin
@@ -4118,77 +2761,166 @@ module if_stage #(
     assert (!o_from_if_to_pd.fetch_fault || !o_from_if_to_pd.btb_predicted_taken);
     p_fault_packet_clears_slot2_taken :
     assert (!o_from_if_to_pd_2.fetch_fault || !o_from_if_to_pd_2.btb_predicted_taken);
-    p_fault_packet_clears_slot1_ras_op : assert (!o_from_if_to_pd.fetch_fault || !ras_op_slot1);
-    p_fault_packet_clears_slot2_ras_op : assert (!o_from_if_to_pd_2.fetch_fault || !ras_op_slot2);
-    p_fault_bundle_clears_ras_push_pop :
-    assert (!(o_from_if_to_pd.fetch_fault &&
-              (o_from_if_to_pd_2.sel_nop || o_from_if_to_pd_2.fetch_fault)) ||
-            (!ras_push && !ras_pop));
+    p_fault_f0_vetoes_span_btb : assert (!fetch_fault0_live || !f0_span_btb_fire);
+    p_fault_f0_clears_ras_op : assert (!fetch_fault0_live || (!f0_ras_push && !f0_ras_pop));
   end
 
   always_ff @(posedge i_clk) begin
     f_fault_past_valid <= 1'b1;
-    f_prev_slot1_fault_no_pd_ras_q <=
-        !i_pipeline_ctrl.reset && o_from_if_to_pd.fetch_fault && !pd_ras_operation;
-    f_prev_slot2_fault_q <= !i_pipeline_ctrl.reset && o_from_if_to_pd_2.fetch_fault;
-    f_prev_slot2_nop_q <= !i_pipeline_ctrl.reset && o_from_if_to_pd_2.sel_nop;
+    f_prev_fault0_q <= !i_pipeline_ctrl.reset && fetch_fault0_live;
+    f_prev_span_tail_fault_q <= !i_pipeline_ctrl.reset && !any_redirect &&
+        !i_from_ex_comb.ras_misprediction && f1_span_tail_fault;
     if (f_fault_past_valid) begin
-      p_fault_packet_clears_slot1_ras_op_q :
-      assert (!f_prev_slot1_fault_no_pd_ras_q || !ras_op_slot1_q);
-      p_fault_packet_clears_slot2_ras_op_q : assert (!f_prev_slot2_fault_q || !ras_op_slot2_q);
-      p_fault_bundle_clears_ras_push_pop_q :
-      assert (!(f_prev_slot1_fault_no_pd_ras_q &&
-                (f_prev_slot2_nop_q || f_prev_slot2_fault_q)) ||
-              (!ras_push_q && !ras_pop_q));
-      cover_spanning_second_word_fault_vetoes_call_ras :
-      cover (!i_pipeline_ctrl.reset && !replay_saved_if_outputs &&
-             pc_reg[1] && !is_compressed && !cur_fault_pair[1] && next_fault_pair[1] &&
-             o_from_if_to_pd.fetch_fault && o_from_if_to_pd.fetch_fault_hi &&
-             slot1_btb_predicted_taken_raw && slot1_packet_is_call &&
-             ras_packet_accepted && !ras_push);
-      cover_replayed_second_word_fault_vetoes_return_ras :
-      cover (!i_pipeline_ctrl.reset && replay_saved_if_outputs &&
-             o_from_if_to_pd.fetch_fault && o_from_if_to_pd.fetch_fault_hi &&
-             slot1_btb_predicted_taken_raw && slot1_packet_is_return &&
-             ras_packet_accepted && !ras_pop);
-      cover_slot2_fault_vetoes_call_ras :
-      cover (!i_pipeline_ctrl.reset && !replay_saved_if_outputs &&
-             !slot2_sel_nop_effective && o_from_if_to_pd_2.fetch_fault &&
-             slot2_predicted_taken && slot2_packet_is_call &&
-             ras_packet_accepted && !o_from_if_to_pd_2.btb_predicted_taken &&
-             !ras_op_slot2 && !ras_push);
-      cover_replayed_slot2_fault_vetoes_return_ras :
-      cover (!i_pipeline_ctrl.reset && replay_saved_if_outputs &&
-             !slot2_sel_nop_effective && o_from_if_to_pd_2.fetch_fault &&
-             slot2_replay_consumed && slot2_packet_is_return &&
-             ras_packet_accepted && !o_from_if_to_pd_2.btb_predicted_taken &&
-             !ras_op_slot2 && !ras_pop);
+      p_prev_fault0_clears_ras_q : assert (!f_prev_fault0_q || (!f0_ras_push_q && !f0_ras_pop_q));
+      p_prev_span_tail_fault_clears_ras_q :
+      assert (!f_prev_span_tail_fault_q || (!f0_ras_push_q && !f0_ras_pop_q));
+      p_span_tail_fault_restores_ras :
+      assert (!f_prev_span_tail_fault_q || i_pipeline_ctrl.reset || ras_restore_q);
+      cover_span_fault_veto :
+      cover (!i_pipeline_ctrl.reset && f0_span_fault_veto && !f0_span_btb_fire &&
+             !f0_ras_push && !f0_ras_pop);
+      cover_span_tail_fault_restore :
+      cover (!i_pipeline_ctrl.reset && f_prev_span_tail_fault_q && ras_restore_q);
+      cover_slot1_hi_fault_clears_taken :
+      cover (!i_pipeline_ctrl.reset && s1_valid && o_from_if_to_pd.fetch_fault &&
+             o_from_if_to_pd.fetch_fault_hi && !o_from_if_to_pd.btb_predicted_taken);
+      cover_slot2_fault_defers_to_slot1 :
+      cover (!i_pipeline_ctrl.reset && s1_valid && !s1_fault && s2_fault &&
+             o_from_if_to_pd_2.sel_nop);
     end
   end
 `endif
 
 `ifdef IF_SLOT2_VETO_REDUNDANT_PROOF
-  // Observed internal state wires connected by formal/if_fault_ras_veto.sby
-  // after flattening (u_slot2_prediction_capture.valid_q and
-  // u_fetch_fault_2_sc.saved).
-  wire        f_slot2_cap_valid_q;
-  wire  [2:0] f_slot2_fault_saved;
-  logic       f_veto_past_valid = 1'b0;
-
+  // Formal model (formal/if_fault_ras_veto.sby, prove_slot2_veto_redundant):
+  // intact decoupled if_stage never pairs a faulting instruction into slot 2
+  // and always forces o_from_if_to_pd_2.fetch_fault low.
+  logic f_veto_past_valid = 1'b0;
   initial assume (i_pipeline_ctrl.reset);
 
   always_ff @(posedge i_clk) begin
     f_veto_past_valid <= 1'b1;
     if (f_veto_past_valid) begin
-      p_pc_reg_high_for_coverage_matches : assert (pc_reg_high_for_coverage == pc_reg[1]);
-      p_live_disjoint : assert (!(slot2_predicted_taken && fetch_fault_2_live[2]));
-      p_cap_disjoint :
-      assert (!(slot2_staged_prediction_used_for_capture && fetch_fault_2_live[2]));
-      p_saved_disjoint : assert (!(f_slot2_cap_valid_q && f_slot2_fault_saved[2]));
-      p_line3311_redundant :
-      assert (!(!slot2_sel_nop_effective && o_from_if_to_pd_2.fetch_fault &&
-                (replay_saved_if_outputs ? slot2_replay_consumed : slot2_predicted_taken)));
+      p_slot2_never_faults : assert (!o_from_if_to_pd_2.fetch_fault);
+      p_slot2_valid_no_fault : assert (o_from_if_to_pd_2.sel_nop || (!s1_fault && !s2_fault));
+      p_slot2_btb_requires_valid :
+      assert (!o_from_if_to_pd_2.btb_predicted_taken || !o_from_if_to_pd_2.sel_nop);
+      p_slot2_fault_clears_btb : assert (!s2_fault || !o_from_if_to_pd_2.btb_predicted_taken);
+      p_slot1_fault_kills_slot2 : assert (!s1_fault || o_from_if_to_pd_2.sel_nop);
     end
+  end
+`endif
+
+`ifdef IF_WALK_PAST_PROOF
+  // Formal model (formal/if_prediction_walk_past.sby): checks interior-halfword
+  // false-BTB resteer, phantom suppression, and emitted PC continuity.
+  logic f_wp_past_valid = 1'b0;
+  logic f_wp_s1_real;
+  logic f_wp_s2_real;
+  logic [3:0] valid_start;
+  assign valid_start[0] = !f1_start_at_1;
+  assign valid_start[1] = f1_start_at_1 || (valid_start[0] && (hw_comp[0] || hw_fault[0]));
+  assign valid_start[2] = (valid_start[0] && !hw_comp[0] && !hw_fault[0]) ||
+      (valid_start[1] && (hw_comp[1] || hw_fault[1]));
+  assign valid_start[3] = (valid_start[1] && !hw_comp[1] && !hw_fault[1]) ||
+      (valid_start[2] && (hw_comp[2] || hw_fault[2]));
+  assign f_wp_s1_real = !o_from_if_to_pd.sel_nop;
+  assign f_wp_s2_real = !o_from_if_to_pd_2.sel_nop;
+
+  always_comb begin
+    // An interior-halfword BTB hit (not on a valid instruction boundary) or a
+    // size/opcode/fault mismatch on an accepted F1 window must trigger
+    // f1_false_btb_resteer and suppress btb_taken on every pushed parcel.
+    if (f1_accept && f1_src_btb_taken && !f1_is_span_tail &&
+        (!valid_start[f1_src_btb_pos] ||
+         (hw_comp[f1_src_btb_pos] != f1_src_btb_comp) ||
+         !hw_is_control[f1_src_btb_pos] ||
+         hw_fault[f1_src_btb_pos])) begin
+      p_false_btb_triggers_resteer :
+      assert (f1_false_btb &&
+              (f1_req_q.btb_is_span ? f1_cancel_span : (f1_false_btb_resteer && f1_resteer)));
+      p_false_btb_suppresses_taken : assert (!f1_valid_btb_taken);
+    end
+    // When a false-BTB resteer fires, F0 must not launch a new window and must
+    // steer to f1_resteer_target on arm 5.
+    if (!any_redirect && f1_false_btb_resteer) begin
+      p_false_btb_blocks_f0_launch : assert (!f0_launch);
+      p_false_btb_selects_arm5 : assert (npc_sel[5]);
+    end
+    // Slot 2 never emits when slot 1 is a bubble, fault, or predicted-taken
+    // (checked after reset once count_ge_q is initialized).
+    if (f_wp_past_valid && !i_pipeline_ctrl.reset) begin
+      p_wp_slot2_order :
+      assert (!f_wp_s2_real || (f_wp_s1_real && !o_from_if_to_pd.fetch_fault &&
+                                !o_from_if_to_pd.btb_predicted_taken));
+      p_wp_slot2_pc_step :
+      assert (!f_wp_s2_real ||
+              (o_from_if_to_pd_2.program_counter ==
+               o_from_if_to_pd.program_counter +
+               (o_from_if_to_pd.sel_compressed ? riscv_pkg::PcIncrementCompressed :
+                                                 riscv_pkg::PcIncrement32bit)));
+      if (!pqueue_flush) begin
+        p_wp_drain_avail_s1_exact :
+        assert (s1_have_bytes == (s1_need_2 ? q_avail_ge[1] : q_avail_ge[0]));
+        if (!i_fetch_trap_hold && !s1_fault && s1_p.allows_slot2_after &&
+            !s2_fault && s2_p.slot2_start_valid) begin
+          p_wp_drain_avail_s2_exact :
+          assert (s2_have_bytes ==
+                  (s1_comp ? (s2_comp ? q_avail_ge[1] : q_avail_ge[2]) :
+                             (s2_comp ? q_avail_ge[2] : q_avail_ge[3])));
+        end
+      end
+    end
+  end
+
+`ifdef IF_CONTINUITY_PROOF
+  logic f_wp_cont_valid_q = 1'b0;
+  logic [XLEN-1:0] f_wp_expected_pc_q = '0;
+  logic [XLEN-1:0] f_wp_s1_step;
+  logic [XLEN-1:0] f_wp_s2_step;
+  logic [XLEN-1:0] f_wp_bundle_next_pc;
+
+  assign f_wp_s1_step = o_from_if_to_pd.sel_compressed ? 64'd2 : 64'd4;
+  assign f_wp_s2_step = o_from_if_to_pd_2.sel_compressed ? 64'd2 : 64'd4;
+  assign f_wp_bundle_next_pc =
+      o_from_if_to_pd.btb_predicted_taken ? o_from_if_to_pd.btb_predicted_target :
+      (f_wp_s2_real && o_from_if_to_pd_2.btb_predicted_taken) ?
+      o_from_if_to_pd_2.btb_predicted_target :
+      (o_from_if_to_pd.program_counter + f_wp_s1_step + (f_wp_s2_real ? f_wp_s2_step : 64'd0));
+`endif
+
+  always_ff @(posedge i_clk) begin
+    f_wp_past_valid <= 1'b1;
+`ifdef IF_CONTINUITY_PROOF
+    if (i_pipeline_ctrl.reset || any_redirect) begin
+      f_wp_cont_valid_q <= 1'b0;
+    end else begin
+      if (f_wp_past_valid && f_wp_cont_valid_q && f_wp_s1_real) begin
+        p_formal_emitted_pc_continuity :
+        assert (o_from_if_to_pd.program_counter == f_wp_expected_pc_q);
+      end
+      if (!i_pipeline_ctrl.stall && f_wp_s1_real) begin
+        if (o_from_if_to_pd.fetch_fault) begin
+          f_wp_cont_valid_q <= 1'b0;
+        end else begin
+          f_wp_cont_valid_q  <= 1'b1;
+          f_wp_expected_pc_q <= f_wp_bundle_next_pc;
+        end
+      end
+    end
+`else
+    if (f_wp_past_valid && !i_pipeline_ctrl.reset) begin
+      cover_interior_halfword_false_btb :
+      cover (f1_accept && f1_src_btb_taken && !f1_is_span_tail &&
+             !valid_start[f1_src_btb_pos] && f1_false_btb_resteer);
+      cover_real_slot2_packet : cover (f_wp_s1_real && f_wp_s2_real);
+      cover_reserved_comp_then_itt :
+      cover (f_wp_s1_real && o_from_if_to_pd.sel_compressed &&
+             (o_from_if_to_pd.raw_parcel[1:0] == 2'b00) && o_itt_hit[0]);
+      cover_backing_region_cross :
+      cover (f_wp_s2_real && !s2_same_region && s2_p.backing_hit && !o_backing_hit[1]);
+    end
+`endif
   end
 `endif
 

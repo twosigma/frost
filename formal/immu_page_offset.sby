@@ -23,6 +23,7 @@ script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top immu
+select -assert-count 7 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

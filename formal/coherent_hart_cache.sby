@@ -115,6 +115,12 @@ bounded: setundef -anyseq
 retained: setundef -anyseq
 covers: setundef -zero
 opt_clean
+coh_hart_maint_cover: select -assert-count 110 t:$check r:FLAVOR=assert %i
+coh_hart_maint_cover: select -assert-count 40 t:$check r:FLAVOR=cover %i
+four: select -assert-count 111 t:$check r:FLAVOR=assert %i
+four: select -assert-count 4 t:$check r:FLAVOR=cover %i
+coh_hart_snapshot_bmc: select -assert-count 123 t:$check r:FLAVOR=assert %i
+coh_hart_snapshot_bmc: select -assert-count 42 t:$check r:FLAVOR=cover %i
 
 [files]
 free_undefined.ys

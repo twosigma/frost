@@ -14,7 +14,7 @@
 
 """Unit tests for fetch_provider, the instruction fetch provider for cached DDR.
 
-The bench stands in for the core, which drives i_pc as pc_controller would and
+The bench stands in for the core, which drives i_pc as fetch_pc_decoupled would and
 consumes valid windows, and for the L1I line port, which accepts fill requests
 and returns patterned lines. The RTL's simulation-only reference check of the
 folded valid bit (window_ready_q) runs throughout.

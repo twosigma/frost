@@ -150,8 +150,11 @@ module tage_copy_convergence_formal #(
         i_train_bank ? dut.train_entry[t][1] : dut.train_entry[t][0];
 
     always_comb begin
-      p_reference_write_kept : assert (!f_reference_write[t] || dut.write_any[t]);
-      p_provider_written : assert (!(dut.train_valid_q && f_provider[t]) || dut.write_any[t]);
+      if (f_past_valid) begin
+        p_write_we_matches_bank : assert (!dut.write_we_q[t][!dut.write_bank]);
+        p_reference_write_kept : assert (!f_reference_write[t] || dut.write_any[t]);
+        p_provider_written : assert (!(dut.train_valid_q && f_provider[t]) || dut.write_any[t]);
+      end
       if (EQUAL_START) begin
         p_copies_equal : assert (f_lookup[t] == f_train[t]);
         // The training registers hold what the previous edge read, so the

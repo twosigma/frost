@@ -27,6 +27,7 @@ read -formal -sv pointer_masking.sv
 hierarchy -top pointer_masking
 script free_undefined.ys
 prep -top pointer_masking
+select -assert-count 18 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

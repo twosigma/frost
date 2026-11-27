@@ -42,6 +42,8 @@ setattr -mod -unset keep_hierarchy *
 hierarchy -top pd_id_slot2_redirect_formal
 script free_undefined.ys
 prep -flatten -top pd_id_slot2_redirect_formal
+select -assert-count 98 t:$check r:FLAVOR=assert %i
+select -assert-count 34 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

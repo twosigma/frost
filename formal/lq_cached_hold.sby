@@ -24,6 +24,7 @@ hierarchy -top load_queue
 script free_undefined.ys
 prep -top load_queue
 select -assert-none t:$assume
+select -assert-count 65 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

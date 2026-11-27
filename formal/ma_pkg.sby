@@ -16,6 +16,7 @@ read -formal -sv ma_pkg_check.sv
 hierarchy -top ma_pkg_check
 script free_undefined.ys
 prep -top ma_pkg_check
+select -assert-count 18 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

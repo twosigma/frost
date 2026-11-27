@@ -52,6 +52,13 @@ script free_undefined.ys
 prep -top coherence_dma_ingress
 memory_map
 opt
+coh_dma_ingress_prove: select -assert-count 184 t:$check r:FLAVOR=assert %i
+coh_dma_ingress_cover: select -assert-count 184 t:$check r:FLAVOR=assert %i
+coh_line_client_cover: select -assert-count 184 t:$check r:FLAVOR=assert %i
+~coh_dma_ingress_soc_cover: select -assert-count 5 t:$check r:FLAVOR=cover %i
+~small: select -assert-count 336 t:$check r:FLAVOR=assert %i
+coh_dma_ingress_soc_cover: select -assert-count 6 t:$check r:FLAVOR=cover %i
+coh_line_client_prove: select -assert-count 120 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_pkg.sv

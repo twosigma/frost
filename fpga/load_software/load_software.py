@@ -28,6 +28,7 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
@@ -38,6 +39,12 @@ sys.path.insert(0, str(PROJECT_ROOT / "linux"))
 from debian_kernel import kernel_image  # noqa: E402
 from hw_defaults import CPU_ECC_READER_BOARDS  # noqa: E402
 from hw_target import add_target_args, select_target, validate_target_args  # noqa: E402
+from vcu118_metadata import (  # noqa: E402
+    extract_dtb_from_sw_ddr_mem,
+    extract_dtb_from_sw_ddr_txt,
+    read_vcu118_bitstream_metadata,
+    verify_dtb_vector_config,
+)
 from riscv_toolchain import default_riscv_prefix  # noqa: E402
 from software_registry import (  # noqa: E402
     COREMARK_PRO_APP_NAMES,
@@ -772,6 +779,7 @@ def compile_app_for_board(
     ddr_bytes: int | None = None,
     board: str = "x3",
     vector: bool = False,
+    vlen: int | None = None,
 ) -> bool:
     """Compile an app with board settings and optional Make overrides.
 
@@ -779,7 +787,9 @@ def compile_app_for_board(
     linux_boot advertises that size or a smaller FROST_LINUX_MEM_SIZE override.
     Cache-geometry programs use the board's L1I and L2 capacities unless
     explicitly overridden by L1I_TEST_BYTES or FROST_L2_CACHE_BYTES for a
-    custom cache configuration.
+    custom cache configuration. vlen, for linux_boot on a VCU118 vector build,
+    is the build's vector length (build.py --vlen), which the device tree's
+    Zvl*b names follow.
     """
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
@@ -794,6 +804,10 @@ def compile_app_for_board(
             env["FROST_LINUX_VECTOR"] = "1" if vector else "0"
         else:
             env.pop("FROST_LINUX_VECTOR", None)
+        if board == "vcu118" and vector and vlen is not None:
+            env["FROST_LINUX_VLEN"] = str(vlen)
+        else:
+            env.pop("FROST_LINUX_VLEN", None)
     if ddr_bytes is not None:
         if not (1 << 30 <= ddr_bytes <= 1 << 37) or ddr_bytes & (ddr_bytes - 1):
             print("Error: board DDR capacity must be a power of two from 1 to 128 GiB")
@@ -1307,7 +1321,8 @@ def main() -> None:
         metavar="BITS",
         help=(
             "Vector length in bits (128, 256, or 512; or 0 for scalar "
-            "vec_state_test) for vector-width applications "
+            "vec_state_test) for vector-width applications, and for linux_boot "
+            "on a vcu118 --vector build made with build.py --vlen "
             "(default: match the selected board's RTL)"
         ),
     )
@@ -1326,8 +1341,8 @@ def main() -> None:
         default=None,
         help=(
             "Target an opt-in VCU118 vector build (162500000 Hz CPU clock, "
-            "VLEN 256, misa.V advertised, vector apps enabled, V in Linux DTB; "
-            "default: on for x3, off for vcu118)"
+            "default VLEN 256 unless --vlen selects 128 or 512, misa.V advertised, "
+            "vector apps enabled, V in Linux DTB; default: on for x3, off for vcu118)"
         ),
     )
     add_target_args(parser, managed=True)
@@ -1440,18 +1455,128 @@ def main() -> None:
             f"CoreMark-PRO hardware flow: {coremark_pro_error}."
         )
 
+    vcu118_meta: dict[str, Any] | None = None
+    if args.board == "vcu118":
+        try:
+            vcu118_meta = read_vcu118_bitstream_metadata(PROJECT_ROOT)
+        except ValueError as error:
+            parser.error(str(error))
+        if vcu118_meta is not None:
+            if vcu118_meta["vector"]:
+                if args.vector is False:
+                    parser.error(
+                        f"recorded VCU118 bitstream is a vector build "
+                        f"(VLEN={vcu118_meta['vlen']}); pass --vector instead of --no-vector"
+                    )
+                if args.vector is None and args.software_app is not None:
+                    parser.error(
+                        f"recorded VCU118 bitstream is a vector build "
+                        f"(VLEN={vcu118_meta['vlen']}); pass --vector"
+                    )
+            elif args.vector is True:
+                parser.error(
+                    "recorded VCU118 bitstream is scalar (not built with --vector)"
+                )
+
+    meta_vlen: int | None = (
+        int(vcu118_meta["vlen"])
+        if (vcu118_meta is not None and vcu118_meta["vector"])
+        else None
+    )
+
+    # linux_boot takes --vlen only to name the vector build's Zvl*b in its device tree.
+    linux_vlen: int | None = None
+    if args.software_app == "linux_boot":
+        if args.vlen is not None:
+            if not vcu118_vector:
+                parser.error("--vlen with linux_boot needs a vcu118 --vector build")
+            if args.vlen not in SUPPORTED_VECTOR_VLENS:
+                parser.error(
+                    "--vlen with linux_boot must be one of "
+                    + ", ".join(str(v) for v in SUPPORTED_VECTOR_VLENS)
+                )
+            if meta_vlen is not None and args.vlen != meta_vlen:
+                parser.error(
+                    f"--vlen {args.vlen} does not match recorded VCU118 bitstream "
+                    f"VLEN {meta_vlen}"
+                )
+            linux_vlen = args.vlen
+        elif vcu118_vector and meta_vlen is not None:
+            linux_vlen = meta_vlen
+
+        raw_env_vlen = os.environ.get("FROST_LINUX_VLEN", "").strip()
+        if raw_env_vlen:
+            if not vcu118_vector:
+                parser.error(
+                    "FROST_LINUX_VLEN with linux_boot needs a vcu118 --vector build"
+                )
+            try:
+                env_vlen = int(raw_env_vlen)
+            except ValueError:
+                parser.error(
+                    f"FROST_LINUX_VLEN must be one of {SUPPORTED_VECTOR_VLENS}, "
+                    f"got {raw_env_vlen!r}"
+                )
+            if env_vlen not in SUPPORTED_VECTOR_VLENS:
+                parser.error(
+                    f"FROST_LINUX_VLEN must be one of {SUPPORTED_VECTOR_VLENS}, "
+                    f"got {env_vlen}"
+                )
+            if linux_vlen is not None and env_vlen != linux_vlen:
+                parser.error(
+                    f"FROST_LINUX_VLEN={env_vlen} does not match selected VLEN "
+                    f"{linux_vlen}"
+                )
+            linux_vlen = env_vlen
+
+        expected_linux_vector = True if args.board == "x3" else vcu118_vector
+        expected_linux_vlen = (
+            0
+            if not expected_linux_vector
+            else (linux_vlen if linux_vlen is not None else 256)
+        )
+        custom_dtb = os.environ.get("FROST_LINUX_DTB", "").strip()
+        if custom_dtb and os.environ.get("FROST_LINUX_PREBUILT") != "1":
+            dtb_path = Path(custom_dtb)
+            if not dtb_path.is_file():
+                parser.error(f"FROST_LINUX_DTB does not exist: {dtb_path}")
+            try:
+                verify_dtb_vector_config(
+                    dtb_path.read_bytes(),
+                    expected_vector=expected_linux_vector,
+                    expected_vlen=expected_linux_vlen,
+                    source=f"FROST_LINUX_DTB ({dtb_path})",
+                )
+            except (OSError, ValueError) as error:
+                parser.error(str(error))
+
+    if args.software_app in VEC_VLEN_APPS and meta_vlen is not None and vcu118_vector:
+        if args.vlen is not None and args.vlen != meta_vlen:
+            parser.error(
+                f"--vlen {args.vlen} does not match recorded VCU118 bitstream "
+                f"VLEN {meta_vlen}"
+            )
+    app_vlen = (
+        (
+            meta_vlen
+            if (args.vlen is None and vcu118_vector and meta_vlen is not None)
+            else args.vlen
+        )
+        if args.software_app in VEC_VLEN_APPS
+        else (None if args.software_app == "linux_boot" else args.vlen)
+    )
     try:
         vector_config = resolve_vector_app_config(
             args.software_app,
             args.board,
-            vlen=args.vlen,
+            vlen=app_vlen,
             vec_advertise=args.vec_advertise,
             vector=vcu118_vector,
         )
         vector_make_vars = vector_app_make_vars(
             args.software_app,
             args.board,
-            vlen=args.vlen,
+            vlen=app_vlen,
             vec_advertise=args.vec_advertise,
             vector=vcu118_vector,
         )
@@ -1485,6 +1610,31 @@ def main() -> None:
     if not app_dir.exists():
         print(f"Error: Application directory not found: {app_dir}", file=sys.stderr)
         sys.exit(1)
+
+    if (
+        args.software_app == "linux_boot"
+        and os.environ.get("FROST_LINUX_PREBUILT") == "1"
+    ):
+        prebuilt_txt = app_dir / "sw_ddr.txt"
+        if not prebuilt_txt.is_file():
+            parser.error(
+                f"FROST_LINUX_PREBUILT=1 requires {prebuilt_txt} "
+                "(hardware Tcl loads sw_ddr.txt, not sw_ddr.mem)"
+            )
+        for prebuilt_path, extractor in (
+            (prebuilt_txt, extract_dtb_from_sw_ddr_txt),
+            (app_dir / "sw_ddr.mem", extract_dtb_from_sw_ddr_mem),
+        ):
+            if prebuilt_path is prebuilt_txt or prebuilt_path.is_file():
+                try:
+                    verify_dtb_vector_config(
+                        extractor(prebuilt_path),
+                        expected_vector=expected_linux_vector,
+                        expected_vlen=expected_linux_vlen,
+                        source=f"prebuilt {prebuilt_path}",
+                    )
+                except (OSError, ValueError) as error:
+                    parser.error(str(error))
 
     # Compile before loading so both images match the selected board.
     if not args.skip_build:
@@ -1554,6 +1704,7 @@ def main() -> None:
         if vector_config[1] is not None:
             print(f"  Vector advertisement (VEC_ADVERTISE): {int(vector_config[1])}")
     compile_vector: dict[str, bool] = {"vector": True} if vcu118_vector else {}
+    compile_vlen: dict[str, int] = {} if linux_vlen is None else {"vlen": linux_vlen}
     if not args.skip_build and not compile_app_for_board(
         args.software_app,
         app_dir,
@@ -1565,6 +1716,7 @@ def main() -> None:
         **board_memory,
         board=args.board,
         **compile_vector,
+        **compile_vlen,
     ):
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)
         sys.exit(1)

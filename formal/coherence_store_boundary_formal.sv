@@ -629,7 +629,8 @@ module coherence_store_boundary_formal #(
         end
         if (home_g_valid && l1_g_ready) granted_q <= 1;
         if (l1_c_valid[0] && permit_c) begin
-          assert (home_live_q && granted_q && !complete_q);
+          p_home_consume_state : assert (home_live_q && granted_q && !complete_q);
+          p_home_completion_id :
           assert (completion == {demand_q.q, 6'd1, demand_q.addr,
               coherence_pkg::Consumed, (demand_q.opcode != coherence_pkg::GetS)});
           complete_q <= 1;
@@ -729,32 +730,33 @@ module coherence_store_boundary_formal #(
       p_no_fatal : assert (!l1_fatal);
       p_c2b_write_busy_atomic : assert (!l1_write_busy || l1_atomic_live);
       p_c2b_store_ack_unbusy : assert (!(l1_write_inflight && l1_write_done) || !l1_write_busy);
-      assert (acknowledged_q <= accepted_q);
-      assert (accepted_q - acknowledged_q <= 1);
+      p_ack_not_ahead : assert (acknowledged_q <= accepted_q);
+      p_one_ack_outstanding : assert (accepted_q - acknowledged_q <= 1);
       if (ordinary_write) begin
-        assert ($past(l1_store_ready));
-        assert ($countones(l1_block_valid) < 4);
+        p_store_ready_prior : assert ($past(l1_store_ready));
+        p_block_valid_below_four : assert ($countones(l1_block_valid) < 4);
       end
       if (l1_pending_store || (sq_mem_write_en && sq_mem_write_is_cached))
+        p_committed_nonempty :
         assert (!sq_committed_empty && !sq_committed_empty_trap && !sq_committed_empty_lq);
       if (!$past(rst) && $past(ordinary_write)) begin
-        assert (l1_write_done && rt_sq_mem_write_done);
-        assert (l1_pending_store);
+        p_write_done_pair : assert (l1_write_done && rt_sq_mem_write_done);
+        p_pending_after_write : assert (l1_pending_store);
       end
       if ((Mode == 0 || Mode == 4) && lq_fu_complete.valid) begin
-        assert (!lq_fu_complete.exception);
+        p_complete_no_exception : assert (!lq_fu_complete.exception);
         p_load_value :
         assert (lq_fu_complete.value ==
             {8{(FOUR_STORES && watched_store == 0) || PROBE_READ_FIRST ?
                first_byte : second_byte}});
       end
       if (Mode == 3 && lq_fu_complete.valid) begin
-        assert (!lq_fu_complete.exception);
+        p_reply_no_exception : assert (!lq_fu_complete.exception);
         p_old_value :
         assert (lq_fu_complete.value == (lq_fu_complete.tag == 2 ? 0 : {32'b0, {4{first_byte}}}));
       end
       if (Mode == 3 && rt_lq_mem_read_valid && accepted_q == 2 && !old_complete_q)
-        assert (!lq_l0_fill);
+        p_reply_no_l0_fill : assert (!lq_l0_fill);
     end
   end
 

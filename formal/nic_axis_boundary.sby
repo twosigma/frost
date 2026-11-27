@@ -18,6 +18,8 @@ script free_undefined.ys
 prep -top nic_axis_boundary_formal -flatten
 ~cover: chformal -cover -remove
 opt_clean
+select -assert-count 8 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 4 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/peripherals/nic/nic_pkg.sv

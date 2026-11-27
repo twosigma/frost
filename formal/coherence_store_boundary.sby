@@ -20,7 +20,10 @@ bmc_amo_same bmc regular amo same amo_partition amo_flow
 bmc_amo_same_owner bmc regular amo same amo_partition amo_owner
 bmc_amo_same_fatal bmc amo same amo_partition amo_fatal
 prove_amo_same_fatal_sticky amo same sticky
-bmc_amo_other bmc regular amo other other_flow
+bmc_amo_other bmc regular amo other other_partition other_flow
+bmc_amo_other_home_state bmc regular amo other other_partition other_home_state
+bmc_amo_other_home_id bmc regular amo other other_partition other_home_id
+bmc_amo_other_c2b bmc regular amo other other_partition other_c2b
 bmc_amo_other_fatal bmc amo other amo_partition amo_fatal
 prove_amo_other_fatal_sticky amo other sticky
 bmc_sc bmc regular sc
@@ -69,7 +72,10 @@ bmc_intervening_same_value: timeout 10800
 bmc_intervening_other_value: timeout 15840
 bmc_intervening_fatal: timeout 1200
 bmc_amo_same: timeout 6600
-bmc_amo_other: timeout 9600
+bmc_amo_other: timeout 6900
+bmc_amo_other_home_state: timeout 600
+bmc_amo_other_home_id: timeout 13800
+bmc_amo_other_c2b: timeout 5400
 bmc_amo_same_owner: timeout 3000
 bmc_amo_same_fatal: timeout 3000
 bmc_amo_other_fatal: timeout 4800
@@ -177,9 +183,15 @@ int_fatal: select -assert-count 1 c:p_no_fatal
 amo_partition: select -assert-count 19 t:$check r:FLAVOR=assert %i
 amo_flow: chformal -assert -remove c:p_no_buffered_atomic c:p_no_buffered_guard c:p_no_fatal
 amo_flow: select -assert-count 16 t:$check r:FLAVOR=assert %i
-other_flow: select -assert-count 19 t:$check r:FLAVOR=assert %i
-other_flow: chformal -assert -remove c:p_no_fatal
-other_flow: select -assert-count 18 t:$check r:FLAVOR=assert %i
+other_partition: select -assert-count 19 t:$check r:FLAVOR=assert %i
+other_flow: chformal -assert -remove c:p_no_fatal c:p_home_consume_state c:p_home_completion_id c:p_c2b_write_busy_atomic c:p_c2b_store_ack_unbusy
+other_flow: select -assert-count 14 t:$check r:FLAVOR=assert %i
+other_home_state: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_home_consume_state %d
+other_home_state: select -assert-count 1 t:$check r:FLAVOR=assert %i
+other_home_id: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_home_completion_id %d
+other_home_id: select -assert-count 1 t:$check r:FLAVOR=assert %i
+other_c2b: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_c2b_write_busy_atomic c:p_c2b_store_ack_unbusy %u %d
+other_c2b: select -assert-count 2 t:$check r:FLAVOR=assert %i
 amo_owner: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_buffered_atomic c:p_no_buffered_guard %u %d
 amo_owner: select -assert-count 2 t:$check r:FLAVOR=assert %i
 amo_fatal: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_no_fatal %d
@@ -203,6 +215,39 @@ bmc: opt -fast
 bmc: setundef -anyseq
 bmc: opt_clean
 check -assert
+cover_four: select -assert-count 23 t:$check r:FLAVOR=assert %i
+bmc_load_same: select -assert-count 23 t:$check r:FLAVOR=assert %i
+bmc_load_other: select -assert-count 23 t:$check r:FLAVOR=assert %i
+bmc_load_same_probe_launch: select -assert-count 23 t:$check r:FLAVOR=assert %i
+bmc_probe_kept_other: select -assert-count 23 t:$check r:FLAVOR=assert %i
+bmc_probe_kept_same: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_load: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_edges_same: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_edges_same_combined: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_edges_other: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_probe_kept_other: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_probe_kept_same: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_four: select -assert-count 2 t:$check r:FLAVOR=cover %i
+cover_amo_same: select -assert-count 2 t:$check r:FLAVOR=cover %i
+cover_amo_same_two: select -assert-count 2 t:$check r:FLAVOR=cover %i
+cover_amo_other_home: select -assert-count 2 t:$check r:FLAVOR=cover %i
+bmc_sc: select -assert-count 19 t:$check r:FLAVOR=assert %i
+bmc_old: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_amo: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_amo_same: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_amo_same_two: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_amo_other_home: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_sc: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_old: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_load: select -assert-count 1 t:$check r:FLAVOR=cover %i
+cover_amo: select -assert-count 1 t:$check r:FLAVOR=cover %i
+cover_sc: select -assert-count 1 t:$check r:FLAVOR=cover %i
+cover_old: select -assert-count 1 t:$check r:FLAVOR=cover %i
+cover_edges_same: select -assert-count 4 t:$check r:FLAVOR=cover %i
+cover_edges_other: select -assert-count 4 t:$check r:FLAVOR=cover %i
+cover_edges_same_combined: select -assert-count 3 t:$check r:FLAVOR=cover %i
+cover_probe_kept_other: select -assert-count 6 t:$check r:FLAVOR=cover %i
+cover_probe_kept_same: select -assert-count 5 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_read_stream.sv

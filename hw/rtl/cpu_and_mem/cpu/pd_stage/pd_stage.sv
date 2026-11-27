@@ -20,7 +20,7 @@
   PD forms slot 1's 32-bit instruction: the native word (IF assembles one that
   spans two words), or for a compressed parcel the RV64C expansion that IF
   selected from the predecode sideband. Slot 2 arrives already expanded by
-  the instruction aligner (see instruction_aligner.sv). In simulation only,
+  if_stage's parcel-queue drain (see if_stage.sv). In simulation only,
   local rvc_decompressors expand both slots' raw parcels as the reference for
   the checks below. PD also registers early source-register fields, from
   which it reassembles slot 2's instruction, and raises the PD redirect when a
@@ -433,7 +433,7 @@ module pd_stage #(
       .o_pc_high_minus_one(pd_pc_high_minus_one)
   );
 
-  // The candidates arrive in the packet (see pd_target_candidate).
+  // The split-target candidates arrive in the packet (see if_stage.sv).
   assign pd_target_native_low_candidate = i_from_if_to_pd.pd_target_native_low;
   assign pd_target_native_high_select = i_from_if_to_pd.pd_target_native_high_select;
   assign pd_target_compressed_low_candidate = i_from_if_to_pd.pd_target_compressed_low;
@@ -706,7 +706,7 @@ module pd_stage #(
   logic pd_backing_redirect_r;
   logic pd_backing_redirect_2_r;
   assign pd_cond_branch = pd_native_branch || pd_compressed_branch;
-  // Predecoded per start position in instruction_aligner ahead of slot2_pos.
+  // Predecoded for slot 2 in if_stage's parcel-queue drain.
   assign pd_cond_branch_2 = pd_slot2_predictable && i_from_if_to_pd_2.is_cond_branch;
   assign o_cond_branch[0] = pd_cond_branch;
   assign o_cond_branch[1] = pd_cond_branch_2;

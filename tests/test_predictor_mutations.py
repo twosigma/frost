@@ -42,8 +42,8 @@ MUTATIONS = {
     "fetch_slot2_branch": Mutation(
         "predictor_fetch_contract",
         "if_stage.sv",
-        "slot2_is_cond_branch_saved_q : slot2_is_cond_branch_live;",
-        "slot2_is_cond_branch_saved_q : !slot2_is_cond_branch_live;",
+        "(s2_instr[6:0] == riscv_pkg::OPC_BRANCH) && (s2_instr[14:13] != 2'b01);",
+        "!((s2_instr[6:0] == riscv_pkg::OPC_BRANCH) && (s2_instr[14:13] != 2'b01));",
         ("p_s2_branch",),
     ),
     "direction_index": Mutation(
@@ -56,15 +56,21 @@ MUTATIONS = {
     "indirect_correct": Mutation(
         "ittage_predictor_twin",
         "ittage_predictor.sv",
-        "if (correct_q[t]) begin",
-        "if (!correct_q[t]) begin",
+        # Target correctness now selects the owned provider's read-stage update.
+        "if (read_provider[t]) begin\n"
+        "        if (read_owned[t]) begin\n"
+        "          if (read_correct[t]) begin",
+        "if (read_provider[t]) begin\n"
+        "        if (read_owned[t]) begin\n"
+        "          if (!read_correct[t]) begin",
         ("p_write_data",),
     ),
     "backing_redirect": Mutation(
         "backing_btb_twin",
         "backing_btb.sv",
-        "if (i_reset || sweep_active || i_redirect) begin",
-        "if (i_reset || sweep_active) begin",
+        # The window-hit clear has the same guard; mutate only held-read validity.
+        "if (i_reset || sweep_active || i_redirect) begin\n      held_valid_q <= 1'b0;",
+        "if (i_reset || sweep_active) begin\n      held_valid_q <= 1'b0;",
         ("p_held_select", "p_registers"),
     ),
     "direction_history": Mutation(

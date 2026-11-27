@@ -435,7 +435,7 @@ async def test_pd_redirect_restores_the_branch_history_and_pushes_if_taken(
         dut.i_fetch_pc_path_bits.value = 0b10
         await _step(dut)
         dut.i_pd_redirect_taken.value = 0
-        # The next cycle: pc_controller's registered arm.
+        # The next cycle: fetch_pc_decoupled's registered arm.
         dut.i_hist_restore_arm.value = 1 << ARM_PD_REDIRECT
         await _settle()
         expected = _push(hist, 0b10) if taken else hist
@@ -713,7 +713,7 @@ async def test_slot2_pd_veto_discards_fast_btb_push_without_pushing_fallthrough(
     dut.i_pd_q_cond_branch.value = 0
     dut.i_hist_push.value = 0
 
-    # Cycle T+2: pc_controller asserts arm 4 (ARM_PD_REDIRECT) with fall-through
+    # Cycle T+2: fetch_pc_decoupled asserts arm 4 (ARM_PD_REDIRECT) with fall-through
     # fetch PC path bits (0b10) on i_fetch_pc_path_bits. Because taken=0, arm 4
     # must restore `pre_branch_hist` and NOT push 0b10.
     dut.i_hist_restore_arm.value = 1 << ARM_PD_REDIRECT

@@ -34,6 +34,13 @@ cover_128g: chparam -set ADDR_WIDTH 38 -set AXI_ADDR_WIDTH 37 line_port_axi_brid
 hierarchy -top line_port_axi_bridge
 script free_undefined.ys
 prep -top line_port_axi_bridge
+select -assert-count 51 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 6 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 6 t:$check r:FLAVOR=cover %i
+bmc_64g: select -assert-count 7 t:$check r:FLAVOR=cover %i
+bmc_128g: select -assert-count 7 t:$check r:FLAVOR=cover %i
+cover_64g: select -assert-count 7 t:$check r:FLAVOR=cover %i
+cover_128g: select -assert-count 7 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/line_port_axi_bridge.sv

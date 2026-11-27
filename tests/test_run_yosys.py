@@ -1143,16 +1143,13 @@ def test_xilinx_pc_hierarchy_keeps_parameterized_dependencies(
     top.write_text(
         "module platform_top #(parameter ENABLE_CACHED_TIER=1, "
         "USE_BEHAVIORAL_DDR=1)(input reset, output [63:0] value);\n"
-        "  pc_controller #(.PENDING_HANDOFF_EXCLUDES_SLOT2(1)) pc "
+        "  fetch_pc_decoupled #(.BTB_INDEX_BITS(6)) pc "
         "(.i_reset(reset), .o_pc(value));\n"
         "endmodule\n"
     )
     sources = [
         rtl / "riscv_pkg.sv",
-        rtl / "if_stage/control_flow_tracker.sv",
-        rtl / "if_stage/pc_reg_precompute.sv",
-        rtl / "if_stage/pc_increment_calculator.sv",
-        rtl / "if_stage/pc_controller.sv",
+        rtl / "if_stage/fetch_pc_decoupled.sv",
         top,
     ]
     runner.filelist.write_text("\n".join(map(str, sources)) + "\n")

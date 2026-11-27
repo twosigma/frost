@@ -159,6 +159,14 @@ module ittage_predictor #(
   logic write_bank;
   logic [Tables-1:0][INDEX_BITS-1:0] write_index;
   logic [Tables-1:0][EntryBits-1:0] write_entry;
+  (* max_fanout = 16, equivalent_register_removal = "no" *) logic [Tables-1:0][1:0] write_we_q = '0;
+  (* max_fanout = 32 *) logic [Tables-1:0][INDEX_BITS-1:0] write_index_q;
+  logic [Tables-1:0][EntryBits-1:0] write_entry_q;
+  assign write_index = write_index_q;
+  assign write_entry = write_entry_q;
+  for (genvar t = 0; t < Tables; t++) begin : gen_write_any_vec
+    assign write_any[t] = |write_we_q[t];
+  end
 
   for (genvar b = 0; b < 2; b++) begin : gen_bank
     logic [LOOKUP_HI:2] bank_word;
@@ -170,7 +178,7 @@ module ittage_predictor #(
       logic write_enable;
       assign lookup_index[t][b] = hash_index(bank_word, i_lookup_hist & HistMask);
       assign lookup_tag[t][b] = hash_tag(bank_word, i_lookup_hist & HistMask);
-      assign write_enable = write_any[t] && (write_bank == 1'(b));
+      assign write_enable = write_we_q[t][b];
       sdp_dist_ram #(
           .ADDR_WIDTH(INDEX_BITS),
           .DATA_WIDTH(EntryBits)
@@ -284,6 +292,64 @@ module ittage_predictor #(
     read_above[2] = !i_train_lookup.hit[2];
   end
 
+  // Precompute allocation, usefulness clears, write enables, and updated
+  // entries in the read stage so every distributed RAM write port is driven
+  // directly from registered flops.
+  logic [Tables-1:0] read_useful;
+  logic [Tables-1:0] read_alloc;
+  logic [Tables-1:0] read_useful_clear;
+  logic [Tables-1:0] read_write_any;
+  logic [Tables-1:0][1:0] read_write_we;
+  logic [Tables-1:0][EntryBits-1:0] read_write_entry;
+  for (genvar t = 0; t < Tables; t++) begin : gen_read_useful
+    entry_t read_u_s;
+    assign read_u_s = read_entry[t];
+    assign read_useful[t] = |read_u_s.useful;
+  end
+  always_comb begin
+    read_alloc = '0;
+    read_useful_clear = '0;
+    for (int t = 0; t < Tables; t++) begin
+      if (i_train_mispredicted && read_above[t] && !read_provider[t] && !(|read_alloc)) begin
+        if (!read_owned[t] && !read_useful[t]) read_alloc[t] = 1'b1;
+        else if (read_useful[t]) read_useful_clear[t] = 1'b1;
+      end
+    end
+  end
+  for (genvar t = 0; t < Tables; t++) begin : gen_read_write
+    entry_t r_entry;
+    entry_t r_updated;
+    assign r_entry = read_entry[t];
+    always_comb begin
+      r_updated = r_entry;
+      if (read_provider[t]) begin
+        if (read_owned[t]) begin
+          if (read_correct[t]) begin
+            r_updated.conf   = (&r_entry.conf) ? r_entry.conf : r_entry.conf + 2'd1;
+            r_updated.useful = 1'b1;
+          end else if (r_entry.conf != 2'd0) begin
+            r_updated.conf = r_entry.conf - 2'd1;
+          end else begin
+            r_updated.target = i_train_target;
+          end
+        end
+      end else if (read_alloc[t]) begin
+        r_updated.valid  = 1'b1;
+        r_updated.tag    = i_train_lookup.tag[t];
+        r_updated.target = i_train_target;
+        r_updated.conf   = 2'd0;
+        r_updated.useful = 1'b0;
+      end else if (read_useful_clear[t]) begin
+        r_updated.useful = 1'b0;
+      end
+    end
+    assign read_write_entry[t] = r_updated;
+    assign read_write_any[t] = i_train_valid &&
+        (read_provider[t] || read_alloc[t] || read_useful_clear[t]);
+    assign read_write_we[t][0] = read_write_any[t] && !i_train_bank;
+    assign read_write_we[t][1] = read_write_any[t] && i_train_bank;
+  end
+
   logic train_valid_q = 1'b0;
   riscv_pkg::itt_lookup_t train_lookup_q;
   logic [TARGET_BITS-2:0] train_target_q;
@@ -292,6 +358,8 @@ module ittage_predictor #(
   logic [Tables-1:0] above;  // tables above the provider
   logic [Tables-1:0] owned;
   logic [Tables-1:0] correct_q;
+  logic [Tables-1:0] alloc;
+  logic [Tables-1:0] useful_clear;
   always_ff @(posedge i_clk) begin
     train_valid_q        <= i_train_valid;
     train_lookup_q       <= i_train_lookup;
@@ -303,58 +371,11 @@ module ittage_predictor #(
     above                <= read_above;
     owned                <= read_owned;
     correct_q            <= read_correct;
-  end
-  for (genvar t = 0; t < Tables; t++) begin : gen_write_index
-    assign write_index[t] = train_lookup_q.index[t];
-  end
-
-  // Write stage: the provider's update, then the allocation above it.
-  logic [Tables-1:0] useful;
-  logic [Tables-1:0] alloc;
-  logic [Tables-1:0] useful_clear;
-  always_comb begin
-    // The shortest table above the provider that is free, and the useful
-    // entries passed before it.
-    alloc = '0;
-    useful_clear = '0;
-    for (int t = 0; t < Tables; t++) begin
-      if (train_mispredicted_q && above[t] && !provider[t] && !(|alloc)) begin
-        if (!owned[t] && !useful[t]) alloc[t] = 1'b1;
-        else if (useful[t]) useful_clear[t] = 1'b1;
-      end
-    end
-  end
-
-  for (genvar t = 0; t < Tables; t++) begin : gen_write
-    entry_t entry;
-    entry_t updated;
-    assign entry = cur[t];
-    assign useful[t] = |entry.useful;
-    always_comb begin
-      updated = entry;
-      if (provider[t]) begin
-        if (owned[t]) begin
-          if (correct_q[t]) begin
-            updated.conf   = (&entry.conf) ? entry.conf : entry.conf + 2'd1;
-            updated.useful = 1'b1;
-          end else if (entry.conf != 2'd0) begin
-            updated.conf = entry.conf - 2'd1;
-          end else begin
-            updated.target = train_target_q;
-          end
-        end
-      end else if (alloc[t]) begin
-        updated.valid  = 1'b1;
-        updated.tag    = train_lookup_q.tag[t];
-        updated.target = train_target_q;
-        updated.conf   = 2'd0;
-        updated.useful = 1'b0;
-      end else if (useful_clear[t]) begin
-        updated.useful = 1'b0;
-      end
-    end
-    assign write_entry[t] = updated;
-    assign write_any[t]   = train_valid_q && (provider[t] || alloc[t] || useful_clear[t]);
+    alloc                <= read_alloc;
+    useful_clear         <= read_useful_clear;
+    write_we_q           <= read_write_we;
+    write_index_q        <= i_train_lookup.index;
+    write_entry_q        <= read_write_entry;
   end
 
 `ifdef ITTAGE_TRAINING_PROOF

@@ -166,6 +166,10 @@ cover: select -assert-count 15 t:$check r:FLAVOR=cover %i
 cover_alu_issue: chformal -assert -remove
 cover_alu_issue: chformal -cover -remove t:$check r:FLAVOR=cover %i c:cover_port0_through_alu2_* c:cover_head_done_result_held %u %d
 cover_alu_issue: select -assert-count 3 t:$check r:FLAVOR=cover %i
+bmc: select -assert-count 787 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 18 t:$check r:FLAVOR=cover %i
+fp_repair_bmc: select -assert-count 18 t:$check r:FLAVOR=cover %i
+fp_repair_bmc: select -assert-count 823 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

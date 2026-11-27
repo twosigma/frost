@@ -35,6 +35,11 @@ vhold_sq_cursor_cover: chparam -set DIRECT_ADDR 1 -set CURSOR_ONLY 1 vec_hold_ro
 hierarchy -top vec_hold_rows_formal
 script free_undefined.ys
 prep -top vec_hold_rows_formal
+select -assert-count 3 t:$check r:FLAVOR=assert %i
+vhold_lq_bmc: select -assert-count 8 t:$check r:FLAVOR=cover %i
+vhold_lq_cover: select -assert-count 8 t:$check r:FLAVOR=cover %i
+vhold_sq_bmc: select -assert-count 9 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

@@ -19,6 +19,8 @@ chparam -set NUM_IDS 63 -set APLIC_DELIVERY 1 -set PREDECODED_SELECT 1 -set PRED
 hierarchy -top imsic_file
 script free_undefined.ys
 prep -top imsic_file
+select -assert-count 521 t:$check r:FLAVOR=assert %i
+select -assert-count 7 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/peripherals/imsic/imsic_priority.sv

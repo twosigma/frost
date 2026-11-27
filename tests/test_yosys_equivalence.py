@@ -41,9 +41,7 @@ CASES = {
     "tage_history": f"{CPU}/u_tage_history",
     "dmmu": f"{BACKEND}/u_dmmu",
     "axi_mux": "soc/gen_cached_tier.dma_interconnect",
-    "branch_predictor": (
-        f"{CPU}/if_stage_inst/branch_prediction_controller_inst/branch_predictor_inst"
-    ),
+    "fetch_btb_2w": f"{CPU}/if_stage_inst/u_fetch_btb_2w",
     "lq_coherence_port": f"{BACKEND}/u_coherence_port",
     "store_queue": f"{BACKEND}/u_sq",
     "coherence_home_completions": f"{HOME_INSTANCE}/completions",
@@ -59,6 +57,11 @@ PROOF_SECONDS = 420
 # These children load simulation images through file tasks or hierarchical writes.
 # Only their port declarations are needed at the proof boundary.
 IMAGE_MODULES = ("axi_behavioral_memory", "imem_predecode", "tdp_bram_dc_byte_en")
+# Ascending unpacked scalar arrays: logic name[BANKS][ENTRIES]. Native
+# read_verilog flattens both dimensions into scalar memory words; slang keeps
+# BANKS words and packs each ascending inner dimension into a word, MSB first.
+# Give their mapped flops the same logical bank/entry order before pairing.
+BANKED_SCALAR_MEMORIES = {"fetch_btb_2w": {"btb_valid": 2}}
 
 Bit = int | str
 Module = dict[str, Any]
@@ -287,6 +290,43 @@ def match_state(
     return pairs
 
 
+def alias_banked_memory(module: Module, name: str, banks: int, frontend: str) -> None:
+    """Name every bit of an ascending banked scalar memory in bank/entry order.
+
+    This only adds a public wire alias. The cells, ports, initial values and
+    transition functions remain intact, and the usual one-to-one state checks
+    still apply. Reject unexpected layouts rather than guessing a pairing.
+    """
+    pattern = re.compile(rf"{re.escape(name)}\[([0-9]+)\]")
+    words = {
+        int(match[1]): net["bits"]
+        for netname, net in module["netnames"].items()
+        if (match := pattern.fullmatch(netname)) and not net["hide_name"]
+    }
+    if not words or set(words) != set(range(len(words))):
+        raise UnsupportedModelError(f"{frontend}: noncontiguous memory {name}")
+    if frontend == "native":
+        entries, remainder = divmod(len(words), banks)
+        width = 1
+        bits = [bit for index in range(len(words)) for bit in words[index]]
+        valid_shape = entries > 0 and remainder == 0
+    elif frontend == "slang":
+        entries = width = len(words[0])
+        bits = [bit for index in range(len(words)) for bit in reversed(words[index])]
+        valid_shape = entries > 0 and len(words) == banks
+    else:
+        raise UnsupportedModelError(f"unknown memory frontend {frontend}")
+    if not valid_shape or any(len(word) != width for word in words.values()):
+        raise UnsupportedModelError(f"{frontend}: unexpected memory layout for {name}")
+    state = flop_bits(module)
+    if len(set(bits)) != banks * entries or any(bit not in state for bit in bits):
+        raise UnsupportedModelError(f"{frontend}: {name} is not distinct flop state")
+    alias = f"frost_banked_state_{name}"
+    if alias in module["netnames"]:
+        raise UnsupportedModelError(f"memory state alias already exists: {alias}")
+    module["netnames"][alias] = {"hide_name": 0, "bits": bits, "attributes": {}}
+
+
 def add_port(module: Module, name: str, direction: str, bits: list[Bit]) -> None:
     """Expose the given bit IDs as a port in the JSON netlist."""
     if name in module["netnames"]:
@@ -416,8 +456,10 @@ def load_cut(directory: Path, work: Path, frontend: str, case: str) -> Module:
     )
     if status:
         pytest.fail(f"{case} {frontend} memory/state lowering exit {status}:\n{tail}")
-    cut = json.loads(model.read_text())
-    return cut["modules"]["frost_equiv_cut"]
+    cut = json.loads(model.read_text())["modules"]["frost_equiv_cut"]
+    for memory, banks in BANKED_SCALAR_MEMORIES.get(case, {}).items():
+        alias_banked_memory(cut, memory, banks, frontend)
+    return cut
 
 
 def check_interface(gold: Module, gate: Module) -> int:
@@ -551,3 +593,87 @@ def frontend_cuts(
 def test_yosys_frontend_equivalence(frontend_cuts: Path, case: str) -> None:
     """Prove that both frontends implement the same module transition."""
     prove(frontend_cuts, case)
+
+
+BANKED_MEMORY_SOURCE = """\
+module fetch_btb_2w (
+    input logic i_clk, i_rst, i_write, i_bank, i_data,
+    input logic [1:0] i_row,
+    output logic o_data
+);
+  logic btb_valid[2][4];
+  initial begin
+    for (int b = 0; b < 2; b++)
+      for (int r = 0; r < 4; r++)
+        btb_valid[b][r] = ((b * 4 + r) % 3) == 0;
+  end
+  assign o_data = btb_valid[i_bank][i_row];
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      for (int b = 0; b < 2; b++)
+        for (int r = 0; r < 4; r++) btb_valid[b][r] <= 1'b0;
+    end else if (i_write) begin
+      btb_valid[i_bank][i_row] <= i_data;
+    end
+  end
+endmodule
+"""
+BANKED_MEMORY_MUTATIONS = {
+    "none": ("", ""),
+    "read_bank": ("btb_valid[i_bank][i_row];", "btb_valid[!i_bank][i_row];"),
+    "read_row": ("btb_valid[i_bank][i_row];", "btb_valid[i_bank][i_row ^ 2'b01];"),
+    "write_data": ("<= i_data;", "<= !i_data;"),
+    "reset": ("<= 1'b0;", "<= 1'b1;"),
+    "initial": ("% 3", "% 2"),
+}
+
+
+@pytest.mark.synthesis
+@pytest.mark.parametrize("fault", BANKED_MEMORY_MUTATIONS)
+def test_banked_memory_state_equivalence(tmp_path: Path, fault: str) -> None:
+    """Pair both layouts and reject changes to reads, updates, reset or init."""
+    case = "fetch_btb_2w"
+    for frontend in ("slang", "native"):
+        directory = tmp_path / frontend
+        directory.mkdir()
+        source = BANKED_MEMORY_SOURCE
+        if frontend == "native" and fault != "none":
+            before, after = BANKED_MEMORY_MUTATIONS[fault]
+            assert source.count(before) == 1
+            source = source.replace(before, after)
+        rtl = directory / "banked.sv"
+        rtl.write_text(source)
+        (directory / f"{case}.module").write_text(case)
+        read = (
+            f"read_slang --no-proc --top {case} {rtl}"
+            if frontend == "slang"
+            else f"read_verilog -sv {rtl}"
+        )
+        status, tail = run_yosys(
+            directory,
+            "elaborate",
+            [
+                read,
+                f"hierarchy -check -top {case}",
+                "proc -norom",
+                f"rename {case} frost_equiv_cut",
+                f"write_rtlil {directory / (case + '.il')}",
+            ],
+            tmp_path,
+            LOWERING_SECONDS,
+        )
+        assert status == 0, tail
+    if fault == "initial":
+        with pytest.raises(UnsupportedModelError, match="different initialization"):
+            prove(tmp_path, case)
+    elif fault != "none":
+        with pytest.raises(pytest.fail.Exception, match="transition counterexample"):
+            prove(tmp_path, case)
+    else:
+        prove(tmp_path, case)
+        models = json.loads((tmp_path / case / "transition.json").read_text())
+        for module in models["modules"].values():
+            # Eight paired bits, no independent state, and every next-state bit
+            # is compared even when the array read does not select that bit.
+            assert len(module["ports"]["frost_state_q"]["bits"]) == 8
+            assert len(module["ports"]["frost_state_d"]["bits"]) == 8

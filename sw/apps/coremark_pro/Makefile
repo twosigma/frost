@@ -102,10 +102,13 @@ $(error FROST_DEBUG must be 0 or 1)
 endif
 
 # Base flags shared by every translation unit and the final link.
+# -falign-loops=4: FROST's fetch is sensitive to a loop's 2-byte phase; this
+# restores the loop starts GCC 15.3 produced for radix2, linear_alg and loops.
 BASE_FLAGS := -march=$(ARCH) -mabi=$(ABI) $(FROST_CMODEL) $(OPT_LEVEL) \
               -nostdlib -nostartfiles -ffreestanding \
               -static -fno-pie -no-pie -fno-stack-protector \
               -ffunction-sections -fdata-sections -fno-strict-aliasing \
+              -falign-loops=4 \
               -DCOREMARK_PRO_TRACE=$(COREMARK_PRO_TRACE)
 
 # ============================================================================

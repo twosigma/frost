@@ -20,12 +20,21 @@ SOURCE_DIR := $(BUILD_DIR)/source
 OUTPUT_DIR := $(BUILD_DIR)/out
 JOBS ?= 8
 VECTOR ?= 0
+VLEN ?=
 
 ifeq ($(VECTOR),1)
 VCU118_CLK_ARG := FPGA_CPU_CLK_FREQ=162500000
+ifneq ($(or $(VLEN),256),256)
+$(error VLEN=$(VLEN) is not supported for flash builds; flash supports only default VLEN 256 (non-default VLENs are supported over JTAG loading only))
+endif
 VCU118_DTS := ../../boards/vcu118/dts/frost_vcu118_vector.dts
 VCU118_DTB := ../../boards/vcu118/frost_vector.dtb
 else ifeq ($(VECTOR),0)
+ifneq ($(filter command line override,$(origin VLEN)),)
+ifneq ($(VLEN),)
+$(error VLEN requires VECTOR=1 (got VLEN='$(VLEN)', VECTOR='$(VECTOR)'))
+endif
+endif
 VCU118_CLK_ARG :=
 VCU118_DTS := ../../boards/vcu118/dts/frost_vcu118.dts
 VCU118_DTB := ../../boards/vcu118/frost.dtb

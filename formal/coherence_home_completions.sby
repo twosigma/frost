@@ -47,6 +47,24 @@ opt -keepdc
 proof: techmap
 proof: opt -keepdc
 proof: setundef -undriven -anyseq
+coh_completions_prove: select -assert-count 187 t:$check r:FLAVOR=assert %i
+coh_completions_cover: select -assert-count 187 t:$check r:FLAVOR=assert %i
+coh_if_pair_cover: select -assert-count 187 t:$check r:FLAVOR=assert %i
+coh_completions_prove: select -assert-count 9 t:$check r:FLAVOR=cover %i
+coh_completions_pairs_prove: select -assert-count 9 t:$check r:FLAVOR=cover %i
+coh_completions_partition_prove: select -assert-count 9 t:$check r:FLAVOR=cover %i
+coh_completions_cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
+coh_completions_partition_cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
+pairs: select -assert-count 196 t:$check r:FLAVOR=assert %i
+coh_completions_partition_prove: select -assert-count 188 t:$check r:FLAVOR=assert %i
+coh_completions_partition_cover: select -assert-count 188 t:$check r:FLAVOR=assert %i
+partition2: select -assert-count 244 t:$check r:FLAVOR=assert %i
+partition2: select -assert-count 10 t:$check r:FLAVOR=cover %i
+coh_completions_fast_prove: select -assert-count 194 t:$check r:FLAVOR=assert %i
+coh_completions_fast_cover: select -assert-count 194 t:$check r:FLAVOR=assert %i
+fast: select -assert-count 11 t:$check r:FLAVOR=cover %i
+coh_completions_fast_partition_prove: select -assert-count 195 t:$check r:FLAVOR=assert %i
+if_pair: select -assert-count 4 t:$check r:FLAVOR=cover %i
 
 [files]
 coherence_if_pair_formal.sv

@@ -66,6 +66,32 @@ msi_prove_four_harts: chparam -set MSI_ENABLE 1 -set NUM_SOURCES 3 -set NUM_HART
 hierarchy -top aplic
 script free_undefined.ys
 prep -top aplic
+bmc: select -assert-count 131 t:$check r:FLAVOR=assert %i
+prove: select -assert-count 131 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 131 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 10 t:$check r:FLAVOR=cover %i
+prove: select -assert-count 10 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 10 t:$check r:FLAVOR=cover %i
+prove_one_hart: select -assert-count 10 t:$check r:FLAVOR=cover %i
+prove_wide: select -assert-count 10 t:$check r:FLAVOR=cover %i
+prove_three_harts: select -assert-count 10 t:$check r:FLAVOR=cover %i
+prove_one_hart: select -assert-count 49 t:$check r:FLAVOR=assert %i
+prove_wide: select -assert-count 1091 t:$check r:FLAVOR=assert %i
+prove_three_harts: select -assert-count 157 t:$check r:FLAVOR=assert %i
+msi_bmc: select -assert-count 165 t:$check r:FLAVOR=assert %i
+msi_prove: select -assert-count 165 t:$check r:FLAVOR=assert %i
+msi_cover: select -assert-count 165 t:$check r:FLAVOR=assert %i
+msi_bmc: select -assert-count 30 t:$check r:FLAVOR=cover %i
+msi_prove: select -assert-count 30 t:$check r:FLAVOR=cover %i
+msi_cover: select -assert-count 30 t:$check r:FLAVOR=cover %i
+msi_prove_32: select -assert-count 30 t:$check r:FLAVOR=cover %i
+msi_prove_locked: select -assert-count 30 t:$check r:FLAVOR=cover %i
+msi_prove_wide: select -assert-count 30 t:$check r:FLAVOR=cover %i
+msi_prove_four_harts: select -assert-count 30 t:$check r:FLAVOR=cover %i
+msi_prove_32: select -assert-count 191 t:$check r:FLAVOR=assert %i
+msi_prove_locked: select -assert-count 79 t:$check r:FLAVOR=assert %i
+msi_prove_wide: select -assert-count 1185 t:$check r:FLAVOR=assert %i
+msi_prove_four_harts: select -assert-count 217 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/peripherals/aplic/aplic.sv

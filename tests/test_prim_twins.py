@@ -54,12 +54,6 @@ COVERAGE: dict[str, dict[str, tuple[str, ...] | None]] = {
     # Older proofs of small helper cones: pin-level references or a mux reference.
     "data_mem_response_mux.sby": {"cpu_and_mem/data_mem_response_mux.sv": None},
     "line_arbiter_grant.sby": {"lib/cache/line_port_arbiter.sv": None},
-    "served_window_coverage.sby": {CPU + "if_stage/served_window_coverage.sv": None},
-    "fetch_pc_mux.sby": {CPU + "if_stage/pc_controller.sv": ("u_nonseq",)},
-    "pc_register_mux.sby": {
-        CPU + "if_stage/pc_controller.sv": ("u_without_live_valid", "u_base", "u_final")
-    },
-    "pc_increment_holdoff.sby": {CPU + "if_stage/pc_increment_calculator.sv": None},
     "lq_l0_lookup.sby": {CPU + "tomasulo/load_queue/lq_l0_cache.sv": None},
     "lq_age_groups.sby": {
         CPU + "tomasulo/load_queue/coherent_lq_issue_selector.sv": None
@@ -99,16 +93,6 @@ COVERAGE: dict[str, dict[str, tuple[str, ...] | None]] = {
     "dmmu_twin.sby": {CPU + "mmu/dmmu.sv": None},
     "immu_twin.sby": {CPU + "mmu/immu.sv": None},
     "fp_engine_twin.sby": {CPU + "ex_stage/fpu/fp_engine.sv": None},
-    "control_flow_tracker_twin.sby": {CPU + "if_stage/control_flow_tracker.sv": None},
-    "pd_target_candidate_twin.sby": {CPU + "if_stage/pd_target_candidate.sv": None},
-    "pc_controller_twin.sby": {
-        CPU + "if_stage/pc_controller.sv": None,
-        CPU + "if_stage/pc_increment_calculator.sv": None,
-        CPU + "if_stage/control_flow_tracker.sv": None,
-    },
-    "branch_predictor_twin.sby": {
-        CPU + "if_stage/branch_prediction/branch_predictor.sv": None
-    },
     "store_queue_twin.sby": {CPU + "tomasulo/store_queue/store_queue.sv": None},
     "coherent_store_pma_twin.sby": {
         CPU + "tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv": ("u_zero", "u_allow")
@@ -121,9 +105,6 @@ COVERAGE: dict[str, dict[str, tuple[str, ...] | None]] = {
 # Blocks with no check, as `file::name` -> why. Remove an entry in the change
 # that adds its check.
 NOT_COVERED: dict[str, str] = {
-    "cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv::u_slot2_staged_uses_ras": "in-context twin does not close (slot-2 relation cones stay unproven); the LUT truth table was checked by hand",
-    "cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv::u_slot2_candidate": "in-context twin does not close (slot-2 relation cones stay unproven); the LUT truth table was checked by hand",
-    "cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv::u_prediction_metadata_prepare": "its inputs include the slot-2 candidate select above, so the in-context twin does not close",
     "cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv::u_select": "load queue twin leaves FDRE-paired registers unproven and takes over seven minutes",
     "cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv::sq_check_pending_ff": "load queue twin leaves FDRE-paired registers unproven and takes over seven minutes",
     "cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv::sq_check_idx_ff": "load queue twin leaves FDRE-paired registers unproven and takes over seven minutes",
@@ -138,7 +119,6 @@ NOT_COVERED: dict[str, str] = {
 # the selection of an XPM memory. They have no portable twin to compare.
 NON_LOGIC: dict[str, str] = {
     'cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv::nonlogic:(* keep_hierarchy = "yes" *)': "module attribute under the macro",
-    "cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv::nonlogic:localparam logic [63:0] LateSelRegInit = 64'hff1": "INIT constants used by the covered LUT blocks",
     'cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv::nonlogic:(* keep_hierarchy = "yes" *)': "module attribute under the macro",
     'cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv::nonlogic:(* keep_hierarchy = "yes" *)#2': "module attribute under the macro",
     'cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv::nonlogic:(* keep_hierarchy = "yes" *)': "module attribute under the macro",

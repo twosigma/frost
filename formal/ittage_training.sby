@@ -21,6 +21,8 @@ prep -top ittage_predictor -flatten
 select -assert-count 12 t:$mem_v2
 prove: chformal -cover -remove
 cover: chformal -assert -remove
+prove: select -assert-count 32 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 6 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

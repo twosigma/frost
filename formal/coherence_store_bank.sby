@@ -40,6 +40,9 @@ proof: chformal -assert -remove t:$check r:FLAVOR=assert %i c:*p_store_taint_* %
 class: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_store_no_bank_* %d c:*p_store_taint_* %d
 chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_store_taint_* %d c:c_store_probe_after_store %d c:c_store_no_bank_take %d
 covers: chformal -assert -remove
+proof: select -assert-count 8 t:$check r:FLAVOR=assert %i
+class: select -assert-count 10 t:$check r:FLAVOR=assert %i
+select -assert-count 4 t:$check r:FLAVOR=cover %i
 memory_map -keepdc
 opt -keepdc
 ~covers: techmap

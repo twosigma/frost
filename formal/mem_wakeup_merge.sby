@@ -15,6 +15,7 @@ hierarchy -top mem_wakeup_merge
 script free_undefined.ys
 prep -top mem_wakeup_merge -flatten
 select -assert-none t:$assume a:init
+select -assert-count 10 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
