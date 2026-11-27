@@ -886,19 +886,28 @@ async def test_nearly_full_viq_staged_commit_and_port_handoff(dut: Any) -> None:
     assert got_sum == 1 + num_adds, f"v12 mismatch: {got_sum} != {1 + num_adds}"
 
     # Part B: Port-4 handoff between u_head_mmu / u_vmu (unit-stride vector store
-    # vse32.v at tag 0) and masked vcpop.m at tag 1 (pauses in OV_CHK across
-    # vhead_port_claim_q and in OV_RD0 with ov_s2_cap_q == 1 across vmu_busy_q!).
+    # vse32.v of v19 at tag 0) and masked vcpop.m of v16 at tag 1 (pauses in
+    # OV_CHK across vhead_port_claim_q and in OV_RD0 with ov_s2_cap_q == 1
+    # across vmu_busy_q!). Distinct store data in v19 ensures an overwrite of
+    # ov_s2_q during OV_RD0 changes the popcount.
     v0_pat = 0x5555_AAAA_3333_555F
     v16_pat = 0xFFFF_00FF_0F0F_F0FD
+    v19_pat = 0x0000_0000_0000_0000
     await b.write_vreg_splat(0, v0_pat, sew=64, tag=14)
     await b.write_vreg_splat(16, v16_pat, sew=64, tag=15)
+    await b.write_vreg_splat(19, v19_pat, sew=64, tag=16)
     vl_mask = (1 << vl32) - 1
     exp_pop = (
         mask_from_elems(b.vlen, 64, v0_pat)
         & mask_from_elems(b.vlen, 64, v16_pat)
         & vl_mask
     ).bit_count()
-    assert exp_pop > 0
+    store_pop = (
+        mask_from_elems(b.vlen, 64, v0_pat)
+        & mask_from_elems(b.vlen, 64, v19_pat)
+        & vl_mask
+    ).bit_count()
+    assert exp_pop > 0 and store_pop != exp_pop
 
     b.set_state(
         i_head_tag=0,
@@ -917,7 +926,7 @@ async def test_nearly_full_viq_staged_commit_and_port_handoff(dut: Any) -> None:
         i_alloc_is_vload=0,
         i_alloc_vmt_idx=0,
         i_alloc_vtype=vtype32,
-        i_alloc_insn=enc_vse32(16),
+        i_alloc_insn=enc_vse32(19),
     )
     await b.tick(
         i_alloc=1,
