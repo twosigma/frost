@@ -26,8 +26,12 @@ to its latest preceding architectural writer; writes to x0 create no edge.
 Branches carry the recorded F0 decision and target, any PD redirect and its
 decision/target, and whether execution must correct the final prediction.
 PD redirects distinguish direction (TAGE/bimodal selection), backing BTB/RAS,
-and ITTAGE. Their annotations follow allocation into the ROB; a backend
-flush discards pending annotations for the killed decode stream. Execution
+and ITTAGE. Their annotations follow the ID register and the decoded queue's
+accepted bundle order, including held producers and empty bypass, before
+allocation assigns ROB tags. Matching only by PC is insufficient when several
+iterations of the same branch are in flight. Both producer and allocation
+predictions are checked against the annotation. A backend flush discards
+pending annotations for the killed decode stream. Execution
 recovery is determined by comparing the final predicted successor with the
 retired branch's resolved successor, including early recovery that does not
 increment the commit-time misprediction counter.

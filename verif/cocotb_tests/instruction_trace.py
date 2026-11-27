@@ -27,7 +27,7 @@ import gzip
 import hashlib
 import json
 import struct
-from collections import Counter, defaultdict, deque
+from collections import Counter, deque
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +90,8 @@ class InstructionTrace:
         self.handles: dict[str, Any] = {}
         names = [
             "flush_pipeline",
+            "dbg_pipeline_stall",
+            "gen_decoded_queue.u_queue.accept",
             "pd_redirect",
             "pd_redirect_slot2",
             "pd_redirect_taken",
@@ -104,6 +106,7 @@ class InstructionTrace:
         for suffix in ("", "_2"):
             names += [
                 f"from_id_to_ex{suffix}",
+                f"decoded_packet{suffix}",
                 f"rob_alloc_req{suffix}",
                 f"rob_alloc_resp{suffix}",
                 f"rob_commit_comb{suffix}",
@@ -116,6 +119,7 @@ class InstructionTrace:
         for name, layout in (
             ("rob_commit_comb", COMMIT_FIELDS),
             ("from_id_to_ex", ID_TO_EX_FIELDS),
+            ("decoded_packet", ID_TO_EX_FIELDS),
             ("rob_alloc_req", ROB_ALLOC_REQ_FIELDS),
             ("from_pd_to_id", PD_TO_ID_FIELDS),
         ):
@@ -126,7 +130,8 @@ class InstructionTrace:
                     )
         self.registers = {0: 0}
         self.allocated: dict[int, dict[str, Any]] = {}
-        self.pending_pd: dict[int, deque[dict[str, Any]]] = defaultdict(deque)
+        self.producer: list[dict[str, Any]] = []
+        self.decoded: deque[list[dict[str, Any]]] = deque()
         self.count = 0
         self.tiers: Counter[str] = Counter()
         self.file: Any = None
@@ -137,7 +142,7 @@ class InstructionTrace:
         return int(self.handles[name].value)
 
     def sample(self, active: bool) -> None:
-        """Follow retirement before tag reuse, then PD redirects and allocation."""
+        """Follow retirement, queue acceptance/allocation, then the ID register."""
         if self.closed:
             return
         if active and self.file is None:
@@ -151,53 +156,95 @@ class InstructionTrace:
         if self.read("flush_pipeline"):
             # This flush kills ID and the decoded queue. Older ROB entries
             # survive partial recovery; their tag annotations remain intact.
-            self.pending_pd.clear()
-        elif self.read("pd_redirect"):
-            suffix = "_2" if self.read("pd_redirect_slot2") else ""
-            pd_packet = fields(PD_TO_ID_FIELDS, self.read(f"from_pd_to_id{suffix}"))
-            slot_suffix = "_2_r" if suffix else "_r"
-            tier = "pd_direction"
-            if self.read(f"pd_stage_inst.pd_itt_redirect{slot_suffix}"):
-                tier = "pd_ittage"
-            elif self.read(f"pd_stage_inst.pd_backing_redirect{slot_suffix}"):
-                tier = "pd_backing"
-            self.pending_pd[pd_packet["program_counter"]].append(
-                {
-                    "f0_taken": bool(pd_packet["btb_predicted_taken"]),
-                    "f0_target": pd_packet["btb_predicted_target"],
-                    "pd_tier": tier,
-                    "pd_taken": bool(self.read("pd_redirect_taken")),
-                    "pd_target": self.read("pd_redirect_target"),
-                }
-            )
-        for suffix in ("", "_2"):
+            self.producer = []
+            self.decoded.clear()
+            return
+        # Accept precedes pop in this observer so empty bypass and concurrent
+        # push/pop both retain the RTL's bundle order. A held producer is accepted
+        # only once, as qualified by the queue's consumed_q state.
+        if self.read("gen_decoded_queue.u_queue.accept"):
+            if len(self.producer) != 2:
+                raise AssertionError(
+                    "instruction capture: accepted bundle has no producer"
+                )
+            for slot, suffix in enumerate(("", "_2")):
+                producer_packet = fields(
+                    ID_TO_EX_FIELDS, self.read(f"decoded_packet{suffix}")
+                )
+                if producer_packet["is_real"]:
+                    self.check_prediction(producer_packet, self.producer[slot])
+            self.decoded.append(self.producer)
+        bundle = None
+        for slot, suffix in enumerate(("", "_2")):
             request = fields(ROB_ALLOC_REQ_FIELDS, self.read(f"rob_alloc_req{suffix}"))
             response = self.read(f"rob_alloc_resp{suffix}")
-            if not request["alloc_valid"] or not (response >> (ROB_TAG_WIDTH + 1)):
+            if not request["alloc_valid"]:
                 continue
+            if not (response >> (ROB_TAG_WIDTH + 1)):
+                raise AssertionError("instruction capture: allocation without ready")
+            if slot == 0:
+                if not self.decoded:
+                    raise AssertionError(
+                        "instruction capture: allocation without accepted bundle"
+                    )
+                bundle = self.decoded.popleft()
+            if bundle is None:
+                raise AssertionError("instruction capture: slot 2 without slot 1")
             tag = (response >> 1) & ((1 << ROB_TAG_WIDTH) - 1)
             packet: dict[str, Any] = fields(
                 ID_TO_EX_FIELDS, self.read(f"from_id_to_ex{suffix}")
             )
-            pc = packet["program_counter"]
-            prediction = {
-                "f0_taken": bool(packet["btb_predicted_taken"]),
-                "f0_target": packet["btb_predicted_target"],
-                "pd_tier": "none",
-                "pd_taken": bool(packet["btb_predicted_taken"]),
-                "pd_target": packet["btb_predicted_target"],
-            }
-            if packet["is_branch_or_jump"] and self.pending_pd[pc]:
-                prediction = self.pending_pd[pc].popleft()
-                if prediction["pd_taken"] != bool(packet["btb_predicted_taken"]) or (
-                    prediction["pd_taken"]
-                    and prediction["pd_target"] != packet["btb_predicted_target"]
-                ):
-                    raise AssertionError(
-                        "instruction capture: PD annotation differs from allocated prediction"
-                    )
-            packet["prediction"] = prediction
+            self.check_prediction(packet, bundle[slot])
+            packet["prediction"] = bundle[slot]["prediction"]
             self.allocated[tag] = packet
+        # ID registers this cycle's PD packet on an advance. Save the annotation
+        # for the NEXT observation; a younger same-PC redirect cannot annotate
+        # the older bundle being allocated above.
+        if not self.read("dbg_pipeline_stall"):
+            self.producer = [self.pd_annotation(slot) for slot in range(2)]
+
+    @staticmethod
+    def check_prediction(packet: dict[str, Any], annotation: dict[str, Any]) -> None:
+        """Check both dynamic bundle lineage and the final ID prediction."""
+        prediction = annotation["prediction"]
+        if (
+            annotation["pc"] != packet["program_counter"]
+            or prediction["pd_taken"] != bool(packet["btb_predicted_taken"])
+            or (
+                prediction["pd_taken"]
+                and prediction["pd_target"] != packet["btb_predicted_target"]
+            )
+        ):
+            raise AssertionError(
+                f"instruction capture: prediction lineage mismatch at "
+                f"{packet['program_counter']:#x}: {annotation}, "
+                f"allocated {packet['btb_predicted_taken']}/{packet['btb_predicted_target']:#x}"
+            )
+
+    def pd_annotation(self, slot: int) -> dict[str, Any]:
+        """Snapshot the F0 decision and the aligned PD override entering ID."""
+        suffix = "_2" if slot else ""
+        packet = fields(PD_TO_ID_FIELDS, self.read(f"from_pd_to_id{suffix}"))
+        prediction = {
+            "f0_taken": bool(packet["btb_predicted_taken"]),
+            "f0_target": packet["btb_predicted_target"],
+            "pd_tier": "none",
+            "pd_taken": bool(packet["btb_predicted_taken"]),
+            "pd_target": packet["btb_predicted_target"],
+        }
+        if self.read("pd_redirect") and self.read("pd_redirect_slot2") == slot:
+            tier = "pd_direction"
+            if self.read(f"pd_stage_inst.pd_itt_redirect{suffix}_r"):
+                tier = "pd_ittage"
+            elif self.read(f"pd_stage_inst.pd_backing_redirect{suffix}_r"):
+                tier = "pd_backing"
+            prediction = {
+                **prediction,
+                "pd_tier": tier,
+                "pd_taken": bool(self.read("pd_redirect_taken")),
+                "pd_target": self.read("pd_redirect_target"),
+            }
+        return {"pc": packet["program_counter"], "prediction": prediction}
 
     def retire(self, commit: dict[str, int], active: bool) -> None:
         """Resolve operands from the architectural state immediately before commit."""

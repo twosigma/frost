@@ -144,6 +144,7 @@ def make_recorder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Bind packed signal doubles with the same widths as production."""
     layouts = {
         "from_id_to_ex": cpu_structs.ID_TO_EX_FIELDS,
+        "decoded_packet": cpu_structs.ID_TO_EX_FIELDS,
         "from_pd_to_id": cpu_structs.PD_TO_ID_FIELDS,
         "rob_alloc_req": cpu_structs.ROB_ALLOC_REQ_FIELDS,
         "rob_commit_comb": cpu_structs.COMMIT_FIELDS,
@@ -192,13 +193,32 @@ def allocate(capture: Any, pc: int, insn: int, tag: int, **extra: int) -> None:
     }
     drive(
         capture,
-        rob_alloc_req=packed_structs.pack_struct(
-            cpu_structs.ROB_ALLOC_REQ_FIELDS, {"alloc_valid": 1, "pc": pc}
-        ),
-        rob_alloc_resp=(1 << (cpu_structs.ROB_TAG_WIDTH + 1)) | tag << 1,
-        from_id_to_ex=packed_structs.pack_struct(cpu_structs.ID_TO_EX_FIELDS, packet),
+        from_pd_to_id=packed_structs.pack_struct(cpu_structs.PD_TO_ID_FIELDS, packet),
     )
     capture.sample(False)
+    drive(capture, **bundle_signals([packet], [tag]))
+    capture.sample(False)
+
+
+def bundle_signals(packets: list[dict[str, int]], tags: list[int]) -> dict[str, int]:
+    """Accept and dispatch a bundle through the empty queue bypass."""
+    values = {"gen_decoded_queue.u_queue.accept": 1}
+    for slot, (packet, tag) in enumerate(zip(packets, tags, strict=True)):
+        suffix = "_2" if slot else ""
+        encoded = packed_structs.pack_struct(cpu_structs.ID_TO_EX_FIELDS, packet)
+        values.update(
+            {
+                f"decoded_packet{suffix}": encoded,
+                f"from_id_to_ex{suffix}": encoded,
+                f"rob_alloc_req{suffix}": packed_structs.pack_struct(
+                    cpu_structs.ROB_ALLOC_REQ_FIELDS,
+                    {"alloc_valid": 1, "pc": packet["program_counter"]},
+                ),
+                f"rob_alloc_resp{suffix}": (1 << (cpu_structs.ROB_TAG_WIDTH + 1))
+                | tag << 1,
+            }
+        )
+    return values
 
 
 def commit(pc: int, tag: int, reg: int, value: int) -> int:
@@ -284,23 +304,85 @@ def test_prediction_annotations_follow_allocation_and_flush(
         values[f"pd_stage_inst.pd_{name}_redirect{suffix}_r"] = 1
     drive(cap, **values)
     cap.sample(False)
-    allocate(
-        cap,
-        4,
-        0x0400006F,
-        2,
-        is_branch_or_jump=1,
-        btb_predicted_taken=1,
-        btb_predicted_target=64,
-    )
+    packet = {
+        "program_counter": 4,
+        "is_real": 1,
+        "is_branch_or_jump": 1,
+        "btb_predicted_taken": 1,
+        "btb_predicted_target": 64,
+    }
+    packets = [{"program_counter": 0, "is_real": 1}, packet] if slot else [packet]
+    drive(cap, **bundle_signals(packets, [1, 2] if slot else [2]))
+    cap.sample(False)
     assert cap.allocated[2]["prediction"]["pd_tier"] == tier
     assert not cap.allocated[2]["prediction"]["f0_taken"]
     drive(cap, **values)
     cap.sample(False)
     drive(cap, flush_pipeline=1)
     cap.sample(False)
-    assert not cap.pending_pd
+    assert not cap.decoded
+    assert not cap.producer
     # A surviving older branch retains its tag annotation through a partial flush.
     assert cap.allocated[2]["prediction"]["pd_tier"] == tier
     allocate(cap, 4, 0x0400006F, 2, is_branch_or_jump=1)
     assert cap.allocated[2]["prediction"]["pd_tier"] == "none"
+
+
+def test_same_pc_iterations_keep_prediction_lineage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A younger PD override cannot annotate an older same-PC allocation."""
+    cap = make_recorder(tmp_path, monkeypatch)
+    packet = {"program_counter": 4, "is_real": 1, "is_branch_or_jump": 1}
+    pd = packed_structs.pack_struct(cpu_structs.PD_TO_ID_FIELDS, packet)
+    drive(cap, from_pd_to_id=pd)
+    cap.sample(False)
+    # Queue the older iteration while ID stalls: the producer must be held.
+    values = bundle_signals([packet], [1])
+    drive(
+        cap,
+        **{k: v for k, v in values.items() if not k.startswith("rob_alloc")},
+        dbg_pipeline_stall=1,
+    )
+    cap.sample(False)
+    for _ in range(3):
+        drive(cap, dbg_pipeline_stall=1)
+        cap.sample(False)
+    # Allocate the old queue head as the younger override enters ID.
+    drive(
+        cap,
+        **{k: v for k, v in values.items() if k != "gen_decoded_queue.u_queue.accept"},
+        from_pd_to_id=pd,
+        pd_redirect=1,
+        pd_redirect_taken=1,
+        pd_redirect_target=64,
+    )
+    cap.sample(False)
+    assert cap.allocated[1]["prediction"]["pd_tier"] == "none"
+    younger = {**packet, "btb_predicted_taken": 1, "btb_predicted_target": 64}
+    drive(cap, **bundle_signals([younger], [2]))
+    cap.sample(False)
+    assert cap.allocated[2]["prediction"]["pd_tier"] == "pd_direction"
+    assert not cap.decoded
+
+
+def test_annotation_mismatch_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing override cannot silently turn into a different tier."""
+    cap = make_recorder(tmp_path, monkeypatch)
+    drive(
+        cap,
+        from_pd_to_id=packed_structs.pack_struct(
+            cpu_structs.PD_TO_ID_FIELDS, {"program_counter": 4}
+        ),
+    )
+    cap.sample(False)
+    drive(
+        cap,
+        **bundle_signals(
+            [{"program_counter": 4, "is_real": 1, "btb_predicted_taken": 1}], [0]
+        ),
+    )
+    with pytest.raises(AssertionError, match="lineage mismatch"):
+        cap.sample(False)
