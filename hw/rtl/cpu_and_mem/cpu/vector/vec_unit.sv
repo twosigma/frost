@@ -760,7 +760,10 @@ module vec_unit #(
                             vmu_idle && !vmem_desc_valid_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) vec_backend_idle_q <= 1'b1;
-    else vec_backend_idle_q <= vec_backend_idle && !varith_commit_only && !desc_launch_valid;
+    else
+      vec_backend_idle_q <= eng_idle && (count_q == '0) && !cpush_valid_q && !issued_non_grp_q &&
+                            (vmu_idle || vmu_done) && !vmem_desc_valid_q &&
+                            !varith_commit_only && !desc_launch_valid;
   end
   assign vtox_backend_ready = vec_backend_idle_q && !o_vmem_head_shield && !i_csr_wb_pending;
 
@@ -1369,6 +1372,10 @@ module vec_unit #(
       else $error("vec_unit: head_tag_q disagreed with i_head_tag on off-head partial flush");
       assert (!vec_backend_idle_q || vec_backend_idle)
       else $error("vec_unit: registered backend idle disagreed with live backend idle");
+      assert (!(vmu_done && vmu_idle))
+      else $error("vec_unit: vmu_done and vmu_idle asserted in the same cycle");
+      assert (!(vmu_done && vmu_cmd_valid))
+      else $error("vec_unit: vmu_done overlapped a new VMU command launch");
       assert (!(alloc_q_valid && i_commit_valid && (i_commit_tag == alloc_q_tag)))
       else $error("vec_unit: commit arrived for tag still in alloc_q (%0d)", alloc_q_tag);
       assert (vmu_idle || vmu_busy_q || o_vmu_fatal)

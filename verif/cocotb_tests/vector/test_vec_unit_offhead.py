@@ -149,6 +149,19 @@ def enc_vse32(vs3: int, rs1: int = 10) -> int:
     )
 
 
+def enc_vle32(vd: int, rs1: int = 10) -> int:
+    """Encode vle32.v vd, (rs1) (unmasked unit-stride load)."""
+    return (
+        (0x00 << 26)
+        | (1 << 25)
+        | (0 << 20)
+        | (rs1 << 15)
+        | (6 << 12)
+        | (vd << 7)
+        | 0x07
+    )
+
+
 def make_vtype(sew: int, lmul_code: int = 0) -> int:
     """Pack {vill=0, vtype[7:0]} for SEW in {8, 16, 32, 64}."""
     sew_code = {8: 0, 16: 1, 32: 2, 64: 3}[sew]
@@ -277,6 +290,13 @@ class VecUnitBench:
             "flush_spec_d1": int(dut.flush_spec_d1_q.value),
             "vmu_busy": int(dut.vmu_busy_q.value),
             "vhead_port_claim": int(dut.vhead_port_claim_q.value),
+            "vmu_done": int(dut.vmu_done.value),
+            "vmu_idle": int(dut.vmu_idle.value),
+            "vmu_cmd_valid": int(dut.vmu_cmd_valid.value),
+            "vmem_desc_valid": int(dut.vmem_desc_valid_q.value),
+            "vec_backend_idle_q": int(dut.vec_backend_idle_q.value),
+            "hm_state": int(dut.u_head_mmu.state_q.value),
+            "hm_vec_idle": int(dut.u_head_mmu.i_vec_idle.value),
         }
         await RisingEdge(dut.i_clk)
         await ReadOnly()
@@ -1043,4 +1063,229 @@ async def test_nearly_full_viq_staged_commit_and_port_handoff(dut: Any) -> None:
     dut._log.info(
         f"VLEN={b.vlen}: near-full VIQ (max_count={max_count}), port-4 handoff "
         f"(rd0_hold={saw_rd0_hold}), and all VTOX/VTOF formats verified"
+    )
+
+
+@cocotb.test()
+async def test_vmu_done_idle_handoff(dut: Any) -> None:
+    """Verify zero-bubble vmu_done -> vec_backend_idle_q handoff and hazard gating."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    b = VecUnitBench(dut)
+    await b.reset()
+
+    vl32 = b.vlen // 32
+    vtype32 = make_vtype(32)
+    b.set_state(
+        i_head_tag=0,
+        i_rob_empty=0,
+        i_vl=vl32,
+        i_vtype=vtype32,
+        i_rf_read_data=0x80000100,
+        i_translate=0,
+        i_lc_req_ready=1,
+        i_grant=1,
+    )
+
+    def _check_invariants(s: dict[str, int]) -> None:
+        assert not (s["vmu_done"] and s["vmu_idle"]), "vmu_done overlapped vmu_idle"
+        assert not (s["vmu_done"] and s["vmu_cmd_valid"]), (
+            "vmu_done overlapped vmu_cmd_valid"
+        )
+        if s["vec_backend_idle_q"]:
+            assert s["vmu_idle"] == 1, "vec_backend_idle_q set while VMU active"
+            assert s["vmem_desc_valid"] == 0, (
+                "vec_backend_idle_q set while VMU descriptor pending"
+            )
+
+    # Part A: Back-to-back vle32.v (tag 0) -> vse32.v (tag 1).
+    # On the cycle after tag 0 pulses vmu_done, vec_backend_idle_q must rise
+    # immediately with vmu_idle so u_head_mmu enters HM_WAIT without a bubble.
+    await b.tick(
+        i_alloc=1,
+        i_alloc_tag=0,
+        i_alloc_is_vmem=1,
+        i_alloc_is_vload=1,
+        i_alloc_vmt_idx=0,
+        i_alloc_vtype=vtype32,
+        i_alloc_insn=enc_vle32(4),
+    )
+    await b.tick(
+        i_alloc=1,
+        i_alloc_tag=1,
+        i_alloc_is_vmem=1,
+        i_alloc_is_vload=0,
+        i_alloc_vmt_idx=1,
+        i_alloc_vtype=vtype32,
+        i_alloc_insn=enc_vse32(4),
+    )
+
+    lc_pending: list[int] = []
+    t0_cdb = False
+    t0_wait = 0
+    t0_ret = False
+    t1_cdb = False
+    t1_wait = 0
+    t1_ret = False
+    saw_t0_done = False
+    after_t0_done = 0
+
+    for _ in range(150):
+        pulses: dict[str, int] = {}
+        if t0_cdb and not t0_ret:
+            t0_wait += 1
+            if t0_wait == 2:
+                pulses["i_commit_valid"] = 1
+                pulses["i_commit_tag"] = 0
+                pulses["i_head_tag"] = 1
+                t0_ret = True
+        elif t1_cdb and not t1_ret:
+            t1_wait += 1
+            if t1_wait == 2:
+                pulses["i_commit_valid"] = 1
+                pulses["i_commit_tag"] = 1
+                pulses["i_head_tag"] = 2
+                pulses["i_rob_empty"] = 1
+                t1_ret = True
+        if lc_pending:
+            pulses["i_lc_resp_valid"] = 1
+            pulses["i_lc_resp_id"] = lc_pending.pop(0)
+            pulses["i_lc_resp_data"] = 0x11223344_55667788
+
+        s = await b.tick(**pulses)
+        _check_invariants(s)
+        if s["o_lc_req_valid"]:
+            lc_pending.append(int(s["o_lc_req_id"]))
+
+        if saw_t0_done and after_t0_done == 1:
+            assert s["vmu_idle"] == 1
+            assert s["vec_backend_idle_q"] == 1, (
+                "vec_backend_idle_q delayed after vmu_done"
+            )
+            assert s["hm_vec_idle"] == 1
+            assert s["hm_state"] == 0  # HM_IDLE launching transition this edge
+            after_t0_done = 2
+        elif saw_t0_done and after_t0_done == 2:
+            assert s["hm_state"] == 1, (
+                f"expected HM_WAIT (1) on vmu_done+2, got {s['hm_state']}"
+            )
+            after_t0_done = 3
+
+        if t0_ret and not saw_t0_done and s["vmu_done"]:
+            assert s["vmu_idle"] == 0
+            assert s["vmu_cmd_valid"] == 0
+            assert s["vec_backend_idle_q"] == 0
+            saw_t0_done = True
+            after_t0_done = 1
+
+        if s["comp"]["valid"]:
+            if s["comp"]["tag"] == 0:
+                t0_cdb = True
+            elif s["comp"]["tag"] == 1:
+                t1_cdb = True
+
+        if t1_ret and s["o_idle"] == 1 and not lc_pending:
+            break
+
+    assert saw_t0_done and after_t0_done == 3 and t1_ret
+    assert int(dut.o_idle.value) == 1
+
+    # Part B: Committed varith arriving on the exact vmu_done cycle must keep
+    # vec_backend_idle_q low so the following vle32.v waits for it to finish.
+    b.set_state(i_head_tag=2, i_rob_empty=0)
+    await b.tick(
+        i_alloc=1,
+        i_alloc_tag=2,
+        i_alloc_is_vmem=1,
+        i_alloc_is_vload=0,
+        i_alloc_vmt_idx=0,
+        i_alloc_vtype=vtype32,
+        i_alloc_insn=enc_vse32(4),
+    )
+    await b.tick(
+        i_alloc=1,
+        i_alloc_tag=3,
+        i_alloc_is_varith=1,
+        i_alloc_vtype=vtype32,
+        i_alloc_insn=enc_vadd_vx(5, 4),
+    )
+    await b.tick(
+        i_alloc=1,
+        i_alloc_tag=4,
+        i_alloc_is_vmem=1,
+        i_alloc_is_vload=1,
+        i_alloc_vmt_idx=1,
+        i_alloc_vtype=vtype32,
+        i_alloc_insn=enc_vle32(6),
+    )
+
+    t2_cdb = False
+    t2_wait = 0
+    t2_ret = False
+    t3_committed = False
+    t4_cdb = False
+    t4_wait = 0
+    t4_ret = False
+    checked_blocked_cycle = False
+
+    for _ in range(200):
+        pulses = {}
+        if t2_cdb and not t2_ret:
+            t2_wait += 1
+            if t2_wait == 2:
+                pulses["i_commit_valid"] = 1
+                pulses["i_commit_tag"] = 2
+                pulses["i_head_tag"] = 3
+                t2_ret = True
+        elif t2_ret and not t3_committed and int(dut.vmu_done.value) == 1:
+            # Commit varith tag 3 on the exact vmu_done cycle of tag 2!
+            pulses["i_commit_valid"] = 1
+            pulses["i_commit_tag"] = 3
+            pulses["i_commit_value"] = 7
+            pulses["i_head_tag"] = 4
+            t3_committed = True
+        elif t4_cdb and not t4_ret:
+            t4_wait += 1
+            if t4_wait == 2:
+                pulses["i_commit_valid"] = 1
+                pulses["i_commit_tag"] = 4
+                pulses["i_head_tag"] = 5
+                pulses["i_rob_empty"] = 1
+                t4_ret = True
+        if lc_pending:
+            pulses["i_lc_resp_valid"] = 1
+            pulses["i_lc_resp_id"] = lc_pending.pop(0)
+            pulses["i_lc_resp_data"] = 0
+
+        was_t3_commit = t3_committed and not checked_blocked_cycle
+        s = await b.tick(**pulses)
+        _check_invariants(s)
+        if s["o_lc_req_valid"]:
+            lc_pending.append(int(s["o_lc_req_id"]))
+
+        if was_t3_commit:
+            # On the cycle immediately following (vmu_done && varith_commit_only),
+            # vmu_idle is 1 but cpush_valid_q holds tag 3 so vec_backend_idle_q
+            # MUST remain 0 and tag 4 must stay in HM_IDLE.
+            if s["cpush_valid"] == 1:
+                assert s["vmu_idle"] == 1
+                assert s["vec_backend_idle_q"] == 0, (
+                    "vec_backend_idle_q falsely asserted while varith staged"
+                )
+                assert s["hm_vec_idle"] == 0
+                assert s["hm_state"] == 0
+                checked_blocked_cycle = True
+
+        if s["comp"]["valid"]:
+            if s["comp"]["tag"] == 2:
+                t2_cdb = True
+            elif s["comp"]["tag"] == 4:
+                t4_cdb = True
+
+        if t4_ret and s["o_idle"] == 1 and not lc_pending:
+            break
+
+    assert t3_committed and checked_blocked_cycle and t4_ret
+    assert int(dut.o_idle.value) == 1
+    dut._log.info(
+        f"VLEN={b.vlen}: zero-bubble vmu_done handoff and varith-on-vmu_done block verified"
     )

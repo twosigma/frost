@@ -26,7 +26,7 @@ read -formal -sv vec_vmu_formal.sv
 hierarchy -top vec_vmu_formal
 script free_undefined.ys
 prep -top vec_vmu_formal -flatten
-select -assert-count 7 t:$check r:FLAVOR=assert %i
+select -assert-count 9 t:$check r:FLAVOR=assert %i
 select -assert-count 2 t:$check r:FLAVOR=cover %i
 bmc: memory_map -keepdc
 bmc: opt -keepdc
