@@ -1936,8 +1936,8 @@ jobs:
           # predictor-mutation proofs.
           - shard: Frontend and predictor
             pytest_filter: >-
-              prediction_release or prediction_handoff or if_prediction_walk_past or
-              fetch_shadow_capture or (backing_btb and not _twin) or
+              if_prediction_walk_past or
+              fetch_parcel_queue or fetch_shadow_capture or (backing_btb and not _twin) or
               predictor_fetch_contract or test_predictor_mutations
             timeout_minutes: 150
           # The longest remaining block proofs: the flash-valid cache bits, the
@@ -1970,8 +1970,8 @@ jobs:
               coherence_ or coherent_ or _twin or csr_file_vector or
               vec_lmul_legality or vec_vmu or vec_vtype_tracker or line_client_link or ptw or
               tlb or imsic or aplic or immu or dmmu or load_queue or lq_ or rs_issue_tag_ or
-              prediction_release or prediction_handoff or if_prediction_walk_past or
-              fetch_shadow_capture or backing_btb or predictor_fetch_contract or
+              if_prediction_walk_past or
+              fetch_parcel_queue or fetch_shadow_capture or backing_btb or predictor_fetch_contract or
               test_predictor_mutations or cache_flash_valid or vec_vmt or tomasulo_wrapper or
               reservation_station_bmc or reservation_station_cover or rs_mem_broadcast or
               rat_checkpoint_restore or home_seat_next_equiv or

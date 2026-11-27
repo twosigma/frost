@@ -6,7 +6,7 @@ cover_unequal cover_mode unequal
 
 [options]
 prove_mode: mode prove
-prove_mode: depth 1
+prove_mode: depth 2
 # The first training write can come in step 1 (train_valid_q starts at 0),
 # from any table contents and any training registers; step 2 checks it.
 bmc_mode: mode bmc

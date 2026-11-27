@@ -1826,7 +1826,7 @@ the generic `SYNTHESIS` view of `hw/rtl/frost.f`. Both elaborate the
 default `platform_top`. Before loading the cuts, each case checks both
 elaboration logs for their respective Verilog-2005 and SLANG frontend
 execution headers. The cases cover `soc_top`, `tage_history`, `dmmu`,
-`axi_mux`, `branch_predictor`, `lq_coherence_port`, `store_queue`,
+`axi_mux`, `fetch_btb_2w`, `lq_coherence_port`, `store_queue`,
 `coherence_home_completions`, `cpu_ooo`, `coherence_l1d`, `load_queue`, and
 `coherence_home`. Each case selects an instance from that hierarchy to
 use its elaborated parameters. The comparison includes the selected module's

@@ -1,34 +1,16 @@
 # Instruction Fetch (IF) stage file list
 
-# RVC alignment and state
--f $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_extension.f
+# RVC reference decompressor (instantiated by pd_stage in simulation)
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
 
 # Branch prediction
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction.f
 
-# Holdoffs for stale instruction cycles
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv
+# Decoupled F0 fetch PC controller
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/fetch_pc_decoupled.sv
 
-# PC adders with a preserved synthesis boundary
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv
-
-# Sequential PC calculation
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
-
-# Fetch and emitted-packet PCs
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
-
-# Served-window coverage
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/served_window_coverage.sv
-
-# Low-BRAM request retargeting
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/fetch_redirect.sv
-
-# Low target sums carried to PD
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pd_target_candidate.sv
-
-# Prediction candidates captured with stalled packets
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/slot2_prediction_capture.sv
+# Decoupled parcel queue with zero-cycle empty and partial bypass
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/fetch_parcel_queue.sv
 
 # Instruction MMU - Bare-mode pass-through and Sv39 translation of the fetch PC;
 # its TLB module (mmu/dtlb.sv) is listed in tomasulo_wrapper.f

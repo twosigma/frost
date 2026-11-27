@@ -80,12 +80,15 @@ module fetch_provider #(
     input logic i_fault1,
     input logic i_fault1_page,
     input logic i_line_after_ok,
-    // if_stage's registered retarget pulse (see the header). A leading slot-1
-    // prediction is left to the PC-movement detector (retarget_now).
+    // if_stage's registered retarget pulse (see the header). F0 BTB steering
+    // advances PC through normal progress; explicit redirects and F1 resteers
+    // pulse i_retarget.
     input logic i_retarget,
+    // Optional replay-consume qualifier (tied low by the decoupled front end).
     input logic i_fetch_replay_consume,
-    // Decode cannot consume while stalled. Registered stall gates publication
-    // to preserve IF's first-stall-cycle capture; it does not gate fill addresses.
+    // Optional pipeline-stall gate (tied low by the decoupled front end, which
+    // absorbs back-end stalls in its parcel queue). When asserted, registered
+    // stall gates publication without gating fill addresses.
     input logic i_pipeline_stall,
     output logic [63:0] o_instr,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
@@ -191,8 +194,8 @@ module fetch_provider #(
   logic [riscv_pkg::XLEN-1:0] fetch_addr;
   // Form the live PC's window on a valid cycle to sustain one window per
   // cycle. Otherwise hold the owed request, including through stalls.
-  // Retarget takes one cycle to reach this mux; the core's control-flow
-  // holdoff rejects that stale window and persists through no-progress cycles.
+  // Retarget takes one cycle to reach this mux; if_stage's served-word tag
+  // check and F1 request validity reject that stale window.
   assign fetch_addr = o_instr_valid ? i_pc : ask_q;
 
   // The physical pair of the window being formed (same select as fetch_addr).
