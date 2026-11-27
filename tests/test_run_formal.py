@@ -193,7 +193,10 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_boundary", "bmc_intervening_other_value"): 15840,
     ("coherence_store_boundary", "bmc_intervening_fatal"): 1200,
     ("coherence_store_boundary", "bmc_amo_same"): 6600,
-    ("coherence_store_boundary", "bmc_amo_other"): 9600,
+    ("coherence_store_boundary", "bmc_amo_other"): 6900,
+    ("coherence_store_boundary", "bmc_amo_other_home_state"): 600,
+    ("coherence_store_boundary", "bmc_amo_other_home_id"): 13800,
+    ("coherence_store_boundary", "bmc_amo_other_c2b"): 5400,
     ("coherence_store_boundary", "bmc_amo_same_owner"): 3000,
     ("coherence_store_boundary", "bmc_amo_same_fatal"): 3000,
     ("coherence_store_boundary", "bmc_amo_other_fatal"): 4800,
@@ -356,6 +359,9 @@ FORMAL_TARGETS = [
             "bmc_amo_same_fatal",
             "prove_amo_same_fatal_sticky",
             "bmc_amo_other",
+            "bmc_amo_other_home_state",
+            "bmc_amo_other_home_id",
+            "bmc_amo_other_c2b",
             "bmc_amo_other_fatal",
             "prove_amo_other_fatal_sticky",
             "bmc_sc",
@@ -2955,6 +2961,18 @@ SBY_TASKS = [
     ),
     ("bmc_amo_other", "Different-sector store and AMO credit, drain and ownership."),
     (
+        "bmc_amo_other_home_state",
+        "Different-sector AMO home grant and completion ordering before the home consumes it.",
+    ),
+    (
+        "bmc_amo_other_home_id",
+        "Different-sector AMO completion identity matches the home demand.",
+    ),
+    (
+        "bmc_amo_other_c2b",
+        "Different-sector AMO write-busy exclusion and store acknowledgement.",
+    ),
+    (
         "bmc_amo_other_fatal",
         "Different-sector fatal status at frame 139, paired with fatal persistence induction.",
     ),
@@ -5147,6 +5165,13 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         ),
         "coherence_store_boundary_bmc_amo_same": "Store boundary AMO same",
         "coherence_store_boundary_bmc_amo_other": "Store boundary AMO other",
+        "coherence_store_boundary_bmc_amo_other_c2b": "Store boundary AMO other C2b",
+        "coherence_store_boundary_bmc_amo_other_home_state": (
+            "Store boundary AMO other C2b"
+        ),
+        "coherence_store_boundary_bmc_amo_other_home_id": (
+            "Store boundary AMO other home"
+        ),
         "coherence_store_boundary_bmc_sc": "Store boundary",
     }
     # Shards sized directly from their tasks' allowances plus CI setup; the
@@ -5645,7 +5670,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_store_boundary": (
         "plain memory_map and opt: its BMC tasks run them before their setundef, its cover and sticky tasks have none",
         {
-            "bmc_four_control bmc_four_value_0 bmc_four_value_1 bmc_four_value_2 bmc_four_value_3 bmc_intervening_same_flow bmc_intervening_other_flow bmc_intervening_same_value bmc_intervening_other_value bmc_intervening_fatal bmc_load_same bmc_load_other bmc_load_same_probe_launch bmc_probe_kept_other bmc_probe_kept_same bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_fatal bmc_sc bmc_old": [
+            "bmc_four_control bmc_four_value_0 bmc_four_value_1 bmc_four_value_2 bmc_four_value_3 bmc_intervening_same_flow bmc_intervening_other_flow bmc_intervening_same_value bmc_intervening_other_value bmc_intervening_fatal bmc_load_same bmc_load_other bmc_load_same_probe_launch bmc_probe_kept_other bmc_probe_kept_same bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_home_state bmc_amo_other_home_id bmc_amo_other_c2b bmc_amo_other_fatal bmc_sc bmc_old": [
                 "memory_map",
                 "opt",
                 "opt -fast",
@@ -12250,6 +12275,79 @@ def test_store_boundary_four_and_intervening_partitions_complete() -> None:
             validator(altered)
 
 
+def test_store_boundary_amo_other_partitions_complete() -> None:
+    """Require disjoint, exhaustive assertion partitions for bmc_amo_other."""
+    root = Path(__file__).resolve().parents[1]
+    sby_path = root / FORMAL_DIR / "coherence_store_boundary.sby"
+    configs = {
+        name: cfg.sections(sby_path.parent)
+        for name, cfg in sby_config.resolved(sby_path).items()
+    }
+    flow_name = "bmc_amo_other"
+    kept_names = (
+        "bmc_amo_other_home_state",
+        "bmc_amo_other_home_id",
+        "bmc_amo_other_c2b",
+    )
+    names = (flow_name, *kept_names)
+    total = "select -assert-count 19 t:$check r:FLAVOR=assert %i"
+    keep_prefix = "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+
+    def partition_lines(script: list[str]) -> list[str]:
+        return [
+            line
+            for line in script
+            if line.startswith(("select -assert-", "chformal -assert -remove "))
+        ]
+
+    def checks(line: str) -> list[str]:
+        return [word[2:] for word in line.split() if word.startswith("c:")]
+
+    parts = {name: partition_lines(configs[name]["[script]"]) for name in names}
+    # The flow task removes the fatal assertion (checked by bmc_amo_other_fatal)
+    # and every assertion another task keeps; each of those tasks keeps only its own.
+    flow = parts[flow_name]
+    assert flow[0] == total
+    assert flow[1].startswith("chformal -assert -remove c:")
+    removed = checks(flow[1])
+    kept: list[str] = []
+    for name in kept_names:
+        lines = parts[name]
+        assert lines[0] == total
+        assert lines[1].startswith(keep_prefix)
+        assert lines[1].endswith(" %d")
+        own = checks(lines[1])
+        assert lines[2] == (
+            f"select -assert-count {len(own)} t:$check r:FLAVOR=assert %i"
+        )
+        assert len(lines) == 3
+        kept += own
+    assert len(kept) == len(set(kept)) == 4
+    assert flow[2] == "select -assert-count 14 t:$check r:FLAVOR=assert %i"
+    assert len(flow) == 3
+    # 14 + 4 + the fatal assertion = all 19.
+    assert sorted(removed) == sorted([*kept, "p_no_fatal"])
+    # The fatal assertion's own task keeps exactly p_no_fatal.
+    fatal = partition_lines(configs["bmc_amo_other_fatal"]["[script]"])
+    assert fatal[0] == total
+    assert checks(fatal[1]) == ["p_no_fatal"]
+    # The tasks share one model and prove with no assumptions or cutpoints.
+    models = [
+        [line for line in configs[name]["[script]"] if line not in parts[name]]
+        for name in names
+    ]
+    assert all(model == models[0] for model in models)
+    for name in names:
+        assert not any(
+            line.startswith(("cutpoint ", "connect ", "chformal -assert2assume"))
+            for line in configs[name]["[script]"]
+        )
+        assert configs[name]["[engines]"] == ["abc bmc3 -c"]
+        opts = dict(line.split(maxsplit=1) for line in configs[name]["[options]"])
+        assert opts["mode"] == "bmc"
+        assert opts["depth"] == "140"
+
+
 def test_local_data_partition_models_match() -> None:
     """Keep every scheduled real-array assertion at its original depth."""
     reference = l1d_task_config("coh_l1d_local_cover")
@@ -14654,7 +14752,10 @@ def test_fatal_frame_validation(
         ("coherence_store_boundary", "bmc_intervening_other_value", 15840),
         ("coherence_store_boundary", "bmc_intervening_fatal", 1200),
         ("coherence_store_boundary", "bmc_amo_same", 6600),
-        ("coherence_store_boundary", "bmc_amo_other", 9600),
+        ("coherence_store_boundary", "bmc_amo_other", 6900),
+        ("coherence_store_boundary", "bmc_amo_other_home_state", 600),
+        ("coherence_store_boundary", "bmc_amo_other_home_id", 13800),
+        ("coherence_store_boundary", "bmc_amo_other_c2b", 5400),
         ("coherence_store_boundary", "bmc_amo_same_owner", 3000),
         ("coherence_store_boundary", "bmc_amo_same_fatal", 3000),
         ("coherence_store_boundary", "bmc_amo_other_fatal", 4800),
