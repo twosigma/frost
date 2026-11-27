@@ -71,18 +71,26 @@ uncached_cover: chparam -set VLEN 128 vec_head_mmu
 hierarchy -top vec_head_mmu
 script free_undefined.ys
 prep -top vec_head_mmu
-bmc: select -assert-count 10 t:$check r:FLAVOR=assert %i
-cover: select -assert-count 10 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 12 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 12 t:$check r:FLAVOR=assert %i
 bmc: select -assert-count 3 t:$check r:FLAVOR=cover %i
 cover: select -assert-count 3 t:$check r:FLAVOR=cover %i
+stride_bmc: select -assert-count 24 t:$check r:FLAVOR=assert %i
+stride_cover: select -assert-count 24 t:$check r:FLAVOR=assert %i
 stride_bmc: select -assert-count 3 t:$check r:FLAVOR=cover %i
 stride_cover: select -assert-count 3 t:$check r:FLAVOR=cover %i
-stride_bmc: select -assert-count 23 t:$check r:FLAVOR=assert %i
-stride_cover: select -assert-count 23 t:$check r:FLAVOR=assert %i
-index_bmc: select -assert-count 23 t:$check r:FLAVOR=assert %i
-index_cover: select -assert-count 23 t:$check r:FLAVOR=assert %i
+index_bmc: select -assert-count 24 t:$check r:FLAVOR=assert %i
+index_irq_bmc: select -assert-count 24 t:$check r:FLAVOR=assert %i
+index_cover: select -assert-count 24 t:$check r:FLAVOR=assert %i
 index_bmc: select -assert-count 6 t:$check r:FLAVOR=cover %i
+index_irq_bmc: select -assert-count 6 t:$check r:FLAVOR=cover %i
 index_cover: select -assert-count 6 t:$check r:FLAVOR=cover %i
+uncached_bmc: select -assert-count 23 t:$check r:FLAVOR=assert %i
+uncached_seg_bmc: select -assert-count 23 t:$check r:FLAVOR=assert %i
+uncached_cover: select -assert-count 23 t:$check r:FLAVOR=assert %i
+uncached_bmc: select -assert-count 7 t:$check r:FLAVOR=cover %i
+uncached_seg_bmc: select -assert-count 7 t:$check r:FLAVOR=cover %i
+uncached_cover: select -assert-count 7 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
