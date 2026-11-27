@@ -1839,6 +1839,7 @@ module tomasulo_wrapper #(
   (* keep = "true" *) logic [12:0] store_page_offset_sum;
   logic store_addr_pma_ok;
   logic store_addr_misaligned;
+  logic mem_rs_issue_staged;
   logic mem_rs_issue_is_sc;
   (* keep = "true" *) logic mem_rs_issue_atomic_pma;
   logic mem_rs_issue_is_cmo;
@@ -2391,6 +2392,7 @@ module tomasulo_wrapper #(
       .i_sc_completion_pending         (sc_fu_complete_reg.valid),
       .i_store_misalign_fu_complete_reg(store_misalign_fu_complete_reg),
       .i_mem_rs_issue                  (sc_mem_rs_issue),
+      .i_sct_payload_alloc_valid       (mem_rs_issue_staged && mem_rs_issue_is_sc),
       .i_sq_effective_addr             (sq_effective_addr),
       .i_sct_alloc_addr_valid          (!i_translation_active),
       .i_sct_addr_fill_valid           (dmmu_store_ok && dmmu_out_is_sc),
@@ -3486,7 +3488,7 @@ module tomasulo_wrapper #(
       .o_issue_writes_cdb_hint(),
       .o_branch_predicate_tag(),
       .o_issue_is_jalr(),
-      .o_issue_staged(),
+      .o_issue_staged(mem_rs_issue_staged),
       .o_issue_2(),
       .i_fu_ready_2(1'b0),
       .o_issue_2_staged(),

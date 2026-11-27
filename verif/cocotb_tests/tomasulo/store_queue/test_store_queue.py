@@ -604,7 +604,7 @@ async def test_payload_only_fault_capture_stays_invisible(dut: Any) -> None:
     assert int(dut.sq_data_valid.value) == 0
     assert int(dut.sq_address_flat.value) & MASK_XLEN == 0xDEAD_1000
     assert int(dut.sq_is_mmio.value) & 1
-    assert int(dut.sq_data_fwd_flat.value) & MASK64 == 0xDEAD_BEEF_CAFE_0001
+    assert int(dut.u_sq_data_fwd.ram[0].value) == 0xDEAD_BEEF_CAFE_0001
 
     # The hidden payload must not let the committed entry drain. A later valid
     # update replaces it, and only that payload reaches memory.

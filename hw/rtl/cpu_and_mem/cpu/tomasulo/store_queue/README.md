@@ -32,7 +32,9 @@ masks intersect.
 | No conflict | No older store overlaps | Reads the L0 cache or memory |
 
 The result is registered: the LQ sees it one cycle after presenting the
-check (`i_sq_check_capture_valid`).
+check (`i_sq_check_capture_valid`). The forwarding unit registers the winning
+slot index and byte offset, and `store_queue` reads the raw payload from its
+distributed-RAM forwarding copy (`u_sq_data_fwd`) during the LQ consume cycle.
 
 Two ordering rules decide which stores count:
 

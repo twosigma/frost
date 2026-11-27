@@ -179,19 +179,9 @@ module vec_hold_rows #(
       ovl_valid_q <= '0;
     end else begin
       mirror_q <= i_valid;
-      head_q   <= i_head_tag;
       for (int i = 0; i < DEPTH; i++) begin
         for (int t = 0; t < VMT; t++) begin
           row_q[i][t] <= row_d[i][t];
-          ovl_q[i][t] <= seg_covers(
-              sv[t][0], sppn[t][0], slo[t][0], shi[t][0], sec_lo_q[i]
-          ) || seg_covers(
-              sv[t][1], sppn[t][1], slo[t][1], shi[t][1], sec_lo_q[i]
-          ) || seg_covers(
-              sv[t][0], sppn[t][0], slo[t][0], shi[t][0], sec_hi_q[i]
-          ) || seg_covers(
-              sv[t][1], sppn[t][1], slo[t][1], shi[t][1], sec_hi_q[i]
-          );
           // Valid-qualified: on the edge after a free, addr_known_q still has
           // the old generation's value, and the new entry's first cycle must
           // see an unknown address.
@@ -199,15 +189,31 @@ module vec_hold_rows #(
         end
         if (DIRECT_ADDR) begin
           addr_known_q[i] <= i_valid[i] && i_addr_valid[i];
-          sec_lo_q[i] <= direct_lo[i];
-          sec_hi_q[i] <= direct_hi[i];
         end else if (!i_valid[i]) addr_known_q[i] <= 1'b0;
         else if (i_upd_valid && i_upd_idx == $clog2(DEPTH)'(i)) addr_known_q[i] <= 1'b1;
       end
-      if (!DIRECT_ADDR && i_upd_valid) begin
-        sec_lo_q[i_upd_idx] <= upd_lo;
-        sec_hi_q[i_upd_idx] <= upd_hi;
+    end
+  end
+
+  // Payload and overlap registers stay off the reset net; mirror_q, row_q,
+  // addr_known_q, and ovl_valid_q gate every use.
+  always_ff @(posedge i_clk) begin
+    head_q <= i_head_tag;
+    for (int i = 0; i < DEPTH; i++) begin
+      for (int t = 0; t < VMT; t++) begin
+        ovl_q[i][t] <= seg_covers(sv[t][0], sppn[t][0], slo[t][0], shi[t][0], sec_lo_q[i]) ||
+            seg_covers(sv[t][1], sppn[t][1], slo[t][1], shi[t][1], sec_lo_q[i]) ||
+            seg_covers(sv[t][0], sppn[t][0], slo[t][0], shi[t][0], sec_hi_q[i]) ||
+            seg_covers(sv[t][1], sppn[t][1], slo[t][1], shi[t][1], sec_hi_q[i]);
       end
+      if (DIRECT_ADDR) begin
+        sec_lo_q[i] <= direct_lo[i];
+        sec_hi_q[i] <= direct_hi[i];
+      end
+    end
+    if (!DIRECT_ADDR && i_upd_valid) begin
+      sec_lo_q[i_upd_idx] <= upd_lo;
+      sec_hi_q[i_upd_idx] <= upd_hi;
     end
   end
 

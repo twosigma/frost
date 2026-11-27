@@ -57,8 +57,12 @@ module sq_forwarding_unit_formal #(
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
 
-  logic                          o_sq_all_older_addrs_known;
-  riscv_pkg::sq_forward_result_t o_sq_forward;
+  logic                          [IdxWidth-1:0] dut_sq_data_fwd_idx;
+  logic                          [    FLEN-1:0] dut_sq_data_fwd_data;
+  logic                                         o_sq_all_older_addrs_known;
+  riscv_pkg::sq_forward_result_t                o_sq_forward;
+
+  assign dut_sq_data_fwd_data = sq_data_fwd_flat[dut_sq_data_fwd_idx*FLEN+:FLEN];
 
   sq_forwarding_unit #(
       .DEPTH(DEPTH)
@@ -90,7 +94,8 @@ module sq_forwarding_unit_formal #(
       .sq_rob_tag_flat           (sq_rob_tag_flat),
       .sq_address_flat           (sq_address_flat),
       .sq_size_flat              (sq_size_flat),
-      .sq_data_fwd_flat          (sq_data_fwd_flat),
+      .o_sq_data_fwd_idx         (dut_sq_data_fwd_idx),
+      .i_sq_data_fwd_data        (dut_sq_data_fwd_data),
       .o_sq_all_older_addrs_known(o_sq_all_older_addrs_known),
       .o_sq_forward              (o_sq_forward)
   );

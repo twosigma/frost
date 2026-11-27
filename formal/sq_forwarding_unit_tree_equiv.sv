@@ -45,10 +45,12 @@ module sq_forwarding_unit_shipped (
     input logic [(riscv_pkg::SqDepth*riscv_pkg::ReorderBufferTagWidth)-1:0] sq_rob_tag_flat,
     input logic [(riscv_pkg::SqDepth*riscv_pkg::XLEN)-1:0] sq_address_flat,
     input logic [(riscv_pkg::SqDepth*2)-1:0] sq_size_flat,
-    input logic [(riscv_pkg::SqDepth*riscv_pkg::FLEN)-1:0] sq_data_fwd_flat,
+    output logic [$clog2(riscv_pkg::SqDepth)-1:0] o_sq_data_fwd_idx,
+    input logic [riscv_pkg::FLEN-1:0] i_sq_data_fwd_data,
     output logic o_sq_all_older_addrs_known,
     output riscv_pkg::sq_forward_result_t o_sq_forward
 );
+  assign o_sq_data_fwd_idx = '0;
   assign o_sq_all_older_addrs_known = 1'b0;
   assign o_sq_forward = '0;
 endmodule
@@ -81,10 +83,12 @@ module sq_forwarding_unit_formal_sel (
     input logic [(riscv_pkg::SqDepth*riscv_pkg::ReorderBufferTagWidth)-1:0] sq_rob_tag_flat,
     input logic [(riscv_pkg::SqDepth*riscv_pkg::XLEN)-1:0] sq_address_flat,
     input logic [(riscv_pkg::SqDepth*2)-1:0] sq_size_flat,
-    input logic [(riscv_pkg::SqDepth*riscv_pkg::FLEN)-1:0] sq_data_fwd_flat,
+    output logic [$clog2(riscv_pkg::SqDepth)-1:0] o_sq_data_fwd_idx,
+    input logic [riscv_pkg::FLEN-1:0] i_sq_data_fwd_data,
     output logic o_sq_all_older_addrs_known,
     output riscv_pkg::sq_forward_result_t o_sq_forward
 );
+  assign o_sq_data_fwd_idx = '0;
   assign o_sq_all_older_addrs_known = 1'b0;
   assign o_sq_forward = '0;
 endmodule
@@ -125,10 +129,17 @@ module sq_forwarding_unit_tree_equiv #(
     input logic [(DEPTH*riscv_pkg::FLEN)-1:0] sq_data_fwd_flat
 );
 
-  logic                          tree_older_known;
-  riscv_pkg::sq_forward_result_t tree_fwd;
-  logic                          lin_older_known;
-  riscv_pkg::sq_forward_result_t lin_fwd;
+  logic                          [  $clog2(DEPTH)-1:0] tree_fwd_idx;
+  logic                          [riscv_pkg::FLEN-1:0] tree_fwd_data;
+  logic                                                tree_older_known;
+  riscv_pkg::sq_forward_result_t                       tree_fwd;
+  logic                          [  $clog2(DEPTH)-1:0] lin_fwd_idx;
+  logic                          [riscv_pkg::FLEN-1:0] lin_fwd_data;
+  logic                                                lin_older_known;
+  riscv_pkg::sq_forward_result_t                       lin_fwd;
+
+  assign tree_fwd_data = sq_data_fwd_flat[tree_fwd_idx*riscv_pkg::FLEN+:riscv_pkg::FLEN];
+  assign lin_fwd_data  = sq_data_fwd_flat[lin_fwd_idx*riscv_pkg::FLEN+:riscv_pkg::FLEN];
 
   sq_forwarding_unit_shipped u_shipped (
       .i_clk                     (i_clk),
@@ -158,7 +169,8 @@ module sq_forwarding_unit_tree_equiv #(
       .sq_rob_tag_flat           (sq_rob_tag_flat),
       .sq_address_flat           (sq_address_flat),
       .sq_size_flat              (sq_size_flat),
-      .sq_data_fwd_flat          (sq_data_fwd_flat),
+      .o_sq_data_fwd_idx         (tree_fwd_idx),
+      .i_sq_data_fwd_data        (tree_fwd_data),
       .o_sq_all_older_addrs_known(tree_older_known),
       .o_sq_forward              (tree_fwd)
   );
@@ -191,7 +203,8 @@ module sq_forwarding_unit_tree_equiv #(
       .sq_rob_tag_flat           (sq_rob_tag_flat),
       .sq_address_flat           (sq_address_flat),
       .sq_size_flat              (sq_size_flat),
-      .sq_data_fwd_flat          (sq_data_fwd_flat),
+      .o_sq_data_fwd_idx         (lin_fwd_idx),
+      .i_sq_data_fwd_data        (lin_fwd_data),
       .o_sq_all_older_addrs_known(lin_older_known),
       .o_sq_forward              (lin_fwd)
   );

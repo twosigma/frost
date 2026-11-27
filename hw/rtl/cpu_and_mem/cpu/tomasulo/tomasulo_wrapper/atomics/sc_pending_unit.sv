@@ -75,6 +75,9 @@ module sc_pending_unit #(
     // SC's entry. This unit never sees the live fault decision.
     input riscv_pkg::fu_complete_t i_store_misalign_fu_complete_reg,
     input riscv_pkg::rs_issue_t i_mem_rs_issue,
+    // Payload-only issue capture enable omitting recovery-hold and ready gates.
+    // sct_valid allocation remains gated by i_mem_rs_issue.valid and flushes.
+    input logic i_sct_payload_alloc_valid,
     input logic [riscv_pkg::XLEN-1:0] i_sq_effective_addr,
     // The reservation compare is in the PA domain, so under active data
     // translation the issue-time capture (a VA) is a placeholder. The entry's
@@ -145,6 +148,7 @@ module sc_pending_unit #(
   // including the issuing SC, so a SqDepth table always has a free slot for it.
   // A smaller table could drop an SC at allocation and leave it unable to fire.
   localparam int unsigned ScTableDepth = riscv_pkg::SqDepth;
+  localparam int unsigned ScIdxWidth = $clog2(ScTableDepth);
   logic [ScTableDepth-1:0] sct_valid;
   logic [ScTableDepth-1:0] sct_addr_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sct_tag[ScTableDepth];
@@ -170,9 +174,9 @@ module sc_pending_unit #(
       assign sct_is_cached[i] = (sct_addr[i] & ~CachedMask) == CachedBase;
     end
   end else begin : gen_range_cached_class
-  for (genvar i = 0; i < ScTableDepth; i++) begin : gen_cached_class
-    assign sct_is_cached[i] = addr_is_cached(sct_addr[i]);
-  end
+    for (genvar i = 0; i < ScTableDepth; i++) begin : gen_cached_class
+      assign sct_is_cached[i] = addr_is_cached(sct_addr[i]);
+    end
   end
 `ifndef SYNTHESIS
   if (1'b1) begin : gen_cached_class_check
@@ -215,6 +219,7 @@ module sc_pending_unit #(
 
   // Head match: an in-flight SC sits at the ROB head.
   logic                       sct_hit;
+  logic [     ScIdxWidth-1:0] sct_hit_idx;
   logic                       sct_hit_addr_valid;
   logic [riscv_pkg::XLEN-1:0] sct_hit_addr;
   logic                       sct_hit_resv_match;
@@ -222,6 +227,7 @@ module sc_pending_unit #(
   logic [   ScTableDepth-1:0] sct_hit_oh;
   always_comb begin
     sct_hit               = 1'b0;
+    sct_hit_idx           = '0;
     sct_hit_addr_valid    = 1'b0;
     sct_hit_addr          = '0;
     sct_hit_resv_match    = (lq_reservation_addr[riscv_pkg::XLEN-1:3] == '0);
@@ -232,6 +238,7 @@ module sc_pending_unit #(
     for (int i = 0; i < ScTableDepth; i++) begin
       if (sct_valid[i] && (sct_tag[i] == head_tag)) begin
         sct_hit = 1'b1;
+        sct_hit_idx = ScIdxWidth'(i);
         sct_hit_addr_valid = sct_addr_valid[i];
         sct_hit_addr = sct_addr[i];
         sct_hit_size = sct_size[i];
@@ -295,11 +302,29 @@ module sc_pending_unit #(
           o_mem_rs_issue.rob_tag, i_flush_tag, head_tag
       ));
 
-  // Payload capture omits flush gates for timing. Only sct_valid exposes the
-  // payload, so a rejected allocation may safely write a free entry.
+  // Payload capture omits flush, recovery-hold, and ready gates. Only
+  // sct_valid exposes the payload, so a rejected allocation may safely write
+  // a free entry.
   logic sct_payload_alloc;
-  assign sct_payload_alloc = o_mem_rs_issue.valid &&
-      (o_mem_rs_issue.op == riscv_pkg::SC);
+  assign sct_payload_alloc = i_sct_payload_alloc_valid;
+
+  logic [ScIdxWidth-1:0] sct_free_idx;
+  if (ScTableDepth == 16) begin : gen_sct_free_idx_16
+    always_comb begin
+      // sct_free_oh is one-hot (or zero when full).
+      sct_free_idx[0] = |(sct_free_oh & 16'hAAAA);
+      sct_free_idx[1] = |(sct_free_oh & 16'hCCCC);
+      sct_free_idx[2] = |(sct_free_oh & 16'hF0F0);
+      sct_free_idx[3] = |sct_free_oh[15:8];
+    end
+  end else begin : gen_sct_free_idx_generic
+    always_comb begin
+      sct_free_idx = '0;
+      for (int i = 0; i < ScTableDepth; i++) begin
+        if (sct_free_oh[i]) sct_free_idx = ScIdxWidth'(i);
+      end
+    end
+  end
 
   logic sc_can_fire;
   logic sc_success;
@@ -310,22 +335,33 @@ module sc_pending_unit #(
   logic [2:0] coherent_size_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] coherent_tag_q;
 
+  // Store the original issue-time VA in distributed RAM for coherent fault
+  // reporting; coherent_vaddr_q captures coherent_hit_vaddr when armed.
   if (1'b1) begin : gen_coherent_fault_address
-    logic [riscv_pkg::XLEN-1:0] virtual_address_q[ScTableDepth];
-    always_ff @(posedge i_clk) begin
-      for (int slot = 0; slot < ScTableDepth; slot++) begin
-        if (sct_payload_alloc && sct_free_oh[slot]) begin
-          virtual_address_q[slot] <= o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
-          sct_size[slot] <= (o_mem_rs_issue.mem_size == riscv_pkg::MEM_SIZE_DOUBLE) ? 3'd3 : 3'd2;
+    (* ram_style = "distributed" *) logic [riscv_pkg::XLEN-1:0] virtual_address_ram[ScTableDepth];
+`ifndef SYNTHESIS
+`ifndef FORMAL
+`ifdef FROST_RANDOM_START
+    initial begin
+      for (int row = 0; row < ScTableDepth; row++) begin
+        for (int chunk = 0; chunk < (riscv_pkg::XLEN + 31) / 32; chunk++) begin
+          virtual_address_ram[row] = (virtual_address_ram[row] << 32) | riscv_pkg::XLEN'($urandom);
         end
       end
     end
-    always_comb begin
-      coherent_hit_vaddr = '0;
-      for (int slot = 0; slot < ScTableDepth; slot++) begin
-        if (sct_hit_oh[slot]) coherent_hit_vaddr = virtual_address_q[slot];
+`else
+    initial begin
+      for (int i = 0; i < ScTableDepth; i++) virtual_address_ram[i] = '0;
+    end
+`endif
+`endif
+`endif
+    always_ff @(posedge i_clk) begin
+      if (sct_payload_alloc && sct_has_free) begin
+        virtual_address_ram[sct_free_idx] <= o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
       end
     end
+    assign coherent_hit_vaddr = sct_hit ? virtual_address_ram[sct_hit_idx] : '0;
   end
 
   // The fire also waits for the entry's PA (i_sct_addr_fill_* under active
@@ -476,14 +512,15 @@ module sc_pending_unit #(
     end
   end
 
-  // SC tag/addr capture (no reset; gated by the alloc one-hot), plus the
-  // MMU's later PA fill under active translation. Fill targets valid entries
-  // and allocation targets free entries, so sct_valid selects the address
-  // source directly without pulling issue controls onto the data pin.
+  // SC tag, size, and address capture (no reset; gated by the alloc one-hot),
+  // plus the MMU's later PA fill under active translation. Fill targets valid
+  // entries and allocation targets free entries, so sct_valid selects the
+  // address source directly without pulling issue controls onto the data pin.
   always_ff @(posedge i_clk) begin
     for (int i = 0; i < ScTableDepth; i++) begin
       if (sct_payload_alloc && sct_free_oh[i]) begin
         sct_tag[i] <= o_mem_rs_issue.rob_tag;
+        sct_size[i] <= (o_mem_rs_issue.mem_size == riscv_pkg::MEM_SIZE_DOUBLE) ? 3'd3 : 3'd2;
       end
       if (sct_fill_capture_oh[i] || (sct_payload_alloc && sct_free_oh[i])) begin
         // SC has no immediate: dispatch supplies imm==0, so src1 is its address.
@@ -507,7 +544,8 @@ module sc_pending_unit #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (reset_seen_q && i_rst_n && sct_payload_alloc && !$isunknown(
+    if (reset_seen_q && i_rst_n && o_mem_rs_issue.valid &&
+        (o_mem_rs_issue.op == riscv_pkg::SC) && !$isunknown(
             {o_mem_rs_issue.imm, o_mem_rs_issue.src1_value, sq_effective_addr}
         )) begin
       p_sc_effective_addr_is_src1 :

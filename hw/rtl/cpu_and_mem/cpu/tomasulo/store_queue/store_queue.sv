@@ -463,35 +463,22 @@ module store_queue #(
   // Read outputs
   logic [IdxWidth-1:0] drain_idx_q;  // drain cursor (see Drain Cursor below)
   logic [FLEN-1:0] sq_data_drain_rd;  // read at drain_idx_q (drain cursor)
+  logic [IdxWidth-1:0] sq_data_fwd_rd_idx;  // registered winning index from forwarding unit
+  logic [FLEN-1:0] sq_data_fwd_rd;  // read at sq_data_fwd_rd_idx (LQ consume cycle)
 
-  logic [FLEN-1:0] sq_data_fwd_entry[DEPTH];
-  logic [(DEPTH*FLEN)-1:0] sq_data_fwd_flat;
-
-`ifndef SYNTHESIS
-`ifdef FROST_RANDOM_START
-  initial begin
-    for (int row = 0; row < DEPTH; row++)
-    for (int chunk = 0; chunk < (FLEN + 31) / 32; chunk++)
-    sq_data_fwd_entry[row] = (sq_data_fwd_entry[row] << 32) | FLEN'($urandom);
-  end
-`else
-  initial for (int i = 0; i < DEPTH; i++) sq_data_fwd_entry[i] = '0;
-`endif
-`endif
-
-  always_ff @(posedge i_clk) begin
-    if (i_data_update_capture_valid) begin
-      for (int i = 0; i < DEPTH; i++) begin
-        if (sq_data_tag_match[i]) begin
-          sq_data_fwd_entry[i] <= i_data_update.data;
-        end
-      end
-    end
-  end
-
-  for (genvar i = 0; i < DEPTH; i++) begin : gen_sq_data_fwd_flat
-    assign sq_data_fwd_flat[i*FLEN+:FLEN] = sq_data_fwd_entry[i];
-  end
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH(FLEN)
+  ) u_sq_data_fwd (
+      .i_clk,
+      .i_write_enable (sq_data_we),
+      .i_write_address(sq_data_wr_idx),
+      .i_write_data   (i_data_update.data),
+      // Forwarding-side read: addressed by the registered winning index from
+      // sq_forwarding_unit during the LQ consume cycle.
+      .i_read_address (sq_data_fwd_rd_idx),
+      .o_read_data    (sq_data_fwd_rd)
+  );
 
   sdp_dist_ram #(
       .ADDR_WIDTH(IdxWidth),
@@ -865,7 +852,8 @@ module store_queue #(
       .sq_rob_tag_flat           (sq_rob_tag_flat),
       .sq_address_flat           (sq_address_flat),
       .sq_size_flat              (sq_size_flat),
-      .sq_data_fwd_flat          (sq_data_fwd_flat),
+      .o_sq_data_fwd_idx         (sq_data_fwd_rd_idx),
+      .i_sq_data_fwd_data        (sq_data_fwd_rd),
       .o_sq_all_older_addrs_known(o_sq_all_older_addrs_known),
       .o_sq_forward              (o_sq_forward)
   );

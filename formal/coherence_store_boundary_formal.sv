@@ -1341,6 +1341,7 @@ module coherence_store_boundary_formal #(
       .i_sc_completion_pending(dependency_sc_pending),
       .i_store_misalign_fu_complete_reg('0),
       .i_mem_rs_issue(sc_issue),
+      .i_sct_payload_alloc_valid(sc_issue.valid && (sc_issue.op == riscv_pkg::SC)),
       .i_sq_effective_addr(address1),
       .i_sct_alloc_addr_valid(1'b1),
       .i_sct_addr_fill_valid('0),
