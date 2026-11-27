@@ -16,10 +16,11 @@
 
 Drives vec_engine the same way vec_unit does: group-ALU instructions issue on
 the first cycle o_grp_ready is high without waiting for o_idle, exercising the
-E0/E1/E2/W/MWR RAW hazard logic, pipe_tail_wr_mask_q, group skipping past vl,
-mask-destination compare serialization, v0 hazards, and split i_int_valid
-handoff. All 32 architectural vector registers are checked against the
-element-level reference model after each burst.
+R1/E0/E1/E2/W/MWR RAW hazard logic, pipe_tail_wr_mask_q, group skipping past
+vl, mask-destination compare serialization, v0 hazards, and split i_int_valid
+handoff (including multi-beat single-width and widening multiply-accumulate).
+All 32 architectural vector registers are checked against the element-level
+reference model after each burst.
 """
 
 import random
@@ -164,8 +165,39 @@ def encode_vmacc_vv(
     )
 
 
+def encode_vwmacc_vv(
+    sew: int, lmul_code: int, vl: int, vstart: int, vm: int, vd: int, vs1: int, vs2: int
+) -> EngineOp:
+    """Encode vwmacc.vv (OPMVV, funct6=111101, funct3=010) for split i_int_valid."""
+    insn = (
+        (0b111101 << 26)
+        | (vm << 25)
+        | (vs2 << 20)
+        | (vs1 << 15)
+        | (0b010 << 12)
+        | (vd << 7)
+        | 0b1010111
+    )
+    return EngineOp(
+        kind="int",
+        name="vwmacc",
+        form="vv",
+        sew=sew,
+        lmul_code=lmul_code,
+        vl=vl,
+        vstart=vstart,
+        vm=vm,
+        vd=vd,
+        vs1=vs1,
+        vs2=vs2,
+        scalar=0,
+        rs1=0,
+        insn=insn,
+    )
+
+
 def apply_model(model: Model, op: EngineOp) -> None:
-    """Apply either a group-ALU op or vmacc.vv to the architectural model."""
+    """Apply either a group-ALU op, vmacc.vv or vwmacc.vv to the architectural model."""
     if op.kind == "grp":
         model.execute(
             op.name,
@@ -180,18 +212,34 @@ def apply_model(model: Model, op: EngineOp) -> None:
             op.scalar,
         )
         return
-    assert op.name == "vmacc"
-    mask = (1 << op.sew) - 1
     v0 = model.regs[0]
+    if op.name == "vmacc":
+        mask = (1 << op.sew) - 1
+        updates = []
+        for i in range(op.vstart, op.vl):
+            if op.vm or ((v0 >> i) & 1):
+                a = model.elem(op.vs2, i, op.sew)
+                b = model.elem(op.vs1, i, op.sew)
+                acc = model.elem(op.vd, i, op.sew)
+                updates.append((i, (acc + a * b) & mask))
+        for i, val in updates:
+            model.set_elem(op.vd, i, op.sew, val)
+        return
+    assert op.name == "vwmacc"
+    dsew = 2 * op.sew
+    dmask = (1 << dsew) - 1
+    sign_bit = 1 << (op.sew - 1)
     updates = []
     for i in range(op.vstart, op.vl):
         if op.vm or ((v0 >> i) & 1):
             a = model.elem(op.vs2, i, op.sew)
             b = model.elem(op.vs1, i, op.sew)
-            acc = model.elem(op.vd, i, op.sew)
-            updates.append((i, (acc + a * b) & mask))
+            sa = a - (1 << op.sew) if (a & sign_bit) else a
+            sb = b - (1 << op.sew) if (b & sign_bit) else b
+            acc = model.elem(op.vd, i, dsew)
+            updates.append((i, (acc + sa * sb) & dmask))
     for i, val in updates:
-        model.set_elem(op.vd, i, op.sew, val)
+        model.set_elem(op.vd, i, dsew, val)
 
 
 async def reset_and_load(dut: Any, vlen: int, rng: random.Random) -> Model:
@@ -387,9 +435,9 @@ async def test_vec_engine_split_directed(dut: Any) -> None:
     assert st == 0, f"expected 0 stall cycles for independent ops, got {st}"
     assert cyc < 20, f"expected pipelined completion (<20 cycles), took {cyc}"
 
-    # 2. RAW distances 0..4 on both vs2 and vs1 (hits E0, E1, E2, W stages).
+    # 2. RAW distances 0..5 on vs2 and vs1 (hits R1, E0, E1, E2, W and clean).
     raw_ops: list[EngineOp] = []
-    for dist in range(5):
+    for dist in range(6):
         raw_ops.append(encode_grp_op("add", "vv", 32, 0, epr32, 0, 1, 2, 10, 11))
         for pad in range(dist):
             raw_ops.append(
@@ -417,24 +465,37 @@ async def test_vec_engine_split_directed(dut: Any) -> None:
     ov, st, _ = await run_burst(dut, model, lmul4_ops, "lmul4_chain_skip")
     assert ov > 0 and st > 0
 
-    # 4. v0 RAW hazards: ALU -> masked op, ALU -> vmerge, compare -> MWR -> masked op.
-    v0_ops = [
-        encode_grp_op("xor", "vv", 32, 0, epr32, 0, 1, 0, 6, 7),
-        encode_grp_op("add", "vv", 32, 0, epr32, 0, 0, 5, 8, 9),
-        encode_grp_op("or", "vv", 32, 0, epr32, 0, 1, 0, 10, 11),
-        encode_grp_op("merge", "vv", 32, 0, epr32, 0, 0, 6, 12, 13),
-        # Producer writes v7, compare writes v7 (old-vd RAW!), then masked op reads v0.
-        encode_grp_op("add", "vv", 32, 0, epr32, 0, 1, 7, 14, 15),
-        encode_grp_op("mseq", "vv", 32, 0, epr32, 0, 1, 7, 8, 9),
-        encode_grp_op("add", "vv", 32, 0, epr32, 0, 1, 18, 7, 10),
-        # Compare writes v0 directly, then masked op + vmerge read v0.
-        encode_grp_op("mslt", "vv", 32, 1, 2 * epr32, 0, 1, 0, 8, 10),
-        encode_grp_op("sub", "vv", 32, 1, 2 * epr32, 0, 0, 12, 14, 16),
-        encode_grp_op("merge", "vi", 32, 0, epr32, 0, 0, 18, 0, 19, imm5=7),
-    ]
+    # 4. v0 and old-vd compare RAW distances 0..5 (covers R1..W and MWR).
+    v0_ops: list[EngineOp] = []
+    for dist in range(6):
+        # Producer writes v0, followed by `dist` independent pads, then masked add + vmerge.
+        v0_ops.append(encode_grp_op("xor", "vv", 32, 0, epr32, 0, 1, 0, 6, 7))
+        for pad in range(dist):
+            v0_ops.append(
+                encode_grp_op("or", "vv", 32, 0, epr32, 0, 1, 20 + pad, 10, 11)
+            )
+        v0_ops.append(encode_grp_op("add", "vv", 32, 0, epr32, 0, 0, 5, 8, 9))
+        v0_ops.append(encode_grp_op("merge", "vv", 32, 0, epr32, 0, 0, 6, 12, 13))
+        # Producer writes v7, followed by `dist` pads, then compare reads old v7.
+        v0_ops.append(encode_grp_op("add", "vv", 32, 0, epr32, 0, 1, 7, 14, 15))
+        for pad in range(dist):
+            v0_ops.append(
+                encode_grp_op("sub", "vv", 32, 0, epr32, 0, 1, 20 + pad, 16, 17)
+            )
+        v0_ops.append(encode_grp_op("mseq", "vv", 32, 0, epr32, 0, 1, 7, 8, 9))
+        v0_ops.append(encode_grp_op("add", "vv", 32, 0, epr32, 0, 1, 18, 7, 10))
+    # Compare writes v0 directly, then masked op + vmerge read v0.
+    v0_ops.extend(
+        [
+            encode_grp_op("mslt", "vv", 32, 1, 2 * epr32, 0, 1, 0, 8, 10),
+            encode_grp_op("sub", "vv", 32, 1, 2 * epr32, 0, 0, 12, 14, 16),
+            encode_grp_op("merge", "vi", 32, 0, epr32, 0, 0, 18, 0, 19, imm5=7),
+        ]
+    )
     await run_burst(dut, model, v0_ops, "v0_and_compare_hazards")
 
-    # 5. Zvbb unary vs2->r_vs1 hazard, VI_MV (vs2 ignored), and split i_int_valid handoff.
+    # 5. Zvbb unary vs2->r_vs1 hazard, VI_MV (vs2 ignored), and split i_int_valid
+    #    handoff (single-beat, multi-beat, and widening vwmacc at m1 and m2).
     mixed_ops = [
         encode_grp_op("add", "vv", 32, 0, epr32, 0, 1, 0, 1, 2),
         # vmv.v.x encodes vs2=0; should not falsely stall or misread while v0 writes.
@@ -442,10 +503,16 @@ async def test_vec_engine_split_directed(dut: Any) -> None:
         # Unary Zvbb consumes v3 (just written by mv).
         encode_grp_op("rev8", "vv", 32, 0, epr32, 0, 1, 5, 0, 3),
         encode_grp_op("clz", "vv", 32, 0, epr32, 0, 1, 6, 0, 5),
-        # Split i_int_valid vmacc.vv consumes v5, v6, updates v7, then group-ALU resumes.
+        # Split i_int_valid vmacc.vv (partial beat, full reg, and LMUL=2).
+        encode_vmacc_vv(32, 0, min(3, epr32), 0, 1, 7, 5, 6),
         encode_vmacc_vv(32, 0, epr32, 0, 1, 7, 5, 6),
-        encode_grp_op("add", "vv", 32, 0, epr32, 0, 1, 8, 7, 6),
-        encode_grp_op("xor", "vv", 32, 0, epr32, 0, 1, 9, 8, 5),
+        encode_vmacc_vv(32, 1, 2 * epr32 - 1, 0, 0, 10, 12, 14),
+        # Widening vwmacc.vv: partial (<=128b beat 0 only) and full m1/m2.
+        encode_vwmacc_vv(32, 0, min(4, epr32), 0, 1, 16, 5, 6),
+        encode_vwmacc_vv(32, 0, epr32, 0, 1, 18, 5, 6),
+        encode_vwmacc_vv(32, 1, 2 * epr32, 0, 0, 20, 12, 14),
+        encode_grp_op("add", "vv", 32, 0, epr32, 0, 1, 8, 16, 17),
+        encode_grp_op("xor", "vv", 32, 0, epr32, 0, 1, 9, 18, 19),
     ]
     await run_burst(dut, model, mixed_ops, "unary_mv_and_int_handoff")
     dut._log.info(f"Directed split-issue suites passed at VLEN={vlen}")
