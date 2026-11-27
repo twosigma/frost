@@ -17,6 +17,8 @@ read -formal -sv cdb_arbiter.sv
 hierarchy -top cdb_arbiter
 script free_undefined.ys
 prep -top cdb_arbiter
+select -assert-count 31 t:$check r:FLAVOR=assert %i
+select -assert-count 6 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

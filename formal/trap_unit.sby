@@ -26,6 +26,8 @@ prep -top trap_unit
 prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
 prove: select -assert-none t:$assume
 prove: select -assert-none t:$check r:FLAVOR=assume %i
+~prove: select -assert-count 86 t:$check r:FLAVOR=assert %i
+~prove: select -assert-count 28 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

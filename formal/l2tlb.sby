@@ -31,6 +31,10 @@ walk_select: read -formal -sv walk_request_select.sv
 walk_select: hierarchy -top walk_request_select
 walk_select: script free_undefined.ys
 walk_select: prep -top walk_request_select
+~walk_select: select -assert-count 13 t:$check r:FLAVOR=assert %i
+~walk_select: select -assert-count 22 t:$check r:FLAVOR=cover %i
+walk_select: select -assert-count 10 t:$check r:FLAVOR=assert %i
+walk_select: select -assert-count 4 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

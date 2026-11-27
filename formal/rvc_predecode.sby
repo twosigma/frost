@@ -14,6 +14,7 @@ read -formal -sv rvc_predecode_equiv.sv
 hierarchy -top rvc_predecode_equiv
 script free_undefined.ys
 prep -top rvc_predecode_equiv
+select -assert-count 8 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

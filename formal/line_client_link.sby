@@ -38,6 +38,12 @@ script free_undefined.ys
 prep -top line_client_link
 memory_map
 opt
+line_link0_bmc: select -assert-count 131 t:$check r:FLAVOR=assert %i
+select -assert-count 7 t:$check r:FLAVOR=cover %i
+line_link1_bmc: select -assert-count 137 t:$check r:FLAVOR=assert %i
+line_link1_four_bmc: select -assert-count 201 t:$check r:FLAVOR=assert %i
+line_link1_eight_bmc: select -assert-count 353 t:$check r:FLAVOR=assert %i
+line_link1_cover: select -assert-count 353 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_pkg.sv

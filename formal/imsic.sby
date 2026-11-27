@@ -45,6 +45,20 @@ bmc_ids2047: chparam -set NUM_HARTS 1 -set NUM_IDS 2047 -set APLIC_DELIVERY 1 im
 hierarchy -top imsic
 script free_undefined.ys
 prep -top imsic
+bmc: select -assert-count 528 t:$check r:FLAVOR=assert %i
+prove: select -assert-count 528 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 528 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 9 t:$check r:FLAVOR=cover %i
+prove: select -assert-count 9 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
+prove_ids511: select -assert-count 9 t:$check r:FLAVOR=cover %i
+bmc_ids2047: select -assert-count 9 t:$check r:FLAVOR=cover %i
+prove_harts3: select -assert-count 1555 t:$check r:FLAVOR=assert %i
+cover_harts3: select -assert-count 1555 t:$check r:FLAVOR=assert %i
+prove_harts3: select -assert-count 8 t:$check r:FLAVOR=cover %i
+cover_harts3: select -assert-count 8 t:$check r:FLAVOR=cover %i
+prove_ids511: select -assert-count 4109 t:$check r:FLAVOR=assert %i
+bmc_ids2047: select -assert-count 16397 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/peripherals/imsic/imsic_priority.sv

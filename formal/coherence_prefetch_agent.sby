@@ -42,6 +42,10 @@ script free_undefined.ys
 prep -top coherence_prefetch_agent
 memory_map -keepdc
 opt_clean
+~full: select -assert-count 296 t:$check r:FLAVOR=assert %i
+~full: select -assert-count 11 t:$check r:FLAVOR=cover %i
+full: select -assert-count 277 t:$check r:FLAVOR=assert %i
+full: select -assert-count 10 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_pkg.sv

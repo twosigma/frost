@@ -58,6 +58,18 @@ external: chparam -set PWC_L1_ENTRIES 2 -set PWC_ROOT_ENTRIES 2 ptw
 hierarchy -top ptw
 script free_undefined.ys
 prep -top ptw
+bmc: select -assert-count 41 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 41 t:$check r:FLAVOR=assert %i
+bmc_wide: select -assert-count 41 t:$check r:FLAVOR=assert %i
+cover_wide: select -assert-count 41 t:$check r:FLAVOR=assert %i
+bmc_2g: select -assert-count 41 t:$check r:FLAVOR=assert %i
+cover_2g: select -assert-count 41 t:$check r:FLAVOR=assert %i
+bmc_external: select -assert-count 41 t:$check r:FLAVOR=assert %i
+cover_external: select -assert-count 41 t:$check r:FLAVOR=assert %i
+~wide: select -assert-count 18 t:$check r:FLAVOR=cover %i
+bmc_nopwc: select -assert-count 39 t:$check r:FLAVOR=assert %i
+bmc_replace: select -assert-count 39 t:$check r:FLAVOR=assert %i
+wide: select -assert-count 20 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

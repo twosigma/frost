@@ -31,6 +31,11 @@ prep -flatten -top coherence_array
 select -assert-count 5 c:p_plru_*
 chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_plru_* %d
 chformal -cover -remove t:$check r:FLAVOR=cover %i c:c_plru_* %d
+select -assert-count 5 t:$check r:FLAVOR=assert %i
+~bimodal: select -assert-count 5 t:$check r:FLAVOR=cover %i
+coh_array_plru_bimodal_prove: select -assert-count 6 t:$check r:FLAVOR=cover %i
+coh_array_plru_bimodal_cover: select -assert-count 6 t:$check r:FLAVOR=cover %i
+port: select -assert-count 11 t:$check r:FLAVOR=cover %i
 memory_map -keepdc
 opt -keepdc
 proof: techmap

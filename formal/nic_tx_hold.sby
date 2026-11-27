@@ -23,6 +23,9 @@ prep -top nic_tx_hold_formal -flatten
 memory_map -keepdc
 opt -fast -keepdc
 opt_clean
+prove: select -assert-count 5 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 2 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 7 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/peripherals/nic/nic_pkg.sv

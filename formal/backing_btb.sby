@@ -35,6 +35,9 @@ script free_undefined.ys
 prep -top backing_btb
 memory_map
 opt -fast
+~prove: select -assert-count 23 t:$check r:FLAVOR=assert %i
+select -assert-count 15 t:$check r:FLAVOR=cover %i
+prove: select -assert-count 19 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

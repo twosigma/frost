@@ -20,6 +20,8 @@ script free_undefined.ys
 prep -top sync_dist_ram_fifo_formal
 memory_map
 opt -fast
+select -assert-count 7 t:$check r:FLAVOR=assert %i
+select -assert-count 4 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/ram/sdp_dist_ram.sv

@@ -18,6 +18,8 @@ script free_undefined.ys
 prep -top axi_register_slice_formal -flatten
 ~cover: chformal -cover -remove
 opt_clean
+select -assert-count 130 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 5 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/axi/axi_register_slice.sv

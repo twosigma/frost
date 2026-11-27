@@ -31,6 +31,8 @@ bmc: opt -keepdc
 bmc: techmap
 bmc: opt -keepdc
 bmc: setundef -undriven -anyseq
+select -assert-count 7 t:$check r:FLAVOR=assert %i
+select -assert-count 2 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

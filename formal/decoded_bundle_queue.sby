@@ -22,6 +22,9 @@ prove_depth2: chparam -set DEPTH 2 decoded_bundle_queue
 hierarchy -top decoded_bundle_queue
 script free_undefined.ys
 prep -top decoded_bundle_queue
+~prove_depth2: select -assert-count 39 t:$check r:FLAVOR=assert %i
+select -assert-count 5 t:$check r:FLAVOR=cover %i
+prove_depth2: select -assert-count 29 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

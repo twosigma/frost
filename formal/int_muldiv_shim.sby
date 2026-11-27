@@ -54,6 +54,17 @@ direct: chparam -set DIRECT_MUL 1 int_muldiv_shim
 hierarchy -top int_muldiv_shim
 script free_undefined.ys
 prep -top int_muldiv_shim -flatten
+prove: select -assert-count 62 t:$check r:FLAVOR=assert %i
+prove_fallback: select -assert-count 62 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 62 t:$check r:FLAVOR=assert %i
+select -assert-count 6 t:$check r:FLAVOR=cover %i
+prove_alignment: select -assert-count 59 t:$check r:FLAVOR=assert %i
+prove_alignment_fallback: select -assert-count 59 t:$check r:FLAVOR=assert %i
+prove_direct: select -assert-count 72 t:$check r:FLAVOR=assert %i
+prove_direct_fallback: select -assert-count 72 t:$check r:FLAVOR=assert %i
+cover_direct: select -assert-count 72 t:$check r:FLAVOR=assert %i
+prove_alignment_direct: select -assert-count 69 t:$check r:FLAVOR=assert %i
+prove_alignment_direct_fallback: select -assert-count 69 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
