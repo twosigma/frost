@@ -1971,12 +1971,27 @@ module vec_head_mmu #(
 `ifdef VEC_HEAD_MMU_INDEX_IRQ_PROOF
   always_comb assume (f_irq_mode != 2'd0);
 `endif
+`ifdef VEC_HEAD_MMU_INDEX_IRQ_FLUSH_PROOF
+  always_comb assume (f_irq_mode == 2'd1);
+`endif
+`ifdef VEC_HEAD_MMU_INDEX_IRQ_RESUME_PROOF
+  always_comb assume (f_irq_mode == 2'd3);
+`endif
 `else
   // Mid-run interrupt arming/flush/withdraw is the same FSM logic for both
   // forms and is proved by the indexed task; the strided task still proves
   // the between-element shield drop and vstart sideband alongside pointer
   // masking.
   always_comb assume (!f_indexed && f_irq_mode == 2'd0);
+`endif
+`ifdef VEC_HEAD_MMU_RUN_NOFAULT_PROOF
+  always_comb assume (f_fault_page == 2'd3);
+`endif
+`ifdef VEC_HEAD_MMU_RUN_FAULT_E0_PROOF
+  always_comb assume (!f_fault_page[1]);
+`endif
+`ifdef VEC_HEAD_MMU_RUN_FAULT_E2_PROOF
+  always_comb assume (f_fault_page == 2'd2);
 `endif
   // The first element touching the faulting page, and the fault's xtval.
   logic [2:0] f_fault_elem;
@@ -2244,6 +2259,15 @@ module vec_head_mmu #(
 `endif
 `ifdef VEC_HEAD_MMU_UNCACHED_SEG_PROOF
   always_comb assume (f_form == 2'd3);
+`endif
+`ifdef VEC_HEAD_MMU_UNCACHED_OK_PROOF
+  always_comb assume (!f_misalign && !f_bus_err && !f_irq_stop);
+`endif
+`ifdef VEC_HEAD_MMU_UNCACHED_FAULT_PROOF
+  always_comb assume (f_misalign || f_bus_err);
+`endif
+`ifdef VEC_HEAD_MMU_UNCACHED_IRQ_PROOF
+  always_comb assume (f_irq_stop);
 `endif
 
   logic [2:0] f_fields_per_elem;
