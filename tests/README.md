@@ -694,7 +694,7 @@ of its memory and ALU loop.
 
 | Entries that run once | Reason |
 | --- | --- |
-| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256`, `vec_vstart_irq_test_v256`, `vec_crypto_irq_test_v256` | Run time |
+| `coremark_pro_loops`, `coremark_pro_nnet`, `fencei_jit_bench`, `fplat_probe`, `irq_take_latency`, `lq_stale_slot_probe`, `vec_stride_test_v256`, `vec_index_test_v256`, `vec_segment_test_v256`, `vec_ff_test_v256`, `vec_vstart_irq_test_v256`, `vec_uncached_test_v256`, `vec_uncached_grant_test_v256`, `vec_crypto_irq_test_v256` | Run time |
 | `opensbi_smoke`, `opensbi_smoke_no_misaligned_hw` | OpenSBI keeps its boot state in `.data`, so a reset without a reload is a warm boot to it |
 | `opensbi_reset_cold`, `opensbi_reset_warm` | Each bench issues its own S-mode reset and stops at the first retired boot instruction |
 | `amo_irq_torture_sim`, `coremark`, `coremark_link1`, `coremark_profile`, `coremark_pro_core`, `coremark_pro_linear_alg`, `coremark_pro_radix2`, `itlb_test` (and its aperture variants), `pde_return_hazard`, `restore_window_stress`, `sprintf_test`, `tick_torture_sim`, `tomasulo_perf`, `wfi_lost_tick`, `window_skip_repro` | Each kind of state it leaves for the reset is also left by a shorter application that runs twice, and where CI collects its coverage, its second run reaches no coverage point that another application misses |
@@ -1152,10 +1152,22 @@ for negative tests; the program still checks all three architectural results.
 The `vec_vmu_v*` and `vec_head_mmu_v*` unit benches check sector byte masks,
 response reordering, backpressure, fatal errors, two-page translation, and
 partial-fault descriptors, including an enabled suffix whose first element
-straddles the faulting page, and strided, indexed and segment element runs
-(one descriptor per element, or per field of a segment, in order, index reads,
-precise faults with the faulting element's `vstart` and address, pointer
-masking and the VS-dirty report). `vec_debug_partial` runs in the Vector programs,
+straddles the faulting page, strided, indexed and segment element runs (one
+descriptor per cached element or segment field in order, index reads, precise
+faults with the faulting element's `vstart` and address, pointer masking and
+the VS-dirty report), and uncached element runs
+(`test_uncached_all_forms_and_widths` and
+`test_uncached_faults_svpbmt_and_irq`: unit-stride, whole-register, mask,
+strided, indexed and mixed cached/uncached segment beats across widths,
+requiring `i_unc_port_ready` in the cycle before every beat, alignment/PMA/Svpbmt
+NC/IO and bus-error faults with exact `xtval` and `vstart`, fault-only-first
+trimming, and mid-run interrupt boundaries checking `vstart == last_beat_elem +
+1`). `test_walk_fault_cause_and_latency` checks page/access fault priority,
+load/store causes, `xtval`, `vstart`, and a single decision edge after a
+registered walker response on either page, including straddling elements and
+partial execution. It covers walker-rejected leaves, permissions, PPN range,
+and non-PMA PBMT faults alongside successful U/S, SUM, MXR, and D controls.
+`vec_debug_partial` runs in the Vector programs,
 memory and strides CI shard in both BRAM and DDR tiers. It checks that partial unit-stride and
 strided vector loads in Debug Mode write the completed elements before a page
 fault re-parks the hart and leave `mstatus.VS` Dirty.
@@ -1221,6 +1233,21 @@ mid-run on strided, indexed, segment, and fault-only-first loads and stores,
 checking `dpc`, `dcsr.cause`, `vstart`, `mstatus.VS`, prestart preservation,
 and completion after `dret`, and single-steps over multi-element strided loads
 and stores to verify the whole instruction completes before halting.
+
+The `vec_uncached_test_v128`, `vec_uncached_test_v256`, and
+`vec_uncached_test_v512` programs exercise every vector load and store form
+(unit-stride, mask, whole-register, strided, ordered and unordered indexed,
+segment, and fault-only-first) against low BRAM, side-effecting MMIO devices
+(`FIFO0`, `FIFO1`, `MTIME`), and Svpbmt NC/IO pages. They check exact element
+order, zero duplicate or speculative device pops, program order with scalar
+MMIO, low-BRAM L0 coherence and LR/SC invalidation, alignment/PMA/permission
+faults with `vstart`, mixed cached/uncached crossings, and mid-run timer
+interrupts during uncached runs. The `vec_uncached_grant_test_v128`,
+`vec_uncached_grant_test_v256`, and `vec_uncached_grant_test_v512` programs
+place buffered scalar low-BRAM stores immediately before uncached vector loads
+and stores across forms and widths (so the registered uncached-port grant must
+wait for in-flight buffered writes) and place scalar misaligned cached-DDR
+accesses directly behind retiring vector memory operations.
 
 ### `test_riscv_vector_tests.py`
 
@@ -1556,11 +1583,12 @@ are `vec_smoke`, `vec_ldst`, `vec_string`, `vec_dot_int`, `vec_dot_fp`,
 cycle budgets are ceilings to tighten after the first run. To put them in the
 default pytest collection, remove `include_in_pytest=False` from the loop under
 `VECTOR_BRING_UP_PROGRAMS` in `test_run_cocotb.py`. Vector loads and stores
-reach only cached DDR (an access to BRAM takes an access fault), so a program
-whose vector code touches its static data or its stack runs correctly only with
-the program in DDR, where a program built with the vector extension has its
-stack in cached DDR as well: `vec_ldst_ddr_v128`, `vec_ldst_ddr_v256` and
-`vec_ldst_ddr_v512` run `vec_ldst` that way.
+reach low BRAM, device windows, and Svpbmt NC/IO pages as well as cached DDR,
+requiring natural alignment outside cached DDR just as scalar accesses do.
+Because `vec_ldst` exercises misaligned vector accesses on its static and stack
+buffers, `vec_ldst_ddr_v128`, `vec_ldst_ddr_v256` and `vec_ldst_ddr_v512` run
+`vec_ldst` in the DDR tier, where a program built with the vector extension
+places both its static data and its stack in cached DDR.
 
 The `vec_integer_test_v128`, `vec_integer_test_v256` and
 `vec_integer_test_v512` entries exercise 149 integer, fixed-point, mask and
@@ -2284,7 +2312,7 @@ and Fast Python Tests jobs locally.
 | riscv-tests | Physical mode in BRAM and DDR (including `rv64mzicbo`), user-level Sv39 tests in DDR, and benchmarks in both; each job runs a group of suites or benchmarks on one Verilator build; a fast check compares the workflow's suites with the runner's supported suites |
 | Torture | BRAM, DDR, and paged DDR |
 | Vector programs on Spike | In the fast Python job: the bring-up programs at three vector lengths, and a sample of riscv-vector-tests at VLEN 128 and 256 |
-| TestRIG vector | Two jobs (`core` and `segment`) at each of VLEN 128, 256, and 512 (six jobs total) on main pushes and pull requests labelled `run-ci`. Across both shards, each vector length compares 12 seeded vector traces, source-width and directed vector traces (state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride, strided, indexed, fault-only-first, integer comparison, carry/borrow, mask-register, integer multiply-add, integer scalar/merge, widening and narrowing integer, fixed-point, single-width FP, whole-register, widening FP, permute, reduction, and `vector_segment.S` plus five generated segment matrix traces) against Sail, plus VLEN 128 result-control checks |
+| TestRIG vector | Two jobs (`core` and `segment`) at each of VLEN 128, 256, and 512 (six jobs total) on main pushes and pull requests labelled `run-ci`. Across both shards, each vector length compares 12 seeded vector traces, source-width and directed vector traces (state and scalar-result, fractional LMUL, base FP, fused multiply-add, FP comparison, FP conversion, cached DDR probe, unit-stride, strided, indexed, fault-only-first, nonzero-`vstart` resume, uncached region, integer comparison, carry/borrow, mask-register, integer multiply-add, integer scalar/merge, widening and narrowing integer, fixed-point, single-width FP, whole-register, widening FP, permute, reduction, and `vector_segment.S` plus five generated segment matrix traces) against Sail, plus VLEN 128 result-control checks |
 | Vector RTL | [Native shards](#generated-vector-programs-in-ci) |
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, `--cmo 80`, `--fp-ext 60`, and `--zcb 50`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |

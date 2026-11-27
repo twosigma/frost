@@ -2428,12 +2428,12 @@ def test_vec_state_test_vlen_and_advertise_reach_program_and_build_identity(
             assert b"VS reads zero\0" in elf
             assert b"VS resets Off\0" not in elf
             assert b"vstart keeps log2(VLEN) bits\0" not in elf
-            assert b"fault buffer in low BRAM\0" not in elf
+            assert b"buffer in low BRAM\0" not in elf
         else:
             assert b"VS reads zero\0" not in elf
             assert b"VS resets Off\0" in elf
             assert b"vstart keeps log2(VLEN) bits\0" in elf
-            assert b"fault buffer in low BRAM\0" in elf
+            assert b"buffer in low BRAM\0" in elf
 
         key = (board, want_vlen, want_adv)
         assert sha not in config_hashes.values(), f"duplicate build identity for {key}"

@@ -63,7 +63,10 @@ module load_queue #(
     // it probes the SQ, before the verdict (load queue README, "Launch
     // during the probe"). The verdict then keeps the read, or drops its
     // response and completes the load by forwarding or relaunches it.
-    parameter bit PROBE_LAUNCH = 1'b0
+    parameter bit PROBE_LAUNCH = 1'b0,
+    // 1: accept vector low-BRAM store invalidations on L0 port 2 and the
+    // reservation register.
+    parameter bit VECTOR = 1'b0
 ) (
     input logic i_coherent_cut_hold = 1'b0,
     input logic [riscv_pkg::XLEN-1:0] i_coherent_cut_addr = '0,
@@ -265,6 +268,10 @@ module load_queue #(
     input logic [63:0] i_cache_store_data = '0,
     input logic [7:0] i_cache_store_strb = '0,
     input logic i_l0_hit_allowed = 1'b0,
+    // Vector low-BRAM store invalidation (VECTOR=1): shares L0 port 2 and
+    // reservation invalidation with AMOs; both serialize at the ROB head.
+    input logic i_vec_inval_valid = 1'b0,
+    input logic [riscv_pkg::XLEN-1:0] i_vec_inval_addr = '0,
     // =========================================================================
     // DMA coherence (from the wrapper's lq_coherence_port)
     // =========================================================================
@@ -1025,11 +1032,23 @@ module load_queue #(
   end
   assign coh_reservation_inval = i_coh_inval_valid && reservation_valid &&
       (i_coh_inval_addr[XLEN-1:CohLineLsb] == reservation_addr[XLEN-1:CohLineLsb]);
-  // The hart's AMO write cancels a reservation in its reservation set,
-  // as a store does through i_reservation_snoop_invalidate.
+  // Head-serialized L0 port-2 and reservation invalidation: an AMO write, or
+  // (with VECTOR=1) a vector store to low BRAM. Both run at the ROB head with
+  // committed stores drained, so they never overlap each other or SQ drains.
+  logic l0_inval2_valid;
+  logic [XLEN-1:0] l0_inval2_addr;
+  if (VECTOR) begin : gen_vec_inval2
+    assign l0_inval2_valid = amo_cache_inv || i_vec_inval_valid;
+    assign l0_inval2_addr  = i_vec_inval_valid ? i_vec_inval_addr : amo_write_addr_q;
+  end else begin : gen_no_vec_inval2
+    assign l0_inval2_valid = amo_cache_inv;
+    assign l0_inval2_addr  = amo_write_addr_q;
+  end
+  // The hart's AMO write or vector low-BRAM store cancels a reservation in its
+  // reservation set, as a scalar store does through i_reservation_snoop_invalidate.
   logic amo_reservation_inval;
-  assign amo_reservation_inval = amo_cache_inv && reservation_valid &&
-      ((amo_write_addr_q[XLEN-1:5] == reservation_addr[XLEN-1:5]));
+  assign amo_reservation_inval = l0_inval2_valid && reservation_valid &&
+      ((l0_inval2_addr[XLEN-1:5] == reservation_addr[XLEN-1:5]));
   logic reservation_clear;
   assign reservation_clear = i_sc_clear_reservation || i_reservation_snoop_invalidate ||
       coh_reservation_inval || amo_reservation_inval ||
@@ -2819,8 +2838,8 @@ module load_queue #(
       .o_port_valid, .o_port_addr, .o_port_block, .o_port_data, .o_port_strb
   );
 `else
-      .i_invalidate2_valid(amo_cache_inv),
-      .i_invalidate2_addr(amo_write_addr_q),
+      .i_invalidate2_valid(l0_inval2_valid),
+      .i_invalidate2_addr(l0_inval2_addr),
 
       // SQ writes suppress same-cycle hits. AMO completion needs only sequential
       // invalidation because head serialization blocks younger loads.

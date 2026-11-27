@@ -16,8 +16,9 @@
 
 /*
   Head-executed legality, span calculation, and DMMU translation for vector
-  loads and stores: unit-stride, whole-register and mask forms as one span,
-  strided, indexed and segment forms element by element.
+  loads and stores: unit-stride, whole-register and mask forms as one span in
+  cached DDR, and strided, indexed, segment, fault-only-first, and any
+  uncached-region form element by element.
 
   A VLOAD or VSTORE dispatches with RS_NONE and waits for the ROB head. Once at
   the head with older vector and CSR work settled, this unit:
@@ -35,44 +36,43 @@
        record an empty VMT range, complete on CDB slot 6, and free their VMT
        entry on retirement.
     4. Translates up to two 4 KiB pages on the DMMU page-walker port and checks
-       cached-DDR region legality. Page-0 faults trap with zero memory accesses
-       and vstart = first_p0_elem. Page-1 faults with no Page-0-only elements
+       PMA, Svpbmt, and alignment rules matching scalar non-atomic loads and
+       stores. Page-0 faults trap with zero memory accesses and
+       vstart = first_p0_elem. Page-1 faults with no Page-0-only elements
        (including when first_p0_elem straddles the page boundary) also trap with
-       zero memory accesses. When Page 0 is valid and active elements lie wholly
-       in Page 0 before a faulting Page 1, those Page-0-only elements execute
+       zero memory accesses. When Page 0 is cached DDR with Page-0-only
+       elements before a faulting Page 1, those Page-0-only elements execute
        on vec_vmu first (after committed scalar stores drain and under the
-       interrupt shield), and the Page-1 fault then reports vstart = first_p1_elem.
-    5. When all touched pages succeed, waits for committed scalar stores to
-       drain, raises the head interrupt shield, writes the physical VMT segments,
-       completes on CDB slot 6, and upon registered retirement hands the
-       translated command to vec_unit for vec_vmu execution.
+       interrupt shield), and the Page-1 fault then reports
+       vstart = first_p1_elem. If either touched page of a span form maps to an
+       uncached region (low BRAM, a device window, or an Svpbmt NC/IO page),
+       the instruction transitions to the element-by-element head run.
+    5. When all touched pages of a span form map to cached DDR, waits for
+       committed scalar stores to drain, raises the head interrupt shield,
+       writes the physical VMT segments, completes on CDB slot 6, and upon
+       registered retirement hands the translated command to vec_unit for
+       vec_vmu execution.
 
-  Strided and indexed forms run their active elements in order at the head
-  instead. For each element the unit forms the address, rs1 + i * rs2 for a
-  strided form (a running sum stepped once per element) or rs1 plus the
-  zero-extended index element i of vs2 for an indexed form (read through the
-  VRF port in the cycle before), translates the one or two pages of the
-  element's bytes, and then hands vec_vmu a descriptor for that element alone,
-  waiting for its completion before the next element. Ordered and unordered
-  indexed forms both run in element order. An indexed form's data EEW is SEW
-  and its data EMUL is LMUL; the width field gives the index EEW and EMUL. A
-  segment form (nf > 0, any addressing) treats each segment as the element:
-  its NF fields are contiguous in memory from the segment's address (a
-  unit-stride segment's stride is NF * EEW), the segment's one or two pages
-  are translated first, and field f then gets its own descriptor with
-  destination register group vd + f * EMUL. A fault on a segment is reported
-  before any of its fields is accessed. A fault-only-first load runs as a
-  unit-stride (segment) form; a fault on element i > 0 ends the run before
-  element i without an exception, and the instruction's retirement sets vl
-  to i (o_vl_trim); a fault on element 0 traps. The first access waits for
-  committed scalar stores to drain. Each active element (or whole segment)
-  raises the interrupt shield before launch and drops it on completion so an
-  armed interrupt or debug halt stops the run at an element boundary with
-  vstart naming the next element (or next segment) and does not interrupt
-  between fields of a segment. A fault on element i traps with vstart = i
-  after elements vstart..i-1 are performed. The VMT range is never written for
-  these instructions, so younger scalar loads and stores wait for the whole
-  instruction; the VMT entry is freed when the instruction retires.
+  Strided, indexed, segment, fault-only-first, and uncached span forms run
+  their active elements in ascending element order at the head. For each
+  element the unit forms the address, translates the one or two pages of the
+  element's (or segment's) bytes, checks natural alignment on any uncached page
+  (raising address-misaligned on low BRAM or device pages, or access fault on
+  misaligned Svpbmt DDR alias pages, matching scalar rules), and executes each
+  field either through vec_vmu (on a cached DDR page) or as a single exact-width
+  beat on the uncached port (on an uncached page), waiting for completion
+  before the next field or element. Ordered and unordered indexed forms both
+  run in element order. A fault on a segment is reported before any of its
+  fields is accessed. A bus error on an uncached element raises a precise
+  load/store access fault with vstart = i (without writing VRF on a load), or
+  trims vl to i for fault-only-first loads at i > 0. Each active element (or
+  whole segment) raises the interrupt shield before launch (settling for a
+  full cycle before any uncached beat) and drops it on completion so an armed
+  interrupt or debug halt stops the run at an element boundary with vstart
+  naming the next element (or next segment) and never replays a device read.
+  The VMT range is never written for element-run instructions, so younger
+  scalar loads and stores wait for the whole instruction; the VMT entry is
+  freed when the instruction retires.
 
   Element addresses take the Ssnpm pointer-masking transform of the data mode
   sampled with the translation state (riscv_pkg::pm_tval, sign extension under
@@ -86,6 +86,7 @@ module vec_head_mmu #(
     parameter int unsigned VLEN = 256,
     parameter bit CACHED_TIER_EN = 1'b1,
     localparam int unsigned XLEN = riscv_pkg::XLEN,
+    localparam int unsigned VlenBytes = VLEN / 8,
     localparam int unsigned TagW = riscv_pkg::ReorderBufferTagWidth,
     localparam int unsigned VmtIdxW = $clog2(riscv_pkg::VmtDepth),
     localparam int unsigned SegW = 1 + riscv_pkg::VmtPpnBits + 14
@@ -188,7 +189,26 @@ module vec_head_mmu #(
 
     // Case-C partial Page-0 and run element completion from vec_vmu
     input logic i_vmu_done,
-    input logic i_vmu_fatal
+    input logic i_vmu_fatal,
+
+    // Head-executed uncached element load/store port (single in-flight beat)
+    input  logic                                               i_unc_port_ready = 1'b1,
+    output logic                                               o_unc_bus_hold,
+    output logic                                               o_unc_req_valid,
+    output logic                                               o_unc_req_write,
+    output logic                 [riscv_pkg::PhysAddrBits-1:0] o_unc_req_addr,
+    output riscv_pkg::mem_size_e                               o_unc_req_size,
+    output logic                 [ riscv_pkg::MemDataBits-1:0] o_unc_req_wdata,
+    output logic                 [ riscv_pkg::MemStrbBits-1:0] o_unc_req_wstrb,
+    input  logic                                               i_unc_resp_valid = 1'b0,
+    input  logic                 [ riscv_pkg::MemDataBits-1:0] i_unc_resp_data = '0,
+    input  logic                                               i_unc_resp_error = 1'b0,
+
+    // VRF writeback port for uncached head-executed loads
+    output logic                 o_vrf_write_en,
+    output logic [          4:0] o_vrf_write_addr,
+    output logic [     VLEN-1:0] o_vrf_write_data,
+    output logic [VlenBytes-1:0] o_vrf_write_be
 );
 
   initial begin
@@ -196,7 +216,6 @@ module vec_head_mmu #(
       $fatal(1, "vec_head_mmu: VLEN must be 128, 256 or 512");
   end
 
-  localparam int unsigned VlenBytes = VLEN / 8;
   localparam int unsigned NumGroups16 = VLEN / 16;
   localparam int unsigned ElemBits = 10;  // Covers 0..511 across VLEN <= 512
 
@@ -245,7 +264,15 @@ module vec_head_mmu #(
     HM_RUN_IDX_CAP,
     // A fault-only-first load that stops before a faulting element > 0
     HM_RUN_TRIM,
-    HM_RUN_TRIM_SETTLE
+    HM_RUN_TRIM_SETTLE,
+    // Head-executed uncached element path (single beat per field)
+    HM_RUN_UNC_RD,
+    HM_RUN_UNC_PRE,
+    HM_RUN_UNC_WAIT,
+    HM_RUN_UNC_WB,
+    // Registered PMA evaluation of non-cached Sv39 leaves
+    HM_WALK_EVAL_P0,
+    HM_WALK_EVAL_P1
   } hm_state_e;
 
   hm_state_e state_q;
@@ -302,11 +329,30 @@ module vec_head_mmu #(
   logic [XLEN-1:0] va_first_q, va_last_end_q, va_first_p1_q, va_last_p0_only_end_q;
   logic [XLEN-1:0] p1_tval_q;
 
+  typedef enum logic [1:0] {
+    WE_PAGE_FAULT,
+    WE_ACCESS_FAULT,
+    WE_PBMT_NON_PMA,
+    WE_PMA_CHECK
+  } walk_eval_kind_e;
+
   // Walk & verdict registers
   logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn_q;
   logic walk_reissue_q;
+  walk_eval_kind_e walk_eval_kind_q;
   logic [riscv_pkg::VmtPpnBits-1:0] ppn0_q, ppn1_q;
+  logic p0_cached_q, p1_cached_q;
   riscv_pkg::vmt_seg_t seg0_q, seg1_q;
+
+  // Registered single-beat uncached request and read response capture
+  logic unc_bus_hold_q;
+  logic unc_req_q;
+  logic unc_is_store_q;
+  logic [riscv_pkg::PhysAddrBits-1:0] unc_addr_q;
+  riscv_pkg::mem_size_e unc_size_q;
+  logic [riscv_pkg::MemDataBits-1:0] unc_wdata_q;
+  logic [riscv_pkg::MemStrbBits-1:0] unc_wstrb_q;
+  logic [riscv_pkg::MemDataBits-1:0] unc_rdata_q;
 
   // Fault & shield registers
   riscv_pkg::exc_cause_t fault_cause_q;
@@ -560,8 +606,11 @@ module vec_head_mmu #(
 
   // Field f of a segment: its page offset from the segment's first byte, and
   // whether it starts on the segment's second page.
-  logic [12:0] field_off;
+  logic [12:0] field_off, next_field_off;
+  logic next_field_is_cached;
   assign field_off = {1'b0, va_first_q[11:0]} + (13'(field_q) << eew_log2_q);
+  assign next_field_off = {1'b0, va_first_q[11:0]} + (13'(field_q + 3'd1) << eew_log2_q);
+  assign next_field_is_cached = (has_p1_q && next_field_off[12]) ? p1_cached_q : p0_cached_q;
 
   // An indexed element's index: byte offset i * EEW_index into the index
   // group, the register it lies in, its 64-bit word (an index never crosses
@@ -589,22 +638,111 @@ module vec_head_mmu #(
     endcase
   end
 
+  // Data element VRF location and uncached beat payload assembly
+  logic [15:0] elem_byte;
+  logic [4:0] elem_vrf_reg;
+  logic [Log2VlenBytes-1:0] elem_vrf_byte;
+  logic [riscv_pkg::PhysAddrBits-1:0] unc_field_pa;
+  logic [XLEN-1:0] unc_field_va;
+  logic [63:0] store_vrf_word, store_vrf_shifted, unc_store_wdata;
+  logic [riscv_pkg::MemStrbBits-1:0] unc_store_wstrb;
+  logic [63:0] load_mem_shifted, load_word_rep;
+  logic [7:0] load_eew_be;
+  logic [VLEN-1:0] unc_load_wdata;
+  logic [VlenBytes-1:0] unc_load_wbe;
+
+  assign elem_byte = run_elem_q << eew_log2_q;
+  assign elem_vrf_reg = (vd_vs3_q + (5'(field_q) << emul_regs_log2_q)) +
+                        {2'b00, elem_byte[Log2VlenBytes+:3]};
+  assign elem_vrf_byte = elem_byte[Log2VlenBytes-1:0];
+  assign unc_field_pa = {field_off[12] ? ppn1_q : ppn0_q, field_off[11:0]};
+  assign unc_field_va = va_first_q + (XLEN'(field_q) << eew_log2_q);
+
+  always_comb begin
+    store_vrf_word = '0;
+    for (int w = 0; w < VLEN / 64; w++) begin
+      if (elem_vrf_byte[Log2VlenBytes-1:3] == (Log2VlenBytes - 3)'(w)) begin
+        store_vrf_word = i_vrf_read_data[64*w+:64];
+      end
+    end
+    store_vrf_shifted = store_vrf_word >> {elem_vrf_byte[2:0], 3'b000};
+    unique case (eew_log2_q)
+      2'd0:    unc_store_wdata = {8{store_vrf_shifted[7:0]}};
+      2'd1:    unc_store_wdata = {4{store_vrf_shifted[15:0]}};
+      2'd2:    unc_store_wdata = {2{store_vrf_shifted[31:0]}};
+      default: unc_store_wdata = store_vrf_shifted;
+    endcase
+    unc_store_wstrb  = riscv_pkg::mem_strobe_for(eew_log2_q, field_off[2:0]);
+
+    load_mem_shifted = unc_rdata_q >> {unc_addr_q[2:0], 3'b000};
+    unique case (eew_log2_q)
+      2'd0: begin
+        load_word_rep = {8{load_mem_shifted[7:0]}};
+        load_eew_be   = 8'h01;
+      end
+      2'd1: begin
+        load_word_rep = {4{load_mem_shifted[15:0]}};
+        load_eew_be   = 8'h03;
+      end
+      2'd2: begin
+        load_word_rep = {2{load_mem_shifted[31:0]}};
+        load_eew_be   = 8'h0F;
+      end
+      default: begin
+        load_word_rep = load_mem_shifted;
+        load_eew_be   = 8'hFF;
+      end
+    endcase
+    unc_load_wdata = {(VLEN / 64) {load_word_rep}};
+    unc_load_wbe   = VlenBytes'(load_eew_be) << elem_vrf_byte;
+  end
+
   // --------------------------------------------------------------------------
-  // Translation & region checks (Bare and Sv39 walk responses)
+  // Translation, region, and alignment checks (Bare and Sv39 walk responses)
   // --------------------------------------------------------------------------
-  logic checking_p1;
-  logic [XLEN-1:0] cur_check_va, walk_pa;
-  logic cur_va_canonical, bare_cached_ok, walk_resp_match;
-  ma_pkg::ma_part_e walk_verdict;
-  riscv_pkg::exc_cause_t page_fault_cause, access_fault_cause;
+  typedef enum logic [2:0] {
+    WK_CACHED,
+    WK_UNCACHED,
+    WK_UNCACHED_ALIAS,
+    WK_PAGE_FAULT,
+    WK_ACCESS_FAULT
+  } walk_class_e;
+
+  logic checking_p1, eval_from_walk;
+  logic [XLEN-1:0] cur_check_va, walk_pa, check_pa;
+  logic cur_va_canonical, pa_is_cached, pa_is_data, pa_is_pbmt_alias;
+  logic bare_cached_ok, bare_uncached_ok, walk_resp_match;
+  logic walk_oor, walk_cached_fast;
+  logic elem_misaligned;
+  walk_class_e walk_class;
+  riscv_pkg::exc_cause_t page_fault_cause, access_fault_cause, misalign_fault_cause;
 
   assign checking_p1 = (state_q == HM_CHECK_P1) || (state_q == HM_WALK_REQ_P1) ||
-                       (state_q == HM_WALK_WAIT_P1);
+                       (state_q == HM_WALK_WAIT_P1) || (state_q == HM_WALK_EVAL_P1);
+  assign eval_from_walk = (state_q == HM_WALK_EVAL_P0) || (state_q == HM_WALK_EVAL_P1);
   assign cur_check_va = checking_p1 ? {va_last_end_q[XLEN-1:12], 12'h000} : va_first_q;
   assign cur_va_canonical = riscv_pkg::sv39_va_canonical(cur_check_va);
-  assign bare_cached_ok = CACHED_TIER_EN && riscv_pkg::pma_cached_ok(cur_check_va);
   assign walk_resp_match = i_walk_resp_valid && (i_walk_resp.vpn == walk_vpn_q);
   assign walk_pa = ma_pkg::leaf_pa(i_walk_resp.ppn, i_walk_resp.level, cur_check_va);
+  // Bare checks and registered non-cached walk evaluations share one local
+  // PMA classifier; walk responses only test the cached window in WAIT. Whenever
+  // !walk_oor (WE_PBMT_NON_PMA / WE_PMA_CHECK), ppn0_q/ppn1_q carry all
+  // nonzero PPN bits of walk_pa.
+  assign check_pa = eval_from_walk ? XLEN'({checking_p1 ? ppn1_q : ppn0_q, 12'h000}) : cur_check_va;
+  assign pa_is_cached = CACHED_TIER_EN && riscv_pkg::pma_cached_ok(check_pa);
+  assign pa_is_data = riscv_pkg::pma_data_ok(check_pa);
+  assign pa_is_pbmt_alias = riscv_pkg::pma_pbmt_alias_ok(check_pa);
+  assign bare_cached_ok = pa_is_cached;
+  assign bare_uncached_ok = !pa_is_cached && pa_is_data;
+
+  always_comb begin
+    unique case (eew_log2_q)
+      2'd1:    elem_misaligned = va_first_q[0];
+      2'd2:    elem_misaligned = |va_first_q[1:0];
+      2'd3:    elem_misaligned = |va_first_q[2:0];
+      default: elem_misaligned = 1'b0;
+    endcase
+  end
 
   assign page_fault_cause = is_store_q ?
       riscv_pkg::ExcCauseWidth'(riscv_pkg::ExcStorePageFault) :
@@ -612,6 +750,9 @@ module vec_head_mmu #(
   assign access_fault_cause = is_store_q ?
       riscv_pkg::ExcCauseWidth'(riscv_pkg::ExcStoreAccessFault) :
       riscv_pkg::ExcCauseWidth'(riscv_pkg::ExcLoadAccessFault);
+  assign misalign_fault_cause = is_store_q ?
+      riscv_pkg::ExcCauseWidth'(riscv_pkg::ExcStoreAddrMisalign) :
+      riscv_pkg::ExcCauseWidth'(riscv_pkg::ExcLoadAddrMisalign);
 
   logic walk_perm_ok;
   assign walk_perm_ok = ma_pkg::leaf_perm_ok(
@@ -625,27 +766,50 @@ module vec_head_mmu #(
       sum_q,
       mxr_q
   );
+  assign walk_oor = ma_pkg::leaf_ppn_out_of_range(i_walk_resp.ppn);
+  // Fast cached Sv39 check on the registered walker response (zero added
+  // cycles on cached translations). Only non-PMA PBMT leaves and non-cached
+  // PMA leaves step into HM_WALK_EVAL_P0/P1 for local multi-window PMA checks.
+  assign walk_cached_fast =
+      (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) &&
+      walk_perm_ok && !walk_oor &&
+      (i_walk_resp.pbmt == riscv_pkg::PbmtPma) &&
+      CACHED_TIER_EN && riscv_pkg::pma_cached_ok(
+      walk_pa
+  );
 
+  // Fault decode uses only registered walker outputs and sampled permissions,
+  // with no PMA comparator. WAIT takes these faults immediately; other leaves
+  // register this classification for EVAL without extending the L2TLB path
+  // through the multi-window PMA classifier.
+  walk_eval_kind_e walk_eval_kind_d;
   always_comb begin
     unique case (i_walk_resp.fault_kind)
-      riscv_pkg::DFAULT_PAGE: walk_verdict = ma_pkg::MaPartPage;
+      riscv_pkg::DFAULT_PAGE: walk_eval_kind_d = WE_PAGE_FAULT;
       riscv_pkg::DFAULT_ACCESS: begin
         // A no-alias Svpbmt leaf carries permissions; its page fault wins.
-        walk_verdict = ((i_walk_resp.pbmt != riscv_pkg::PbmtPma) && !walk_perm_ok) ?
-            ma_pkg::MaPartPage : ma_pkg::MaPartAccess;
+        walk_eval_kind_d = ((i_walk_resp.pbmt != riscv_pkg::PbmtPma) && !walk_perm_ok) ?
+            WE_PAGE_FAULT : WE_ACCESS_FAULT;
       end
       default: begin
-        if (!walk_perm_ok) begin
-          walk_verdict = ma_pkg::MaPartPage;
-        end else if ((i_walk_resp.pbmt != riscv_pkg::PbmtPma) || ma_pkg::leaf_ppn_out_of_range(
-                i_walk_resp.ppn
-            )) begin
-          walk_verdict = ma_pkg::MaPartAccess;
-        end else if (!CACHED_TIER_EN || !riscv_pkg::pma_cached_ok(walk_pa)) begin
-          walk_verdict = ma_pkg::MaPartAccess;
-        end else begin
-          walk_verdict = ma_pkg::MaPartOk;
-        end
+        if (!walk_perm_ok) walk_eval_kind_d = WE_PAGE_FAULT;
+        else if (walk_oor) walk_eval_kind_d = WE_ACCESS_FAULT;
+        else if (i_walk_resp.pbmt != riscv_pkg::PbmtPma) walk_eval_kind_d = WE_PBMT_NON_PMA;
+        else walk_eval_kind_d = WE_PMA_CHECK;
+      end
+    endcase
+  end
+
+  always_comb begin
+    unique case (walk_eval_kind_q)
+      WE_PAGE_FAULT:   walk_class = WK_PAGE_FAULT;
+      WE_ACCESS_FAULT: walk_class = WK_ACCESS_FAULT;
+      WE_PBMT_NON_PMA: begin
+        walk_class = pa_is_pbmt_alias ? WK_UNCACHED_ALIAS :
+                     pa_is_data ? WK_UNCACHED : WK_ACCESS_FAULT;
+      end
+      default: begin
+        walk_class = pa_is_cached ? WK_CACHED : pa_is_data ? WK_UNCACHED : WK_ACCESS_FAULT;
       end
     endcase
   end
@@ -733,6 +897,7 @@ module vec_head_mmu #(
       state_q               <= HM_IDLE;
       wait_q                <= 1'b0;
       walk_reissue_q        <= 1'b0;
+      walk_eval_kind_q      <= WE_PAGE_FAULT;
       shield_q              <= 1'b0;
       run_started_q         <= 1'b0;
       fault_vstart_en_q     <= 1'b0;
@@ -740,19 +905,27 @@ module vec_head_mmu #(
       zero_vmt_done_idx_q   <= '0;
       vs_dirty_q            <= 1'b0;
       span_p1_q             <= 1'b0;
+      p0_cached_q           <= 1'b1;
+      p1_cached_q           <= 1'b1;
+      unc_bus_hold_q        <= 1'b0;
+      unc_req_q             <= 1'b0;
     end else begin
       zero_vmt_done_valid_q <= 1'b0;
       span_p1_q <= 1'b0;
-      // Case C's partial run and every run element of a load write the
-      // VRF before the instruction retires or traps.
-      vs_dirty_q <= !is_store_q && i_vmu_done &&
-                    ((state_q == HM_PARTIAL_RUN) || (state_q == HM_RUN_WAIT));
+      unc_req_q <= 1'b0;
+      // Case C's partial run, cached run elements, and uncached load
+      // writebacks write the VRF before the instruction retires or traps.
+      vs_dirty_q <= (!is_store_q && i_vmu_done &&
+                     ((state_q == HM_PARTIAL_RUN) || (state_q == HM_RUN_WAIT))) ||
+                    (!cancel_outputs && (state_q == HM_RUN_UNC_WB));
 
       if (fatal_q) begin
         state_q           <= HM_FATAL;
         shield_q          <= 1'b1;
         run_started_q     <= 1'b0;
         fault_vstart_en_q <= 1'b0;
+        unc_bus_hold_q    <= 1'b0;
+        unc_req_q         <= 1'b0;
       end else if (flush_q) begin
         // Outputs are inhibited from the flush cycle through this cleanup
         // edge. Retired memory work is owned by the VMU and is not cancelled.
@@ -762,9 +935,13 @@ module vec_head_mmu #(
         shield_q          <= 1'b0;
         run_started_q     <= 1'b0;
         fault_vstart_en_q <= 1'b0;
+        unc_bus_hold_q    <= 1'b0;
+        unc_req_q         <= 1'b0;
       end else begin
-        if (i_tlb_invalidate && ((state_q == HM_WALK_REQ_P0) || (state_q == HM_WALK_WAIT_P0) ||
-                                 (state_q == HM_WALK_REQ_P1) || (state_q == HM_WALK_WAIT_P1))) begin
+        if (i_tlb_invalidate &&
+            ((state_q == HM_WALK_REQ_P0) || (state_q == HM_WALK_WAIT_P0) ||
+             (state_q == HM_WALK_EVAL_P0) || (state_q == HM_WALK_REQ_P1) ||
+             (state_q == HM_WALK_WAIT_P1) || (state_q == HM_WALK_EVAL_P1))) begin
           walk_reissue_q <= 1'b1;
         end
 
@@ -773,6 +950,7 @@ module vec_head_mmu #(
             shield_q          <= 1'b0;
             run_started_q     <= 1'b0;
             fault_vstart_en_q <= 1'b0;
+            unc_bus_hold_q    <= 1'b0;
             if (head_vmem_q && i_vec_idle && !i_csr_wb_pending && !i_int_take_armed) begin
               tag_q     <= head_tag_q;
               insn_q    <= head_insn_q;
@@ -832,9 +1010,10 @@ module vec_head_mmu #(
               nf_q             <= dec_seg ? dec_nf : 3'd0;
               emul_regs_log2_q <= dec_emul_regs_log2;
               seg_last_q       <= XLEN'(dec_seg_bytes - 7'd1);
-              // A unit-stride segment steps by one segment; a strided form
-              // reads its stride below.
-              stride_q         <= dec_unit_seg ? XLEN'(dec_seg_bytes) : '0;
+              // Preload the element/segment byte step (EEW when nf = 0) so
+              // unit-stride span fallback reuses stride_q without an extra
+              // write cone; a strided form overwrites stride_q in HM_STRIDE_CAP.
+              stride_q         <= XLEN'(dec_seg_bytes);
               if (dec_illegal) begin
                 fault_vstart_en_q <= 1'b0;
                 state_q           <= HM_FAULT_ARM;
@@ -872,9 +1051,9 @@ module vec_head_mmu #(
               zero_active_q      <= 1'b0;
               first_p0_elem_q    <= 16'(red_lo_elem);
               last_active_elem_q <= 16'(red_hi_elem);
-              // Indexed runs jump straight to the first active element; strided
-              // and unit-stride segment runs step their address from rs1.
-              run_elem_q         <= idx_q ? 16'(red_lo_elem) : 16'd0;
+              // Indexed runs and span fallbacks start at the first active
+              // element; strided and unit-stride segment runs step from rs1.
+              run_elem_q         <= (idx_q || !run_q) ? 16'(red_lo_elem) : 16'd0;
               run_addr_q         <= rs1_q;
               state_q            <= run_q ? HM_RUN_SEEK : HM_SPAN1_ADD;
             end
@@ -883,6 +1062,9 @@ module vec_head_mmu #(
           HM_SPAN1_ADD: begin
             va_first_q    <= riscv_pkg::pm_tval(span_va_first, pm_mode_q, translate_q);
             va_last_end_q <= riscv_pkg::pm_tval(span_va_last_end, pm_mode_q, translate_q);
+            // Preserve the untransformed first-element address in case either
+            // span page maps outside cached DDR and falls back to an element run.
+            run_addr_q    <= span_va_first;
             cand_p1_q     <= first_p0_elem_q + 16'(bytes_rem_p0 >> eew_log2_q);
             state_q       <= HM_SPAN2;
           end
@@ -934,9 +1116,23 @@ module vec_head_mmu #(
             // it is read only with fault_vstart_en_q.
             fault_vstart_q <= first_p0_elem_q;
             if (!translate_q) begin
+              ppn0_q <= cur_check_va[12+:riscv_pkg::VmtPpnBits];
               if (bare_cached_ok) begin
-                ppn0_q  <= cur_check_va[12+:riscv_pkg::VmtPpnBits];
-                state_q <= has_p1_q ? HM_CHECK_P1 : translated_next;
+                p0_cached_q <= 1'b1;
+                state_q     <= has_p1_q ? HM_CHECK_P1 : translated_next;
+              end else if (bare_uncached_ok) begin
+                if (!run_q) begin
+                  run_q   <= 1'b1;
+                  state_q <= HM_RUN_SEEK;
+                end else if (elem_misaligned) begin
+                  fault_cause_q     <= misalign_fault_cause;
+                  fault_tval_q      <= va_first_q;
+                  fault_vstart_en_q <= 1'b1;
+                  state_q           <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
+                end else begin
+                  p0_cached_q <= 1'b0;
+                  state_q     <= has_p1_q ? HM_CHECK_P1 : HM_RUN_ARM;
+                end
               end else begin
                 fault_cause_q     <= access_fault_cause;
                 fault_tval_q      <= va_first_q;
@@ -966,29 +1162,80 @@ module vec_head_mmu #(
 
           HM_WALK_WAIT_P0: begin
             fault_vstart_q <= first_p0_elem_q;
+            // Preload the payload while waiting; only a matching fault makes
+            // it valid below. Keep response/PMA decisions off its write enable.
+            fault_cause_q <= (walk_eval_kind_d == WE_PAGE_FAULT) ?
+                             page_fault_cause : access_fault_cause;
+            fault_tval_q <= va_first_q;
             if (walk_reissue_q || i_tlb_invalidate) begin
               walk_reissue_q <= 1'b0;
               state_q        <= HM_WALK_REQ_P0;
             end else if (walk_resp_match) begin
-              if (walk_verdict == ma_pkg::MaPartOk) begin
-                ppn0_q  <= walk_pa[12+:riscv_pkg::VmtPpnBits];
-                state_q <= has_p1_q ? HM_CHECK_P1 : translated_next;
-              end else begin
-                fault_cause_q     <= (walk_verdict == ma_pkg::MaPartPage) ?
-                                     page_fault_cause : access_fault_cause;
-                fault_tval_q <= va_first_q;
+              ppn0_q           <= walk_pa[12+:riscv_pkg::VmtPpnBits];
+              walk_eval_kind_q <= walk_eval_kind_d;
+              state_q          <= HM_WALK_EVAL_P0;
+              if (walk_cached_fast) begin
+                p0_cached_q <= 1'b1;
+                state_q     <= has_p1_q ? HM_CHECK_P1 : translated_next;
+              end
+              // Fault and cached outcomes are disjoint. A separate fault
+              // decision preserves the cached path's existing write enables.
+              if ((walk_eval_kind_d == WE_PAGE_FAULT) ||
+                  (walk_eval_kind_d == WE_ACCESS_FAULT)) begin
                 fault_vstart_en_q <= 1'b1;
                 state_q <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
               end
             end
           end
 
+          HM_WALK_EVAL_P0: begin
+            fault_vstart_q <= first_p0_elem_q;
+            if (walk_reissue_q || i_tlb_invalidate) begin
+              walk_reissue_q <= 1'b0;
+              state_q        <= HM_WALK_REQ_P0;
+            end else if ((walk_class == WK_UNCACHED) || (walk_class == WK_UNCACHED_ALIAS)) begin
+              if (!run_q) begin
+                run_q   <= 1'b1;
+                state_q <= HM_RUN_SEEK;
+              end else if (elem_misaligned) begin
+                fault_cause_q     <= (walk_class == WK_UNCACHED_ALIAS) ?
+                                     access_fault_cause : misalign_fault_cause;
+                fault_tval_q <= va_first_q;
+                fault_vstart_en_q <= 1'b1;
+                state_q <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
+              end else begin
+                p0_cached_q <= 1'b0;
+                state_q     <= has_p1_q ? HM_CHECK_P1 : HM_RUN_ARM;
+              end
+            end else begin
+              fault_cause_q     <= (walk_class == WK_PAGE_FAULT) ?
+                                   page_fault_cause : access_fault_cause;
+              fault_tval_q <= va_first_q;
+              fault_vstart_en_q <= 1'b1;
+              state_q <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
+            end
+          end
+
           HM_CHECK_P1: begin
             fault_vstart_q <= first_p1_elem_q;
             if (!translate_q) begin
+              ppn1_q <= cur_check_va[12+:riscv_pkg::VmtPpnBits];
               if (bare_cached_ok) begin
-                ppn1_q  <= cur_check_va[12+:riscv_pkg::VmtPpnBits];
-                state_q <= translated_next;
+                p1_cached_q <= 1'b1;
+                state_q     <= translated_next;
+              end else if (bare_uncached_ok) begin
+                if (!run_q) begin
+                  run_q   <= 1'b1;
+                  state_q <= HM_RUN_SEEK;
+                end else if (elem_misaligned) begin
+                  fault_cause_q     <= misalign_fault_cause;
+                  fault_tval_q      <= va_first_q;
+                  fault_vstart_en_q <= 1'b1;
+                  state_q           <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
+                end else begin
+                  p1_cached_q <= 1'b0;
+                  state_q     <= HM_RUN_ARM;
+                end
               end else begin
                 fault_cause_q <= access_fault_cause;
                 fault_tval_q <= p1_tval_q;
@@ -1020,21 +1267,56 @@ module vec_head_mmu #(
 
           HM_WALK_WAIT_P1: begin
             fault_vstart_q <= first_p1_elem_q;
+            // As on Page 0, preload independently of the response decision.
+            fault_cause_q <= (walk_eval_kind_d == WE_PAGE_FAULT) ?
+                             page_fault_cause : access_fault_cause;
+            fault_tval_q <= p1_tval_q;
             if (walk_reissue_q || i_tlb_invalidate) begin
               walk_reissue_q <= 1'b0;
               state_q        <= HM_WALK_REQ_P1;
             end else if (walk_resp_match) begin
-              if (walk_verdict == ma_pkg::MaPartOk) begin
-                ppn1_q  <= walk_pa[12+:riscv_pkg::VmtPpnBits];
-                state_q <= translated_next;
-              end else begin
-                fault_cause_q     <= (walk_verdict == ma_pkg::MaPartPage) ?
-                                     page_fault_cause : access_fault_cause;
-                fault_tval_q <= p1_tval_q;
-                fault_vstart_en_q <= 1'b1;
-                state_q <= ff_trim ? HM_RUN_TRIM :
-                         has_p0_only_elems_q ? HM_PARTIAL_ARM : HM_FAULT_ARM;
+              ppn1_q           <= walk_pa[12+:riscv_pkg::VmtPpnBits];
+              walk_eval_kind_q <= walk_eval_kind_d;
+              state_q          <= HM_WALK_EVAL_P1;
+              if (walk_cached_fast) begin
+                p1_cached_q <= 1'b1;
+                state_q     <= translated_next;
               end
+              if ((walk_eval_kind_d == WE_PAGE_FAULT) ||
+                  (walk_eval_kind_d == WE_ACCESS_FAULT)) begin
+                fault_vstart_en_q <= 1'b1;
+                state_q           <= ff_trim ? HM_RUN_TRIM :
+                                     has_p0_only_elems_q ? HM_PARTIAL_ARM : HM_FAULT_ARM;
+              end
+            end
+          end
+
+          HM_WALK_EVAL_P1: begin
+            fault_vstart_q <= first_p1_elem_q;
+            if (walk_reissue_q || i_tlb_invalidate) begin
+              walk_reissue_q <= 1'b0;
+              state_q        <= HM_WALK_REQ_P1;
+            end else if ((walk_class == WK_UNCACHED) || (walk_class == WK_UNCACHED_ALIAS)) begin
+              if (!run_q) begin
+                run_q   <= 1'b1;
+                state_q <= HM_RUN_SEEK;
+              end else if (elem_misaligned) begin
+                fault_cause_q     <= (walk_class == WK_UNCACHED_ALIAS) ?
+                                     access_fault_cause : misalign_fault_cause;
+                fault_tval_q <= (walk_class == WK_UNCACHED_ALIAS) ? p1_tval_q : va_first_q;
+                fault_vstart_en_q <= 1'b1;
+                state_q <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
+              end else begin
+                p1_cached_q <= 1'b0;
+                state_q     <= HM_RUN_ARM;
+              end
+            end else begin
+              fault_cause_q     <= (walk_class == WK_PAGE_FAULT) ?
+                                   page_fault_cause : access_fault_cause;
+              fault_tval_q <= p1_tval_q;
+              fault_vstart_en_q <= 1'b1;
+              state_q <= ff_trim ? HM_RUN_TRIM :
+                       has_p0_only_elems_q ? HM_PARTIAL_ARM : HM_FAULT_ARM;
             end
           end
 
@@ -1169,25 +1451,37 @@ module vec_head_mmu #(
 
           // Both pages of the element are translated. The first access waits
           // for committed scalar stores and settles the shield before launch;
-          // later elements raise the shield and launch directly once no
+          // later cached elements raise the shield and launch directly once no
           // interrupt or debug halt is armed (a flush from an earlier take
-          // cancels the launch through cancel_outputs and flush_q).
+          // cancels the launch through cancel_outputs and flush_q). Every
+          // uncached element raises shield_q and unc_bus_hold_q, settles for
+          // one cycle in HM_RUN_SETTLE, and waits for cpu_ooo's registered
+          // grant (i_unc_port_ready) in HM_RUN_UNC_PRE before launching.
           HM_RUN_ARM: begin
             if (!head_matches_q || i_int_take_armed) begin
               if (!run_started_q) state_q <= HM_IDLE;
             end else if (run_started_q || i_sq_committed_empty) begin
-              seg0_q   <= full_seg0_d;
-              seg1_q   <= full_seg1_d;
-              shield_q <= 1'b1;
-              state_q  <= run_started_q ? HM_RUN_LAUNCH : HM_RUN_SETTLE;
+              seg0_q         <= full_seg0_d;
+              seg1_q         <= full_seg1_d;
+              shield_q       <= 1'b1;
+              unc_bus_hold_q <= !p0_cached_q;
+              state_q        <= (run_started_q && p0_cached_q) ? HM_RUN_LAUNCH : HM_RUN_SETTLE;
             end
           end
 
           HM_RUN_SETTLE: begin
-            state_q <= head_matches_q ? HM_RUN_LAUNCH : HM_IDLE;
             if (!head_matches_q) begin
-              shield_q      <= 1'b0;
-              run_started_q <= 1'b0;
+              state_q        <= HM_IDLE;
+              shield_q       <= 1'b0;
+              run_started_q  <= 1'b0;
+              unc_bus_hold_q <= 1'b0;
+            end else if (p0_cached_q) begin
+              state_q <= HM_RUN_LAUNCH;
+            end else begin
+              // Uncached store reads vs3 in HM_RUN_UNC_RD while the registered
+              // uncached-port grant settles; uncached load enters
+              // HM_RUN_UNC_PRE to consume the grant on the next cycle.
+              state_q <= is_store_q ? HM_RUN_UNC_RD : HM_RUN_UNC_PRE;
             end
           end
 
@@ -1200,7 +1494,9 @@ module vec_head_mmu #(
             if (i_vmu_done && (field_q != nf_q)) begin
               // The segment's next field, under the shield already up.
               field_q <= field_q + 3'd1;
-              state_q <= HM_RUN_LAUNCH;
+              unc_bus_hold_q <= !next_field_is_cached;
+              state_q        <= next_field_is_cached ? HM_RUN_LAUNCH :
+                                is_store_q ? HM_RUN_UNC_RD : HM_RUN_UNC_PRE;
             end else if (i_vmu_done) begin
               if (run_elem_q == last_active_elem_q) begin
                 state_q <= HM_CDB_OK;
@@ -1245,6 +1541,94 @@ module vec_head_mmu #(
             state_q    <= HM_RUN_ADDR;
           end
 
+          // Uncached store: one cycle to present elem_vrf_reg on the VRF read port.
+          HM_RUN_UNC_RD: begin
+            if (!head_matches_q) begin
+              state_q        <= HM_IDLE;
+              shield_q       <= 1'b0;
+              run_started_q  <= 1'b0;
+              unc_bus_hold_q <= 1'b0;
+            end else begin
+              state_q <= HM_RUN_UNC_PRE;
+            end
+          end
+
+          // Register the single-beat uncached request once cpu_ooo's registered
+          // grant (i_unc_port_ready) is asserted.
+          HM_RUN_UNC_PRE: begin
+            if (!head_matches_q) begin
+              state_q        <= HM_IDLE;
+              shield_q       <= 1'b0;
+              run_started_q  <= 1'b0;
+              unc_bus_hold_q <= 1'b0;
+            end else if (i_unc_port_ready && !cancel_outputs) begin
+              unc_req_q      <= 1'b1;
+              unc_is_store_q <= is_store_q;
+              unc_addr_q     <= unc_field_pa;
+              unc_size_q     <= riscv_pkg::mem_size_e'(eew_log2_q);
+              unc_wdata_q    <= is_store_q ? unc_store_wdata : '0;
+              unc_wstrb_q    <= is_store_q ? unc_store_wstrb : '0;
+              run_started_q  <= 1'b1;
+              state_q        <= HM_RUN_UNC_WAIT;
+            end
+          end
+
+          // First cycle drives the single-shot o_unc_req_valid pulse (unc_req_q);
+          // subsequent cycles wait for the single response.
+          HM_RUN_UNC_WAIT: begin
+            if (!unc_req_q && i_unc_resp_valid) begin
+              if (i_unc_resp_error) begin
+                unc_bus_hold_q <= 1'b0;
+                if (ff_trim) begin
+                  trim_q    <= 1'b1;
+                  trim_vl_q <= run_elem_q;
+                  state_q   <= HM_CDB_OK;
+                end else begin
+                  fault_cause_q     <= access_fault_cause;
+                  fault_tval_q      <= unc_field_va;
+                  fault_vstart_q    <= run_elem_q;
+                  fault_vstart_en_q <= 1'b1;
+                  state_q           <= HM_CDB_FAULT;
+                end
+              end else if (!is_store_q) begin
+                unc_rdata_q    <= i_unc_resp_data;
+                unc_bus_hold_q <= (field_q != nf_q) && !next_field_is_cached;
+                state_q        <= HM_RUN_UNC_WB;
+              end else if (field_q != nf_q) begin
+                field_q        <= field_q + 3'd1;
+                unc_bus_hold_q <= !next_field_is_cached;
+                state_q        <= next_field_is_cached ? HM_RUN_LAUNCH : HM_RUN_UNC_RD;
+              end else if (run_elem_q == last_active_elem_q) begin
+                unc_bus_hold_q <= 1'b0;
+                state_q        <= HM_CDB_OK;
+              end else begin
+                shield_q       <= 1'b0;
+                unc_bus_hold_q <= 1'b0;
+                run_elem_q     <= run_elem_q + 16'd1;
+                run_addr_q     <= run_addr_q + stride_q;
+                state_q        <= HM_RUN_SEEK;
+              end
+            end
+          end
+
+          // Commit the uncached load element to the VRF and advance.
+          HM_RUN_UNC_WB: begin
+            if (field_q != nf_q) begin
+              field_q        <= field_q + 3'd1;
+              unc_bus_hold_q <= !next_field_is_cached;
+              state_q        <= next_field_is_cached ? HM_RUN_LAUNCH : HM_RUN_UNC_PRE;
+            end else if (run_elem_q == last_active_elem_q) begin
+              unc_bus_hold_q <= 1'b0;
+              state_q        <= HM_CDB_OK;
+            end else begin
+              shield_q       <= 1'b0;
+              unc_bus_hold_q <= 1'b0;
+              run_elem_q     <= run_elem_q + 16'd1;
+              run_addr_q     <= run_addr_q + stride_q;
+              state_q        <= HM_RUN_SEEK;
+            end
+          end
+
           default: ;  // HM_FATAL holds until reset
         endcase
       end
@@ -1264,10 +1648,25 @@ module vec_head_mmu #(
                            ((state_q == HM_STRIDE_RD) || (state_q == HM_STRIDE_CAP));
   assign o_rf_read_en = read_regs_now || read_stride_now;
   assign o_rf_read_addr = read_stride_now ? dec_umop : dec_rs1;
-  logic read_index_now;
+  logic read_index_now, read_store_vrf_now;
   assign read_index_now = !cancel_outputs && (state_q == HM_RUN_IDX);
-  assign o_vrf_read_en = read_regs_now || read_index_now;
-  assign o_vrf_read_addr = read_index_now ? idx_reg : 5'd0;
+  assign read_store_vrf_now = !cancel_outputs && is_store_q &&
+      ((state_q == HM_RUN_UNC_RD) || (state_q == HM_RUN_UNC_PRE));
+  assign o_vrf_read_en = read_regs_now || read_index_now || read_store_vrf_now;
+  assign o_vrf_read_addr = read_index_now ? idx_reg : read_store_vrf_now ? elem_vrf_reg : 5'd0;
+
+  assign o_unc_bus_hold = unc_bus_hold_q && !flush_q && !fatal_q;
+  assign o_unc_req_valid = unc_req_q && !flush_q && !fatal_q && !i_fatal_stop;
+  assign o_unc_req_write = unc_is_store_q;
+  assign o_unc_req_addr = unc_addr_q;
+  assign o_unc_req_size = unc_size_q;
+  assign o_unc_req_wdata = unc_wdata_q;
+  assign o_unc_req_wstrb = unc_wstrb_q;
+
+  assign o_vrf_write_en = !cancel_outputs && (state_q == HM_RUN_UNC_WB);
+  assign o_vrf_write_addr = elem_vrf_reg;
+  assign o_vrf_write_data = unc_load_wdata;
+  assign o_vrf_write_be = unc_load_wbe;
 
   assign o_walk_req_valid = !cancel_outputs && head_matches_q &&
                             ((state_q == HM_WALK_REQ_P0) || (state_q == HM_WALK_REQ_P1));
@@ -1371,6 +1770,20 @@ module vec_head_mmu #(
       assert (!(run_async_vstart_valid && ((state_q == HM_IDLE) || (state_q == HM_WAIT_RETIRE))));
       assert (!run_async_vstart_valid ||
               ((run_elem_q > vstart_q) && (run_elem_q <= last_active_elem_q)));
+      // Uncached beats launch only under a settled head shield and bus hold
+      // for an active element, never alongside a VMU descriptor, and VRF
+      // writes belong to shielded uncached loads.
+      assert (!o_unc_req_valid || (shield_q && o_unc_bus_hold &&
+                                   active_mask_q[run_elem_q[ElemIdxW-1:0]]));
+      assert (!(o_unc_req_valid && o_desc_valid));
+      assert (!o_vrf_write_en || (!is_store_q && shield_q));
+      assert (!(eval_from_walk && (walk_class == WK_CACHED)));
+      // A started run must never take the mid-run !head_matches_q abandon path;
+      // only a full flush (flush_q) or fatal stop (fatal_q) may tear down a
+      // started run once elements have executed.
+      assert (!(!flush_q && !fatal_q && !head_matches_q && run_started_q &&
+                ((state_q == HM_RUN_SETTLE) || (state_q == HM_RUN_UNC_RD) ||
+                 (state_q == HM_RUN_UNC_PRE) || (state_q == HM_RUN_TRIM_SETTLE))));
     end
   end
 `endif
@@ -1402,12 +1815,16 @@ module vec_head_mmu #(
     assume (i_vl == 4 && i_vtype == 9'h10 && i_vstart == 0);
     assume (i_rf_read_data == 64'h400ff8 && i_vrf_read_data == '1);
     assume (i_translate && !i_eff_priv_u && !i_sum && !i_mxr && !i_tlb_invalidate);
+    assume (i_unc_port_ready && !i_unc_resp_valid && !i_unc_resp_error && (i_unc_resp_data == '0));
     // The CDB is registered before the ROB, whose earliest (bypass) commit
     // follows in the next cycle, and the commit bus is registered again: the
     // registered commit arrives at least two cycles after the acceptance.
     assume (!i_commit_valid || (f_cdb_registered && !f_page1_fault && !f_retired));
     assume (i_commit_tag == 3 && !i_commit_exception);
     assume (!i_vmu_done || f_launched);
+    if (!i_rst) begin
+      p_cached_no_unc_req : assert (!o_unc_req_valid && !o_unc_bus_hold && !o_vrf_write_en);
+    end
     if (i_walk_resp_valid) begin
       assume (f_walk_pending);
       assume (i_walk_resp.vpn == f_pending_vpn);
@@ -1465,6 +1882,10 @@ module vec_head_mmu #(
       end
       if (o_vhead_complete.valid) begin
         p_commit_shield : assert (o_vmem_head_shield && $past(o_vmem_head_shield));
+        p_fault_cause :
+        assert (o_vhead_complete.exception == f_page1_fault &&
+                (!f_page1_fault ||
+                 o_vhead_complete.exc_cause == riscv_pkg::ExcLoadPageFault));
       end
       if ($rose(o_vmem_head_shield)) begin
         p_store_drain : assert ($past(i_sq_committed_empty));
@@ -1527,6 +1948,12 @@ module vec_head_mmu #(
   // covers it, while the indexed task covers mid-run interrupt arming,
   // flush to idle, and withdrawal-and-resume.
   always_comb assume (f_indexed && f_pm == riscv_pkg::EnvcfgPmmOff);
+`ifdef VEC_HEAD_MMU_INDEX_NOIRQ_PROOF
+  always_comb assume (f_irq_mode == 2'd0);
+`endif
+`ifdef VEC_HEAD_MMU_INDEX_IRQ_PROOF
+  always_comb assume (f_irq_mode != 2'd0);
+`endif
 `else
   // Mid-run interrupt arming/flush/withdraw is the same FSM logic for both
   // forms and is proved by the indexed task; the strided task still proves
@@ -1596,6 +2023,7 @@ module vec_head_mmu #(
     assume (i_rf_read_data == ((o_rf_read_addr == 5'd10) ? {f_tag, 57'h400ffe} :
                                (o_rf_read_addr == 5'd11) ? 64'h800 : 64'h0));
     assume (i_translate && !i_eff_priv_u && !i_sum && !i_mxr && !i_tlb_invalidate);
+    assume (i_unc_port_ready && !i_unc_resp_valid && !i_unc_resp_error && (i_unc_resp_data == '0));
     assume (!i_commit_valid || (f_cdb_registered && f_fault_page == 2'd3 && !f_retired &&
                                 !f_irq_flushed_q));
     assume (i_commit_tag == 3 && !i_commit_exception);
@@ -1627,6 +2055,7 @@ module vec_head_mmu #(
       f_irq_wait_q <= '0;
       f_irq_flushed_q <= 1'b0;
     end else begin
+      p_stride_no_unc : assert (!o_unc_req_valid && !o_unc_bus_hold && !o_vrf_write_en);
       if (f_irq_flush_now) f_irq_flushed_q <= 1'b1;
       if (((f_irq_mode == 2'd1) || (f_irq_mode == 2'd3)) &&
           (f_dones == 3'd1) && (state_q == HM_RUN_ARM)) begin
@@ -1701,6 +2130,8 @@ module vec_head_mmu #(
           assert (o_vhead_complete.exception && f_launches == f_fault_elem &&
                   f_dones == f_fault_elem && o_vmem_fault_vstart_valid &&
                   o_vmem_fault_vstart == 16'(f_fault_elem) &&
+                  o_vhead_complete.exc_cause == (f_store ?
+                    riscv_pkg::ExcStorePageFault : riscv_pkg::ExcLoadPageFault) &&
                   o_vhead_complete.value == riscv_pkg::FLEN'(f_fault_tval));
         end
       end
@@ -1752,6 +2183,222 @@ module vec_head_mmu #(
       // pausing, flush, and withdrawal.
       c_stride_tagged : cover (f_irq_mode == 2'd0 && i_commit_valid && f_tag != 0);
 `endif
+    end
+  end
+`endif
+
+`ifdef VEC_HEAD_MMU_UNCACHED_PROOF
+  // Uncached Bare-mode proof over MMIO / low BRAM with vl = 2, EEW = 32:
+  //   f_form 0: unit-stride (vle32.v / vse32.v) falling back from span to run
+  //   f_form 1: strided (vlse32.v / vsse32.v, stride = 0x10)
+  //   f_form 2: fault-only-first (vle32ff.v, load only)
+  //   f_form 3: 2-field unit-stride segment (vlseg2e32.v / vsseg2e32.v)
+  // Covers alignment faults (f_misalign), bus errors on element 1 (f_bus_err),
+  // and mid-run interrupt stop-and-flush at the element 1 boundary (f_irq_stop).
+  logic f_past_valid = 1'b0;
+  logic f_cdb_accepted = 1'b0;
+  logic f_cdb_registered = 1'b0;
+  logic f_retired = 1'b0;
+  logic f_drained = 1'b0;
+  logic f_unc_busy = 1'b0;
+  logic f_unc_grant_q = 1'b0;
+  logic f_withheld_grant_q = 1'b0;
+  logic [2:0] f_unc_launches = '0;
+  logic [2:0] f_unc_dones = '0;
+  logic [2:0] f_vrf_writes = '0;
+  logic [1:0] f_irq_wait_q = '0;
+  logic f_sq_wait_q = 1'b0;
+  logic f_irq_flushed_q = 1'b0;
+  (* anyseq *) logic f_grant_allow;
+  (* anyconst *) logic f_store;
+  (* anyconst *) logic [1:0] f_form;
+  (* anyconst *) logic f_misalign;
+  (* anyconst *) logic f_bus_err;
+  (* anyconst *) logic f_irq_stop;
+  (* anyconst *) logic f_mmio;  // 0: low BRAM 0x18000, 1: MMIO 0x40000008
+  (* anyconst *) logic f_drain_delay;  // 0..1 cycles of SQ drain wait in HM_RUN_ARM
+
+`ifdef VEC_HEAD_MMU_UNCACHED_ELEM_PROOF
+  always_comb assume (f_form != 2'd3);
+`endif
+`ifdef VEC_HEAD_MMU_UNCACHED_SEG_PROOF
+  always_comb assume (f_form == 2'd3);
+`endif
+
+  logic [2:0] f_fields_per_elem;
+  logic [2:0] f_total_beats;
+  logic [31:0] f_insn;
+  logic [XLEN-1:0] f_base_addr;
+  logic f_irq_flush_now, f_irq_arm_now;
+  assign f_fields_per_elem = (f_form == 2'd3) ? 3'd2 : 3'd1;
+  assign f_total_beats = (f_form == 2'd3) ? 3'd4 : 3'd2;
+  assign f_base_addr = (f_mmio ? 64'h4000_0008 : 64'h0001_8000) | (f_misalign ? 64'd2 : 64'd0);
+  always_comb begin
+    unique case (f_form)
+      2'd0:    f_insn = f_store ? 32'h0205_6427 : 32'h0205_6407;  // vse32 / vle32 v8,(x10)
+      2'd1:    f_insn = f_store ? 32'h0ab5_6427 : 32'h0ab5_6407;  // vsse32 / vlse32 v8,(x10),x11
+      2'd2:    f_insn = 32'h0305_6407;  // vle32ff v8,(x10)
+      default: f_insn = f_store ? 32'h2205_6427 : 32'h2205_6407;  // vsseg2e32 / vlseg2e32
+    endcase
+  end
+  assign f_irq_flush_now = f_irq_stop && !f_irq_flushed_q && (f_irq_wait_q == 2'd2);
+  assign f_irq_arm_now = f_irq_stop && (f_unc_launches >= 3'd1) &&
+      !f_irq_flush_now && !f_irq_flushed_q;
+
+  // Expected physical address of beat k (k in 0..3).
+  function automatic logic [riscv_pkg::PhysAddrBits-1:0] f_beat_pa(input logic [2:0] k);
+    logic [2:0] elem_k, field_k;
+    logic [XLEN-1:0] stride_k;
+    elem_k = (f_form == 2'd3) ? {1'b0, k[2:1]} : k;
+    field_k = (f_form == 2'd3) ? {2'b00, k[0]} : 3'd0;
+    stride_k = (f_form == 2'd1) ? 64'h10 : (f_form == 2'd3) ? 64'h8 : 64'h4;
+    f_beat_pa = riscv_pkg::PhysAddrBits'(f_base_addr + XLEN'(elem_k) * stride_k +
+                                         (XLEN'(field_k) << 2));
+  endfunction
+
+  always_ff @(posedge i_clk) begin
+    f_past_valid <= 1'b1;
+    if (!f_past_valid)
+      assume (i_rst);
+      else assume (!i_rst);
+    // Keep fault / irq modes mutually exclusive for clean case coverage.
+    assume (!(f_form == 2'd2 && f_store));
+    assume ({2'b00, f_misalign} + {2'b00, f_bus_err} + {2'b00, f_irq_stop} <= 3'd1);
+    assume (i_sq_committed_empty ==
+            (f_drained || ((state_q == HM_RUN_ARM) && (f_sq_wait_q == f_drain_delay))));
+    assume (i_grant == o_vhead_complete.valid);
+    assume (i_flush_all == f_irq_flush_now && !i_fatal_stop && !i_vmu_fatal);
+    assume (i_head_tag == 3 && !i_rob_empty &&
+            (i_head_safe == (!f_irq_flush_now && !f_irq_flushed_q)));
+    assume (i_head_is_vmem == (!f_cdb_accepted && !f_irq_flushed_q) && i_head_insn == f_insn);
+    assume (i_head_vmt_idx == 0 && i_vec_idle && !i_csr_wb_pending &&
+            (i_int_take_armed == f_irq_arm_now));
+    assume (i_vl == 2 && i_vtype == 9'h10 && i_vstart == 0);
+    assume (i_rf_read_data == ((o_rf_read_addr == 5'd10) ? f_base_addr :
+                               (o_rf_read_addr == 5'd11) ? 64'h10 : 64'h0));
+    assume (i_vrf_read_data == '1);
+    assume (!i_translate && !i_eff_priv_u && !i_sum && !i_mxr && !i_tlb_invalidate &&
+            i_pm_mode == riscv_pkg::EnvcfgPmmOff);
+    assume (!i_vmu_done && !i_walk_resp_valid && i_walk_req_ready);
+    // Model cpu_ooo's registered one-cycle uncached-port grant, allowing the
+    // environment to withhold the grant on arbitrary cycles (for example,
+    // while an older buffered scalar uncached store is still in flight).
+    assume (i_unc_port_ready == (f_unc_grant_q && f_grant_allow));
+    assume (i_unc_resp_valid == f_unc_busy);
+    assume (i_unc_resp_data == 64'h11223344_55667788);
+    // Inject bus error on the first beat of element 1 when f_bus_err is set.
+    assume (i_unc_resp_error == (f_bus_err && f_unc_busy && (f_unc_dones == f_fields_per_elem)));
+    assume (i_commit_valid ==
+            (f_cdb_registered && !f_misalign && (!f_bus_err || f_form == 2'd2) &&
+             !f_irq_stop && !f_retired));
+    assume (i_commit_tag == 3 && !i_commit_exception);
+    if (i_rst) begin
+      f_cdb_accepted <= 1'b0;
+      f_cdb_registered <= 1'b0;
+      f_retired <= 1'b0;
+      f_drained <= 1'b0;
+      f_unc_busy <= 1'b0;
+      f_unc_grant_q <= 1'b0;
+      f_withheld_grant_q <= 1'b0;
+      f_unc_launches <= '0;
+      f_unc_dones <= '0;
+      f_vrf_writes <= '0;
+      f_irq_wait_q <= '0;
+      f_sq_wait_q <= 1'b0;
+      f_irq_flushed_q <= 1'b0;
+    end else begin
+      f_unc_grant_q <= o_unc_bus_hold && !f_unc_busy && !o_unc_req_valid && !i_flush_all;
+      if ((state_q == HM_RUN_UNC_PRE) && f_unc_grant_q && !i_unc_port_ready)
+        f_withheld_grant_q <= 1'b1;
+      if (f_irq_flush_now) f_irq_flushed_q <= 1'b1;
+      if (!f_drained && (state_q == HM_RUN_ARM)) f_sq_wait_q <= 1'b1;
+      if (f_irq_stop && (f_unc_dones == f_fields_per_elem) && (state_q == HM_RUN_ARM)) begin
+        if (f_irq_wait_q != 2'd2) f_irq_wait_q <= f_irq_wait_q + 2'd1;
+      end
+      if (i_sq_committed_empty) f_drained <= 1'b1;
+      p_unc_no_desc : assert (!o_desc_valid);
+      p_unc_no_vmt_range : assert (!o_vmt_range_valid);
+      if (o_unc_req_valid) begin
+        f_unc_launches <= f_unc_launches + 3'd1;
+        f_unc_busy <= 1'b1;
+        // Every uncached beat follows older-store drain, settles the shield for
+        // at least one full cycle before launching, holds the bus and consumes
+        // cpu_ooo's registered grant, flies alone, and matches exact
+        // element/field order and address.
+        p_unc_store_drain : assert (f_drained);
+        p_unc_settled_shield : assert (o_vmem_head_shield && $past(o_vmem_head_shield));
+        p_unc_hold_on_launch : assert (o_unc_bus_hold && $past(o_unc_bus_hold));
+        p_unc_grant_before_launch : assert ($past(i_unc_port_ready));
+        p_unc_one_at_a_time : assert (!f_unc_busy);
+        p_unc_no_misalign_launch : assert (!f_misalign);
+        p_unc_addr_order : assert (o_unc_req_addr == f_beat_pa(f_unc_launches));
+        p_unc_kind_size :
+        assert (o_unc_req_write == f_store && o_unc_req_size == riscv_pkg::MEM_SIZE_WORD);
+        if (f_irq_stop) p_unc_stop_at_irq : assert (f_unc_launches < f_fields_per_elem);
+        if (f_bus_err) p_unc_stop_at_bus_err : assert (f_unc_launches <= f_fields_per_elem);
+      end
+      if (i_unc_resp_valid) begin
+        f_unc_busy  <= 1'b0;
+        f_unc_dones <= f_unc_dones + 3'd1;
+      end
+      if (o_vrf_write_en) begin
+        f_vrf_writes <= f_vrf_writes + 3'd1;
+        p_unc_vrf_load_only : assert (!f_store);
+      end
+      if (f_unc_busy) p_unc_shield_inflight : assert (o_vmem_head_shield);
+      if (o_cdb_done) begin
+        f_cdb_accepted <= 1'b1;
+        p_unc_single_cdb : assert (!f_cdb_accepted);
+        if (f_misalign) begin
+          p_unc_misalign_exact :
+          assert (o_vhead_complete.exception && f_unc_launches == 3'd0 &&
+                  o_vhead_complete.exc_cause ==
+                  (f_store ? riscv_pkg::ExcCauseWidth'(riscv_pkg::ExcStoreAddrMisalign) :
+                             riscv_pkg::ExcCauseWidth'(riscv_pkg::ExcLoadAddrMisalign)) &&
+                  o_vmem_fault_vstart_valid && o_vmem_fault_vstart == 16'd0 &&
+                  o_vhead_complete.value == riscv_pkg::FLEN'(f_base_addr));
+        end else if (f_bus_err) begin
+          if (f_form == 2'd2) begin
+            p_unc_fof_bus_trim :
+            assert (!o_vhead_complete.exception && f_vrf_writes == 3'd1 && f_unc_launches == 3'd2);
+          end else begin
+            p_unc_bus_err_precise :
+            assert (o_vhead_complete.exception &&
+                    o_vhead_complete.exc_cause ==
+                    (f_store ? riscv_pkg::ExcCauseWidth'(riscv_pkg::ExcStoreAccessFault) :
+                               riscv_pkg::ExcCauseWidth'(riscv_pkg::ExcLoadAccessFault)) &&
+                    o_vmem_fault_vstart_valid && o_vmem_fault_vstart == 16'd1 &&
+                    f_vrf_writes == (f_store ? 3'd0 : f_fields_per_elem));
+          end
+        end else begin
+          p_unc_complete_all :
+          assert (!o_vhead_complete.exception && f_unc_launches == f_total_beats &&
+                  f_unc_dones == f_total_beats &&
+                  f_vrf_writes == (f_store ? 3'd0 : f_total_beats));
+        end
+      end
+      if (f_cdb_accepted) f_cdb_registered <= 1'b1;
+      if (i_commit_valid) begin
+        f_retired <= 1'b1;
+        if (f_bus_err && f_form == 2'd2) begin
+          p_unc_fof_vl_trim : assert (o_vl_trim_valid && o_vl_trim == 16'd1);
+        end
+      end
+      if (f_past_valid && $past(i_commit_valid)) p_unc_frees_vmt : assert (o_zero_vmt_done_valid);
+      if (f_irq_stop && (f_unc_dones == f_fields_per_elem) && !o_vmem_head_shield &&
+          !f_irq_flushed_q && (state_q == HM_RUN_ARM)) begin
+        p_unc_irq_vstart : assert (o_vmem_fault_vstart_valid && o_vmem_fault_vstart == 16'd1);
+      end
+      if (f_irq_flushed_q) p_unc_flushed_no_launch : assert (!o_unc_req_valid);
+      c_unc_unit_retire :
+      cover (f_form == 2'd0 && !f_misalign && !f_bus_err && !f_irq_stop && i_commit_valid);
+      c_unc_seg_retire :
+      cover (f_form == 2'd3 && !f_misalign && !f_bus_err && !f_irq_stop && i_commit_valid);
+      c_unc_misalign : cover (f_misalign && o_cdb_done);
+      c_unc_bus_err : cover (f_bus_err && f_form != 2'd2 && o_cdb_done);
+      c_unc_fof_bus_trim : cover (f_bus_err && f_form == 2'd2 && i_commit_valid);
+      c_unc_irq_stop : cover (f_irq_stop && f_irq_flushed_q && (state_q == HM_IDLE));
+      c_unc_withheld_grant : cover (o_unc_req_valid && f_withheld_grant_q);
     end
   end
 `endif

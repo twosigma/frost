@@ -30,17 +30,18 @@ larger pieces come before the second hart:
   `misa.V` with `VECTOR_ADVERTISE=1` and `VLEN=256`. Its device tree advertises
   V, Zvbb, Zvbc, Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb,
   Zvkg, Zvkn, Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, Zvl32b, Zvl64b,
-  Zvl128b and Zvl256b. Strided, indexed, segment and
-  fault-only-first loads and stores run one element at a time and take pending
+  Zvl128b and Zvl256b. Strided, indexed, segment, fault-only-first, and
+  uncached loads and stores run one element at a time and take pending
   interrupts and debug halts between elements (or between segments for segment
   forms), with `vstart` naming the next element and execution resuming from
-  `vstart` after `mret`, `sret` or `dret`. Vector loads and stores are executed in cached memory
-  only: an element address in any other region, such as the low BRAM or a
-  device, raises an access fault. In the bare-metal DDR layout, a program built
-  with the vector extension therefore has its stack in cached DDR as well, so
-  vector code that the compiler emits by itself, such as copies and clears of
-  stack objects, works there; in the BRAM layout, its static data and stack are
-  in the low BRAM.
+  `vstart` after `mret`, `sret` or `dret`. Vector loads and stores reach every
+  region a scalar load or store of the same width and kind can (cached DDR,
+  low BRAM, the device windows, and Svpbmt NC/IO pages), with scalar PMA, Sv39
+  permission, and alignment rules. In the bare-metal DDR layout, a program
+  built with the vector extension keeps its stack in cached DDR for cached
+  throughput and hardware misaligned stack accesses; in the BRAM layout, its
+  static data and stack are in low BRAM, where aligned vector accesses
+  execute.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR by default
   on the X3 and VCU118 and in simulation (`MISALIGNED_HW`), including
@@ -76,7 +77,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
 | Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Implemented with `VECTOR=1`; advertised by the X3 with `VLEN=256` | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy) at three vector lengths), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
+| V | Implemented with `VECTOR=1`; advertised by the X3 with `VLEN=256` | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_uncached_test`, `vec_uncached_grant_test`, `vec_vstart_irq_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy) at three vector lengths), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
 | Zvfhmin | Implemented with `VECTOR=1` (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at SEW 16); advertised by the X3 | `vec_fp_test`, `test_vec_fcvt.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy), one program per form at three vector lengths) |
 | Zvbb | Implemented with `VECTOR=1` (including `vwsll`); advertised by the X3 | `test_vec_int_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py` |
 | Zvkt | Implemented with `VECTOR=1` (data-independent execution latency for the listed vector instructions); advertised by the X3 | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py`, `test_vec_crypto_exec.py` |
@@ -791,7 +792,6 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   debugger can neither halt it nor read its registers. Inspection needs the
   debug path exempt from the commit hold, the front-end stall and the
   blocking of memory requests, while the program under debug stays stopped.
-- Vector loads and stores to uncached memory, such as the low BRAM and devices.
 - A check that corrects a fast-BTB taken prediction on an instruction that
   is not control flow. The BTB is tagged by fetch PC alone and is cleared
   wherever software must fence a change to the code or translation under

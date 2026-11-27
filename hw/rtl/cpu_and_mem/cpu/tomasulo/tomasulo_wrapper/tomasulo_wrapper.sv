@@ -176,6 +176,9 @@ module tomasulo_wrapper #(
     // No retired vector memory instruction is still accessing memory
     // (registered); FENCE, FENCE.I, SFENCE.VMA and SC wait for it (V-O4)
     input  logic                              i_vmem_quiet = 1'b1,
+    // Vector low-BRAM store invalidation for L0 cache and LR/SC reservations
+    input  logic                              i_vec_inval_valid = 1'b0,
+    input  logic [       riscv_pkg::XLEN-1:0] i_vec_inval_addr = '0,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb,
     output logic                              o_commit_valid_raw,
     output logic                              o_commit_misprediction_raw,
@@ -4196,7 +4199,8 @@ module tomasulo_wrapper #(
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
       .ENABLE_SQ_FORWARD_FAST_PATH(1'b1),
-      .REGISTERED_SECTOR_MATCH(REGISTERED_SECTOR_MATCH)
+      .REGISTERED_SECTOR_MATCH(REGISTERED_SECTOR_MATCH),
+      .VECTOR(VECTOR)
   ) u_lq (
       .i_coherent_cut_hold(i_coherent_cut_hold),
       .i_coherent_cut_addr(i_coh_admit_addr),
@@ -4333,6 +4337,8 @@ module tomasulo_wrapper #(
   );
   store_queue u_sq (
 `else
+      .i_vec_inval_valid(i_vec_inval_valid),
+      .i_vec_inval_addr(i_vec_inval_addr),
       // DMA coherence (lq_coherence_port)
       .i_coh_inval_valid(coh_lq_inval_valid),
       .i_coh_inval_addr(coh_lq_inval_addr),
