@@ -27,11 +27,12 @@ larger pieces come before the second hart:
   every vector load and store form. Guided by John Goodacre's vector
   performance study, the vector engine pipelines single-width ALU operations at
   one register group per cycle (skipping groups beyond `vl` and overlapping
-  register-independent arithmetic with active `vec_vmu` transfers), executes
-  integer multiply/MAC across all 64-bit lanes with pipelined integer
-  reductions, and runs `vmv.x.s`, `vfmv.f.s`, `vcpop.m` and `vfirst.m` off the
-  ROB head once older writes to their source registers drain. The X3 build
-  includes the unit. It also
+  register-independent arithmetic with active `vec_vmu` transfers), streams
+  integer multiply/MAC through a shared 64-bit multiply lane in pipelined
+  64-bit beats (skipping groups and upper beats beyond `vl`) with pipelined
+  integer reductions, and runs `vmv.x.s`, `vfmv.f.s`, `vcpop.m` and `vfirst.m`
+  off the ROB head once older writes to their source registers drain. The X3
+  build includes the unit. It also
   executes vector carry-less multiply, AES rounds and key schedules, SHA-256
   and SHA-512 compression and message schedules, and GHASH. The X3 sets
   `misa.V` with `VECTOR_ADVERTISE=1` and `VLEN=256`. Its device tree advertises

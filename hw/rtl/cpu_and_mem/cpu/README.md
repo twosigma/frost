@@ -1211,10 +1211,11 @@ logical operations, `vcpop.m`, `vfirst.m`, `vmsbf.m`, `vmsif.m`, `vmsof.m`,
 64-bit word of elements each, keeping the running count, the first-bit flag and
 the element index from one step of an instruction to the next.
 `vec_red_unit` runs the integer reductions and the widening sums the same way,
-one 64-bit word of elements per step: inactive elements count as the
-operation's identity, elements are extended to 64 bits so one operation
-serves every element width, and a three-level tree reduces each word before it
-meets the running value.
+one 64-bit word of elements per step: per-node active flags skip inactive
+elements without widening them to 64-bit identities, lower tree levels carry
+narrowed element widths while sharing one comparator across minimum and maximum
+forms, and a three-level pipelined tree reduces each word before it meets the
+running value.
 `vec_xbar` moves bytes within one element group: a crossbar whose output byte
 takes any input byte or zero, for the gathers, slides and compress that the
 sequencer turns into byte indices, and a rotator for slides by whole bytes and
@@ -1269,22 +1270,23 @@ precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
 
 `vec_engine` combines the register file with registered execution blocks, with
 engine-side throughput and latency shaped by John Goodacre's vector performance
-study. Single-width ALU operations run through a five-stage, one-group-per-cycle
-pipeline with per-register RAW hazard stalls, skipping register groups outside
+study. Single-width ALU operations run through a six-stage, one-group-per-cycle
+pipeline (with registered VRF read data between the read and execute stages)
+with per-register RAW hazard stalls, skipping register groups outside
 `vstart..vl` and chaining element groups across multi-register LMUL operations.
-`vec_int_exec` executes single-width and widening integer multiply and
-multiply-accumulate across all `VLEN / 64` multiply lanes in parallel (skipping
-groups outside `vstart..vl`), streams integer and widening-sum reductions one
-64-bit lane per cycle through the pipelined reduction tree, and executes one
-element at a time for divide, carry and borrow, widening and narrowing add and
-shift, extension, fixed point, masks and permutations. `vec_fixed_lane`
-separates arithmetic, shifts, rounding and saturation into registered stages;
-`vec_div_lane` uses 64
-restoring steps. The multiply, mask and reduction units supply their
-respective results. Gathers and slides read the selected source element in a
-separate registered step. Compress visits every source element, including
-unselected elements, and advances a packed destination cursor. Whole-register
-moves use the encoded register count independently of `vl` and LMUL.
+`vec_int_exec` streams single-width and widening integer multiply and
+multiply-accumulate through one shared 64-bit multiply lane in pipelined 64-bit
+beats (skipping register groups and upper beats outside `vstart..vl`), streams
+integer and widening-sum reductions one 64-bit lane per cycle through the
+pipelined reduction tree, and executes one element at a time for divide, carry
+and borrow, widening and narrowing add and shift, extension, fixed point, masks
+and permutations. `vec_fixed_lane` separates arithmetic, shifts, rounding and
+saturation into registered stages; `vec_div_lane` uses 64 restoring steps. The
+multiply, mask and reduction units supply their respective results. Gathers and
+slides read the selected source element in a separate registered step. Compress
+visits every source element, including unselected elements, and advances a
+packed destination cursor. Whole-register moves use the encoded register count
+independently of `vl` and LMUL.
 
 `vec_fp_exec` executes the floating-point instructions one element at a time:
 it reads the source registers, extracts the elements, runs `vec_fp_lane` and
@@ -1307,10 +1309,10 @@ back to back (stalling on RAW hazards or in-flight mask-destination compares),
 and register-independent group-ALU instructions pop from the VIQ and run in
 `vec_engine` concurrently with an active `vec_vmu` transfer; multi-cycle
 `vec_int_exec`, `vec_fp_exec` and `vec_crypto_exec` instructions wait for
-`vmu_busy_q` and execute in order without overlapping other engine operations. Only active body bytes are
-written, preserving tails and inactive elements. Mask results merge one bit
-into the previous destination byte. Widening and narrowing operations permit
-the overlaps specified by their source and destination EEWs; reductions read
+`vmu_busy_q` and execute in order without overlapping other engine operations.
+Only active body bytes are written, preserving tails and inactive elements.
+Mask results merge one bit into the previous destination byte. Widening and
+narrowing operations permit the overlaps specified by their source and destination EEWs; reductions read
 their seed before writing their scalar result. Each operand value follows the
 same sequence of states for its instruction and configuration. A registered
 read port and a byte-enabled write port serve the memory side.
