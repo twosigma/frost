@@ -9,6 +9,7 @@
   ],
   "implemented_features": [
     "Binary-bound BRAM CoreMark instruction replay with architectural dependencies, resolved addresses, recorded prediction tiers, decoupled F0/F1 fetch, parcel/metadata capacity, bypass/alignment, PD/ID and decoded queues, and redirect/refill service. Synthetic workloads retain their separate idealized feed.",
+    "Binary replay reserves integer issue port 0 for branches and delays consumers of completed live ROB producers through registered allocation-indexed operand repair, including dispatch-cycle CDB delivery; resident CDB matches bypass and retired producers read the architectural register file (reservation_station/README.md; tomasulo_wrapper.sv).",
     "Explicit CpuTopModel + SocTopModel separation across the 6-bit-ID, 512-bit AXI4 boundary so downstream projects can replace SocTopModel or DdrController independently.",
     "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ with MEM_RS release at issue and LQ release at the result, out-of-order load/ALU completion, two-lane CDB contention, and committed stores draining from the SQ into the L1D's store records.",
     "Configurable direct-mapped L0 with fills from memory responses: synthetic defaults use 256 dword entries and one-cycle dependent hits; BRAM calibration uses 512 entries and measured three-cycle dependent hits.",

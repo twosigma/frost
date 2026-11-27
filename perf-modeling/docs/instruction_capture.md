@@ -48,7 +48,7 @@ Capture each CI comparison in its existing simulation, rather than keeping
 a full versioned stream. Compiler flags, layout, seeds and predictor state
 can change independently of the workload name. Recapture prevents an old
 binary or old prediction behavior from silently calibrating new RTL. The
-first full capture contains 226,801 instructions and occupies 1,971,289 bytes
+verified capture contains 226,801 instructions and occupies about 1.9 MiB
 compressed. Capture adds no simulation and retains only one timed window;
 the CI artifact directory already contains the larger aggregate event trace.
 Small synthetic instruction fixtures exercise the contract in the fast suite.

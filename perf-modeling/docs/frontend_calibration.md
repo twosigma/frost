@@ -1,14 +1,14 @@
 # CoreMark front-end calibration
 
 BRAM CoreMark now replays the binary-bound instruction stream captured in the
-same RTL run as the aggregate calibration events. The initial measured
+same RTL run as the aggregate calibration events. The measured
 comparison passes the unchanged **10% IPC tolerance**:
 
 | Measurement | Cycles | Retired instructions | IPC | Replay / RTL IPC minus 1 |
 |---|---:|---:|---:|---:|
 | RTL after #595 | 201,392 | 226,801 | 1.1262 | — |
 | Former synthetic `coremark_bram` | 3,219 | 3,128 | 0.9717 | -13.71% |
-| Binary-bound replay | 190,905 | 226,801 | 1.1880 | +5.49% |
+| Binary-bound replay | 183,450 | 226,801 | 1.2363 | +9.78% |
 
 The RTL was captured with the CoreMark shard's BRAM configuration, startup
 sweep, coverage disabled, one simulator thread, and
@@ -44,9 +44,10 @@ destination, resolved address/size and branch successor. Slot-2 addresses see
 slot-1 writeback. Wrong-path allocations are discarded by retirement.
 
 Branch annotations record F0 predictions, PD direction/backing/ITTAGE
-redirects and execution correction, including early recovery. An allocation
-check requires PD's recorded final prediction to agree with the ID packet.
-The capture contains 4,835 PD redirects and 2,192 execution corrections;
+redirects and execution correction, including early recovery. Annotations
+follow accepted decode bundles before ROB allocation; producer and allocation
+checks require the final prediction to agree with the ID packet.
+The capture contains 4,195 PD redirects and 1,485 execution corrections;
 the aggregate commit-only misprediction counter is 35 and must not stand in
 for early recoveries.
 
@@ -104,6 +105,22 @@ seven. `int_muldiv_shim.sv`'s word multiplier and `cl_multiplier.sv` have
 three stages, giving four from selection. These are source/measurement
 constraints, not an IPC multiplier or a fitted memory-latency reduction.
 
+Replay also follows registered dispatch done repair. The RAT returns a live
+producer's tag even after that producer completes. Dispatch registers the tag;
+one cycle later the station captures the ROB value. INT/MUL/MEM all disable
+`ISSUE_REPAIR_BYPASS`, so selection starts in the second cycle after dispatch.
+A dispatch-cycle CDB match has the same deferred delivery. A resident CDB
+match still bypasses into selection, and already-retired sources do not need
+repair. These rules follow `reservation_station/README.md` and
+`tomasulo_wrapper.sv`'s indexed repair wiring; the directed tests distinguish
+all four situations. The corrected instruction stream without this behavior
+was still +10.90% high, and was rejected without refreshing the baseline.
+The remaining scalar correction restricts branches to integer issue port 0;
+port 1 accepts only non-branches. Together these source-defined rules produce
+183,450 cycles and the passing +9.78% comparison. The replay still uses the
+existing approximate station arbitration and shared arithmetic resources;
+it does not claim a full implementation of the RTL backend.
+
 The calibration keeps its existing 512-entry L0 and measured ten-cycle
 local-BRAM read configuration. Synthetic workloads retain their established
 abstractions and result fixtures. Replay reports its distinct execution
@@ -119,6 +136,22 @@ overlapping prediction. It also checks scalar stage constants and the
 three-cycle dependent L0 chase. `tests/test_instruction_trace.py` checks
 binary/manifest/window binding, architectural renaming, same-cycle register
 writes, PD annotation ownership/flush, and malformed/truncated rejection.
+
+The replay cases correspond to existing production fetch-stage checks in
+`verif/cocotb_tests/if_stage/test_if_stage.py`:
+
+| Behavior | RTL directed case |
+|---|---|
+| Run-ahead and registered queue headroom | `test_stall_buffers_in_parcel_queue_and_asserts_stop_fetch`, `test_parcel_queue_wraparound_and_headroom_stress` |
+| Empty and partial bypass, compressed and spanning instructions | `test_zero_cycle_empty_bypass_native_pair`, `test_compressed_four_parcel_window_and_queue_draining`, `test_spanning_32bit_instruction_and_partial_bypass` |
+| Predicted taken flow and spanning branches | `test_fast_btb_taken_prediction_and_truncation`, `test_spanning_btb_branch_fetches_second_word_then_steers` |
+| Trap/xRET, fence, execution and PD redirects | `test_trap_mret_fence_ex_and_pd_redirect_pulse_both_retargets` |
+| F1 false hits and stale provider tags | `test_false_btb_interior_halfword_triggers_resteer`, `test_served_word_tag_mismatch_triggers_f1_resteer` |
+| Refill overlapping prediction | `test_fetch_gap_and_collapsed_lead_accept`, `test_collapsed_fetch_trap_hold_pause_preserves_fresh_prediction` |
+
+The recorder's queue-lineage test additionally holds a producer under
+backpressure and allocates an older branch at the same PC on the cycle a
+younger PD override enters ID. Matching redirects by PC alone fails this case.
 
 Only the architectural path has instruction semantics. Incorrect predictions
 stop useful fetch until correction; wrong-path execution and cache pollution

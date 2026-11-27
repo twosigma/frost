@@ -306,3 +306,64 @@ def test_native_execution_stages_and_l0_dependency_span() -> None:
     result = pipe.run()
     assert result["cycles"] == 302
     assert result["pipeline"]["stats"]["l0_hits"] == 100
+
+
+@pytest.mark.parametrize(
+    "state", ["done", "dispatch_broadcast", "resident_broadcast", "retired"]
+)
+def test_registered_dispatch_done_repair(state: str) -> None:
+    """Live completed renames wait for repair; resident broadcasts still bypass."""
+    producer = model.MicroOp(0, "alu", 0)
+    consumer = model.MicroOp(1, "alu", 4, depends_on=(0,), execution_cycles=2)
+    pipe = model.FrostPipeline(
+        model.ModelConfig(), [producer, consumer], scalar_replay=True
+    )
+    pipe.fetch_state[0] = "ready"
+    entry = model.RobEntry(producer, dispatched_cycle=0, issued=True)
+    pipe.entries[0] = entry
+    pipe.next_dispatch = 1
+    pipe.loop.cycle = 10
+    pipe.int_rs_in_use = int(state in {"dispatch_broadcast", "resident_broadcast"})
+    if state == "dispatch_broadcast":
+        pipe.completions.append(entry)
+        pipe._drain_cdb()
+    elif state != "resident_broadcast":
+        entry.done = True
+        entry.retired = state == "retired"
+        pipe.completed_ids.add(0)
+    pipe._dispatch()
+    pipe.loop.cycle = 11
+    if state == "resident_broadcast":
+        pipe.completions.append(entry)
+        pipe._drain_cdb()
+    pipe._issue()
+    delayed = state in {"done", "dispatch_broadcast"}
+    assert pipe.entries[1].issued == (not delayed)
+    pipe.loop.cycle = 12
+    pipe._issue()
+    assert pipe.entries[1].issued
+    assert pipe.stats["dispatch_done_repairs"] == int(delayed)
+
+
+@pytest.mark.parametrize(
+    "kinds,issued",
+    [
+        (("alu", "branch"), (True, False)),
+        (("branch", "alu"), (True, True)),
+        (("branch", "branch"), (True, False)),
+    ],
+)
+def test_only_integer_issue_port_zero_accepts_branches(
+    kinds: tuple[str, str], issued: tuple[bool, bool]
+) -> None:
+    """A ready branch cannot occupy the second integer issue port."""
+    ops = [model.MicroOp(i, kind, i * 4) for i, kind in enumerate(kinds)]
+    pipe = model.FrostPipeline(model.ModelConfig(), ops, scalar_replay=True)
+    pipe.fetch_state[0] = "ready"
+    pipe._dispatch()
+    pipe.loop.cycle = 1
+    pipe._issue()
+    assert tuple(pipe.entries[i].issued for i in range(2)) == issued
+    pipe.loop.cycle = 2
+    pipe._issue()
+    assert all(entry.issued for entry in pipe.entries.values())

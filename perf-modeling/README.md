@@ -404,7 +404,12 @@ the pressure generators: a combinational ALU plus registered RS stage 2 takes
 two selection-to-wakeup cycles, full-width multiply takes seven, and word or
 carry-less multiply takes four. Resident L0 dependent loads take three cycles,
 as measured by the directed chase. Synthetic workloads retain their existing
-abstract execution settings. Replay rejects operand-dependent division until
+abstract execution settings. A completed producer still live in the ROB needs
+registered operand repair when its consumer dispatches: selection waits until
+the second cycle after dispatch. A resident consumer can still issue on a live
+CDB broadcast, and a retired producer supplies the register-file value directly.
+Branches use integer issue port 0; port 1 accepts only non-branches.
+Replay rejects operand-dependent division until
 that service is implemented. The [calibration evidence](docs/frontend_calibration.md)
 records the before/after comparison and source references; tolerance remains 10%.
 
@@ -467,7 +472,7 @@ and compares before updating any figures. A passing check calibrates only
 this workload and BRAM configuration.
 
 For the current 226,801-instruction capture, RTL takes 201,392 cycles
-(IPC 1.1262) and replay takes 190,905 cycles (IPC 1.1880), a +5.49% IPC gap.
+(IPC 1.1262) and replay takes 183,450 cycles (IPC 1.2363), a +9.78% IPC gap.
 The former 3,128-operation synthetic BRAM workload missed this RTL by -13.71%.
 The separate synthetic `coremark` workload remains in the DDR sweeps.
 

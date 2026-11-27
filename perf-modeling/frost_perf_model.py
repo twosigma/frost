@@ -2530,6 +2530,8 @@ class RobEntry:
     done: bool = False
     rs_issued: bool = False  # left MEM_RS for the LQ or SQ
     fault: bool = False
+    retired: bool = False
+    operands_ready_cycle: int = 0
 
 
 class FrostPipeline:
@@ -2548,12 +2550,14 @@ class FrostPipeline:
         soc: SocTopPort | None = None,
         frontend: FetchFrontend | None = None,
         l0_hit_cycles: int = 1,
+        scalar_replay: bool = False,
     ) -> None:
         """Set up the pipeline, caches, and SoC to run program."""
         self.config = config
         self.program = program
         self.frontend = frontend
         self.l0_hit_cycles = l0_hit_cycles
+        self.scalar_replay = scalar_replay
         self.loop = EventLoop()
         self.soc: SocTopPort = soc or SocTopModel(
             config, self.loop, controller=controller
@@ -2660,6 +2664,19 @@ class FrostPipeline:
                 self.stats[f"dispatch_stall_{reason}"] += 1
                 break
             entry = RobEntry(op=op, dispatched_cycle=self.loop.cycle)
+            if self.scalar_replay and any(
+                dep in self.entries
+                and self.entries[dep].done
+                and not self.entries[dep].retired
+                for dep in op.depends_on
+            ):
+                # A live RAT rename is unready even when its ROB producer is
+                # done. Dispatch registers the tag, then indexed repair writes
+                # the resident operand one edge later. Production INT/MUL/MEM
+                # disable ISSUE_REPAIR_BYPASS, as does a deferred CDB match on
+                # the dispatch edge (reservation_station.sv).
+                entry.operands_ready_cycle = self.loop.cycle + 2
+                self.stats["dispatch_done_repairs"] += 1
             self.rob.append(entry)
             self.entries[op.op_id] = entry
             if op.kind in {"alu", "branch"}:
@@ -2677,6 +2694,8 @@ class FrostPipeline:
             self.frontend.consume(dispatched)
 
     def _deps_ready(self, entry: RobEntry) -> bool:
+        if self.loop.cycle < entry.operands_ready_cycle:
+            return False
         deps = entry.op.depends_on
         for dep in deps:
             if dep not in self.completed_ids:
@@ -2726,6 +2745,11 @@ class FrostPipeline:
                 continue
             if op.kind in {"alu", "branch"}:
                 if alu_issued >= self.config.alu_issue_width:
+                    continue
+                # INT_RS port 1 chooses a non-branch. If port 0 already chose
+                # an ALU, a later ready branch must wait for the next cycle.
+                if self.scalar_replay and op.kind == "branch" and alu_issued:
+                    self.stats["branch_issue_port_stall"] += 1
                     continue
                 entry.issued = True
                 alu_issued += 1
@@ -2963,6 +2987,7 @@ class FrostPipeline:
                 self.stats["retire_head_not_ready"] += 1
                 break
             self.rob.popleft()
+            entry.retired = True
             self.retired += 1
             retired += 1
             self.stats["retired"] += 1
@@ -3359,11 +3384,15 @@ def run_instruction_stream(
     # The architectural stream exposes real load-use chains. The L0 array
     # itself is combinational; MEM_RS/LQ and registered result/wakeup are not.
     # The measured resident dependent chase takes three cycles per load.
-    pipeline = FrostPipeline(config, program, frontend=frontend, l0_hit_cycles=3)
+    pipeline = FrostPipeline(
+        config, program, frontend=frontend, l0_hit_cycles=3, scalar_replay=True
+    )
     result = pipeline.run()
     result["replay_execution"] = {
         "l0_dependent_load_cycles": 3,
         "integer_select_to_wakeup_cycles": 2,
+        "done_operand_dispatch_to_select_cycles": 2,
+        "branch_issue_ports": 1,
         "multiply_select_to_result_cycles": 7,
         "word_and_carryless_multiply_cycles": 4,
         "instruction_provider_cycles": 1,
@@ -3982,6 +4011,7 @@ def rtl_audit() -> dict[str, Any]:
         ],
         "implemented_features": [
             "Binary-bound BRAM CoreMark instruction replay with architectural dependencies, resolved addresses, recorded prediction tiers, decoupled F0/F1 fetch, parcel/metadata capacity, bypass/alignment, PD/ID and decoded queues, and redirect/refill service. Synthetic workloads retain their separate idealized feed.",
+            "Binary replay reserves integer issue port 0 for branches and delays consumers of completed live ROB producers through registered allocation-indexed operand repair, including dispatch-cycle CDB delivery; resident CDB matches bypass and retired producers read the architectural register file (reservation_station/README.md; tomasulo_wrapper.sv).",
             "Explicit CpuTopModel + SocTopModel separation across the 6-bit-ID, 512-bit AXI4 boundary so downstream projects can replace SocTopModel or DdrController independently.",
             "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ with MEM_RS release at issue and LQ release at the result, out-of-order load/ALU completion, two-lane CDB contention, and committed stores draining from the SQ into the L1D's store records.",
             "Configurable direct-mapped L0 with fills from memory responses: synthetic defaults use 256 dword entries and one-cycle dependent hits; BRAM calibration uses 512 entries and measured three-cycle dependent hits.",
