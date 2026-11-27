@@ -229,7 +229,7 @@ def test_cocotb_matrix_output(tmp_path: Path, toggle: bool) -> None:
     assert key == "matrix"
     matrix = job_matrix(coverage_only=toggle)
     assert json.loads(data) == matrix
-    assert len(matrix["include"]) == (EXPECTED_TOGGLE_JOBS if toggle else 78)
+    assert len(matrix["include"]) == (EXPECTED_TOGGLE_JOBS if toggle else 80)
 
 
 @pytest.mark.parametrize(

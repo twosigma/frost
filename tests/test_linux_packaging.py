@@ -2248,6 +2248,11 @@ def test_linux_boot_make_refuses_a_build_directory_that_built_a_kernel(
     )
     sources.mkdir(parents=True)
     (sources / "frost_stress.c").write_text("int main(void) { return 0; }\n")
+    # Date the images at the epoch so the source is newer by construction: files written
+    # within one filesystem timestamp tick share an mtime and make then skips the stage.
+    for stale in (tmp_path / "linux" / "build-mmu" / "images").iterdir():
+        if stale.is_file():
+            os.utime(stale, ns=(1, 1))
     # A Buildroot that shouts if it is invoked at all.
     buildroot = tmp_path / "linux" / "buildroot"
     buildroot.mkdir()

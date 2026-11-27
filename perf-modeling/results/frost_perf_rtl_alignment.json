@@ -80,7 +80,7 @@
       "source": "hw/rtl/lib/cache/coherence_l1d.sv:1218-1231, 1297-1315, 2233-2238, 2339-2351; hw/rtl/lib/cache/README.md:316, 350-355, 369-372 (ade0de67)"
     },
     {
-      "fact": "Stream look-ahead: three adjacent demand sector misses confirm a stream; the cursor stays within eight sectors past the frontier and within a 4 KiB page; hints use the highest PrefetchCount load endpoints (2 with four or more endpoints, 1 with three), demand may use every load endpoint, and a hint is the controller's lowest-priority selection.",
+      "fact": "Stream look-ahead: three adjacent demand sector misses confirm a stream; the cursor stays within eight sectors past the frontier and within a 4 KiB page; hints, off by default in the model because the RTL issues few, use the highest PrefetchCount load endpoints (2 with four or more endpoints, 1 with three), demand may use every load endpoint, and a hint is the controller's lowest-priority selection.",
       "source": "hw/rtl/lib/cache/coherence_read_stream.sv:17-82; hw/rtl/lib/cache/coherence_l1d.sv:550-553, 611-638, 692-713, 2227-2231, 2304-2309 (ade0de67)"
     },
     {
