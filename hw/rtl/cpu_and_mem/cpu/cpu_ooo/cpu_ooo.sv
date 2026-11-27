@@ -267,8 +267,10 @@ module cpu_ooo #(
     input logic i_cached_write_done,
     input logic i_cached_write_inflight,
     // Single-cycle handoffs to frost_hart's variable-latency uncached adapter.
-    // Address and write data share o_data_mem_addr/o_data_mem_wr_data.
+    // Write data shares o_data_mem_wr_data; o_uncached_addr carries the
+    // uncached request address without adding logic to the cached-tier address.
     input logic i_uncached_read_request_ready = 1'b1,
+    output logic [XLEN-1:0] o_uncached_addr,
     output logic o_uncached_read_enable,
     output riscv_pkg::mem_size_e o_uncached_read_size,
     input logic i_uncached_read_valid = 1'b0,
@@ -414,11 +416,14 @@ module cpu_ooo #(
   logic trap_drain_wait;
   logic [XLEN-1:0] trap_target_reg;
 
-  logic fetch_pa_hold;  // if_stage: no visible result for the selected fetch VA yet
-  // fetch_pa_hold from separate IMMU copies, for the decoded queue's shadow
-  // select only.
+  // Tied low by the decoupled if_stage: an ITLB miss pauses only F0 launch
+  // while the parcel queue continues draining, so the back end never stalls
+  // directly on fetch translation. Kept wired for the decoded-queue shadow
+  // select interface.
+  logic fetch_pa_hold;
   logic [riscv_pkg::FetchPaHoldCopies-1:0] fetch_pa_hold_copy;
-  // The front-end stall without fetch_pa_hold, for the same select.
+  // Front-end stall without fetch_pa_hold (identical to frontend stall while
+  // fetch_pa_hold is tied low).
   logic frontend_stall_without_pa_hold;
 
   // Trap control
@@ -706,7 +711,9 @@ module cpu_ooo #(
   assign dbg_post_flush_holdoff_q = post_flush_holdoff_q;
   assign dbg_csr_in_flight = csr_in_flight;
   assign dbg_pipeline_stall = pipeline_ctrl.stall;
-  assign o_pipeline_stall = pipeline_ctrl.stall;
+  // Decoupled IF manages its own fetch backpressure via the parcel queue so
+  // providers can prefetch ahead during backend stalls without release lag.
+  assign o_pipeline_stall = 1'b0;
   assign dbg_pipeline_stall_registered = pipeline_ctrl.stall_registered;
   assign dbg_dispatch_stall = dispatch_stall;
   assign dbg_front_end_cf_serialize_stall = front_end_cf_serialize_stall;
@@ -894,6 +901,7 @@ module cpu_ooo #(
   logic itt_train_bank;
   logic [riscv_pkg::PhysAddrBits-2:0] itt_train_target;
   logic itt_train_mispredicted;
+  logic fetch_trap_hold_q;
 
   if_stage #(
       .XLEN(XLEN),
@@ -969,6 +977,7 @@ module cpu_ooo #(
       .i_fence_i_target(fence_i_target_pc),
       .i_btb_invalidate(btb_invalidate),
       .i_disable_branch_prediction(disable_branch_prediction_ooo),
+      .i_fetch_trap_hold(fetch_trap_hold_q),
       // Bimodal direction-predictor training (conditional branches only, see
       // dir_update_* below).
       .i_dir_update_valid(dir_update_valid),
@@ -1210,6 +1219,16 @@ module cpu_ooo #(
   logic [255:0] vec_lc_req_data;
   logic [31:0] vec_lc_req_mask;
   logic [3:0] vec_lc_req_id;
+  logic vec_unc_port_ready, vec_unc_bus_hold, vec_unc_bus_busy;
+  logic vec_unc_req_valid, vec_unc_req_write;
+  logic [riscv_pkg::PhysAddrBits-1:0] vec_unc_req_addr;
+  riscv_pkg::mem_size_e vec_unc_req_size;
+  logic [riscv_pkg::MemDataBits-1:0] vec_unc_req_wdata;
+  logic [riscv_pkg::MemStrbBits-1:0] vec_unc_req_wstrb;
+  logic vec_unc_resp_valid, vec_unc_resp_error;
+  logic [riscv_pkg::MemDataBits-1:0] vec_unc_resp_data;
+  logic vec_l0_inval_valid;
+  logic [XLEN-1:0] vec_l0_inval_addr;
   logic vec_vmu_fatal;
   logic [riscv_pkg::PhysAddrBits-1:0] vec_vmu_fatal_addr;
   logic vec_commit_hold;
@@ -1996,6 +2015,35 @@ module cpu_ooo #(
   assign dbg_pd_valid_q = pd_valid_q;
   assign dbg_id_valid   = id_valid;
 
+  // Pause decoupled F0 fetch-ahead once an unconditional trap or xRET is live
+  // in ID: every sequential instruction after it is dead wrong-path and will
+  // be flushed by either an older redirect or this instruction itself.
+  logic id_slot1_uncond_trap;
+  logic id_slot2_uncond_trap;
+  logic id_trap_hold_valid;
+  assign id_slot1_uncond_trap = decoded_packet.is_real &&
+      (decoded_packet.is_illegal_instruction || decoded_packet.is_fetch_fault ||
+       decoded_packet.is_mret || decoded_packet.is_sret || decoded_packet.is_dret ||
+       (decoded_packet.instruction_operation == riscv_pkg::ECALL) ||
+       (decoded_packet.instruction_operation == riscv_pkg::EBREAK));
+  assign id_slot2_uncond_trap = decoded_packet_2.is_real &&
+      (decoded_packet_2.is_illegal_instruction || decoded_packet_2.is_fetch_fault ||
+       decoded_packet_2.is_mret || decoded_packet_2.is_sret || decoded_packet_2.is_dret ||
+       (decoded_packet_2.instruction_operation == riscv_pkg::ECALL) ||
+       (decoded_packet_2.instruction_operation == riscv_pkg::EBREAK));
+  assign id_trap_hold_valid = (DECODED_QUEUE_DEPTH != 0) ? pd_valid_q : direct_id_valid_preflush;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      fetch_trap_hold_q <= 1'b0;
+    end else if (flush_pipeline || trap_ctrl.trap_taken || trap_ctrl.mret_taken ||
+                 fence_i_flush || pd_redirect) begin
+      fetch_trap_hold_q <= 1'b0;
+    end else if (id_trap_hold_valid && (id_slot1_uncond_trap || id_slot2_uncond_trap)) begin
+      fetch_trap_hold_q <= 1'b1;
+    end
+  end
+
   // ===========================================================================
   // Tomasulo Wrapper Instance
   // ===========================================================================
@@ -2743,6 +2791,8 @@ module cpu_ooo #(
       .o_vcfg_in_flight(vec_vcfg_in_flight),
       .i_vmt(vec_vmt_view),
       .i_vmem_quiet(vec_vmem_quiet),
+      .i_vec_inval_valid(vec_l0_inval_valid),
+      .i_vec_inval_addr(vec_l0_inval_addr),
       .o_commit_comb(rob_commit_comb),
       .o_commit_valid_raw(rob_commit_valid_raw),
       .o_commit_misprediction_raw(rob_commit_misprediction_raw),
@@ -2830,7 +2880,9 @@ module cpu_ooo #(
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
       .i_backend_recovery_hold(backend_recovery_hold || (step_done_q) || ma_hold_q),
       .i_slow_write_inflight(slow_write_inflight),
-      .i_uncached_read_busy(VARIABLE_UNCACHED && !i_uncached_read_request_ready),
+      .i_uncached_read_busy(
+          (VARIABLE_UNCACHED && !i_uncached_read_request_ready) || vec_unc_bus_busy
+      ),
       .i_coh_admit_valid(i_coh_admit_valid),
       .i_coh_admit_slot(i_coh_admit_slot),
       .i_coh_admit_addr(i_coh_admit_addr),
@@ -3445,9 +3497,10 @@ module cpu_ooo #(
 `else
         $error("cpu_ooo: drained held LQ request remained write-blocked");
 `endif
-      // Device-read interrupt shield (trap_unit.i_device_read_at_head): the
-      // device read must never happen before the shield is up.
-      if (o_mmio_read_pulse && !device_read_shield_q)
+      // Device-read interrupt shield (trap_unit.i_device_read_at_head or
+      // vec_head_shield for head-executed vector device reads): a device read
+      // must never happen before a shield is up.
+      if (o_mmio_read_pulse && !device_read_shield_q && !vec_head_shield)
 `ifdef FROST_SIM_ASSERTIONS
         assert (1'b0)
         else $error("cpu_ooo: MMIO read pulse fired without the device interrupt shield");
@@ -4202,6 +4255,28 @@ module cpu_ooo #(
   end
 `endif
 
+  logic [XLEN-1:0] router_data_mem_addr;
+  logic [riscv_pkg::MemDataBits-1:0] router_data_mem_wr_data;
+  logic [riscv_pkg::MemStrbBits-1:0] router_data_mem_per_byte_wr_en;
+  logic [riscv_pkg::MemStrbBits-1:0] router_data_mem_bram_byte_wr_en;
+  logic router_data_mem_bram_write_any;
+  logic router_data_mem_read_enable;
+  logic router_cached_read_ready;
+  logic router_uncached_read_enable;
+  riscv_pkg::mem_size_e router_uncached_read_size;
+  logic router_uncached_read_ready;
+  logic [riscv_pkg::MemStrbBits-1:0] router_uncached_write_byte_en;
+  riscv_pkg::mem_size_e router_uncached_write_size;
+  logic router_uncached_write_buffered;
+  logic router_mmio_read_pulse;
+  logic [XLEN-1:0] router_mmio_load_addr;
+  logic router_mmio_load_valid;
+  logic router_mmio_fifo0_read_pulse;
+  logic router_mmio_fifo1_read_pulse;
+  logic router_mmio_uart_rx_ready_pulse;
+  logic router_i_uncached_read_valid;
+  logic router_i_uncached_write_done;
+
   data_mem_request_router #(
       .VARIABLE_UNCACHED(VARIABLE_UNCACHED),
       .XLEN(XLEN),
@@ -4255,29 +4330,29 @@ module cpu_ooo #(
       .i_cached_read_id(i_cached_read_id),
       .i_cached_read_valid(i_cached_read_valid),
       .i_cached_read_error(i_cached_read_error),
-      .o_cached_read_ready(o_cached_read_ready),
+      .o_cached_read_ready(router_cached_read_ready),
       .o_cached_read_held(cached_read_held),
       .i_cached_write_done(i_cached_write_done),
       .i_cached_write_inflight(cached_write_busy),
       .i_uncached_read_request_ready,
-      .o_uncached_read_enable,
-      .o_uncached_read_size,
-      .i_uncached_read_valid,
-      .o_uncached_read_ready,
+      .o_uncached_read_enable(router_uncached_read_enable),
+      .o_uncached_read_size(router_uncached_read_size),
+      .i_uncached_read_valid(router_i_uncached_read_valid),
+      .o_uncached_read_ready(router_uncached_read_ready),
       .i_uncached_read_data,
       .i_uncached_read_status,
-      .o_uncached_write_byte_en,
-      .o_uncached_write_size,
-      .o_uncached_write_buffered,
-      .i_uncached_write_done,
+      .o_uncached_write_byte_en(router_uncached_write_byte_en),
+      .o_uncached_write_size(router_uncached_write_size),
+      .o_uncached_write_buffered(router_uncached_write_buffered),
+      .i_uncached_write_done(router_i_uncached_write_done),
       .i_uncached_write_status,
       .i_uncached_write_inflight,
-      .o_data_mem_addr(o_data_mem_addr),
-      .o_data_mem_wr_data(o_data_mem_wr_data),
-      .o_data_mem_per_byte_wr_en(o_data_mem_per_byte_wr_en),
-      .o_data_mem_bram_byte_wr_en(o_data_mem_bram_byte_wr_en),
-      .o_data_mem_bram_write_any(data_mem_bram_write_any),
-      .o_data_mem_read_enable(o_data_mem_read_enable),
+      .o_data_mem_addr(router_data_mem_addr),
+      .o_data_mem_wr_data(router_data_mem_wr_data),
+      .o_data_mem_per_byte_wr_en(router_data_mem_per_byte_wr_en),
+      .o_data_mem_bram_byte_wr_en(router_data_mem_bram_byte_wr_en),
+      .o_data_mem_bram_write_any(router_data_mem_bram_write_any),
+      .o_data_mem_read_enable(router_data_mem_read_enable),
       .o_data_mem_cached_byte_wr_en(o_data_mem_cached_byte_wr_en),
       .o_data_mem_cached_wr_data(o_data_mem_cached_wr_data),
       .o_data_mem_cached_read_enable(o_data_mem_cached_read_enable),
@@ -4286,12 +4361,12 @@ module cpu_ooo #(
       .o_data_mem_cached_read_if_clear(o_data_mem_cached_read_if_clear),
       .o_data_mem_cached_read_id(o_data_mem_cached_read_id),
       .o_data_mem_cached_read_no_merge(o_data_mem_cached_read_no_merge),
-      .o_mmio_read_pulse(o_mmio_read_pulse),
-      .o_mmio_load_addr(o_mmio_load_addr),
-      .o_mmio_load_valid(o_mmio_load_valid),
-      .o_mmio_fifo0_read_pulse(o_mmio_fifo0_read_pulse),
-      .o_mmio_fifo1_read_pulse(o_mmio_fifo1_read_pulse),
-      .o_mmio_uart_rx_ready_pulse(o_mmio_uart_rx_ready_pulse),
+      .o_mmio_read_pulse(router_mmio_read_pulse),
+      .o_mmio_load_addr(router_mmio_load_addr),
+      .o_mmio_load_valid(router_mmio_load_valid),
+      .o_mmio_fifo0_read_pulse(router_mmio_fifo0_read_pulse),
+      .o_mmio_fifo1_read_pulse(router_mmio_fifo1_read_pulse),
+      .o_mmio_uart_rx_ready_pulse(router_mmio_uart_rx_ready_pulse),
       .o_sq_mem_write_done(sq_mem_write_done),
       .o_sq_mem_write_error(sq_mem_write_error),
       .o_amo_mem_write_done(amo_mem_write_done),
@@ -4305,6 +4380,199 @@ module cpu_ooo #(
       .o_lq_mem_read_is_cached(lq_mem_read_is_cached),
       .o_lq_mem_read_id(lq_mem_read_id)
   );
+
+  // Share the uncached data port with head-executed vector uncached elements
+  // when VECTOR=1. Cached-tier requests (o_data_mem_cached_* and, in
+  // VARIABLE_UNCACHED mode, o_data_mem_addr) stay connected directly to the
+  // router. When VECTOR=0 every output is wired directly from the router.
+  if (VECTOR) begin : gen_vec_uncached_bus
+    localparam logic [XLEN-1:0] VecUartRxDataMmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'h4);
+    localparam logic [XLEN-1:0] VecFifo0MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'h8);
+    localparam logic [XLEN-1:0] VecFifo1MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'hC);
+
+    logic [XLEN-1:0] vec_unc_addr_xlen;
+    logic vec_unc_launch, vec_unc_read_launch, vec_unc_write_launch;
+    logic vec_unc_is_dev, vec_unc_is_mem;
+    logic vec_unc_read_active_q, vec_unc_write_active_q;
+    logic vec_unc_fast_read_q, vec_unc_fast_write_done_q;
+    logic vec_unc_port_grant_q;
+    logic vec_mmio_fifo0_pulse_q, vec_mmio_fifo1_pulse_q, vec_mmio_uart_rx_pulse_q;
+    logic vec_l0_inval_valid_q;
+    logic [XLEN-1:0] vec_l0_inval_addr_q;
+
+    assign vec_unc_addr_xlen = XLEN'(vec_unc_req_addr);
+    assign vec_unc_launch = vec_unc_req_valid && !i_fatal_stop;
+    assign vec_unc_read_launch = vec_unc_launch && !vec_unc_req_write;
+    assign vec_unc_write_launch = vec_unc_launch && vec_unc_req_write;
+    assign vec_unc_is_dev = riscv_pkg::pma_device_quadrant(vec_unc_addr_xlen);
+    assign vec_unc_is_mem = riscv_pkg::pma_memory_ok(vec_unc_addr_xlen);
+
+    // Hold scalar load launches from load_queue while vec_head_mmu requests or
+    // owns the shared uncached data port (all inputs are registered flops).
+    assign vec_unc_bus_busy = vec_unc_bus_hold || vec_unc_launch ||
+        vec_unc_read_active_q || vec_unc_write_active_q ||
+        vec_unc_fast_read_q || vec_unc_fast_write_done_q;
+
+    always_ff @(posedge i_clk) begin
+      if (i_rst) begin
+        vec_unc_read_active_q     <= 1'b0;
+        vec_unc_write_active_q    <= 1'b0;
+        vec_unc_fast_read_q       <= 1'b0;
+        vec_unc_fast_write_done_q <= 1'b0;
+        vec_unc_port_grant_q      <= 1'b0;
+        vec_mmio_fifo0_pulse_q    <= 1'b0;
+        vec_mmio_fifo1_pulse_q    <= 1'b0;
+        vec_mmio_uart_rx_pulse_q  <= 1'b0;
+        vec_l0_inval_valid_q      <= 1'b0;
+      end else begin
+        if (VARIABLE_UNCACHED) begin
+          if (vec_unc_read_launch) vec_unc_read_active_q <= 1'b1;
+          else if (vec_unc_read_active_q && i_uncached_read_valid) vec_unc_read_active_q <= 1'b0;
+
+          if (vec_unc_write_launch) vec_unc_write_active_q <= 1'b1;
+          else if (vec_unc_write_active_q && i_uncached_write_done) vec_unc_write_active_q <= 1'b0;
+        end
+        vec_unc_fast_read_q <= !VARIABLE_UNCACHED && vec_unc_read_launch;
+        vec_unc_fast_write_done_q <= !VARIABLE_UNCACHED && vec_unc_write_launch;
+        // Registered one-cycle grant for head-executed uncached vector beats.
+        // vec_unc_bus_hold already drives i_mem_bus_busy high in load_queue,
+        // so lq_mem_read_en is forced zero without reading the combinational
+        // L0 lookup / load launch path here.
+        vec_unc_port_grant_q <= vec_unc_bus_hold && !i_fatal_stop &&
+            !vec_unc_launch &&
+            !vec_unc_read_active_q && !vec_unc_write_active_q &&
+            !vec_unc_fast_read_q && !vec_unc_fast_write_done_q &&
+            !sq_mem_write_en && !amo_mem_write_en &&
+            !lq_mem_request_valid &&
+            (VARIABLE_UNCACHED ?
+                (i_uncached_read_request_ready && !i_uncached_write_inflight &&
+                 !i_uncached_read_valid && !i_uncached_write_done) :
+                router_cached_read_ready);
+        vec_mmio_fifo0_pulse_q    <= !VARIABLE_UNCACHED && vec_unc_read_launch && vec_unc_is_dev &&
+                                     (vec_unc_addr_xlen == VecFifo0MmioAddr);
+        vec_mmio_fifo1_pulse_q    <= !VARIABLE_UNCACHED && vec_unc_read_launch && vec_unc_is_dev &&
+                                     (vec_unc_addr_xlen == VecFifo1MmioAddr);
+        vec_mmio_uart_rx_pulse_q  <= !VARIABLE_UNCACHED && vec_unc_read_launch && vec_unc_is_dev &&
+                                     (vec_unc_addr_xlen == VecUartRxDataMmioAddr);
+        vec_l0_inval_valid_q <= vec_unc_write_launch && vec_unc_is_mem;
+      end
+      if (vec_unc_write_launch && vec_unc_is_mem) vec_l0_inval_addr_q <= vec_unc_addr_xlen;
+    end
+
+    assign vec_l0_inval_valid = vec_l0_inval_valid_q;
+    assign vec_l0_inval_addr = vec_l0_inval_addr_q;
+
+    assign vec_unc_port_ready = vec_unc_port_grant_q;
+
+    assign router_i_uncached_read_valid = i_uncached_read_valid && !vec_unc_read_active_q;
+    assign router_i_uncached_write_done = i_uncached_write_done && !vec_unc_write_active_q;
+
+    assign vec_unc_resp_valid = VARIABLE_UNCACHED ?
+        ((vec_unc_read_active_q && i_uncached_read_valid) ||
+         (vec_unc_write_active_q && i_uncached_write_done)) :
+        (vec_unc_fast_read_q || vec_unc_fast_write_done_q);
+    assign vec_unc_resp_data = VARIABLE_UNCACHED ? i_uncached_read_data : i_data_mem_rd_data;
+    assign vec_unc_resp_error = VARIABLE_UNCACHED &&
+        ((vec_unc_read_active_q && i_uncached_read_valid && (i_uncached_read_status != 2'b00)) ||
+         (vec_unc_write_active_q && i_uncached_write_done && (i_uncached_write_status != 2'b00)));
+
+    assign o_data_mem_addr = VARIABLE_UNCACHED ? router_data_mem_addr :
+                             (vec_unc_launch ? vec_unc_addr_xlen : router_data_mem_addr);
+    assign o_uncached_addr = vec_unc_launch ? vec_unc_addr_xlen : router_data_mem_addr;
+    assign o_data_mem_wr_data = vec_unc_write_launch ? vec_unc_req_wdata : router_data_mem_wr_data;
+    assign o_data_mem_per_byte_wr_en = (!VARIABLE_UNCACHED && vec_unc_write_launch) ?
+        vec_unc_req_wstrb : router_data_mem_per_byte_wr_en;
+    assign o_data_mem_bram_byte_wr_en = (!VARIABLE_UNCACHED && vec_unc_write_launch) ?
+        (vec_unc_is_dev ? '0 : vec_unc_req_wstrb) : router_data_mem_bram_byte_wr_en;
+    assign data_mem_bram_write_any = (!VARIABLE_UNCACHED && vec_unc_write_launch) ?
+        (!vec_unc_is_dev && (|vec_unc_req_wstrb)) : router_data_mem_bram_write_any;
+    assign o_data_mem_read_enable = router_data_mem_read_enable ||
+        (!VARIABLE_UNCACHED && vec_unc_read_launch);
+    assign o_cached_read_ready = router_cached_read_ready && !vec_unc_fast_read_q;
+    assign o_uncached_read_enable = router_uncached_read_enable ||
+        (VARIABLE_UNCACHED && vec_unc_read_launch);
+    assign o_uncached_read_size = vec_unc_read_launch ?
+        vec_unc_req_size : router_uncached_read_size;
+    assign o_uncached_read_ready = router_uncached_read_ready ||
+        (VARIABLE_UNCACHED && vec_unc_read_active_q);
+    assign o_uncached_write_byte_en = (VARIABLE_UNCACHED && vec_unc_write_launch) ?
+        vec_unc_req_wstrb : router_uncached_write_byte_en;
+    assign o_uncached_write_size = vec_unc_write_launch ?
+        vec_unc_req_size : router_uncached_write_size;
+    assign o_uncached_write_buffered = vec_unc_write_launch ? 1'b0 : router_uncached_write_buffered;
+    assign o_mmio_read_pulse = router_mmio_read_pulse ||
+        (!VARIABLE_UNCACHED && vec_unc_read_launch && vec_unc_is_dev);
+    assign o_mmio_load_addr = (!VARIABLE_UNCACHED && vec_unc_read_launch && vec_unc_is_dev) ?
+        vec_unc_addr_xlen : router_mmio_load_addr;
+    assign o_mmio_load_valid = router_mmio_load_valid ||
+        (!VARIABLE_UNCACHED && vec_unc_read_launch && vec_unc_is_dev);
+    assign o_mmio_fifo0_read_pulse = router_mmio_fifo0_read_pulse || vec_mmio_fifo0_pulse_q;
+    assign o_mmio_fifo1_read_pulse = router_mmio_fifo1_read_pulse || vec_mmio_fifo1_pulse_q;
+    assign o_mmio_uart_rx_ready_pulse = router_mmio_uart_rx_ready_pulse || vec_mmio_uart_rx_pulse_q;
+
+`ifndef SYNTHESIS
+    logic vec_unc_port_grant_prev_q = 1'b0;
+    always @(posedge i_clk) begin
+      if (i_rst) vec_unc_port_grant_prev_q <= 1'b0;
+      else vec_unc_port_grant_prev_q <= vec_unc_port_grant_q;
+      if (reset_seen_q && !i_rst && vec_unc_bus_hold) begin
+        assert (!lq_mem_read_en)
+        else $error("cpu_ooo: scalar load launched while vec_unc_bus_hold asserted");
+      end
+      if (reset_seen_q && !i_rst && vec_unc_launch) begin
+        assert (vec_unc_port_grant_prev_q)
+        else $error("cpu_ooo: vector uncached beat launched without prior registered grant");
+        assert (vec_head_shield)
+        else $error("cpu_ooo: vector uncached beat launched without vec_head_shield");
+        assert (!sq_mem_write_en && !amo_mem_write_en && !lq_mem_read_en && !lq_mem_request_valid)
+        else $error("cpu_ooo: vector uncached beat overlapped scalar memory request");
+        assert (!(vec_unc_read_active_q || vec_unc_write_active_q))
+        else $error("cpu_ooo: vector uncached beat overlapped active vector beat");
+        if (vec_unc_read_launch) begin
+          assert (VARIABLE_UNCACHED ?
+                  (i_uncached_read_request_ready && !i_uncached_write_inflight) :
+                  router_cached_read_ready)
+          else $error("cpu_ooo: vector uncached read launched while port not ready");
+        end
+        if (vec_unc_write_launch) begin
+          assert (!VARIABLE_UNCACHED ||
+                  (i_uncached_read_request_ready && !i_uncached_write_inflight))
+          else $error("cpu_ooo: vector uncached write launched while uncached port busy");
+        end
+      end
+    end
+`endif
+  end else begin : gen_no_vec_uncached_bus
+    assign vec_unc_bus_busy = 1'b0;
+    assign vec_unc_port_ready = 1'b0;
+    assign vec_unc_resp_valid = 1'b0;
+    assign vec_unc_resp_data = '0;
+    assign vec_unc_resp_error = 1'b0;
+    assign vec_l0_inval_valid = 1'b0;
+    assign vec_l0_inval_addr = '0;
+    assign router_i_uncached_read_valid = i_uncached_read_valid;
+    assign router_i_uncached_write_done = i_uncached_write_done;
+    assign o_data_mem_addr = router_data_mem_addr;
+    assign o_uncached_addr = router_data_mem_addr;
+    assign o_data_mem_wr_data = router_data_mem_wr_data;
+    assign o_data_mem_per_byte_wr_en = router_data_mem_per_byte_wr_en;
+    assign o_data_mem_bram_byte_wr_en = router_data_mem_bram_byte_wr_en;
+    assign data_mem_bram_write_any = router_data_mem_bram_write_any;
+    assign o_data_mem_read_enable = router_data_mem_read_enable;
+    assign o_cached_read_ready = router_cached_read_ready;
+    assign o_uncached_read_enable = router_uncached_read_enable;
+    assign o_uncached_read_size = router_uncached_read_size;
+    assign o_uncached_read_ready = router_uncached_read_ready;
+    assign o_uncached_write_byte_en = router_uncached_write_byte_en;
+    assign o_uncached_write_size = router_uncached_write_size;
+    assign o_uncached_write_buffered = router_uncached_write_buffered;
+    assign o_mmio_read_pulse = router_mmio_read_pulse;
+    assign o_mmio_load_addr = router_mmio_load_addr;
+    assign o_mmio_load_valid = router_mmio_load_valid;
+    assign o_mmio_fifo0_read_pulse = router_mmio_fifo0_read_pulse;
+    assign o_mmio_fifo1_read_pulse = router_mmio_fifo1_read_pulse;
+    assign o_mmio_uart_rx_ready_pulse = router_mmio_uart_rx_ready_pulse;
+  end
 
   // ===========================================================================
   // CSR File
@@ -4928,8 +5196,10 @@ module cpu_ooo #(
     logic [ma_pkg::CauseBits-1:0] ma_fault_cause;
     logic [riscv_pkg::PhysAddrBits-1:0] ma_fatal_addr_q;
     // Debug Mode keeps the exception, so a program-buffer access parks.
+    // Vector memory misaligned traps keep vec_head_shield raised in
+    // HM_WAIT_TRAP and take their architectural exception directly with vstart.
     assign ma_exception_assist = coherent_exception_valid && !ma_fault_pending_q &&
-        !rob_head_mem_atomic && !csr_debug_mode &&
+        !rob_head_mem_atomic && !vec_head_shield && !csr_debug_mode &&
         ((rob_trap_cause == riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]) ||
          (rob_trap_cause == riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]));
     ma_engine #(
@@ -5036,8 +5306,20 @@ module cpu_ooo #(
     assign ma_shield = ma_busy || ma_fault_pending_q;
 `ifndef SYNTHESIS
     logic ma_reset_seen_q = 1'b0;
+    logic ma_shield_masked_comb;
+    logic ma_shield_masked_q = 1'b0;
+    assign ma_shield_masked_comb = coherent_exception_valid && !ma_fault_pending_q &&
+        !rob_head_mem_atomic && !csr_debug_mode &&
+        ((rob_trap_cause == riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]) ||
+         (rob_trap_cause == riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0])) &&
+        vec_head_shield && !vec_vmem_fault_vstart_valid;
     always_ff @(posedge i_clk) begin
-      if (i_rst) ma_reset_seen_q <= 1'b1;
+      if (i_rst) begin
+        ma_reset_seen_q <= 1'b1;
+        ma_shield_masked_q <= 1'b0;
+      end else begin
+        ma_shield_masked_q <= ma_shield_masked_comb;
+      end
       if (ma_reset_seen_q && !i_rst) begin
         // The engine starts only from an idle state with an empty ROB behind
         // the flush, and its register read follows every commit write.
@@ -5048,6 +5330,20 @@ module cpu_ooo #(
         if (ma_hold_q)
           p_ma_no_alloc : assert (!rob_alloc_req.alloc_valid && !rob_alloc_req_2.alloc_valid);
         if (ma_hold) p_ma_hold_registered : assert (ma_hold_q);
+        // Guard the 2-cycle vec_vmem_quiet assumption behind !vec_head_shield
+        // on ma_exception_assist: if a non-faulting stale vec_head_shield
+        // masks a scalar misaligned exception at ROB head, trap_unit must not
+        // take a trap on that cycle or the next (while exception_assist_q holds
+        // the masked 0), and no architectural misaligned trap may fire for a
+        // non-vector instruction when the hardware assist is built.
+        if (ma_shield_masked_comb)
+          p_ma_shield_mask_not_quiet : assert (!vec_vmem_quiet && !trap_taken);
+        if (ma_shield_masked_q) p_ma_shield_mask_holds_next : assert (!trap_taken);
+        if (trap_taken && !ma_assist_start && !ma_fault_pending_q &&
+            !rob_head_mem_atomic && !csr_debug_mode && !trap_to_d && !trap_no_csr &&
+            ((trap_cause_internal == riscv_pkg::ExcLoadAddrMisalign) ||
+             (trap_cause_internal == riscv_pkg::ExcStoreAddrMisalign)))
+          p_ma_arch_misalign_is_vec : assert (vec_head_shield && vec_vmem_fault_vstart_valid);
       end
     end
 `endif
@@ -6368,6 +6664,17 @@ module cpu_ooo #(
         .i_lc_resp_id(i_ma_line_resp_id),
         .i_lc_resp_data(i_ma_line_resp_data),
         .i_lc_resp_error(i_ma_line_resp_error),
+        .i_unc_port_ready(vec_unc_port_ready),
+        .o_unc_bus_hold(vec_unc_bus_hold),
+        .o_unc_req_valid(vec_unc_req_valid),
+        .o_unc_req_write(vec_unc_req_write),
+        .o_unc_req_addr(vec_unc_req_addr),
+        .o_unc_req_size(vec_unc_req_size),
+        .o_unc_req_wdata(vec_unc_req_wdata),
+        .o_unc_req_wstrb(vec_unc_req_wstrb),
+        .i_unc_resp_valid(vec_unc_resp_valid),
+        .i_unc_resp_data(vec_unc_resp_data),
+        .i_unc_resp_error(vec_unc_resp_error),
         .i_grant(cdb_grant[riscv_pkg::FU_FP_DIV]),
         .o_vtox_complete(vec_vtox_complete),
         .o_varith_commit(vec_varith_commit),
@@ -6537,6 +6844,13 @@ module cpu_ooo #(
     assign vec_lc_req_data = '0;
     assign vec_lc_req_mask = '0;
     assign vec_lc_req_id = '0;
+    assign vec_unc_bus_hold = 1'b0;
+    assign vec_unc_req_valid = 1'b0;
+    assign vec_unc_req_write = 1'b0;
+    assign vec_unc_req_addr = '0;
+    assign vec_unc_req_size = riscv_pkg::MEM_SIZE_BYTE;
+    assign vec_unc_req_wdata = '0;
+    assign vec_unc_req_wstrb = '0;
     assign vec_vmu_fatal = 1'b0;
     assign vec_vmu_fatal_addr = '0;
     assign vec_commit_hold = 1'b0;

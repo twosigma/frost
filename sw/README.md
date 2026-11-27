@@ -85,13 +85,14 @@ Both linker scripts place the stack in low BRAM, with one exception: in the
 `ddr` configuration, a program built with the vector extension (a `v` among the
 single-letter extensions of its `-march`, or a Zve subset) has its stack in
 cached DDR, in `FROST_DDR_STACK_BYTES` (1 MiB) between the program and the
-heap. Vector loads and stores are executed in cached memory only: an element
-address in any other region, such as the low BRAM or a device, raises an access
-fault. Such a program therefore runs as written in the `ddr` configuration,
-including what the compiler vectorizes by itself, such as copies and clears of
-stack objects. In the `bram` configuration its static data and stack are in low
-BRAM, so its vector code must keep every operand in a `.ddr_*` section or on
-the heap. Select the tier with
+heap. Vector loads and stores reach low BRAM, device windows, and Svpbmt NC/IO
+pages as well as cached DDR, enforcing natural alignment outside cached DDR
+just as scalar accesses do. Keeping the stack in cached DDR in the `ddr`
+configuration gives compiler-generated vector stack accesses cached throughput
+and hardware misaligned access; in the `bram` configuration static data and
+stack live in low BRAM, where naturally aligned vector accesses execute
+directly while misaligned or high-bandwidth vector buffers belong in a `.ddr_*`
+section or on the heap. Select the tier with
 `FROST_COCOTB_MEM_CONFIG=ddr` in simulation or `--ddr` on the FPGA loader.
 Some apps choose for themselves: several interrupt and trap tests force
 `MEM_CONFIG=ddr` in their Makefiles, and apps with their own linker scripts,
@@ -331,7 +332,7 @@ can be debugged and where each one first stops.
 | `fpu_test/` | Subnormals, fused multiply-add, rounding, and conversions |
 | `fsbl/` | Stage-2 VCU118 flash bootloader: polls DDR4 calibration and ECC scrub, checks DRAM, and loads OpenSBI, kernel, and device-tree payloads from SPI NOR flash into DRAM |
 | `freertos_demo/` | FreeRTOS V11.3.2 tasks passing data through a queue and sharing the UART under a mutex, while worker tasks increment one counter with `amoadd.w` and the 1 ms tick time-slices them; a tick inside a critical section must defer its task switch |
-| `vec_state_test/` | Vector state: with `VEC_VLEN` set, `mstatus.VS` reset to Off, vector CSR and memory accesses illegal while it is Off, `vlenb`, `vl` and `vtype` reset values, `vstart` width, `vxrm`/`vxsat`/`vcsr` aliasing, VS Dirty and SD on writes but not on reads, the `sstatus.VS` view, illegal writes to `vl`, `vtype` and `vlenb`, and `vill` / BRAM access-fault checks on vector memory forms; with `VEC_VLEN=0`, a core without the vector unit |
+| `vec_state_test/` | Vector state: with `VEC_VLEN` set, `mstatus.VS` reset to Off, vector CSR and memory accesses illegal while it is Off, `vlenb`, `vl` and `vtype` reset values, `vstart` width, `vxrm`/`vxsat`/`vcsr` aliasing, VS Dirty and SD on writes but not on reads, the `sstatus.VS` view, illegal writes to `vl`, `vtype` and `vlenb`, and `vill`, low-BRAM alignment, and unmapped access-fault checks on vector memory forms; with `VEC_VLEN=0`, a core without the vector unit |
 | `vec_vsetvl_test/` | `vsetvli`, `vsetivli` and `vsetvl` across `VLEN` 128, 256 and 512: `rd`, `vl`, `vtype` and `vstart` against a reference model, `vl`-preserving forms, `VS` Dirty, and the `VS`-Off trap |
 | `vec_arith_test/` | Single-width vector integer arithmetic, logical, shift, min/max, compare, mask-scalar (`vmv.x.s`, `vcpop.m`, `vfirst.m`) and Zvbb instructions checked by algebraic identities |
 | `vec_order_test/` | Vector stores followed by instruction fences, translation fences, and the SoC DMA START doorbell; concurrent DMA copies and vector loads/stores on shared and separate lines |
@@ -348,6 +349,8 @@ can be debugged and where each one first stops.
 | `vec_integer_test/` | Integer arithmetic, fixed-point rounding and saturation, masks and permutations through the committed engine: 149 encoded forms, with register images read through scalar moves; `VEC_VLEN` selects 128, 256 or 512 |
 | `vec_vtype_handoff_test/` | Register-form `vsetvl` immediately followed by `vadd.vv` from reset `vill`, checked at VLEN 128, 256 and 512 |
 | `vec_vstart_irq_test/` | Machine and delegated supervisor timer interrupts mid-run on strided, indexed, segment and fault-only-first vector loads and stores: `vstart` boundary capture, prestart non-rewriting, bounded single-element latency, resumption via `mret`/`sret`, fault-only-first trimming, and agreement with synchronous page faults |
+| `vec_uncached_test/` | Vector loads and stores to low BRAM, side-effecting MMIO devices (`FIFO0`, `FIFO1`, `MTIME`), and Svpbmt NC/IO pages across all addressing forms: element order, zero duplicate device reads, interleaved scalar-vector MMIO order, wrong-path non-speculation, low-BRAM L0 coherence and LR/SC invalidation, alignment/PMA/permission faults with `vstart`, mixed cached/uncached crossings, and mid-run timer interrupts |
+| `vec_uncached_grant_test/` | Buffered scalar low-BRAM stores immediately followed by uncached vector loads and stores across forms and widths (exercising the registered uncached-port grant while buffered writes are in flight in the adapter), plus retiring vector memory operations immediately followed by scalar misaligned cached-DDR accesses |
 | `vec_vstart_reload_test/` | Configuration and vstart writes followed by masked/unmasked loads/stores and arithmetic, including delayed reload and restart values 1 and vl-1 |
 | `vec_source_eew_test/` | Precise traps for masked v0 data sources, with destination, `vstart` and `mstatus.VS` preservation |
 | `vec_common/` | Shared by the vector bring-up programs below: the check and trap-recording helpers in `vec_test.h` (UART output on FROST, HTIF console on Spike with `-DVT_SPIKE`), and the Spike start-up, linker script and makefile in `spike/` |
@@ -455,7 +458,7 @@ can be debugged and where each one first stops.
 | `sstvala_fault_test/` | Sstvala for access faults from failed bus responses (the registry makes one DDR line answer SLVERR): doubleword, word and byte loads, LR and AMOs, misaligned loads the misaligned-access engine splits, a fetch from the line and an instruction whose second halfword starts it, in M, S and U, delegated and not, bare and through Sv39 where the virtual address differs from the physical one, each with exact cause, `xepc` and `mtval` or `stval` |
 | `sstvala_test/` | Sstvala: every illegal-instruction source in M, S and U, delegated and not, writes the faulting instruction's bits to `mtval` or `stval` (a compressed instruction's 16 bits zero-extended), including an instruction second in its fetch pair, one across a line or page boundary, and one reached after a mispredicted branch |
 | `store_fill_bench/` | Cycles, `mhpmcounter7` L1D permission misses, and `mhpmcounter8` store-queue-full stall cycles to write 64 KiB of cold and L2-resident cached DDR with `memset` (`sd` and `sw`), 48-byte partial-line, `memcpy` (`8x ld` then `8x sd`), interleaved-load `memcpy_ld`, and `cbo.zero` streams, checking every byte afterwards; prints one `FROST_STORE_BENCH` line per pass |
-| `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions |
+| `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions, plus `memcpy` and `memset` at block-edge lengths and every source/destination offset 0 to 7 with guard bytes (`tests/test_libc_memcpy.py` runs the same checks under Spike for every length 0 to 80 and for 1,048,113) |
 | `svnapot_test/` | Svnapot: S/U loads, stores and AMOs across a 64 KiB range; measured second-level TLB residency; all reserved level-0 N encodings, superpages and pointers; per-page remap; Svade; split loads, stores and instruction fetch with upper-page trap values; NC/IO NAPOT aliases |
 | `svpbmt_test/` | Svpbmt: PBMTE and reserved PTE faults, NC and IO coherence and mixed-view ordering, U-mode data access, 4 KiB/2 MiB/1 GiB leaves, atomic/zero/fetch access faults, TLB attribute retention, alias PMA protection, and `sfence.vma` after clearing PBMTE. The `svpbmt_test_2g` variant checks DDR access faults, page-permission precedence and device PBMT on a map without an alias; `svpbmt_bus_error` injects alias read and write errors and checks the original virtual address in the trap value. |
 | `svpbmt_cmo_test/` | Zicbom through Svpbmt: `cbo.inval`, `cbo.clean` and `cbo.flush` executed through a cacheable, an NC and an IO mapping of a DDR line whose cacheable copy is dirty retire without a trap; clean and flush write the line to DDR before they complete (each CBO's window is checked against the DDR model) and keep the data in every view; inval writes nothing and every view then reads the DDR baseline, or flushes in a `CBO_INVAL_AS_FLUSH` build; an IO store followed by a CBO reaches the next cacheable load. Each opcode also precedes a load with no intervening fence across all nine pairs of PMA, NC and IO mappings |

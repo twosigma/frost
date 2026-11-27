@@ -8,9 +8,9 @@
  * opt-in .ddr_* sections stay in DDR after the relocated program, and the heap
  * follows. The stack stays in Normal low BRAM, with L0 read caching and
  * write-through AXI stores in the FROST platform, except in a program built
- * with the vector extension: vector loads and stores execute in cached memory
- * only, so common.mk then defines __frost_ddr_stack_bytes, and the stack takes
- * that much cached DDR between the program and the heap.
+ * with the vector extension, where common.mk defines __frost_ddr_stack_bytes
+ * so stack vector accesses use cached DDR throughput and hardware misaligned
+ * support between the program and the heap.
  *
  * DDR sections load in place (LMA == VMA): the sim preloads the behavioral DDR
  * from sw_ddr.mem, so crt0's .data copy loop self-copies (a no-op).

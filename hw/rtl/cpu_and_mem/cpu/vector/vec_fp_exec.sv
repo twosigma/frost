@@ -286,7 +286,7 @@ module vec_fp_exec #(
         raddr_q[3]   <= 5'd0;
         if (idx_q >= limit_q) o_flags <= acc_flags_q;
       end
-      CAPTURE: regs_q <= i_rdata[2:0];
+      CAPTURE:  regs_q <= i_rdata[2:0];
       EXTRACT: begin
         a_q <= cut(64'(regs_q[0] >> (8 * int'(abyte[ByteBits-1:0]))), aw);
         b_q <= scalar_form ? unbox(
@@ -297,7 +297,7 @@ module vec_fp_exec #(
         c_q <= cut(64'(regs_q[2] >> (8 * int'(dbyte[ByteBits-1:0]))), dw);
         if (reduce_op && idx_q == 0) acc_q <= cut(64'(regs_q[1]), dw);
         active_q <= scalar_move || merge_op || insn_q[25] || mask_q[MaskBits'(idx_q)];
-        flags_q <= '0;
+        flags_q  <= '0;
       end
       OPERANDS: write_q <= reduce_op ? idx_q + 1 == limit_q : active_q;
       LAUNCH: begin
@@ -326,8 +326,8 @@ module vec_fp_exec #(
         end
         acc_flags_q <= acc_flags_q | flags_q;
       end
-      ADVANCE: idx_q <= idx_q + 1;
-      default: ;
+      ADVANCE:  idx_q <= idx_q + 1;
+      default:  ;
     endcase
   end
 endmodule

@@ -12,25 +12,36 @@ cover: depth 10
 smtbmc boolector
 
 [script]
-read_slang --top btb_invalidate_hold_formal --single-unit -DSYNTHESIS riscv_pkg.sv branch_predictor.sv direction_predictor.sv return_address_stack.sv branch_prediction_controller.sv btb_invalidate_hold_formal.sv
+read_slang --top btb_invalidate_hold_formal --single-unit -DSYNTHESIS --blackboxed-module rvc_decompressor --blackboxed-module tage_predictor --blackboxed-module ittage_predictor --blackboxed-module backing_btb --blackboxed-module return_address_stack --blackboxed-module fetch_dir_4b --blackboxed-module fetch_parcel_queue --blackboxed-module fetch_pc_decoupled --blackboxed-module immu riscv_pkg.sv rvc_decompressor.sv tage_predictor.sv ittage_predictor.sv backing_btb.sv return_address_stack.sv fetch_btb_2w.sv fetch_dir_4b.sv fetch_parcel_queue.sv fetch_pc_decoupled.sv dtlb.sv immu.sv if_stage.sv btb_invalidate_hold_formal.sv
 hierarchy -top btb_invalidate_hold_formal
 script free_undefined.ys
+cutpoint -blackbox
+setundef -undriven -anyseq
 setattr -unset keep
 setattr -unset keep_hierarchy
 setattr -mod -unset keep
 setattr -mod -unset keep_hierarchy
 prep -top btb_invalidate_hold_formal -flatten
-select -assert-count 5 t:$check r:FLAVOR=assert %i
+select -assert-count 4 t:$check r:FLAVOR=assert %i
 select -assert-count 5 t:$check r:FLAVOR=cover %i
+select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
 prove: chformal -cover -remove
 cover: chformal -assert -remove
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/tage_predictor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ittage_predictor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/backing_btb.sv
 ../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv
-../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/fetch_btb_2w.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/fetch_dir_4b.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_parcel_queue.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_pc_decoupled.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/immu.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv
 btb_invalidate_hold_formal.sv
 free_undefined.ys

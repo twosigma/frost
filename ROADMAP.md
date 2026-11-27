@@ -38,17 +38,18 @@ larger pieces come before the second hart:
   `misa.V` with `VECTOR_ADVERTISE=1` and `VLEN=256`. Its device tree advertises
   V, Zvbb, Zvbc, Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb,
   Zvkg, Zvkn, Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, Zvl32b, Zvl64b,
-  Zvl128b and Zvl256b. Strided, indexed, segment and
-  fault-only-first loads and stores run one element at a time and take pending
+  Zvl128b and Zvl256b. Strided, indexed, segment, fault-only-first, and
+  uncached loads and stores run one element at a time and take pending
   interrupts and debug halts between elements (or between segments for segment
   forms), with `vstart` naming the next element and execution resuming from
-  `vstart` after `mret`, `sret` or `dret`. Vector loads and stores are executed in cached memory
-  only: an element address in any other region, such as the low BRAM or a
-  device, raises an access fault. In the bare-metal DDR layout, a program built
-  with the vector extension therefore has its stack in cached DDR as well, so
-  vector code that the compiler emits by itself, such as copies and clears of
-  stack objects, works there; in the BRAM layout, its static data and stack are
-  in the low BRAM.
+  `vstart` after `mret`, `sret` or `dret`. Vector loads and stores reach every
+  region a scalar load or store of the same width and kind can (cached DDR,
+  low BRAM, the device windows, and Svpbmt NC/IO pages), with scalar PMA, Sv39
+  permission, and alignment rules. In the bare-metal DDR layout, a program
+  built with the vector extension keeps its stack in cached DDR for cached
+  throughput and hardware misaligned stack accesses; in the BRAM layout, its
+  static data and stack are in low BRAM, where aligned vector accesses
+  execute.
 - Misaligned loads and stores in hardware. The CPU's misaligned-access
   engine performs plain misaligned loads and stores to cached DDR by default
   on the X3 and VCU118 and in simulation (`MISALIGNED_HW`), including
@@ -67,7 +68,7 @@ extensions implemented on `main` or planned with the vector unit:
 | A | Implemented | `riscv-arch-test` (`A`), `riscv-tests` (`rv64ua`), `rv64_amo_test`, `ddr_atomic_test`, TestRIG (`--atomics`), `load_queue_amo_compute.sby`, `coherence_l1d.sby` |
 | F | Implemented | `riscv-arch-test` (`F`), `riscv-tests` (`rv64uf`), `fpu_test`, `fp_dyn_rm_test`, TestRIG, `fp_engine_twin.sby`, `fp_shim.sby` |
 | D | Implemented | `riscv-arch-test` (`D`), `riscv-tests` (`rv64ud`), `fpu_test`, `fpu_assembly_test`, TestRIG, `fp_engine_twin.sby`, `fp_shim.sby` |
-| C | Implemented | `riscv-arch-test` (`C`, `D_Zcd`), `riscv-tests` (`rv64uc`), `c_ext_test`, `cf_ext_test`, TestRIG, `rvc_predecode.sby`, `c_ext_state_cofactor.sby` |
+| C | Implemented | `riscv-arch-test` (`C`, `D_Zcd`), `riscv-tests` (`rv64uc`), `c_ext_test`, `cf_ext_test`, TestRIG, `rvc_predecode.sby`, `fetch_parcel_queue.sby` |
 | B | Implemented | `riscv-arch-test` (`B`), `riscv-tests` (`rv64uzba`, `rv64uzbb`, `rv64uzbs`), `isa_test`, TestRIG, `alu_shift_hint.sby` |
 | Zicsr | Implemented | `riscv-tests` (`rv64mi`, `rv64si`), `csr_test`, `csr_rmw_test`, TestRIG, `csr_file.sby` |
 | Zicntr | Implemented | `csr_test`, `instret_test`, `zihpm_test`, TestRIG (`instret_nops.S`), `csr_file.sby` |
@@ -84,7 +85,7 @@ extensions implemented on `main` or planned with the vector unit:
 | Zicboz | Implemented | `cbo_zero_test`, `cbo_zero_pages`, `riscv-arch-test` (`CMO`), `riscv-tests` (`rv64mzicbo`), TestRIG, `test_coherence_cbo_zero.py`, `store_queue.sby` |
 | Zfhmin | Implemented | `riscv-arch-test` (`Zfh` loads, stores, moves and conversions), `fs_off_test`, `fp_dyn_rm_test`, `test_ma_engine.py`, TestRIG (`--fp-ext`), `fp_launch_squash.sby`, `ma_pkg.sby` |
 | Zkt | Implemented | Verified by reading (fixed-latency ALU, 6-stage/3-stage multiplier, and 3-cycle carry-less multiplier; division is excluded by Zkt); functional tests in `verif/testrig/crypto.py` (`Zbkb`, `Zbkc`), `cl_multiplier.sby`, `int_muldiv_shim.sby` |
-| V | Implemented with `VECTOR=1`; advertised by the X3 with `VLEN=256` | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy) at three vector lengths), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
+| V | Implemented with `VECTOR=1`; advertised by the X3 with `VLEN=256` | `vec_state_test`, `vec_vsetvl_test`, `vec_arith_test`, `vec_integer_test`, `vec_fp_test`, `vec_mem_test`, `vec_stride_test`, `vec_index_test`, `vec_segment_test`, `vec_ff_test`, `vec_uncached_test`, `vec_uncached_grant_test`, `vec_vstart_irq_test`, `vec_debug_partial`, `vec_vstart_reload_test`, `vec_operand_widths`, `test_vec_integer_exec.py`, `test_vector_legality_reference.py`, `test_vector_integer_corners.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy) at three vector lengths), `test_vec_*.py`, `vec_hold_rows.sby`, `vec_lmul_legality_equiv.sby`, `vec_vtype_tracker.sby`, `vec_vmt.sby`, `vec_head_mmu.sby` |
 | Zvfhmin | Implemented with `VECTOR=1` (`vfwcvt.f.f.v` and `vfncvt.f.f.w` at SEW 16); advertised by the X3 | `vec_fp_test`, `test_vec_fcvt.py`, `test_vec_fp_exec.py`, `test_riscv_vector_tests.py` ([original shared-process FP runs](tests/README.md#test_riscv_vector_testspy), one program per form at three vector lengths) |
 | Zvbb | Implemented with `VECTOR=1` (including `vwsll`); advertised by the X3 | `test_vec_int_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py` |
 | Zvkt | Implemented with `VECTOR=1` (data-independent execution latency for the listed vector instructions); advertised by the X3 | `test_vec_int_lane.py`, `test_vec_mul_lane.py`, `test_vec_engine.py`, `test_vec_integer_exec.py`, `test_vec_crypto_exec.py` |
@@ -389,21 +390,17 @@ induction from the state after reset with every other register free.
 Two PDR tasks check maintenance with unspecified initial values left
 free. One proves all 286 ownership facts. The other assumes those
 facts and proves the remaining 89 assertions.
-Fifty-two other `.sby` files run such an optimization after their own
-`setundef` or without one, and twenty-one files in `DONT_CARE_OPEN` (three of
-them without `opt`: `coherence_l1d_twin.sby`, `coherence_read_capture.sby`,
-and `store_queue_twin.sby`) run a plain `memory_map`. Planned: `-keepdc` in
-those files, re-measured. In every command of every script, the fast check
+Forty-five other `.sby` files run such an optimization after their own
+`setundef` or without one, and nineteen files in `DONT_CARE_OPEN` (one of
+them without `opt`: `coherence_read_capture.sby`) run a plain `memory_map`.
+Planned: `-keepdc` in those files, re-measured. In every command of every script, the fast check
 of the scripts accepts only Yosys command forms that, apart from edits the
 script names itself, keep the unknown starting value of registers and
 memories and never merge two free inputs, and for each task of a script it
 lists as open it pins every other command, in order. It also pins commands
-that read undefined bits as defined, in twenty-three more files and some of
-those above: seventeen unopened in-script comparisons zero undefined constants
-before `equiv_simple`, which reads an undefined bit as 0, and four opened ones
-run `equiv_simple` after opening both forms. The predecode target,
-decoded bundle queue, IMEM predecode and L0 store boundary comparisons open
-both forms and prove every point.
+that read undefined bits as defined, in the scripts above and in the
+17 in-script comparisons (which run `equiv_simple` after opening both
+forms with `free_undefined.ys` and prove every point).
 `rs_payload_twin.sby` starts both copies from a zero state; the
 store-home BMCs run `peepopt`, and its compact covers `abc` and
 `opt -fine`, which merges equal multiplexer output bits; the load-queue
@@ -421,8 +418,8 @@ or fix them: `opt_muxtree`, `opt_expr`, `opt_merge` and `opt_reduce` in
 `opt` and `prep`, `proc_rom`, `proc_dlatch` and `proc_dff` in `proc` and
 `prep`, and the default `techmap`'s shift templates
 ([formal/README.md](formal/README.md#adding-a-new-formal-target) gives
-each case). All 257 scripts in `formal/` open undefined values before optimization.
-236 scripts require the shared opening (`hierarchy -top` or
+each case). All 232 scripts in `formal/` open undefined values before optimization.
+215 scripts require the shared opening (`hierarchy -top` or
 `hierarchy -check -top` followed by `script free_undefined.ys`) across
 every task; `free_undefined.ys` lowers processes pass by pass, frees the
 undefined inputs of every multiplexer and the undefined bits of every
@@ -432,29 +429,28 @@ undefined bit before `proc_dff`, and then runs `proc`'s own closing
 port, a connection or a register when those passes run. Commands that a
 script's open entry pins are the exception: a plain `memory_map`, for one,
 writes x for words that nothing writes, and a plain `opt` after it can read
-them before SymbiYosys frees them. The other 21 scripts (the 35 in-script
+them before SymbiYosys frees them. The other 17 scripts (the 30 in-script
 equivalence tasks declared in `TWIN_COMPARISONS`) open both forms with
 `free_undefined.ys`, check matching compiled ports and initializers in
 `twin_ports.json`, cut every register, pin their free-cell counts and
 point floors, and prove every point with unrestricted `equiv_simple` and
 `equiv_status -assert`. The fast check enforces the opening across all
-257 scripts; both `UNDEFINED_OPENING_PENDING` and
+232 scripts; both `UNDEFINED_OPENING_PENDING` and
 `UNDEFINED_OPENING_TWINS` in `tests/test_run_formal.py` are empty.
 
 Before the opening, a dump of every registered task's model
 before the first two `opt_muxtree` steps of each `opt` without `-fast` and
 each `prep`, and before every other `opt_muxtree`, found no constant-x
-multiplexer select; it did not reach the comparison design that
-`branch_predictor_twin.sby` builds inside its script, and it cannot see the
-`opt_expr` case where it acts. In 17 of 26 sampled models of scripts that
-are not open, identical cells hold constant-x inputs before the first
-`opt_merge`, which makes each such group one cell.
+multiplexer select; it cannot see the `opt_expr` case where it acts. In 17 of
+26 sampled models of scripts that are not open, identical cells hold
+constant-x inputs before the first `opt_merge`, which makes each such group one
+cell.
 
 The FPGA build's hand-instantiated primitives are compared with their
 portable forms by [equivalence checks](formal/README.md#primitive-twins).
-Open: a few primitive blocks in the load queue, the Tomasulo wrapper, the
-branch prediction controller and the SoC top have no comparison yet;
-`NOT_COVERED` in `tests/test_prim_twins.py` gives the reason for each.
+Open: a few primitive blocks in the load queue, the Tomasulo wrapper, and the
+SoC top have no comparison yet; `NOT_COVERED` in `tests/test_prim_twins.py`
+gives the reason for each.
 
 ## ASIC-ready RTL
 
@@ -510,15 +506,15 @@ an ASIC, the RTL also needs:
 
 ## Single-core performance
 
-FROST runs CoreMark at 4.89 CoreMark/MHz, past the goal of 4 CoreMark/MHz.
-The next goal is 5 CoreMark/MHz. Work toward it is paused while memory
-performance on the coherent hierarchy and timing margin at the target clock
-are restored. A score counts only from a run of at least ten seconds that
+FROST runs CoreMark at 5.24 CoreMark/MHz, past the goals of 4 and 5
+CoreMark/MHz. Further single-core work is paused while memory performance
+on the coherent hierarchy and timing margin at the target clock are
+restored. A score counts only from a run of at least ten seconds that
 passes the CRC checks for both official seed sets, with the compiler flags,
 the `sw.bin` hash, and memory and cache settings recorded; see the
 [CoreMark README](sw/apps/coremark/README.md).
 
-5 CoreMark/MHz is 200,000 cycles per iteration, against about 205,000 today.
+5 CoreMark/MHz is 200,000 cycles per iteration; FROST now takes about 190,800.
 A model driven by the CoreMark instruction trace gives these estimates for
 each change on its own, for the design before load results woke integer
 consumers early and before Zbc. It treats the BRAM as attached directly to
@@ -539,12 +535,12 @@ baseline is 4.27:
 | Word multiplies two cycles faster | 4.29 |
 | A 64-entry ROB, 16 checkpoints, and 16-entry load and store queues | 4.28 |
 
-No single change reaches 5. Perfect prediction alone stops near 4.7, and the
-back end as built stops near 5.1 even with perfect prediction and ideal fetch.
-Reaching 5 takes about three changes together: two-instruction straight-line
-fetch, a cycle off load-to-use latency, and half the remaining mispredictions
-give about 5.1, as does the same set with back-to-back integer issue in place
-of the load-latency cut.
+For that design, no single change reaches 5. Perfect prediction alone stops
+near 4.7, and the back end as built stops near 5.1 even with perfect
+prediction and ideal fetch. Reaching 5 takes about three changes together:
+two-instruction straight-line fetch, a cycle off load-to-use latency, and half
+the remaining mispredictions give about 5.1, as does the same set with
+back-to-back integer issue in place of the load-latency cut.
 
 Priorities, guided by the performance counters and timing reports:
 
@@ -804,7 +800,6 @@ predictors, the integer reservation station, the ROB, and the two ALUs.
   debugger can neither halt it nor read its registers. Inspection needs the
   debug path exempt from the commit hold, the front-end stall and the
   blocking of memory requests, while the program under debug stays stopped.
-- Vector loads and stores to uncached memory, such as the low BRAM and devices.
 - A check that corrects a fast-BTB taken prediction on an instruction that
   is not control flow. The BTB is tagged by fetch PC alone and is cleared
   wherever software must fence a change to the code or translation under

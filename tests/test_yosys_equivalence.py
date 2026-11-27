@@ -41,9 +41,7 @@ CASES = {
     "tage_history": f"{CPU}/u_tage_history",
     "dmmu": f"{BACKEND}/u_dmmu",
     "axi_mux": "soc/gen_cached_tier.dma_interconnect",
-    "branch_predictor": (
-        f"{CPU}/if_stage_inst/branch_prediction_controller_inst/branch_predictor_inst"
-    ),
+    "fetch_btb_2w": f"{CPU}/if_stage_inst/u_fetch_btb_2w",
     "lq_coherence_port": f"{BACKEND}/u_coherence_port",
     "store_queue": f"{BACKEND}/u_sq",
     "coherence_home_completions": f"{HOME_INSTANCE}/completions",

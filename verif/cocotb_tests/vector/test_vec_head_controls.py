@@ -586,3 +586,45 @@ async def test_fault_arm_irq_pause_after_started_elem(dut: Any) -> None:
     assert int(dut.state_q.value) == IDLE
     assert int(dut.run_started_q.value) == 0
     assert int(dut.o_vmem_head_shield.value) == 0
+
+
+@cocotb.test()
+async def test_uncached_settle_flush_no_launch(dut: Any) -> None:
+    """A flush arriving in HM_RUN_ARM or HM_RUN_SETTLE suppresses any uncached beat."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    b = Bench(dut)
+    vle32 = (1 << 25) | (1 << 15) | (6 << 12) | (8 << 7) | 0x07
+    vse32 = (1 << 25) | (1 << 15) | (6 << 12) | (8 << 7) | 0x27
+    for insn in (vle32, vse32):
+        for flush_state in (RUN_ARM, RUN_SETTLE):
+            await b.reset(fault=False, split=False)
+            await b.tick(
+                i_rst=1,
+                i_head_insn=insn,
+                i_vl=2,
+                i_vtype=0x10,
+                i_rf_read_data=0x40000008,
+                i_vrf_read_data=(1 << len(dut.i_vrf_read_data)) - 1,
+                i_translate=0,
+                i_sq_committed_empty=1,
+                i_unc_port_ready=1,
+                i_unc_resp_valid=0,
+            )
+            await b.tick(i_rst=0)
+            for _ in range(40):
+                if int(dut.state_q.value) == flush_state:
+                    break
+                assert int(dut.o_unc_req_valid.value) == 0
+                await b.tick()
+            else:
+                raise AssertionError(
+                    f"did not reach state {flush_state}, at {int(dut.state_q.value)}"
+                )
+            sample = await b.tick(i_flush_all=1, i_head_safe=0)
+            no_publication(sample)
+            assert int(dut.o_unc_req_valid.value) == 0
+            for _ in range(4):
+                sample = await b.tick(i_flush_all=0, i_rob_empty=1, i_head_is_vmem=0)
+                no_publication(sample)
+                assert int(dut.o_unc_req_valid.value) == 0
+            assert int(dut.state_q.value) == IDLE

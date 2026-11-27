@@ -170,7 +170,7 @@ module vec_mul_lane (
 
   // Stage 2: combine SEW64 quadrants and pack the selected width's products
   // into one 128-bit register before the final accumulate stage.
-  logic [ 95:0] p64_mid;
+  logic [95:0] p64_mid;
   logic [127:0] p64, prod_next;
   assign p64_mid = 96'($signed(pm[MulStages-1][2])) + 96'($signed(pm[MulStages-1][3]));
   assign p64 = {64'd0, pm[MulStages-1][0][63:0]} + {p64_mid, 32'd0} +

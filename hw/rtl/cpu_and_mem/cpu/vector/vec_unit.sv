@@ -130,6 +130,18 @@ module vec_unit #(
     input  logic                    [                       3:0] i_lc_resp_id,
     input  logic                    [                     255:0] i_lc_resp_data,
     input  logic                                                 i_lc_resp_error,
+    // Head-executed uncached element load/store port
+    input  logic                                                 i_unc_port_ready = 1'b1,
+    output logic                                                 o_unc_bus_hold,
+    output logic                                                 o_unc_req_valid,
+    output logic                                                 o_unc_req_write,
+    output logic                    [          PhysAddrBits-1:0] o_unc_req_addr,
+    output riscv_pkg::mem_size_e                                 o_unc_req_size,
+    output logic                    [riscv_pkg::MemDataBits-1:0] o_unc_req_wdata,
+    output logic                    [riscv_pkg::MemStrbBits-1:0] o_unc_req_wstrb,
+    input  logic                                                 i_unc_resp_valid = 1'b0,
+    input  logic                    [riscv_pkg::MemDataBits-1:0] i_unc_resp_data = '0,
+    input  logic                                                 i_unc_resp_error = 1'b0,
     // CDB slot 6 & sideband outputs
     input  logic                                                 i_grant,
     output riscv_pkg::fu_complete_t                              o_vtox_complete,
@@ -197,12 +209,12 @@ module vec_unit #(
     logic is_extra, is_fp_exec, is_crypto;
     logic [1:0] p0, p1, p16, pext, pwhole;
     logic [1:0] wr_log2, vs2_log2, vs1_log2;
-    opc = insn[6:0];
-    f6 = insn[31:26];
-    vm = insn[25];
-    vs1 = insn[19:15];
-    f3 = insn[14:12];
-    sew = vtype[4:3];
+    opc  = insn[6:0];
+    f6   = insn[31:26];
+    vm   = insn[25];
+    vs1  = insn[19:15];
+    f3   = insn[14:12];
+    sew  = vtype[4:3];
     lmul = vtype[2:0];
     unique case (lmul)
       3'b000:  {p0, p1} = {2'd0, 2'd1};
@@ -519,6 +531,18 @@ module vec_unit #(
   logic [4:0] vmu_xw_addr;
   logic [VLEN-1:0] vmu_xw_data;
   logic [VlenBytes-1:0] vmu_xw_be;
+  logic vhead_vrf_write_en;
+  logic [4:0] vhead_vrf_write_addr;
+  logic [VLEN-1:0] vhead_vrf_write_data;
+  logic [VlenBytes-1:0] vhead_vrf_write_be;
+  logic xw_en;
+  logic [4:0] xw_addr;
+  logic [VLEN-1:0] xw_data;
+  logic [VlenBytes-1:0] xw_be;
+  assign xw_en   = vmu_xw_en || vhead_vrf_write_en;
+  assign xw_addr = vmu_xw_en ? vmu_xw_addr : vhead_vrf_write_addr;
+  assign xw_data = vmu_xw_en ? vmu_xw_data : vhead_vrf_write_data;
+  assign xw_be   = vmu_xw_en ? vmu_xw_be : vhead_vrf_write_be;
 
   // Registered handoff latch between vec_head_mmu and vec_vmu
   logic vmem_desc_valid_q;
@@ -597,9 +621,9 @@ module vec_unit #(
       cpush_entry_q <= {
         insn_q[i_commit_tag], i_commit_value, i_vl, i_vtype, i_vstart, i_vxrm, i_frm
       };
-      cpush_vd_q    <= rob_vd_q[i_commit_tag];
+      cpush_vd_q <= rob_vd_q[i_commit_tag];
       cpush_wlog2_q <= rob_wlog2_q[i_commit_tag];
-      cpush_meta_q  <= rob_meta_q[i_commit_tag];
+      cpush_meta_q <= rob_meta_q[i_commit_tag];
     end
   end
 
@@ -657,8 +681,13 @@ module vec_unit #(
       if (pop_non_grp) non_grp_busy_q <= 1'b1;
       else if (!issued_non_grp_q && eng_idle) non_grp_busy_q <= 1'b0;
       // Cover the registered commit bus plus the cpush_q staging register.
-      o_commit_hold <= (count_q + ($clog2(Depth) + 1)'(push) +
-          ($clog2(Depth) + 1)'(varith_commit_only)) >= ($clog2(Depth) + 1)'(Depth - 2);
+      o_commit_hold <= (count_q + ($clog2(
+          Depth
+      ) + 1)'(push) + ($clog2(
+          Depth
+      ) + 1)'(varith_commit_only)) >= ($clog2(
+          Depth
+      ) + 1)'(Depth - 2);
     end
   end
 
@@ -697,10 +726,10 @@ module vec_unit #(
       .o_flags       (o_fp_flags),
       .i_xr_addr     (xr_addr),
       .o_xr_data     (xr_data),
-      .i_xw_en       (vmu_xw_en),
-      .i_xw_addr     (vmu_xw_addr),
-      .i_xw_data     (vmu_xw_data),
-      .i_xw_be       (vmu_xw_be)
+      .i_xw_en       (xw_en),
+      .i_xw_addr     (xw_addr),
+      .i_xw_data     (xw_data),
+      .i_xw_be       (xw_be)
   );
 
   // --------------------------------------------------------------------------
@@ -1136,7 +1165,22 @@ module vec_unit #(
       .o_desc_seg0              (desc_launch_seg0),
       .o_desc_seg1              (desc_launch_seg1),
       .i_vmu_done               (vmu_done),
-      .i_vmu_fatal              (o_vmu_fatal)
+      .i_vmu_fatal              (o_vmu_fatal),
+      .i_unc_port_ready         (i_unc_port_ready),
+      .o_unc_bus_hold           (o_unc_bus_hold),
+      .o_unc_req_valid          (o_unc_req_valid),
+      .o_unc_req_write          (o_unc_req_write),
+      .o_unc_req_addr           (o_unc_req_addr),
+      .o_unc_req_size           (o_unc_req_size),
+      .o_unc_req_wdata          (o_unc_req_wdata),
+      .o_unc_req_wstrb          (o_unc_req_wstrb),
+      .i_unc_resp_valid         (i_unc_resp_valid),
+      .i_unc_resp_data          (i_unc_resp_data),
+      .i_unc_resp_error         (i_unc_resp_error),
+      .o_vrf_write_en           (vhead_vrf_write_en),
+      .o_vrf_write_addr         (vhead_vrf_write_addr),
+      .o_vrf_write_data         (vhead_vrf_write_data),
+      .o_vrf_write_be           (vhead_vrf_write_be)
   );
 
   // Handoff latch: never cleared by i_flush_all, because retired vector memory
@@ -1294,8 +1338,7 @@ module vec_unit #(
       end
       assert (!(push && (count_q == ($clog2(Depth) + 1)'(Depth))))
       else $error("vec_unit: VIQ overflow on cpush_q push");
-      assert (!push ||
-              ((cpush_vd_q & ((5'd1 << cpush_wlog2_q) - 5'd1)) == 5'd0))
+      assert (!push || ((cpush_vd_q & ((5'd1 << cpush_wlog2_q) - 5'd1)) == 5'd0))
       else
         $error(
             "vec_unit: misaligned committed varith vd %0d for wr_log2 %0d",
@@ -1318,9 +1361,11 @@ module vec_unit #(
         );
       assert (!(ov_complete.valid && i_rob_empty))
       else $error("vec_unit: off-head vector-to-scalar result presented on empty ROB");
-      assert (!((ov_state_q != OV_IDLE) && !flush_spec_d1_q && i_flush_en) ||
-              (is_younger(ov_tag_q, i_flush_tag, head_tag_q) ==
-               is_younger(ov_tag_q, i_flush_tag, i_head_tag)))
+      assert (!((ov_state_q != OV_IDLE) && !flush_spec_d1_q && i_flush_en) || (is_younger(
+          ov_tag_q, i_flush_tag, head_tag_q
+      ) == is_younger(
+          ov_tag_q, i_flush_tag, i_head_tag
+      )))
       else $error("vec_unit: head_tag_q disagreed with i_head_tag on off-head partial flush");
       assert (!vec_backend_idle_q || vec_backend_idle)
       else $error("vec_unit: registered backend idle disagreed with live backend idle");
@@ -1344,6 +1389,7 @@ module vec_unit #(
       assert (!(vhead_complete.valid && vtox_only_complete.valid));
       assert (!(zero_vmt_done_valid && vmu_vmt_done_valid));
       assert ($onehot0({ov_xr_en, vhead_vrf_read_en, vmu_xr_en}));
+      assert (!(vmu_xw_en && vhead_vrf_write_en));
       assert (!(fp_read_q && hmmu_rf_read_en));
       assert (!(desc_launch_valid && vmem_desc_valid_q));
     end

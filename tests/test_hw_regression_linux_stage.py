@@ -2759,6 +2759,15 @@ def test_stage_loader_extra_forwards_vector_options_selectively() -> None:
         "vec_arith_test", ["--ddr"], vlen=128, vec_advertise=True
     ) == ["--ddr"]
     assert hw.stage_loader_extra("hello_world", [], vlen=128, vec_advertise=False) == []
+    assert hw.stage_loader_extra(
+        "linux_boot", [], vlen=128, board="vcu118", vector=True
+    ) == ["--vector", "--vlen", "128"]
+    assert (
+        hw.stage_loader_extra("linux_boot", [], vlen=128, board="x3", vector=True) == []
+    )
+    assert hw.stage_loader_extra(
+        "linux_boot", [], vlen=128, board="vcu118", vector=False
+    ) == ["--no-vector"]
 
 
 @pytest.mark.parametrize(
@@ -6463,3 +6472,144 @@ def test_vcu118_vector_regression_options(
             hw.main()
         assert stopped.value.code == 2
         assert expected_err in capsys.readouterr().err
+
+
+def test_vcu118_vector_vlen_forwards_to_linux_stage_and_probe(
+    prepared: tuple[Any, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--board vcu118 --vector --vlen forwards to linux_boot and sets probe vlenb."""
+    assert hw.resolve_isa_vlenb(REPO_ROOT, "vcu118", None, vector=True, vlen=128) == 16
+    assert hw.resolve_isa_vlenb(REPO_ROOT, "vcu118", None, vector=True, vlen=512) == 64
+
+    fake_repo = tmp_path / "repo"
+    (fake_repo / "fpga/build/vcu118/work").mkdir(parents=True)
+    meta_mod = importlib.util.spec_from_file_location(
+        "vcu118_meta_hw_test", REPO_ROOT / "fpga/common/vcu118_metadata.py"
+    )
+    assert meta_mod is not None and meta_mod.loader is not None
+    vcu118_meta = importlib.util.module_from_spec(meta_mod)
+    meta_mod.loader.exec_module(vcu118_meta)
+    bit = fake_repo / "fpga/build/vcu118/work/vcu118_frost.bit"
+    bit.write_bytes(b"bit")
+    vcu118_meta.write_vcu118_bitstream_metadata(
+        bit, vector=True, vlen=128, cpu_clock_hz=162_500_000
+    )
+    assert hw.resolve_isa_vlenb(fake_repo, "vcu118", None, vector=True) == 16
+
+    seen_uart: dict[str, list[str]] = {}
+    seen_vlenb: list[int | None] = []
+    real_linux_stage = hw.linux_stage
+
+    def capture_linux_stage(*args: Any, **kwargs: Any) -> Any:
+        seen_vlenb.append(kwargs.get("isa_vlenb"))
+        return real_linux_stage(*args, **kwargs)
+
+    def fake_uart(
+        _repo: Path,
+        _fd: int,
+        _board: str,
+        stage: Any,
+        _timeout: float,
+        loader_extra: list[str],
+        _target: str,
+        _loader_env: Any = None,
+    ) -> dict[str, Any]:
+        seen_uart[stage.app] = list(loader_extra)
+        return {"stage": stage.app, "status": "PASS", "elapsed": 0.1, "note": "ok"}
+
+    monkeypatch.setattr(hw, "serial_holders", lambda _serial: [])
+    monkeypatch.setattr(hw, "configure_serial", lambda _serial: 99)
+    monkeypatch.setattr(hw.os, "close", lambda _fd: None)
+    monkeypatch.setattr(hw, "linux_root_preflight", lambda *a, **k: ["ok"])
+    monkeypatch.setattr(hw, "source_driver_version", lambda _r: "1.0")
+    monkeypatch.setattr(hw, "linux_stage", capture_linux_stage)
+    monkeypatch.setattr(hw, "run_uart_stage", fake_uart)
+    root, _environment = prepared
+    for name, val in hw.linux_loader_env(root).items():
+        monkeypatch.setenv(name, val)
+
+    monkeypatch.setattr(
+        hw.sys,
+        "argv",
+        [
+            "runner",
+            "--repo",
+            str(fake_repo),
+            "--board",
+            "vcu118",
+            "--vector",
+            "--vlen",
+            "128",
+            "linux_boot",
+        ],
+    )
+    assert hw.main() == 0
+    assert seen_uart == {"linux_boot": ["--vector", "--vlen", "128"]}
+    assert seen_vlenb == [16]
+
+    # Mismatched --vlen or mismatched --linux-dtb fails before touching the board.
+    monkeypatch.setattr(
+        hw.sys,
+        "argv",
+        [
+            "runner",
+            "--repo",
+            str(fake_repo),
+            "--board",
+            "vcu118",
+            "--vector",
+            "--vlen",
+            "256",
+            "linux_boot",
+        ],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        hw.main()
+    assert stopped.value.code == 2
+    assert (
+        "does not match recorded VCU118 bitstream VLEN 128" in capsys.readouterr().err
+    )
+
+    bad_dtb = tmp_path / "bad_v256.dtb"
+    bad_dtb.write_bytes(
+        _build_fdt_with_cpu_isa(
+            "rv64imafdcv_zvl32b_zvl64b_zvl128b_zvl256b",
+            (
+                "i",
+                "m",
+                "a",
+                "f",
+                "d",
+                "c",
+                "v",
+                "zvl32b",
+                "zvl64b",
+                "zvl128b",
+                "zvl256b",
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        hw.sys,
+        "argv",
+        [
+            "runner",
+            "--repo",
+            str(fake_repo),
+            "--board",
+            "vcu118",
+            "--vector",
+            "--vlen",
+            "128",
+            "--linux-dtb",
+            str(bad_dtb),
+            "linux_boot",
+        ],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        hw.main()
+    assert stopped.value.code == 2
+    assert "advertises VLEN 256, expected VLEN 128" in capsys.readouterr().err

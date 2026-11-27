@@ -64,7 +64,7 @@ module vec_red_unit (
     take_y = want_max ? lt : !lt;
     unique case (op)
       vec_pkg::VR_AND: combine10 = x & y;
-      vec_pkg::VR_OR:  combine10 = x | y;
+      vec_pkg::VR_OR: combine10 = x | y;
       vec_pkg::VR_XOR: combine10 = x ^ y;
       vec_pkg::VR_MINU, vec_pkg::VR_MIN, vec_pkg::VR_MAXU, vec_pkg::VR_MAX:
       combine10 = take_y ? y : x;
@@ -84,7 +84,7 @@ module vec_red_unit (
     take_y = want_max ? lt : !lt;
     unique case (op)
       vec_pkg::VR_AND: combine11 = x & y;
-      vec_pkg::VR_OR:  combine11 = x | y;
+      vec_pkg::VR_OR: combine11 = x | y;
       vec_pkg::VR_XOR: combine11 = x ^ y;
       vec_pkg::VR_MINU, vec_pkg::VR_MIN, vec_pkg::VR_MAXU, vec_pkg::VR_MAX:
       combine11 = take_y ? y : x;
@@ -104,7 +104,7 @@ module vec_red_unit (
     take_y = want_max ? lt : !lt;
     unique case (op)
       vec_pkg::VR_AND: combine17 = x & y;
-      vec_pkg::VR_OR:  combine17 = x | y;
+      vec_pkg::VR_OR: combine17 = x | y;
       vec_pkg::VR_XOR: combine17 = x ^ y;
       vec_pkg::VR_MINU, vec_pkg::VR_MIN, vec_pkg::VR_MAXU, vec_pkg::VR_MAX:
       combine17 = take_y ? y : x;
@@ -124,7 +124,7 @@ module vec_red_unit (
     take_y = want_max ? lt : !lt;
     unique case (op)
       vec_pkg::VR_AND: combine64 = x & y;
-      vec_pkg::VR_OR:  combine64 = x | y;
+      vec_pkg::VR_OR: combine64 = x | y;
       vec_pkg::VR_XOR: combine64 = x ^ y;
       vec_pkg::VR_MINU, vec_pkg::VR_MIN, vec_pkg::VR_MAXU, vec_pkg::VR_MAX:
       combine64 = take_y ? y : x;
@@ -209,7 +209,7 @@ module vec_red_unit (
   logic se_valid, se_first;
   vec_pkg::red_op_e se_op;
   vec_pkg::sew_e se_sew;
-  logic [ 7:0] se_act;
+  logic [7:0] se_act;
   logic [63:0] se_e0, se_init;
   logic [31:0] se_e1;
   logic [15:0] se_e2, se_e3;
@@ -237,7 +237,7 @@ module vec_red_unit (
   logic [63:0] se_e1_64, s1_l0_d;
   logic [16:0] se_e2_17, se_e3_17, s1_l1_d;
   logic [9:0] se_e4_10, se_e5_10, se_e6_10, se_e7_10, s1_l2_d, s1_l3_d;
-  assign se_sgn   = is_signed(se_op);
+  assign se_sgn = is_signed(se_op);
   assign se_e1_64 = se_sgn ? 64'($signed(se_e1)) : 64'(se_e1);
   assign se_e2_17 = se_sgn ? 17'($signed(se_e2)) : 17'(se_e2);
   assign se_e3_17 = se_sgn ? 17'($signed(se_e3)) : 17'(se_e3);
@@ -245,24 +245,24 @@ module vec_red_unit (
   assign se_e5_10 = se_sgn ? 10'($signed(se_e5)) : 10'(se_e5);
   assign se_e6_10 = se_sgn ? 10'($signed(se_e6)) : 10'(se_e6);
   assign se_e7_10 = se_sgn ? 10'($signed(se_e7)) : 10'(se_e7);
-  assign s1_l0_d  = !se_act[0] ? se_e1_64 : (!se_act[1] ? se_e0 : combine64(se_op, se_e0, se_e1_64));
-  assign s1_l1_d  = !se_act[2] ? se_e3_17 : (!se_act[3] ? se_e2_17 : combine17(
+  assign s1_l0_d = !se_act[0] ? se_e1_64 : (!se_act[1] ? se_e0 : combine64(se_op, se_e0, se_e1_64));
+  assign s1_l1_d = !se_act[2] ? se_e3_17 : (!se_act[3] ? se_e2_17 : combine17(
       se_op, se_e2_17, se_e3_17
   ));
-  assign s1_l2_d  = !se_act[4] ? se_e5_10 : (!se_act[5] ? se_e4_10 : combine10(
+  assign s1_l2_d = !se_act[4] ? se_e5_10 : (!se_act[5] ? se_e4_10 : combine10(
       se_op, se_e4_10, se_e5_10
   ));
-  assign s1_l3_d  = !se_act[6] ? se_e7_10 : (!se_act[7] ? se_e6_10 : combine10(
+  assign s1_l3_d = !se_act[6] ? se_e7_10 : (!se_act[7] ? se_e6_10 : combine10(
       se_op, se_e6_10, se_e7_10
   ));
 
   logic s1_valid, s1_first;
   vec_pkg::red_op_e s1_op;
   vec_pkg::sew_e s1_sew;
-  logic [ 3:0] s1_act;
+  logic [3:0] s1_act;
   logic [63:0] s1_l0, s1_init;
   logic [16:0] s1_l1;
-  logic [ 9:0] s1_l2, s1_l3;
+  logic [9:0] s1_l2, s1_l3;
   always_ff @(posedge i_clk) begin
     if (i_rst) s1_valid <= 1'b0;
     else s1_valid <= se_valid;
@@ -284,19 +284,19 @@ module vec_red_unit (
   logic s1_sgn;
   logic [63:0] s1_l1_64, s2_l0_d;
   logic [10:0] s1_l2_11, s1_l3_11, s2_l1_d;
-  assign s1_sgn   = is_signed(s1_op);
+  assign s1_sgn = is_signed(s1_op);
   assign s1_l1_64 = s1_sgn ? 64'($signed(s1_l1)) : 64'(s1_l1);
   assign s1_l2_11 = s1_sgn ? 11'($signed(s1_l2)) : 11'(s1_l2);
   assign s1_l3_11 = s1_sgn ? 11'($signed(s1_l3)) : 11'(s1_l3);
-  assign s2_l0_d  = !s1_act[0] ? s1_l1_64 : (!s1_act[1] ? s1_l0 : combine64(s1_op, s1_l0, s1_l1_64));
-  assign s2_l1_d  = !s1_act[2] ? s1_l3_11 : (!s1_act[3] ? s1_l2_11 : combine11(
+  assign s2_l0_d = !s1_act[0] ? s1_l1_64 : (!s1_act[1] ? s1_l0 : combine64(s1_op, s1_l0, s1_l1_64));
+  assign s2_l1_d = !s1_act[2] ? s1_l3_11 : (!s1_act[3] ? s1_l2_11 : combine11(
       s1_op, s1_l2_11, s1_l3_11
   ));
 
   logic s2_valid, s2_first;
   vec_pkg::red_op_e s2_op;
   vec_pkg::sew_e s2_sew;
-  logic [ 1:0] s2_act;
+  logic [1:0] s2_act;
   logic [63:0] s2_l0, s2_init;
   logic [10:0] s2_l1;
   always_ff @(posedge i_clk) begin
@@ -315,8 +315,8 @@ module vec_red_unit (
   // Tree level 3.
   logic s2_sgn;
   logic [63:0] s2_l1_64, s3_word_d;
-  assign s2_sgn    = is_signed(s2_op);
-  assign s2_l1_64  = s2_sgn ? 64'($signed(s2_l1)) : 64'(s2_l1);
+  assign s2_sgn = is_signed(s2_op);
+  assign s2_l1_64 = s2_sgn ? 64'($signed(s2_l1)) : 64'(s2_l1);
   assign s3_word_d = !s2_act[0] ? s2_l1_64 : (!s2_act[1] ? s2_l0 : combine64(
       s2_op, s2_l0, s2_l1_64
   ));

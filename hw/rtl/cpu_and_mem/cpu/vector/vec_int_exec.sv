@@ -278,8 +278,8 @@ module vec_int_exec #(
     end
   end
 
-  assign wide_hi_sel = gm_wr_beat_q[LaneBits-1];
-  assign wide_res_128 = wide_mac_q ? wide_acc_128 : mul_wide;
+  assign wide_hi_sel   = gm_wr_beat_q[LaneBits-1];
+  assign wide_res_128  = wide_mac_q ? wide_acc_128 : mul_wide;
   assign gm_waddr_next = wide_mul_q ? (vd + {g_q[3:0], wide_hi_sel}) : gm_waddr_lo_q;
   assign gm_wdata_next = wide_mul_q ? {WideQuarters{wide_res_128}} : {Lanes{mul_result}};
 
@@ -294,8 +294,7 @@ module vec_int_exec #(
     always_comb begin
       gm_wbe_next = '0;
       if (wide_mul_q) begin
-        if (gm_wr_beat_q[0])
-          gm_wbe_next[31:16] = wide_hi_sel ? wbe_hi_q[31:16] : wbe_lo_q[31:16];
+        if (gm_wr_beat_q[0]) gm_wbe_next[31:16] = wide_hi_sel ? wbe_hi_q[31:16] : wbe_lo_q[31:16];
         else gm_wbe_next[15:0] = wide_hi_sel ? wbe_hi_q[15:0] : wbe_lo_q[15:0];
       end else begin
         for (int b = 0; b < Lanes; b++) begin
@@ -827,11 +826,8 @@ module vec_int_exec #(
       end
       GCAP: regs_q[0] <= i_rdata[0];
       GEXTRACT: begin
-        a_q <= insert_q ? cut(
-            scalar_q, sew_q
-        ) : (source_valid_q ? cut(
-            64'(regs_q[0] >> (8 * int'(abyte[ByteBits-1:0]))), aw
-        ) : 64'd0);
+        a_q <= insert_q ? cut(scalar_q, sew_q) :
+            (source_valid_q ? cut(64'(regs_q[0] >> (8 * int'(abyte[ByteBits-1:0]))), aw) : 64'd0);
       end
       LAUNCH: if (simple_op) result_q <= scalar_move ? cut(scalar_q, sew_q) : a_q;
       WAIT_RESULT: begin

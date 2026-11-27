@@ -68,7 +68,9 @@
 #define MSTATUS_SUM (1ul << 18)
 
 #define CAUSE_ILLEGAL 2ul
+#define CAUSE_LOAD_MISALIGN 4ul
 #define CAUSE_LOAD_ACCESS 5ul
+#define CAUSE_STORE_MISALIGN 6ul
 #define CAUSE_STORE_ACCESS 7ul
 #define CAUSE_LOAD_PAGE 13ul
 #define CAUSE_STORE_PAGE 15ul
@@ -1026,34 +1028,82 @@ static void test_pma_and_sv39(void)
 {
     volatile uint8_t *dump = vrf_io + 1024;
 
-    /* 6a. Bare PMA faults: stack in low BRAM and MMIO at 0x40000010 */
+    /* 6a. Bare low BRAM, MMIO, alignment, and unmapped PMA faults */
     {
         volatile uint64_t stack_buf[2] __attribute__((aligned(16)));
+        volatile uint64_t stack_out[2] __attribute__((aligned(16)));
         stack_buf[0] = 0x1111222233334444ull;
         stack_buf[1] = 0x5555666677778888ull;
+        stack_out[0] = 0xAAAAAAAAAAAAAAAAull;
+        stack_out[1] = 0xBBBBBBBBBBBBBBBBull;
         setvl(4, 0x10ul); /* e32, m1 */
+        seed_v8_group(0xEEu);
         wr_vstart(2);
         RUN_TRAP_INSN(".insn r 0x07, 6, 0x01, x8, %1, x0", stack_buf);
-        check(g_cause == CAUSE_LOAD_ACCESS && g_tval == (unsigned long) stack_buf + 8ul &&
-                  g_vstart_trap == 2ul,
-              "BRAM vle32 access fault + vstart=2",
+        check(g_cause == ~0ul && rd_vstart() == 0ul,
+              "BRAM vle32 aligned with vstart=2 succeeds",
+              rd_vstart(),
+              g_cause,
+              ~0ul);
+        wr_vstart(2);
+        RUN_TRAP_INSN(".insn r 0x27, 6, 0x01, x8, %1, x0", stack_out);
+        check(g_cause == ~0ul && stack_out[0] == 0xAAAAAAAAAAAAAAAAull &&
+                  stack_out[1] == 0x5555666677778888ull,
+              "BRAM vse32 aligned with vstart=2 succeeds",
+              stack_out[1],
+              g_cause,
+              ~0ul);
+        /* Misaligned low BRAM raises address-misaligned (4/6) without writing. */
+        wr_vstart(0);
+        RUN_TRAP_INSN(".insn r 0x07, 6, 0x01, x8, %1, x0", (const uint8_t *) stack_buf + 2);
+        check(g_cause == CAUSE_LOAD_MISALIGN && g_tval == (unsigned long) stack_buf + 2ul &&
+                  g_vstart_trap == 0ul,
+              "BRAM misaligned vle32 raises cause 4",
+              g_tval,
+              g_cause,
+              CAUSE_LOAD_MISALIGN);
+        wr_vstart(0);
+        RUN_TRAP_INSN(".insn r 0x27, 6, 0x01, x8, %1, x0", (uint8_t *) stack_buf + 2);
+        check(g_cause == CAUSE_STORE_MISALIGN && g_tval == (unsigned long) stack_buf + 2ul &&
+                  stack_buf[0] == 0x1111222233334444ull,
+              "BRAM misaligned vse32 raises cause 6",
+              g_tval,
+              g_cause,
+              CAUSE_STORE_MISALIGN);
+        /* Aligned MMIO read of MTIME succeeds; misaligned MMIO raises cause 4. */
+        wr_vstart(0);
+        setvl(2, 0x10ul);
+        RUN_TRAP_INSN(".insn r 0x07, 6, 0x01, x8, %1, x0", (void *) 0x40000010ul);
+        check(g_cause == ~0ul, "MMIO MTIME vle32 succeeds", 0, g_cause, ~0ul);
+        RUN_TRAP_INSN(".insn r 0x07, 6, 0x01, x8, %1, x0", (void *) 0x40000012ul);
+        check(g_cause == CAUSE_LOAD_MISALIGN && g_tval == 0x40000012ul,
+              "MMIO misaligned vle32 raises cause 4",
+              g_tval,
+              g_cause,
+              CAUSE_LOAD_MISALIGN);
+        /* Unmapped physical addresses past low BRAM and MMIO raise access faults (5/7). */
+        setvl(4, 0x10ul);
+        wr_vstart(2);
+        RUN_TRAP_INSN(".insn r 0x07, 6, 0x01, x8, %1, x0", (void *) 0x00040000ul);
+        check(g_cause == CAUSE_LOAD_ACCESS && g_tval == 0x00040008ul && g_vstart_trap == 2ul,
+              "unmapped PA vle32 access fault + vstart=2",
               g_tval,
               g_cause,
               CAUSE_LOAD_ACCESS);
         wr_vstart(0);
-        RUN_TRAP_INSN(".insn r 0x27, 6, 0x01, x8, %1, x0", stack_buf);
-        check(g_cause == CAUSE_STORE_ACCESS && g_tval == (unsigned long) stack_buf &&
-                  stack_buf[0] == 0x1111222233334444ull,
-              "BRAM vse32 access fault",
+        RUN_TRAP_INSN(".insn r 0x27, 6, 0x01, x8, %1, x0", (void *) 0x00040000ul);
+        check(g_cause == CAUSE_STORE_ACCESS && g_tval == 0x00040000ul,
+              "unmapped PA vse32 access fault",
               g_tval,
               g_cause,
               CAUSE_STORE_ACCESS);
-        RUN_TRAP_INSN(".insn r 0x07, 6, 0x01, x8, %1, x0", (void *) 0x40000010ul);
-        check(g_cause == CAUSE_LOAD_ACCESS && g_tval == 0x40000010ul,
-              "MMIO vle32 access fault",
+        RUN_TRAP_INSN(".insn r 0x07, 6, 0x01, x8, %1, x0", (void *) 0x40040000ul);
+        check(g_cause == CAUSE_LOAD_ACCESS && g_tval == 0x40040000ul,
+              "unmapped device-gap vle32 access fault",
               g_tval,
               g_cause,
               CAUSE_LOAD_ACCESS);
+        wr_vstart(0);
     }
 
     /* 6b. Sv39 page tables */
@@ -1260,9 +1310,10 @@ static void test_pma_and_sv39(void)
               dump[b],
               frame_pat(3u * 4096u - 10u + b));
 
-    /* Svpbmt: PBMTE=0 rejects nonzero PBMT with a page fault; PBMTE=1 refuses
-     * NC/IO leaves on vector loads and stores with an access fault unless a
-     * leaf permission check fails first (which wins as a page fault).
+    /* Svpbmt: PBMTE=0 rejects nonzero PBMT with a page fault; PBMTE=1 permits
+     * aligned NC/IO leaves on vector loads and stores (matching scalar rules),
+     * raises access fault on misaligned NC/IO DDR alias accesses, and keeps
+     * leaf permission checks first (page fault wins).
      */
     csr_clear(0x30A, 1ul << 62); /* menvcfg.PBMTE = 0 */
     l0[3] = PTE_PPN(FRAMES + 3u * 4096u) | (1ul << 61) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
@@ -1277,15 +1328,51 @@ static void test_pma_and_sv39(void)
 
     csr_set(0x30A, 1ul << 62); /* menvcfg.PBMTE = 1 */
     __asm__ volatile("sfence.vma" ::: "memory");
+    seed_v8_group(0xEEu);
     s_vle32_v8(VA_BASE + 3u * 4096u, 0);
-    check(g_cause == CAUSE_LOAD_ACCESS && g_tval == VA_BASE + 3u * 4096u && g_vstart_trap == 0ul,
-          "Svpbmt NC vle32 access fault",
+    check(g_cause == ~0ul && rd_vstart() == 0ul,
+          "Svpbmt NC aligned vle32 succeeds",
+          rd_vstart(),
+          g_cause,
+          ~0ul);
+    store_v8_group(dump);
+    for (unsigned long b = 0; b < 16u; b++)
+        check(dump[b] == frame_pat(3u * 4096u + b),
+              "Svpbmt NC aligned vle32 byte",
+              b,
+              dump[b],
+              frame_pat(3u * 4096u + b));
+    for (unsigned long b = 0; b < 16u; b++)
+        vrf_io[b] = (uint8_t) (0x41u + b);
+    load_v8_group(vrf_io);
+    s_vse32_v8(VA_BASE + 3u * 4096u + 32u);
+    check(g_cause == ~0ul && rd_vstart() == 0ul,
+          "Svpbmt NC aligned vse32 succeeds",
+          rd_vstart(),
+          g_cause,
+          ~0ul);
+    seed_v8_group(0xEEu);
+    s_vle32_v8(VA_BASE + 3u * 4096u + 32u, 0);
+    check(g_cause == ~0ul, "Svpbmt NC readback vle32 succeeds", 0, g_cause, ~0ul);
+    store_v8_group(dump);
+    for (unsigned long b = 0; b < 16u; b++)
+        check(dump[b] == (uint8_t) (0x41u + b),
+              "Svpbmt NC aligned vse32 byte",
+              b,
+              dump[b],
+              (uint8_t) (0x41u + b));
+    /* Misaligned NC/IO over the DDR alias raises access fault (5/7), matching scalar. */
+    s_vle32_v8(VA_BASE + 3u * 4096u + 2u, 0);
+    check(g_cause == CAUSE_LOAD_ACCESS && g_tval == VA_BASE + 3u * 4096u + 2u &&
+              g_vstart_trap == 0ul,
+          "Svpbmt NC misaligned vle32 access fault",
           g_tval,
           g_cause,
           CAUSE_LOAD_ACCESS);
-    s_vse32_v8(VA_BASE + 3u * 4096u);
-    check(g_cause == CAUSE_STORE_ACCESS && g_tval == VA_BASE + 3u * 4096u && g_vstart_trap == 0ul,
-          "Svpbmt NC vse32 access fault",
+    s_vse32_v8(VA_BASE + 3u * 4096u + 2u);
+    check(g_cause == CAUSE_STORE_ACCESS && g_tval == VA_BASE + 3u * 4096u + 2u &&
+              g_vstart_trap == 0ul,
+          "Svpbmt NC misaligned vse32 access fault",
           g_tval,
           g_cause,
           CAUSE_STORE_ACCESS);

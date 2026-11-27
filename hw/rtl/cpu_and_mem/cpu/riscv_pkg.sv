@@ -1718,12 +1718,12 @@ package riscv_pkg;
   // Device windows use whole 4 KiB pages. Keep them aligned with the register
   // decode in soc_top.sv (hw/rtl/README.md, "Memory Map"). Its startup
   // checks validate the layout used by the store-issue and DTLB page decodes.
-  localparam logic [19:0] MmioFirstPage = 20'h4_0000;
-  localparam logic [19:0] MmioLastPage = 20'h4_0030;
+  localparam logic [19:0] MmioFirstPage  = 20'h4_0000;
+  localparam logic [19:0] MmioLastPage   = 20'h4_0030;
   localparam logic [19:0] AplicFirstPage = 20'h4_4000;
-  localparam logic [19:0] AplicLastPage = 20'h4_43FF;
+  localparam logic [19:0] AplicLastPage  = 20'h4_43FF;
   localparam logic [19:0] ImsicFirstPage = 20'h4_8000;
-  localparam logic [19:0] ImsicLastPage = 20'h4_81FF;
+  localparam logic [19:0] ImsicLastPage  = 20'h4_81FF;
 
   // Eligible private Normal memory for the optional read-cache/write-through
   // profile. Debug data bypasses L0 to observe transport updates immediately.
@@ -1966,7 +1966,7 @@ package riscv_pkg;
 
   // Offer each PMLEN only when every configured physical region lies below
   // 2**(XLEN-PMLEN-2), as required by the equivalence argument above.
-  localparam bit SsnpmPmlen7 = PmaAddressLimit <= (64'(1) << (XLEN - 7 - 2));
+  localparam bit SsnpmPmlen7  = PmaAddressLimit <= (64'(1) << (XLEN - 7 - 2));
   localparam bit SsnpmPmlen16 = PmaAddressLimit <= (64'(1) << (XLEN - 16 - 2));
 
   // senvcfg.PMM write legalization: an unsupported value keeps the old one.
@@ -2079,7 +2079,7 @@ package riscv_pkg;
   localparam logic [XLEN-1:0] PcIncrementCompressed = 2;  // 16-bit compressed instruction
   localparam logic [XLEN-1:0] PcIncrement32bit = 4;  // 32-bit standard instruction
   localparam int unsigned PcAdvanceSelWidth = 2;
-  // Arms of pc_controller's next-PC priority selector. if_stage uses the
+  // Arms of fetch_pc_decoupled's next-PC priority selector. if_stage uses the
   // one-hot winner and sequential-arm mask to classify provider retargets;
   // translation itself starts from the selected, registered PC.
   localparam int unsigned PcNextArms = 14;
@@ -2088,9 +2088,9 @@ package riscv_pkg;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus6 = 2'd2;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus8 = 2'd3;
 
-  // How a PC candidate v relates to a pending branch PC P, as pc_controller
-  // registers it: v == P, v[XLEN-1:1] below or above P[XLEN-1:1], and the
-  // compressed and 32-bit predecessor tags v == P - 2 and v == P - 4.
+  // How a PC candidate v relates to a branch PC P: v == P, v[XLEN-1:1] below
+  // or above P[XLEN-1:1], and the compressed and 32-bit predecessor tags
+  // v == P - 2 and v == P - 4.
   typedef struct packed {
     logic at;
     logic below;
@@ -2138,7 +2138,7 @@ package riscv_pkg;
   localparam int unsigned BackingBtbEntries = 1024;
   localparam int unsigned BackingBtbWays = 2;
 
-  // Bimodal index width; must match direction_predictor.BIM_BITS.
+  // Bimodal index width; must match fetch_dir_4b.BIM_BITS.
   // Branches carry the prediction-time index through commit for training.
   localparam int unsigned BpDirIdxBits = 10;
 
@@ -2260,16 +2260,15 @@ package riscv_pkg;
     logic fetch_fault;
     logic fetch_fault_page;
     logic fetch_fault_hi;
-    // Slot-2 only: illegal-RVC flag for the expanded effective_instr (the
-    // aligner takes each candidate's flag from its sideband; see
-    // instruction_aligner). 0 for slot 1, whose illegal flag PD takes from
-    // rvc_extra_predecoded.
+    // Slot-2 only: illegal-RVC flag for the expanded effective_instr (if_stage
+    // takes each parcel's flag from its sideband; see if_stage.sv). 0 for slot
+    // 1, whose illegal flag PD takes from rvc_extra_predecoded.
     logic decomp_illegal;
     // Slot-2 only: conditional-branch opcode flag (effective_instr[6:0] ==
-    // OPC_BRANCH), predecoded per slot-2 start position in instruction_aligner
-    // before the position select. Zero for slot 1.
+    // OPC_BRANCH), predecoded for slot 2 in if_stage's parcel-queue drain.
+    // Zero for slot 1.
     logic is_cond_branch;
-    // Redirect candidates from pd_target_candidate: low PC+offset bits for
+    // Split-target redirect candidates from if_stage: low PC+offset bits for
     // native and compressed branches in this slot, with {offset sign, carry}
     // selecting PC-high. PD registers these and decodes the high select
     // afterward.
@@ -3267,7 +3266,7 @@ package riscv_pkg;
   // older than anything in the ROB; until its range is known an entry overlaps
   // everything. A range is up to two segments (one per page): a physical page
   // number and the first and last 32-byte sector index in that page.
-  localparam int unsigned VmtDepth = 4;
+  localparam int unsigned VmtDepth   = 4;
   localparam int unsigned VmtPpnBits = PhysAddrBits - 12;
   typedef struct packed {
     logic                  valid;

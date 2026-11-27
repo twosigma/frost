@@ -14,9 +14,9 @@
  *    limitations under the License.
  */
 
-// Over-approximating RAM stubs: tag, payload, direction, and RAS memories
-// return arbitrary unconstrained words each cycle, so only the real valid-bit
-// flip-flops and staged slot-2 valid registers can keep lookups from hitting.
+// Over-approximating RAM stubs: tag, payload, and counter memories return
+// arbitrary unconstrained words each cycle, so only the real valid-bit
+// flip-flops can keep lookups from hitting.
 module sdp_dist_ram #(
     parameter int unsigned ADDR_WIDTH = 5,
     parameter int unsigned DATA_WIDTH = 32
@@ -49,23 +49,21 @@ module sdp_block_ram #(
   assign o_read_data = free_read;
 endmodule
 
-// Proves that branch_prediction_controller holds i_btb_invalidate active for
-// exactly four cycles, wires that held clear and the registered update pipe
-// directly to branch_predictor, clears every slot-1 and slot-2 valid bit and
-// staged slot-2 valid register on each of those cycles, and drops any
-// in-flight BTB updates arriving before or during the hold.
+// Proves that if_stage holds i_btb_invalidate active for exactly four cycles,
+// wires that held clear and the registered update pipe directly to
+// fetch_btb_2w, clears both even and odd valid-bit banks on each of those
+// cycles, and drops any in-flight BTB updates arriving before or during the
+// hold.
 module btb_invalidate_hold_formal #(
     localparam int unsigned XLEN = riscv_pkg::XLEN,
     localparam int unsigned BtbIndexBits = 2,
-    localparam int unsigned BtbEntries = 1 << BtbIndexBits
+    localparam int unsigned BankEntries = 1 << (BtbIndexBits - 1)
 ) (
     input logic            i_clk,
     input logic            i_reset,
     input logic            i_btb_invalidate,
     input logic [XLEN-1:0] i_pc,
-    input logic [XLEN-1:0] i_pc_2_base,
-    input logic            i_slot2_plus2_candidate_valid,
-    input logic            i_slot2_plus4_candidate_valid,
+    input logic            i_fetch_translation_active,
     input logic            i_btb_update,
     input logic [XLEN-1:0] i_btb_update_pc,
     input logic [XLEN-1:0] i_btb_update_target,
@@ -79,174 +77,198 @@ module btb_invalidate_hold_formal #(
     input logic [XLEN-1:0] i_btb_late_update_pc,
     input logic            i_btb_late_update_taken
 );
-  logic [XLEN-1:0] pc_plus2;
-  logic [XLEN-1:0] pc_plus4;
-  assign pc_plus2 = i_pc_2_base + riscv_pkg::PcIncrementCompressed;
-  assign pc_plus4 = i_pc_2_base + riscv_pkg::PcIncrement32bit;
+  riscv_pkg::pipeline_ctrl_t pipeline_ctrl;
+  riscv_pkg::from_ex_comb_t  from_ex_comb;
+  always_comb begin
+    pipeline_ctrl = '0;
+    pipeline_ctrl.reset = i_reset;
+    from_ex_comb = '0;
+    from_ex_comb.btb_update = i_btb_update;
+    from_ex_comb.btb_update_pc = i_btb_update_pc;
+    from_ex_comb.btb_update_target = i_btb_update_target;
+    from_ex_comb.btb_update_taken = i_btb_update_taken;
+    from_ex_comb.btb_update_compressed = i_btb_update_compressed;
+    from_ex_comb.btb_update_call = i_btb_update_call;
+    from_ex_comb.btb_update_return = i_btb_update_return;
+  end
 
-  branch_prediction_controller u_ctrl (
+  if_stage #(
+      .XLEN(XLEN)
+  ) u_if (
       .i_clk,
-      .i_reset,
-      .i_btb_invalidate,
-      .i_stall(1'b0),
-      .i_stall_registered(1'b0),
-      .i_fetch_progress(1'b1),
-      .i_flush(1'b0),
-      .i_pd_redirect(1'b0),
-      .i_pd_redirect_taken(1'b0),
-      .i_pd_redirect_target('0),
-      .i_pc,
-      .i_pc_2(pc_plus2),
-      .i_pc_2_alt(pc_plus4),
-      .i_pc_2_base,
-      .i_lookup_lead_collapsed(1'b0),
-      .i_pending_prediction_pc('0),
-      .i_pending_prediction_prev_pc('0),
-      .i_pending_prediction_prev_native_pc('0),
-      .i_slot2_plus2_candidate_valid,
-      .i_slot2_plus4_candidate_valid,
-      .i_slot2_valid(1'b1),
-      .i_slot2_valid_wcs0(1'b1),
-      .i_slot2_is_compressed_plus2(1'b1),
-      .i_slot2_is_compressed_plus4(1'b0),
-      .i_slot2_is_compressed(1'b0),
-      .i_trap_taken(1'b0),
-      .i_mret_taken(1'b0),
-      .i_branch_taken(1'b0),
-      .i_any_holdoff_safe(1'b0),
-      .i_use_instr_buffer(1'b0),
-      .i_disable_branch_prediction(1'b0),
-      .i_disable_branch_prediction_wcs0(1'b0),
-      .i_disable_branch_prediction_wcs(1'b0),
-      .i_window_cannot_serve_raw(1'b0),
-      .i_fetch_lookup_is_lower_parcel(1'b0),
-      .i_pending_prediction_blocks_slot1(1'b0),
-      .i_btb_update,
-      .i_btb_update_pc,
-      .i_btb_update_target,
-      .i_btb_update_taken,
-      .i_btb_update_compressed,
-      .i_btb_update_call,
-      .i_btb_update_return,
+      .i_boot_addr('0),
+      .i_from_ex_comb(from_ex_comb),
       .i_btb_early_update_active,
       .i_btb_early_update_pc,
       .i_btb_early_update_taken,
       .i_btb_late_update_pc,
       .i_btb_late_update_taken,
+      .i_instr('0),
+      .i_instr_low_by_parity('0),
+      .i_instr_high('0),
+      .i_instr_window_high(1'b0),
+      .i_instr_sideband('0),
+      .i_instr_pc_metadata('0),
+      .i_instr_pc_metadata_by_provider_parity('0),
+      .i_pc_pairability_by_provider_parity('0),
+      .i_slot2_start_valid_lo_by_provider_parity('0),
+      .i_instr_pc_metadata_served_high(1'b0),
+      .i_instr_bank_sel_r(1'b0),
+      .i_served_word_low('0),
+      .i_served_last_word_low('0),
+      .i_served_prev_word_low('0),
+      .i_served_prev_word_valid_low(1'b0),
+      .i_served_word_high('0),
+      .i_served_last_word_high('0),
+      .i_served_prev_word_high('0),
+      .i_served_prev_word_valid_high(1'b0),
+      .i_instr_valid(1'b0),
+      .i_instr_fault0(1'b0),
+      .i_instr_fault0_page(1'b0),
+      .i_instr_fault1(1'b0),
+      .i_instr_fault1_page(1'b0),
+      .i_served_high(1'b0),
+      .i_pipeline_ctrl(pipeline_ctrl),
+      .i_trap_ctrl('0),
+      .i_frontend_state_flush(1'b0),
+      .i_flush_all(1'b0),
+      .i_fence_i_flush(1'b0),
+      .i_fence_i_target('0),
+      .i_btb_invalidate,
+      .i_disable_branch_prediction(1'b0),
+      .i_fetch_trap_hold(1'b0),
       .i_dir_update_valid(1'b0),
       .i_dir_update_idx('0),
       .i_dir_update_taken(1'b0),
-      .i_ras_push(1'b0),
-      .i_ras_pop(1'b0),
-      .i_ras_push_address('0),
-      .i_ras_misprediction(1'b0),
-      .i_ras_restore_tos('0),
-      .i_ras_restore_valid_count('0),
-      .i_ras_restore_top('0),
-      .i_ras_pop_after_restore(1'b0),
-      .i_ras_push_after_restore(1'b0),
-      .i_ras_push_address_after_restore('0),
-      .o_predicted_target(),
-      .o_predicted_is_call(),
-      .o_predicted_is_return(),
-      .o_prediction_used_r(),
-      .o_predicted_target_r(),
-      .o_predicted_is_call_r(),
-      .o_predicted_is_return_r(),
-      .o_prediction_used(),
-      .o_prediction_used_for_pc(),
-      .o_prediction_used_live_cofactor(),
-      .o_prediction_holdoff(),
-      .o_sel_prediction_r(),
-      .o_prediction_requires_pc_reg_handoff(),
-      .o_control_flow_to_halfword_pred(),
-      .o_slot2_prediction_used(),
-      .o_slot2_prediction_used_for_pc(),
-      .o_slot2_prediction_used_for_fetch_mux(),
-      .o_slot2_staged_prediction_used_for_pc(),
-      .o_slot2_staged_prediction_used_for_capture(),
-      .o_slot1_aliases_slot2_candidate(),
-      .o_slot2_live_target_used_for_pc_cofactor(),
-      .o_slot2_live_target_used_for_pc(),
-      .o_slot2_staged_pc_without_valid(),
-      .o_slot2_live_pc_without_valid(),
-      .o_slot2_predicted_taken(),
-      .o_slot2_predicted_target(),
-      .o_slot2_predicted_target_for_pc(),
-      .o_slot2_staged_predicted_target(),
-      .o_slot2_live_predicted_target(),
-      .o_slot2_predicted_is_call(),
-      .o_slot2_predicted_is_return(),
-      .o_slot2_staged_target_rel_pending(),
-      .o_slot2_live_target_rel_pending(),
-      .o_ras_checkpoint_tos(),
-      .o_ras_checkpoint_valid_count(),
-      .o_ras_checkpoint_top(),
-      .o_dir_predicted_taken(),
-      .o_dir_predicted_taken_live(),
-      .o_dir_predicted_taken_live_cofactor(),
-      .o_dir_idx(),
-      .o_dir_idx_live(),
-      .o_dir_idx_2()
+      .i_pd_redirect(1'b0),
+      .i_pd_redirect_taken(1'b0),
+      .i_pd_redirect_target('0),
+      .i_pd_redirect_ras_push(1'b0),
+      .i_pd_redirect_ras_pop(1'b0),
+      .i_pd_redirect_ras_link('0),
+      .i_pd_backing_refresh(1'b0),
+      .i_pd_backing_refresh_pc('0),
+      .o_pc(),
+      .o_fetch_replay_consume(),
+      .o_fetch_live_claim(),
+      .o_fetch_pa0(),
+      .o_fetch_pa1(),
+      .o_fetch_pa_valid(),
+      .o_fetch_fault0(),
+      .o_fetch_fault0_page(),
+      .o_fetch_fault1(),
+      .o_fetch_fault1_page(),
+      .o_fetch_line_after_ok(),
+      .o_fetch_redirect(),
+      .o_fetch_cached_retarget(),
+      .o_fetch_pa_hold(),
+      .o_fetch_pa_hold_copy(),
+      .i_fetch_translation_active,
+      .i_fetch_priv_u(1'b0),
+      .i_fetch_asid('0),
+      .i_tlb_invalidate(1'b0),
+      .i_tlb_flush('0),
+      .o_walk_req_valid(),
+      .i_walk_req_ready(1'b0),
+      .o_walk_vpn(),
+      .i_walk_resp_valid(1'b0),
+      .i_walk_resp('0),
+      .o_from_if_to_pd(),
+      .o_from_if_to_pd_2(),
+      .o_backing_hit(),
+      .o_backing_compressed(),
+      .o_backing_return(),
+      .o_backing_target(),
+      .o_backing_slot2_return_by_size(),
+      .o_backing_slot2_target_by_size(),
+      .o_slot1_has_control_flow(),
+      .o_slot1_is_indirect(),
+      .o_width_events(),
+      .i_itt_hist('0),
+      .i_itt_train_valid(1'b0),
+      .i_itt_train_lookup('0),
+      .i_itt_train_bank(1'b0),
+      .i_itt_train_target('0),
+      .i_itt_train_mispredicted(1'b0),
+      .o_itt_slot_lookup(),
+      .o_itt_slot_lookup_2(),
+      .o_itt_hit(),
+      .o_itt_target(),
+      .i_tage_hist('0),
+      .i_tage_train_valid(1'b0),
+      .i_tage_train_lookup('0),
+      .i_tage_train_bank(1'b0),
+      .i_tage_train_alt_taken(1'b0),
+      .i_tage_train_taken(1'b0),
+      .i_tage_train_mispredicted(1'b0),
+      .o_tage_hist_push(),
+      .o_tage_hist_restore_arm(),
+      .o_tage_fetch_path_bits(),
+      .o_tage_slot_valid(),
+      .o_tage_slot_lookup(),
+      .o_tage_slot_lookup_2(),
+      .o_tage_lookup_hist()
   );
 
-  // Instantiate the production branch_predictor at BTB_INDEX_BITS=2 driven by
-  // u_ctrl's registered update staging pipe and four-cycle invalidate hold,
-  // while also asserting u_ctrl's internal wiring to branch_predictor_inst.
-  logic btb_hit_small;
-  logic btb_hit_2_small;
-  branch_predictor #(
+  // Instantiate the production fetch_btb_2w at BTB_INDEX_BITS=2 driven by
+  // u_if's registered update staging pipe and four-cycle invalidate hold,
+  // while also asserting u_if's internal wiring to u_fetch_btb_2w.
+  logic btb_taken_small;
+  logic btb_w0_hit_small;
+  logic btb_w1_hit_small;
+  logic [BtbIndexBits-2:0] pc_even_idx_small;
+  assign pc_even_idx_small = i_pc[BtbIndexBits+1:3] + (BtbIndexBits - 1)'(i_pc[2]);
+
+  fetch_btb_2w #(
       .XLEN(XLEN),
-      .BTB_INDEX_BITS(BtbIndexBits)
+      .BTB_INDEX_BITS(BtbIndexBits),
+      .BIM_BITS(riscv_pkg::BpDirIdxBits)
   ) u_btb (
       .i_clk,
       .i_rst(i_reset),
       .i_pc,
-      .o_btb_hit(btb_hit_small),
-      .o_predicted_taken(),
-      .o_predicted_target(),
-      .o_btb_compressed(),
-      .o_btb_is_call(),
-      .o_btb_is_return(),
-      .i_pc_2_lookup_base(i_pc),
-      .i_pc_2_base,
-      .i_pc_2_use_alt(i_slot2_plus4_candidate_valid),
-      .o_predicted_taken_2_plus2(),
-      .o_predicted_taken_2_plus4(),
-      .o_btb_compressed_2_plus2(),
-      .o_btb_compressed_2_plus4(),
-      .o_btb_hit_2(btb_hit_2_small),
-      .o_btb_hit_2_plus2(),
-      .o_btb_hit_2_plus4(),
-      .o_predicted_taken_2(),
-      .o_predicted_target_2(),
-      .o_btb_compressed_2(),
-      .o_btb_is_call_2(),
-      .o_btb_is_return_2(),
-      .o_btb_entry_is_return_2(),
-      .o_predicted_target_2_plus2(),
-      .o_predicted_target_2_plus4(),
-      .o_btb_entry_is_return_2_plus2(),
-      .o_btb_entry_is_return_2_plus4(),
-      .i_pending_prediction_pc('0),
-      .i_pending_prediction_prev_pc('0),
-      .i_pending_prediction_prev_native_pc('0),
-      .o_slot2_plus2_covered_rel_pending(),
-      .o_slot2_plus2_zero_rel_pending(),
-      .o_slot2_plus4_rel_pending(),
-      .i_update(u_ctrl.btb_update_q),
-      .i_update_pc(u_ctrl.btb_update_pc_q),
-      .i_update_target(u_ctrl.btb_update_target_q),
-      .i_update_taken(u_ctrl.btb_update_taken_q),
-      .i_update_compressed(u_ctrl.btb_update_compressed_q),
-      .i_update_call(u_ctrl.btb_update_call_q),
-      .i_update_return(u_ctrl.btb_update_return_q),
-      .i_early_update_active(u_ctrl.btb_early_update_active_q),
-      .i_early_update_pc(u_ctrl.btb_early_update_pc_q),
-      .i_early_update_taken(u_ctrl.btb_early_update_taken_q),
-      .i_late_update_pc(u_ctrl.btb_late_update_pc_q),
-      .i_late_update_taken(u_ctrl.btb_late_update_taken_q),
-      .i_invalidate_all(u_ctrl.btb_invalidate_active)
+      .i_pc_even_idx(pc_even_idx_small),
+      .i_fetch_translation_active,
+      .i_pc_is_cached(riscv_pkg::pma_cached_ok(i_pc)),
+      .i_ras_nonempty(1'b0),
+      .i_ras_top_is_cached(1'b0),
+      .i_ras_top('0),
+      .i_ras_even_dir_idx('0),
+      .o_taken(btb_taken_small),
+      .o_taken_steer(),
+      .o_taken_pos(),
+      .o_target(),
+      .o_target_even_dir_idx(),
+      .o_compressed(),
+      .o_is_call(),
+      .o_is_return(),
+      .o_is_span(),
+      .o_target_is_cached(),
+      .o_w0_hit(btb_w0_hit_small),
+      .o_w1_hit(btb_w1_hit_small),
+      .o_w0_taken(),
+      .o_w0_sel(),
+      .o_w1_target(),
+      .o_w1_even_dir_idx(),
+      .o_w1_is_call(),
+      .o_w1_is_return(),
+      .o_w0_link_inc(),
+      .o_w1_link_inc(),
+      .o_w0_link_hw(),
+      .o_w1_link_hw(),
+      .i_update(u_if.btb_update_q),
+      .i_update_pc(u_if.btb_update_pc_q),
+      .i_update_target(u_if.btb_update_target_q),
+      .i_update_taken(u_if.btb_update_taken_q),
+      .i_update_compressed(u_if.btb_update_compressed_q),
+      .i_update_call(u_if.btb_update_call_q),
+      .i_update_return(u_if.btb_update_return_q),
+      .i_early_update_active(u_if.btb_early_update_active_q),
+      .i_early_update_pc(u_if.btb_early_update_pc_q),
+      .i_early_update_taken(u_if.btb_early_update_taken_q),
+      .i_late_update_pc(u_if.btb_late_update_pc_q),
+      .i_late_update_taken(u_if.btb_late_update_taken_q),
+      .i_invalidate_all(u_if.btb_invalidate_active)
   );
 
   // Track the exact 4-cycle invalidate window from the past 4 non-reset edges.
@@ -269,31 +291,20 @@ module btb_invalidate_hold_formal #(
     end else begin
       hist_valid_q  <= {hist_valid_q[2:0], 1'b1};
       inv_hist_q    <= {inv_hist_q[1:0], i_btb_invalidate};
-      prev_active_q <= u_ctrl.btb_invalidate_active;
-      prev_update_q <= u_ctrl.btb_update_q;
+      prev_active_q <= u_if.btb_invalidate_active;
+      prev_update_q <= u_if.btb_update_q;
     end
   end
 
-  logic [BtbEntries-1:0] valid_s1;
-  logic [BtbEntries-1:0] valid_s2;
-  logic [BtbEntries-1:0] valid_s2_alt;
-  logic [BtbEntries-1:0] valid_s2_rot;
-  for (genvar i = 0; i < BtbEntries; i++) begin : gen_valid_pack
-    assign valid_s1[i]     = u_btb.btb_valid[i];
-    assign valid_s2[i]     = u_btb.btb_valid_2[i];
-    assign valid_s2_alt[i] = u_btb.btb_valid_2_alt[i];
-    assign valid_s2_rot[i] = u_btb.btb_valid_2_rot[i];
+  logic [BankEntries-1:0] valid_bank0;
+  logic [BankEntries-1:0] valid_bank1;
+  for (genvar i = 0; i < BankEntries; i++) begin : gen_valid_pack
+    assign valid_bank0[i] = u_btb.btb_valid[0][i];
+    assign valid_bank1[i] = u_btb.btb_valid[1][i];
   end
 
-  logic all_valid_arrays_clear;
-  assign all_valid_arrays_clear =
-      (valid_s1 == '0) && (valid_s2 == '0) && (valid_s2_alt == '0) && (valid_s2_rot == '0);
-
-  logic staged_slot2_valids_clear;
-  assign staged_slot2_valids_clear =
-      !u_btb.slot2_valid_2_q &&
-      !u_btb.slot2_valid_2_alt_q &&
-      !u_btb.slot2_valid_2_rot_q;
+  logic all_valid_banks_clear;
+  assign all_valid_banks_clear = (valid_bank0 == '0) && (valid_bank1 == '0);
 
   logic [1:0] expected_hold_q;
   assign expected_hold_q =
@@ -305,31 +316,32 @@ module btb_invalidate_hold_formal #(
   assign expected_hold_active = i_btb_invalidate || (expected_hold_q != 2'd0);
 
   always_ff @(posedge i_clk) begin
-    p_controller_wires_btb_invalidate_and_update :
-    assert ((u_ctrl.branch_predictor_inst.i_invalidate_all == u_ctrl.btb_invalidate_active) &&
-            (u_ctrl.branch_predictor_inst.i_update == u_ctrl.btb_update_q));
+    p_if_wires_btb_invalidate_and_update :
+    assert ((u_if.u_fetch_btb_2w.i_invalidate_all == u_if.btb_invalidate_active) &&
+            (u_if.u_fetch_btb_2w.i_update == u_if.btb_update_q));
     if (!i_reset && (&hist_valid_q)) begin
       p_invalidate_hold_exact :
-      assert ((u_ctrl.btb_invalidate_hold_q == expected_hold_q) &&
-              (u_ctrl.btb_invalidate_active == expected_hold_active));
+      assert ((u_if.btb_invalidate_hold_q == expected_hold_q) &&
+              (u_if.btb_invalidate_active == expected_hold_active));
     end
     if (!i_reset && hist_valid_q[0] && prev_active_q) begin
-      p_invalidate_clears_all_valid_arrays : assert (all_valid_arrays_clear);
-      p_invalidate_clears_staged_slot2_valids : assert (staged_slot2_valids_clear);
-      p_invalidate_blocks_all_btb_hits : assert (!btb_hit_small && !btb_hit_2_small);
+      p_invalidate_clears_all_valid_banks : assert (all_valid_banks_clear);
+      p_invalidate_blocks_all_btb_hits :
+      assert (!btb_w0_hit_small && !btb_w1_hit_small && !btb_taken_small);
     end
     if (reset_seen_q && !i_reset && (&hist_valid_q)) begin
       c_drop_on_pulse :
-      cover (prev_active_q && prev_update_q && (inv_hist_q == 3'b001) && all_valid_arrays_clear);
+      cover (prev_active_q && prev_update_q && (inv_hist_q == 3'b001) && all_valid_banks_clear);
       c_drop_on_hold_1 :
-      cover (prev_active_q && prev_update_q && (inv_hist_q == 3'b010) && all_valid_arrays_clear);
+      cover (prev_active_q && prev_update_q && (inv_hist_q == 3'b010) && all_valid_banks_clear);
       c_drop_on_hold_2 :
-      cover (prev_active_q && prev_update_q && (inv_hist_q == 3'b100) && all_valid_arrays_clear);
+      cover (prev_active_q && prev_update_q && (inv_hist_q == 3'b100) && all_valid_banks_clear);
       c_drop_on_hold_3 :
       cover (prev_active_q && prev_update_q && (inv_hist_q == 3'b000) && !i_btb_invalidate &&
-             all_valid_arrays_clear);
+             all_valid_banks_clear);
       c_update_after_hold_installs :
-      cover (!prev_active_q && prev_update_q && !expected_hold_active && (valid_s1 != '0));
+      cover (!prev_active_q && prev_update_q && !expected_hold_active &&
+             ((valid_bank0 != '0) || (valid_bank1 != '0)));
     end
   end
 endmodule

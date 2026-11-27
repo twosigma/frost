@@ -51,7 +51,6 @@ def _configured_inventory() -> list[tuple[str, str]]:
     add("nic.u_tx_fifo.storage.gen_row[{i}].u_macro", "sram_1w1r_512x68", 1)
     add("nic.mac_rx.g_memory_lane[{i}].u_macro", "sram_1w1r_4096x8", 8)
     add("nic.mac_tx.u_frame_memory.gen_row[{i}].u_macro", "sram_1w1r_4096x64_m8", 1)
-    add("btb_payload_ram[{i}].u_macro", "sram_1w1r_256x36", 3)
     for parity in ("even", "odd"):
         for bank, bits in (("cold", 28), ("frontend_hot", 4), ("compressed", 4)):
             add(

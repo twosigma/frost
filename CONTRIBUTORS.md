@@ -136,4 +136,6 @@
 - Added front-end redirect checks and a seeded control-flow test suite.
 - Added early recovery of mispredicted indirect jumps and a misprediction cost probe.
 - Isolated each IP synthesis run in its own Tcl Store user area and bounded the VCU118 NIC pause-event mailbox payload.
+- Added slab-like node reuse benches (`coherence_stale_line` and `node_reuse_test`) beside full-line stores, `cbo.zero` and DMA, added `FROST_BP_COUNT` branch-misprediction logging to real-program simulation, and stopped the performance model crediting L1D stream look-ahead hints by default
+- Added `--vlen` selection (`128`, `256`, or `512`) to the opt-in VCU118 vector build and software loader, naming matching `Zvl*b` extensions in the generated Linux device tree.
 - Measured the vector unit with RVV microbenchmarks and handshake tracing, which guided the engine-side vector performance work (group skipping beyond `vl`, pipelined 64-bit-lane multiply/MAC and pipelined reductions, group-ALU pipelining with VMU overlap, and off-head vector-to-scalar execution).

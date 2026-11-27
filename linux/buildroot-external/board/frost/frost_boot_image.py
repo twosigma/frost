@@ -103,9 +103,10 @@ CBOZ_BLOCK_BYTES = 64
 CBOP_BLOCK_BYTES = 64
 ISA_STRING = "rv64imafdc_zfa_zfhmin_zic64b_zicbom_zicbop_zicboz_ziccamoa_ziccif_zicclsm_ziccrse_zicntr_zicond_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_za64rs_zawrs_zba_zbb_zbc_zbkb_zbkc_zbs_zcb_zcmop_zkt_smaia_ssaia_ssccptr_sscofpmf_sscounterenw_ssnpm_sstc_sstvala_sstvecd_ssu64xl_svade_svinval_svnapot_svpbmt_svvptc"
 
-# X3 and opt-in VCU118 --vector builds implement V with ELEN 64, VLEN 256 and
-# the same vector sub-extensions (Zvfhmin, Zvfh, Zvbb/Zvkb, Zvbc, Zvkned,
-# Zvknha, Zvknhb, Zvkg, Zvkt and the NIST aggregates Zvkn, Zvknc and Zvkng).
+# X3 (VLEN 256) and opt-in VCU118 --vector builds (default VLEN 256, or 128/512
+# with --vlen) implement V with ELEN 64 and the same vector sub-extensions
+# (Zvfhmin, Zvfh, Zvbb/Zvkb, Zvbc, Zvkned, Zvknha, Zvknhb, Zvkg, Zvkt and the
+# NIST aggregates Zvkn, Zvknc and Zvkng).
 # X3's 1 GiB DDR map carries an uncached alias for Svpbmt. Default VCU118
 # builds are scalar, and both VCU118 builds share the 2 GiB DDR map with no
 # uncached alias, so VCU118 device trees omit svpbmt.
@@ -131,6 +132,17 @@ VCU118_VECTOR_ISA_EXTENSIONS = tuple(
     ext for ext in X3_ISA_EXTENSIONS if ext != "svpbmt"
 )
 VCU118_VECTOR_ISA_STRING = "rv64imafdcv_" + "_".join(VCU118_VECTOR_ISA_EXTENSIONS[7:])
+
+
+def vector_length_extensions(extensions: tuple[str, ...], vlen: int) -> tuple[str, ...]:
+    """Name Zvl32b up to Zvl<vlen>b, in place of the VLEN 256 list's Zvl*b names."""
+    zvl = [f"zvl{bits}b" for bits in (32, 64, 128, 256, 512, 1024) if bits <= vlen]
+    plain = [
+        ext for ext in extensions if not (ext.startswith("zvl") and ext.endswith("b"))
+    ]
+    at = plain.index("smaia")
+    return (*plain[:at], *zvl, *plain[at:])
+
 
 # Disable IPv6 autoconfiguration traffic, which returns through NIC loopback
 # and fails frost_nettest's idle checks. The initramfs needs no IPv6.
@@ -306,14 +318,22 @@ def gen_dts(
     mem_size: int = MEM_SIZE,
     board: str = "x3",
     vector: bool | None = None,
+    vlen: int = 256,
 ) -> str:
     """Return the FROST device tree source for the OpenSBI + Sv39 boot.
 
     mac is the NIC's local-mac-address as DT bytes ("02 11 22 33 44 55");
     mem_size is the size of the memory node at DDR_BASE; vector overrides
-    whether the CPU node advertises V (default: True for x3, False for vcu118).
+    whether the CPU node advertises V (default: True for x3, False for vcu118);
+    vlen is the vector register length, which bounds the Zvl*b names.
     """
     has_vector = (board == "x3") if vector is None else vector
+    if vlen not in (128, 256, 512):
+        raise ValueError(f"vlen must be 128, 256 or 512 (got {vlen})")
+    if not has_vector and vlen != 256:
+        raise ValueError("--vlen requires a vector device tree (--vector)")
+    if board == "x3" and vlen != 256:
+        raise ValueError("x3 vector length is fixed at 256 bits")
     if board == "x3":
         isa_extensions = X3_ISA_EXTENSIONS if has_vector else ISA_EXTENSIONS
         isa_string = X3_ISA_STRING if has_vector else ISA_STRING
@@ -322,6 +342,9 @@ def gen_dts(
             VCU118_VECTOR_ISA_EXTENSIONS if has_vector else VCU118_ISA_EXTENSIONS
         )
         isa_string = VCU118_VECTOR_ISA_STRING if has_vector else VCU118_ISA_STRING
+    if has_vector and vlen != 256:
+        isa_extensions = vector_length_extensions(isa_extensions, vlen)
+        isa_string = "rv64imafdcv_" + "_".join(isa_extensions[7:])
     ext_list = ",\n\t\t\t\t".join(
         ", ".join(f'"{e}"' for e in isa_extensions[i : i + 6])
         for i in range(0, len(isa_extensions), 6)
@@ -572,11 +595,8 @@ def _fdt_uint(data: bytes) -> int | None:
     return None
 
 
-def fdt_chosen_initrd_range(dtb: bytes) -> tuple[int, int] | None:
-    """Return ``(start, end)`` from ``/chosen`` initrd properties, or None.
-
-    Validates the FDT header and bounds before walking the structure block.
-    """
+def _walk_fdt_properties(dtb: bytes):
+    """Yield ``(path, prop_name, value)`` across nodes in a validated FDT blob."""
     if len(dtb) < FDT_HEADER_BYTES:
         raise ValueError(
             f"DTB is {len(dtb)} bytes; shorter than the 40-byte FDT header"
@@ -606,8 +626,6 @@ def fdt_chosen_initrd_range(dtb: bytes) -> tuple[int, int] | None:
     cursor = off_struct
     end = off_struct + sz_struct
     path: list[str] = []
-    start_val: int | None = None
-    end_val: int | None = None
 
     while cursor + 4 <= end:
         (token,) = struct.unpack_from(">I", dtb, cursor)
@@ -616,8 +634,7 @@ def fdt_chosen_initrd_range(dtb: bytes) -> tuple[int, int] | None:
             nul = dtb.find(b"\x00", cursor, end)
             if nul < 0:
                 raise ValueError("unterminated node name in DTB")
-            name = dtb[cursor:nul].decode("ascii", errors="replace")
-            path.append(name)
+            path.append(dtb[cursor:nul].decode("ascii", errors="replace"))
             cursor = (nul + 4) & ~3
         elif token == FDT_END_NODE:
             if not path:
@@ -636,11 +653,7 @@ def fdt_chosen_initrd_range(dtb: bytes) -> tuple[int, int] | None:
             prop_name = strings[nameoff:nul].decode("ascii", errors="replace")
             value = dtb[cursor : cursor + prop_len]
             cursor = (cursor + prop_len + 3) & ~3
-            if path == ["", "chosen"]:
-                if prop_name == "linux,initrd-start":
-                    start_val = _fdt_uint(value)
-                elif prop_name == "linux,initrd-end":
-                    end_val = _fdt_uint(value)
+            yield list(path), prop_name, value
         elif token == FDT_NOP:
             continue
         elif token == FDT_END:
@@ -648,13 +661,89 @@ def fdt_chosen_initrd_range(dtb: bytes) -> tuple[int, int] | None:
         else:
             raise ValueError(f"unknown FDT token 0x{token:08x} in DTB")
 
+
+def fdt_chosen_initrd_range(dtb: bytes) -> tuple[int, int] | None:
+    """Return ``(start, end)`` from ``/chosen`` initrd properties, or None.
+
+    Validates the FDT header and bounds before walking the structure block.
+    """
+    start_val: int | None = None
+    end_val: int | None = None
+    for path, prop_name, value in _walk_fdt_properties(dtb):
+        if path == ["", "chosen"]:
+            if prop_name == "linux,initrd-start":
+                start_val = _fdt_uint(value)
+            elif prop_name == "linux,initrd-end":
+                end_val = _fdt_uint(value)
+
     if start_val is not None and end_val is not None:
         return start_val, end_val
     return None
 
 
+def _split_isa_tokens(isa: str) -> list[str]:
+    """Split a ``riscv,isa`` string into lowercase extension tokens."""
+    text = isa.strip().lower()
+    if not text:
+        return []
+    head, *multi = text.split("_")
+    single: list[str] = []
+    for prefix in ("rv64", "rv32", "rv128"):
+        if head.startswith(prefix):
+            single = list(head[len(prefix) :])
+            break
+    return [*single, *(tok for tok in multi if tok)]
+
+
+def verify_dtb_vlen(dtb: bytes, expected_vlen: int, *, source: str = "DTB") -> None:
+    """Verify that a custom DTB's ``/cpus/cpu*`` ISA matches ``expected_vlen``."""
+    isa_tokens: list[str] | None = None
+    ext_tokens: list[str] | None = None
+    for path, prop_name, value in _walk_fdt_properties(dtb):
+        if len(path) == 3 and path[1] == "cpus" and path[2].startswith("cpu"):
+            if prop_name == "riscv,isa":
+                isa_tokens = _split_isa_tokens(
+                    value.split(b"\x00", 1)[0].decode("ascii", errors="ignore")
+                )
+            elif prop_name == "riscv,isa-extensions":
+                ext_tokens = [
+                    part.decode("ascii", errors="ignore").strip().lower()
+                    for part in value.split(b"\x00")
+                    if part
+                ]
+    if isa_tokens is None and ext_tokens is None:
+        raise ValueError(
+            f"{source}: DTB /cpus/cpu@0 lacks riscv,isa and riscv,isa-extensions"
+        )
+    for label, tokens in (
+        ("riscv,isa", isa_tokens),
+        ("riscv,isa-extensions", ext_tokens),
+    ):
+        if tokens is None:
+            continue
+        if "v" not in tokens:
+            raise ValueError(
+                f"{source}: --vlen {expected_vlen} requires 'v' in {label}"
+            )
+        zvl = [
+            int(match.group(1))
+            for tok in tokens
+            if (match := re.fullmatch(r"zvl(\d+)b", tok)) is not None
+        ]
+        max_zvl = max(zvl) if zvl else None
+        if max_zvl != expected_vlen:
+            raise ValueError(
+                f"{source}: DTB {label} advertises VLEN {max_zvl}, "
+                f"expected VLEN {expected_vlen}"
+            )
+
+
 def load_dtb(
-    dtb_path: Path, out_dir: Path, initrd_range: tuple[int, int] | None
+    dtb_path: Path,
+    out_dir: Path,
+    initrd_range: tuple[int, int] | None,
+    *,
+    expected_vlen: int | None = None,
 ) -> bytes:
     """Load and validate a supplied compiled DTB and write ``frost.dtb`` in ``out_dir``."""
     dtb = dtb_path.read_bytes()
@@ -664,6 +753,8 @@ def load_dtb(
             f"{dtb_path}: /chosen linux,initrd range {chosen_initrd} does not match "
             f"packed initrd range (0x{initrd_range[0]:x}, 0x{initrd_range[1]:x})"
         )
+    if expected_vlen is not None:
+        verify_dtb_vlen(dtb, expected_vlen, source=str(dtb_path))
     target = out_dir / "frost.dtb"
     if dtb_path.resolve() != target.resolve():
         target.write_bytes(dtb)
@@ -832,6 +923,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="advertise the V extension in the generated device tree "
         "(default: on for x3, off for vcu118)",
     )
+    parser.add_argument(
+        "--vlen",
+        type=int,
+        choices=(128, 256, 512),
+        default=None,
+        help="vector register length in bits; names Zvl*b up to it (default: 256)",
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "--dtb",
@@ -854,6 +952,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.bootargs = nfsroot_bootargs(args.nfsroot, args.ip, bool(args.initrd))
     elif args.ip is not None:
         parser.error("--ip applies only with --nfsroot")
+    if args.vlen is not None:
+        has_vector = (args.board == "x3") if args.vector is None else args.vector
+        if not has_vector:
+            parser.error("--vlen requires a vector device tree (--vector)")
+        if args.board == "x3" and args.vlen != 256:
+            parser.error("x3 vector length is fixed at 256 bits")
+    args.explicit_vlen = args.vlen
+    args.vlen = 256 if args.vlen is None else args.vlen
     return args
 
 
@@ -873,7 +979,12 @@ def main(argv: list[str] | None = None) -> int:
             DDR_BASE + layout.initrd_offset + len(initrd),
         )
     if args.dtb:
-        dtb = load_dtb(Path(args.dtb), out_dir, initrd_range)
+        dtb = load_dtb(
+            Path(args.dtb),
+            out_dir,
+            initrd_range,
+            expected_vlen=args.explicit_vlen,
+        )
     else:
         dtb = compile_dtb(
             gen_dts(
@@ -885,6 +996,7 @@ def main(argv: list[str] | None = None) -> int:
                 mem_size=args.mem_size,
                 board=args.board,
                 vector=args.vector,
+                vlen=args.vlen,
             ),
             out_dir,
             args.dtc,

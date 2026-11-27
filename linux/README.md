@@ -173,9 +173,12 @@ The X3 device tree and the opt-in VCU118 vector device tree (`--vector` on
 `frost_boot_image.py` and `load_software.py`, and
 `boards/vcu118/dts/frost_vcu118_vector.dts`) advertise V with Zvbb, Zvbc,
 Zve32f, Zve32x, Zve64d, Zve64f, Zve64x, Zvfh, Zvfhmin, Zvkb, Zvkg, Zvkn,
-Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, and the Zvl32b, Zvl64b, Zvl128b
-and Zvl256b length guarantees. Those builds set `misa.V` and have `VLEN=256`
-and `ELEN=64`. These entries describe the vector capabilities for Linux ISA
+Zvknc, Zvkned, Zvkng, Zvknha, Zvknhb, Zvkt, and the `Zvl*b` length guarantees
+up to the build's `VLEN` (`Zvl32b`, `Zvl64b`, `Zvl128b` and `Zvl256b` on X3,
+the static `frost_vcu118_vector.dts`, and the default VCU118 `--vector` build,
+or up to `Zvl128b` / `Zvl512b` when `--vlen` selects 128 or 512 on VCU118).
+Those builds set `misa.V` and have `ELEN=64` (with `VLEN=256` on X3 and
+default VCU118 `--vector`, or `VLEN` 128/256/512 with VCU118 `--vlen`). These entries describe the vector capabilities for Linux ISA
 discovery. In the pinned Debian 7.3 kernel, the RISC-V vector-crypto (`Zvkned`,
 `Zvknha`/`Zvknhb`, `Zvkg`, `Zvkb`, `Zvbb`) and carry-less CRC32 (`Zbc`)
 implementations reside in `lib/crypto` and `lib/crc`: `aes-lib`,

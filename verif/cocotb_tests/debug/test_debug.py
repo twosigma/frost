@@ -688,9 +688,9 @@ async def test_return_stack_after_older_fault(dut: Any) -> None:
         await ClockCycles(clock, 3)
         await ReadOnly()
         after = (
-            int(front.ras_checkpoint_tos.value),
-            int(front.ras_checkpoint_valid_count.value),
-            int(front.ras_checkpoint_top.value),
+            int(front.ras_tos.value),
+            int(front.ras_valid_count.value),
+            int(front.ras_top.value),
         )
         assert early_admitted is not None, "the younger indirect call did not issue"
         assert (before_call is not None) == early_admitted

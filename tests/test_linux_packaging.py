@@ -626,9 +626,147 @@ def test_vector_device_tree_matches_board(board: str, tmp_path: Path) -> None:
         assert re.search(r"\bparameter\s+bit\s+VECTOR_ADVERTISE\s*=\s*1'b0\b", top)
         assert re.search(r"\.VECTOR\s*\(\s*VECTOR\s*\)", top)
         assert re.search(r"\.VECTOR_ADVERTISE\s*\(\s*VECTOR_ADVERTISE\s*\)", top)
-        assert re.search(r"\.VLEN\s*\(\s*256\s*\)", top)
+        assert re.search(r"\bparameter\s+int\s+unsigned\s+VLEN\s*=\s*256\b", top)
+        assert re.search(r"\.VLEN\s*\(\s*VLEN\s*\)", top)
     subsystem = (REPO_ROOT / "boards/xilinx_frost_subsystem.sv").read_text()
     assert ".VECTOR_ADVERTISE(VECTOR_ADVERTISE)" in subsystem
+
+
+@pytest.mark.parametrize("vlen", [128, 256, 512])
+def test_vcu118_vector_device_tree_names_zvl_up_to_vlen(vlen: int) -> None:
+    """--vlen bounds the Zvl*b names of a VCU118 vector tree; the rest of the list stays."""
+    packer = _load_module(SBI_PACKER)
+    dts = packer.gen_dts(
+        clk_hz=162_500_000,
+        initrd_range=None,
+        bootargs="",
+        model="frost",
+        board="vcu118",
+        vector=True,
+        vlen=vlen,
+    )
+    isa_match = re.search(r'riscv,isa = "([^"]+)"', dts)
+    assert isa_match is not None
+    isa = isa_match.group(1)
+    zvl = [ext for ext in isa.split("_") if re.fullmatch(r"zvl\d+b", ext)]
+    assert zvl == [f"zvl{bits}b" for bits in (32, 64, 128, 256, 512) if bits <= vlen]
+    plain = [ext for ext in isa.split("_") if not re.fullmatch(r"zvl\d+b", ext)]
+    base = [
+        ext
+        for ext in packer.VCU118_VECTOR_ISA_STRING.split("_")
+        if not re.fullmatch(r"zvl\d+b", ext)
+    ]
+    assert plain == base
+    if vlen == 256:
+        assert isa == packer.VCU118_VECTOR_ISA_STRING
+
+
+@pytest.mark.parametrize(
+    "argv,expected_err",
+    [
+        (["--board", "x3", "--vlen", "512"], "x3 vector length is fixed at 256 bits"),
+        (["--board", "x3", "--vlen", "128"], "x3 vector length is fixed at 256 bits"),
+        (
+            ["--board", "vcu118", "--vlen", "128"],
+            "--vlen requires a vector device tree",
+        ),
+        (
+            ["--board", "vcu118", "--vlen", "256"],
+            "--vlen requires a vector device tree",
+        ),
+        (
+            ["--board", "x3", "--no-vector", "--vlen", "256"],
+            "--vlen requires a vector device tree",
+        ),
+    ],
+)
+def test_packer_rejects_invalid_vlen_combinations(
+    capsys: pytest.CaptureFixture[str], argv: list[str], expected_err: str
+) -> None:
+    """frost_boot_image.py rejects --vlen on x3 != 256 and scalar trees."""
+    packer = _load_module(SBI_PACKER)
+    with pytest.raises(SystemExit) as stopped:
+        packer.parse_args(["--firmware", "fw", "--payload", "img", *argv])
+    assert stopped.value.code == 2
+    assert expected_err in capsys.readouterr().err
+
+
+def test_packer_validates_vlen_with_custom_dtb(tmp_path: Path) -> None:
+    """--vlen together with --dtb accepts matching Zvl*b and rejects mismatches."""
+    packer = _load_module(SBI_PACKER)
+    firmware = bytes(range(256)) * 16
+    payload = _linux_image(packer, image_size=0x400000, length=0x1000)
+    fw_path = tmp_path / "fw_jump.bin"
+    img_path = tmp_path / "Image"
+    fw_path.write_bytes(firmware)
+    img_path.write_bytes(payload)
+
+    def build_dtb(tag: str, *, vector: bool, vlen: int) -> Path:
+        sub = tmp_path / f"dtb_{tag}"
+        sub.mkdir()
+        dts = packer.gen_dts(
+            clk_hz=162_500_000,
+            initrd_range=None,
+            bootargs=packer.DEFAULT_BOOTARGS,
+            model=f"test-{tag}",
+            board="vcu118",
+            vector=vector,
+            vlen=vlen,
+        )
+        packer.compile_dtb(dts, sub, "dtc")
+        return sub / "frost.dtb"
+
+    dtb_128 = build_dtb("v128", vector=True, vlen=128)
+    dtb_256 = build_dtb("v256", vector=True, vlen=256)
+    dtb_scalar = build_dtb("scalar", vector=False, vlen=256)
+
+    common = [
+        "--firmware",
+        str(fw_path),
+        "--payload",
+        str(img_path),
+        "--board",
+        "vcu118",
+        "--vector",
+        "--vlen",
+        "128",
+    ]
+    out_ok = tmp_path / "out_ok"
+    assert packer.main([*common, "--dtb", str(dtb_128), "--out", str(out_ok)]) == 0
+    assert (out_ok / "frost.dtb").read_bytes() == dtb_128.read_bytes()
+
+    with pytest.raises(ValueError, match="advertises VLEN 256, expected VLEN 128"):
+        packer.main(
+            [*common, "--dtb", str(dtb_256), "--out", str(tmp_path / "out_bad_vlen")]
+        )
+    with pytest.raises(ValueError, match="requires 'v'"):
+        packer.main(
+            [*common, "--dtb", str(dtb_scalar), "--out", str(tmp_path / "out_scalar")]
+        )
+
+
+def test_gen_dts_rejects_invalid_vlen_combinations() -> None:
+    """gen_dts enforces board/vector applicability for VLEN."""
+    packer = _load_module(SBI_PACKER)
+    with pytest.raises(ValueError, match="fixed at 256 bits"):
+        packer.gen_dts(
+            clk_hz=300_000_000,
+            initrd_range=None,
+            bootargs="",
+            model="t",
+            board="x3",
+            vlen=512,
+        )
+    with pytest.raises(ValueError, match="vector device tree"):
+        packer.gen_dts(
+            clk_hz=200_000_000,
+            initrd_range=None,
+            bootargs="",
+            model="t",
+            board="vcu118",
+            vector=False,
+            vlen=128,
+        )
 
 
 def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:
@@ -840,6 +978,57 @@ def test_vcu118_vector_device_tree_and_packer_settings(tmp_path: Path) -> None:
                 assert "--no-vector" not in result.stdout
             else:
                 assert expected_flag in result.stdout
+
+    # 4. The Makefile forwards FROST_LINUX_VLEN (build.py --vlen) as the packer's --vlen.
+    for vlen_setting, expected_vlen in (
+        (None, None),
+        ("128", "--vlen 128"),
+        ("512", "--vlen 512"),
+        ("64", "ERROR"),
+    ):
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("FROST_LINUX_VECTOR", "FROST_LINUX_BOARD", "FROST_LINUX_VLEN")
+        }
+        env["FROST_LINUX_BOARD"] = "vcu118"
+        env["FROST_LINUX_VECTOR"] = "1"
+        if vlen_setting is not None:
+            env["FROST_LINUX_VLEN"] = vlen_setting
+        result = subprocess.run(
+            [
+                "make",
+                "-s",
+                "-n",
+                "-B",
+                "-o",
+                str(fake_image),
+                "-o",
+                str(fake_initrd),
+                "-o",
+                str(fake_fw),
+                "-f",
+                str(APPS / "linux_boot" / "Makefile"),
+                f"FROST_LINUX_KERNEL={fake_image}",
+                f"FROST_LINUX_INITRD={fake_initrd}",
+                f"FW_JUMP={fake_fw}",
+                "sw_ddr.mem",
+            ],
+            cwd=APPS / "linux_boot",
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if expected_vlen == "ERROR":
+            assert result.returncode != 0
+            assert "FROST_LINUX_VLEN must be 128, 256 or 512" in result.stderr
+        else:
+            assert result.returncode == 0, result.stderr
+            if expected_vlen is None:
+                assert "--vlen" not in result.stdout
+            else:
+                assert expected_vlen in result.stdout
 
 
 def test_advertised_isa_lists_agree() -> None:
@@ -2059,6 +2248,11 @@ def test_linux_boot_make_refuses_a_build_directory_that_built_a_kernel(
     )
     sources.mkdir(parents=True)
     (sources / "frost_stress.c").write_text("int main(void) { return 0; }\n")
+    # Date the images at the epoch so the source is newer by construction: files written
+    # within one filesystem timestamp tick share an mtime and make then skips the stage.
+    for stale in (tmp_path / "linux" / "build-mmu" / "images").iterdir():
+        if stale.is_file():
+            os.utime(stale, ns=(1, 1))
     # A Buildroot that shouts if it is invoked at all.
     buildroot = tmp_path / "linux" / "buildroot"
     buildroot.mkdir()
