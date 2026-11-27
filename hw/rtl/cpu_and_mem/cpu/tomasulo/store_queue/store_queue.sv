@@ -66,7 +66,7 @@ module store_queue #(
     output logic fire,
 `else
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
-    parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 8
+    parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 16
     // Rely on dispatch to check SQ room. Its conservative registered full flags
     // give no credit for same-cycle frees, so !dispatch_full_q implies !full.
     // This permits omitting the local room checks.
