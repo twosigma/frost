@@ -853,7 +853,7 @@ module vec_unit #(
     end
   end
   assign ov_pick_tag = head_tag_q + ov_pick_dist;
-  assign ov_accept = (ov_state_q == OV_IDLE) && !i_rob_empty && !i_flush_spec &&
+  assign ov_accept = (ov_state_q == OV_IDLE) && !i_rob_empty &&
       !flush_spec_d1_q && !i_flush_en && (|ov_pend_q);
 
   // Older-ROB hazard check for the selected tag (pure flop inputs, aligned
@@ -907,22 +907,27 @@ module vec_unit #(
       (i_vcfg_commit_valid || o_vl_trim_valid || i_csr_wb_pending);
   assign ov_hazard = ov_older_rob_hazard || ov_backend_hazard || ov_vl_hazard;
 
-  logic ov_killed, ov_port4_busy, ov_xr_en;
-  assign ov_killed = (ov_state_q != OV_IDLE) && (i_flush_spec || (i_flush_en && is_younger(
-      ov_tag_q, i_flush_tag, i_head_tag
-  )));
+  // Full speculative flushes (i_flush_spec) are already suppressed at the CDB
+  // arbiter via i_kill and take effect here on flush_spec_d1_q; partial
+  // flushes use local head_tag_q (exact for any live uncommitted ov_tag_q and
+  // early-recovery i_flush_tag) so neither i_flush_spec nor i_head_tag enters
+  // the CDB arbiter or ov_state_q paths.
+  logic ov_partial_killed, ov_port4_busy, ov_xr_en;
+  assign ov_partial_killed = (ov_state_q != OV_IDLE) && i_flush_en && is_younger(
+      ov_tag_q, i_flush_tag, head_tag_q
+  );
   assign ov_port4_busy = vmu_busy_q || vhead_port_claim_q;
-  assign ov_xr_en = !ov_port4_busy && !ov_killed &&
+  assign ov_xr_en = !ov_port4_busy && !flush_spec_d1_q && !ov_partial_killed &&
       (((ov_state_q == OV_CHK) && !ov_hazard) || (ov_state_q == OV_RD0));
   assign xr_addr = vmu_busy_q         ? vmu_xr_addr :
                    vhead_port_claim_q ? vhead_vrf_read_addr :
                    (ov_state_q == OV_RD0) ? 5'd0 : ov_vs2;
 
-  assign ov_done = (ov_state_q == OV_OUT) && !ov_killed &&
+  assign ov_done = (ov_state_q == OV_OUT) && !flush_spec_d1_q && !ov_partial_killed &&
       i_grant && !vhead_complete.valid && !vtox_only_complete.valid;
 
-  assign o_idle = vec_backend_idle && (xs == X_IDLE) && (ov_state_q == OV_IDLE) &&
-      !o_vmem_head_shield;
+  assign o_idle = vec_backend_idle && (xs == X_IDLE) &&
+      ((ov_state_q == OV_IDLE) || flush_spec_d1_q) && !o_vmem_head_shield;
 
   // Per-64-bit counts and first set bits of the active mask for vcpop.m/vfirst.m.
   logic [Blocks-1:0][6:0] ov_blk_cnt;
@@ -975,12 +980,12 @@ module vec_unit #(
     ov_red_res = ov_is_first ? first : 64'(cnt);
   end
 
-  // Off-head control state (4 flops driven by i_rst and ov_killed).
+  // Off-head control state (4 flops driven by i_rst, flush_spec_d1_q, partial flush).
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       ov_state_q  <= OV_IDLE;
       ov_s2_cap_q <= 1'b0;
-    end else if (ov_killed) begin
+    end else if (flush_spec_d1_q || ov_partial_killed) begin
       ov_state_q  <= OV_IDLE;
       ov_s2_cap_q <= 1'b0;
     end else begin
@@ -1031,7 +1036,7 @@ module vec_unit #(
 
   always_comb begin
     ov_complete       = '0;
-    ov_complete.valid = (ov_state_q == OV_OUT) && !ov_killed;
+    ov_complete.valid = (ov_state_q == OV_OUT) && !flush_spec_d1_q && !ov_partial_killed;
     ov_complete.tag   = ov_tag_q;
     ov_complete.value = riscv_pkg::FLEN'(ov_res_q);
   end
@@ -1313,6 +1318,10 @@ module vec_unit #(
         );
       assert (!(ov_complete.valid && i_rob_empty))
       else $error("vec_unit: off-head vector-to-scalar result presented on empty ROB");
+      assert (!((ov_state_q != OV_IDLE) && !flush_spec_d1_q && i_flush_en) ||
+              (is_younger(ov_tag_q, i_flush_tag, head_tag_q) ==
+               is_younger(ov_tag_q, i_flush_tag, i_head_tag)))
+      else $error("vec_unit: head_tag_q disagreed with i_head_tag on off-head partial flush");
       assert (!vec_backend_idle_q || vec_backend_idle)
       else $error("vec_unit: registered backend idle disagreed with live backend idle");
       assert (!(alloc_q_valid && i_commit_valid && (i_commit_tag == alloc_q_tag)))
