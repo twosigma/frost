@@ -1162,7 +1162,12 @@ strided, indexed and mixed cached/uncached segment beats across widths,
 requiring `i_unc_port_ready` in the cycle before every beat, alignment/PMA/Svpbmt
 NC/IO and bus-error faults with exact `xtval` and `vstart`, fault-only-first
 trimming, and mid-run interrupt boundaries checking `vstart == last_beat_elem +
-1`). `vec_debug_partial` runs in the Vector programs,
+1`). `test_walk_fault_cause_and_latency` checks page/access fault priority,
+load/store causes, `xtval`, `vstart`, and a single decision edge after a
+registered walker response on either page, including straddling elements and
+partial execution. It covers walker-rejected leaves, permissions, PPN range,
+and non-PMA PBMT faults alongside successful U/S, SUM, MXR, and D controls.
+`vec_debug_partial` runs in the Vector programs,
 memory and strides CI shard in both BRAM and DDR tiers. It checks that partial unit-stride and
 strided vector loads in Debug Mode write the completed elements before a page
 fault re-parks the hart and leave `mstatus.VS` Dirty.

@@ -1111,7 +1111,13 @@ raises a sticky hart fatal error alongside `o_cache_fatal`.
 
 Vector loads and stores reach every region a scalar load or store of the same
 width and kind can (cached DDR, low BRAM, the device windows, and Svpbmt NC/IO
-pages), with scalar PMA, Sv39 permission, and alignment rules. Unit-stride,
+pages), with scalar PMA, Sv39 permission, and alignment rules. Sv39 page and
+access faults determined by the registered walker response, permissions, PPN
+range, and PBMT leave the walk-wait state immediately, with no extra evaluation
+cycle. Cached translations also leave that state immediately. The remaining
+non-PMA PBMT leaves and non-cached PMA leaves register their classification and
+physical page before evaluating the multi-window PMA checks, keeping those
+comparators off the L2TLB response path. Unit-stride,
 whole-register, and mask accesses whose translated span stays in cached DDR
 (`PBMT = PMA`) use `vec_vmu`; if either span page maps to an uncached region,
 or when an element of a strided, indexed, segment, or fault-only-first run

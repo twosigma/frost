@@ -3840,8 +3840,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_head_mmu",
         hdl_toplevel_module="vec_head_mmu",
         description=(
-            "Head vector translation, commit shield, partial faults, mid-run "
-            "interrupt boundaries, and uncached element runs (all forms, "
+            "Head vector translation, walk-fault cause and latency, commit shield, "
+            "partial faults, mid-run interrupt boundaries, and uncached element runs (all forms, "
             "registered grant, Svpbmt NC/IO, faults and IRQ vstart) at VLEN 128"
         ),
         verilator_extra_args=("--assert", "-GVLEN=128"),
@@ -3850,8 +3850,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_head_mmu",
         hdl_toplevel_module="vec_head_mmu",
         description=(
-            "Head vector translation, commit shield, partial faults, mid-run "
-            "interrupt boundaries, and uncached element runs (all forms, "
+            "Head vector translation, walk-fault cause and latency, commit shield, "
+            "partial faults, mid-run interrupt boundaries, and uncached element runs (all forms, "
             "registered grant, Svpbmt NC/IO, faults and IRQ vstart) at VLEN 256"
         ),
         verilator_extra_args=("--assert", "-GVLEN=256"),
@@ -3860,8 +3860,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_head_mmu",
         hdl_toplevel_module="vec_head_mmu",
         description=(
-            "Head vector translation, commit shield, partial faults, mid-run "
-            "interrupt boundaries, and uncached element runs (all forms, "
+            "Head vector translation, walk-fault cause and latency, commit shield, "
+            "partial faults, mid-run interrupt boundaries, and uncached element runs (all forms, "
             "registered grant, Svpbmt NC/IO, faults and IRQ vstart) at VLEN 512"
         ),
         verilator_extra_args=("--assert", "-GVLEN=512"),

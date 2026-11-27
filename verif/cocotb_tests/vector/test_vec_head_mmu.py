@@ -829,6 +829,8 @@ async def _uncached_case(
     translate: int = 0,
     page_map: dict[int, dict[str, int]] | None = None,
     eff_priv_u: int = 0,
+    sum_enabled: int = 0,
+    mxr: int = 0,
     bus_err_beat: int | None = None,
     port_ready_mod: int = 1,
     irq_at_beat: int | None = None,
@@ -874,8 +876,8 @@ async def _uncached_case(
         vrf_read_data=vregs[0],
         translate=translate,
         eff_priv_u=eff_priv_u,
-        sum=0,
-        mxr=0,
+        sum=sum_enabled,
+        mxr=mxr,
         pm_mode=0,
         tlb_invalidate=0,
         walk_req_ready=1,
@@ -922,6 +924,8 @@ async def _uncached_case(
     irq_flushed = False
     exc_info: tuple[int, int, int, int] | None = None
     vmt_range_writes = 0
+    response_cycles: list[int] = []
+    fault_cycle: int | None = None
 
     for cycle in range(2500):
         armed = 0
@@ -984,6 +988,7 @@ async def _uncached_case(
                 "fault_kind": info.get("fault_kind", 0),
             }
             put(dut, walk_resp_valid=1, walk_resp=pack_struct(PTW_RESP_FIELDS, fields))
+            response_cycles.append(cycle)
             walk_resp_at = None
         if vmu_done_at == cycle:
             put(dut, vmu_done=1)
@@ -1002,6 +1007,8 @@ async def _uncached_case(
             put(dut, grant=1)
         await Timer(1, unit="ns")
 
+        if fault_cycle is None and int(dut.fault_vstart_en_q.value):
+            fault_cycle = cycle
         if int(dut.o_walk_req_valid.value):
             assert walk_resp_at is None
             walk_resp_at = (cycle + 2, int(dut.o_walk_vpn.value))
@@ -1120,7 +1127,96 @@ async def _uncached_case(
         "vl_trim": vl_trim,
         "vmt_range_writes": vmt_range_writes,
         "irq_boundary_seen": irq_boundary_seen,
+        "fault_latency": (
+            fault_cycle - response_cycles[-1]
+            if fault_cycle is not None and response_cycles
+            else None
+        ),
     }
+
+
+@cocotb.test()
+async def test_walk_fault_cause_and_latency(dut: Any) -> None:
+    """Registered walker faults keep their priority and take one decision edge."""
+    # Invalid PTEs, A=0, reserved PBMT and misaligned superpages are rejected
+    # by the walker itself. Its registered DFAULT_PAGE is authoritative even
+    # if the remaining payload would otherwise select access fault.
+    page_faults = [
+        {"fault_kind": 2, "ppn": 1 << 30},
+        {"fault_kind": 2, "level": 1, "ppn": 0x83001},
+        {"fault_kind": 2, "pbmt": 3},
+        {"perm_r": 0, "perm_w": 0, "perm_x": 0},
+        {"perm_u": 1},  # S without SUM
+        {"perm_r": 0, "perm_w": 0, "ppn": 1 << 30},
+        {"fault_kind": 3, "pbmt": 1, "perm_r": 0, "perm_w": 0},
+        {"fault_kind": 3, "pbmt": 2, "perm_r": 0, "perm_w": 0},
+    ]
+    access_faults = [
+        {"fault_kind": 3, "perm_r": 0, "perm_w": 0},
+        {"ppn": 1 << 30},
+        {"fault_kind": 3, "pbmt": 1},
+        {"fault_kind": 3, "pbmt": 2},
+    ]
+    for store in (0, 1):
+        insn = (1 << 25) | (10 << 15) | (6 << 12) | (8 << 7) | (0x27 if store else 7)
+        cases = [(leaf, 15 if store else 13) for leaf in page_faults]
+        cases += [(leaf, 7 if store else 5) for leaf in access_faults]
+        if store:
+            cases.append(({"perm_d": 0}, 15))
+        # Both pages, including a straddling element and a nonzero vstart.
+        for fault_page, base, fault_elem, tval, partial in (
+            (0, 0x400FF4, 1, 0x400FF8, False),
+            (1, 0x400FF4, 3, 0x401000, True),
+            (1, 0x400FFA, 1, 0x401000, False),
+        ):
+            for leaf, cause in cases:
+                res = await _uncached_case(
+                    dut,
+                    insn=insn,
+                    base=base,
+                    vl=4,
+                    vstart=1,
+                    eew_log2=2,
+                    store=store,
+                    translate=1,
+                    page_map={0x400 + fault_page: {"ppn": 0x83000, **leaf}},
+                )
+                assert res["exc"] == (cause, tval, 1, fault_elem), (leaf, res)
+                assert res["fault_latency"] == 1, (leaf, res["fault_latency"])
+                assert not res["unc_beats"]
+                assert bool(res["cached_descs"]) == partial
+                if partial:
+                    assert res["cached_descs"][0]["last"] == fault_elem - 1
+
+        # U/S, SUM, MXR and D controls also exercise non-faulting responses.
+        for leaf, user, sum_enabled, mxr, expected_cause in (
+            ({"perm_u": 0}, 1, 0, 0, 15 if store else 13),
+            ({"perm_u": 1}, 1, 0, 0, None),
+            ({"perm_u": 1}, 0, 1, 0, None),
+            ({"perm_r": 0, "perm_x": 1}, 0, 0, 0, None if store else 13),
+            ({"perm_r": 0, "perm_x": 1}, 0, 0, 1, None),
+            ({"perm_d": 0}, 0, 0, 0, 15 if store else None),
+        ):
+            res = await _uncached_case(
+                dut,
+                insn=insn,
+                base=0x400000,
+                vl=2,
+                eew_log2=2,
+                store=store,
+                translate=1,
+                eff_priv_u=user,
+                sum_enabled=sum_enabled,
+                mxr=mxr,
+                page_map={0x400: {"ppn": 0x83000, **leaf}},
+            )
+            assert res["exc"] == (
+                None if expected_cause is None else (expected_cause, 0x400000, 1, 0)
+            )
+            assert bool(res["cached_descs"]) == (expected_cause is None)
+            assert not res["unc_beats"]
+            if expected_cause is not None:
+                assert res["fault_latency"] == 1
 
 
 @cocotb.test()

@@ -270,7 +270,7 @@ module vec_head_mmu #(
     HM_RUN_UNC_PRE,
     HM_RUN_UNC_WAIT,
     HM_RUN_UNC_WB,
-    // Registered evaluation of non-cached Sv39 walk responses
+    // Registered PMA evaluation of non-cached Sv39 leaves
     HM_WALK_EVAL_P0,
     HM_WALK_EVAL_P1
   } hm_state_e;
@@ -725,7 +725,7 @@ module vec_head_mmu #(
   assign walk_resp_match = i_walk_resp_valid && (i_walk_resp.vpn == walk_vpn_q);
   assign walk_pa = ma_pkg::leaf_pa(i_walk_resp.ppn, i_walk_resp.level, cur_check_va);
   // Bare checks and registered non-cached walk evaluations share one local
-  // PMA classifier; live walk responses only test walk_cached_fast. Whenever
+  // PMA classifier; walk responses only test the cached window in WAIT. Whenever
   // !walk_oor (WE_PBMT_NON_PMA / WE_PMA_CHECK), ppn0_q/ppn1_q carry all
   // nonzero PPN bits of walk_pa.
   assign check_pa = eval_from_walk ? XLEN'({checking_p1 ? ppn1_q : ppn0_q, 12'h000}) : cur_check_va;
@@ -767,9 +767,9 @@ module vec_head_mmu #(
       mxr_q
   );
   assign walk_oor = ma_pkg::leaf_ppn_out_of_range(i_walk_resp.ppn);
-  // Fast cached Sv39 check evaluated directly on i_walk_resp (zero added
-  // cycles on cached translations); uncached pages and faults step into
-  // HM_WALK_EVAL_P0/P1 to run multi-window PMA checks from registers.
+  // Fast cached Sv39 check on the registered walker response (zero added
+  // cycles on cached translations). Only non-PMA PBMT leaves and non-cached
+  // PMA leaves step into HM_WALK_EVAL_P0/P1 for local multi-window PMA checks.
   assign walk_cached_fast =
       (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) &&
       walk_perm_ok && !walk_oor &&
@@ -778,8 +778,10 @@ module vec_head_mmu #(
       walk_pa
   );
 
-  // Pre-classify non-PMA walk outcomes (2 bits) on live i_walk_resp without
-  // touching multi-window PMA comparators.
+  // Fault decode uses only registered walker outputs and sampled permissions,
+  // with no PMA comparator. WAIT takes these faults immediately; other leaves
+  // register this classification for EVAL without extending the L2TLB path
+  // through the multi-window PMA classifier.
   walk_eval_kind_e walk_eval_kind_d;
   always_comb begin
     unique case (i_walk_resp.fault_kind)
@@ -1160,17 +1162,28 @@ module vec_head_mmu #(
 
           HM_WALK_WAIT_P0: begin
             fault_vstart_q <= first_p0_elem_q;
+            // Preload the payload while waiting; only a matching fault makes
+            // it valid below. Keep response/PMA decisions off its write enable.
+            fault_cause_q <= (walk_eval_kind_d == WE_PAGE_FAULT) ?
+                             page_fault_cause : access_fault_cause;
+            fault_tval_q <= va_first_q;
             if (walk_reissue_q || i_tlb_invalidate) begin
               walk_reissue_q <= 1'b0;
               state_q        <= HM_WALK_REQ_P0;
             end else if (walk_resp_match) begin
               ppn0_q           <= walk_pa[12+:riscv_pkg::VmtPpnBits];
               walk_eval_kind_q <= walk_eval_kind_d;
+              state_q          <= HM_WALK_EVAL_P0;
               if (walk_cached_fast) begin
                 p0_cached_q <= 1'b1;
                 state_q     <= has_p1_q ? HM_CHECK_P1 : translated_next;
-              end else begin
-                state_q <= HM_WALK_EVAL_P0;
+              end
+              // Fault and cached outcomes are disjoint. A separate fault
+              // decision preserves the cached path's existing write enables.
+              if ((walk_eval_kind_d == WE_PAGE_FAULT) ||
+                  (walk_eval_kind_d == WE_ACCESS_FAULT)) begin
+                fault_vstart_en_q <= 1'b1;
+                state_q <= ff_trim ? HM_RUN_TRIM : HM_FAULT_ARM;
               end
             end
           end
@@ -1254,17 +1267,26 @@ module vec_head_mmu #(
 
           HM_WALK_WAIT_P1: begin
             fault_vstart_q <= first_p1_elem_q;
+            // As on Page 0, preload independently of the response decision.
+            fault_cause_q <= (walk_eval_kind_d == WE_PAGE_FAULT) ?
+                             page_fault_cause : access_fault_cause;
+            fault_tval_q <= p1_tval_q;
             if (walk_reissue_q || i_tlb_invalidate) begin
               walk_reissue_q <= 1'b0;
               state_q        <= HM_WALK_REQ_P1;
             end else if (walk_resp_match) begin
               ppn1_q           <= walk_pa[12+:riscv_pkg::VmtPpnBits];
               walk_eval_kind_q <= walk_eval_kind_d;
+              state_q          <= HM_WALK_EVAL_P1;
               if (walk_cached_fast) begin
                 p1_cached_q <= 1'b1;
                 state_q     <= translated_next;
-              end else begin
-                state_q <= HM_WALK_EVAL_P1;
+              end
+              if ((walk_eval_kind_d == WE_PAGE_FAULT) ||
+                  (walk_eval_kind_d == WE_ACCESS_FAULT)) begin
+                fault_vstart_en_q <= 1'b1;
+                state_q           <= ff_trim ? HM_RUN_TRIM :
+                                     has_p0_only_elems_q ? HM_PARTIAL_ARM : HM_FAULT_ARM;
               end
             end
           end
@@ -1860,6 +1882,10 @@ module vec_head_mmu #(
       end
       if (o_vhead_complete.valid) begin
         p_commit_shield : assert (o_vmem_head_shield && $past(o_vmem_head_shield));
+        p_fault_cause :
+        assert (o_vhead_complete.exception == f_page1_fault &&
+                (!f_page1_fault ||
+                 o_vhead_complete.exc_cause == riscv_pkg::ExcLoadPageFault));
       end
       if ($rose(o_vmem_head_shield)) begin
         p_store_drain : assert ($past(i_sq_committed_empty));
@@ -2104,6 +2130,8 @@ module vec_head_mmu #(
           assert (o_vhead_complete.exception && f_launches == f_fault_elem &&
                   f_dones == f_fault_elem && o_vmem_fault_vstart_valid &&
                   o_vmem_fault_vstart == 16'(f_fault_elem) &&
+                  o_vhead_complete.exc_cause == (f_store ?
+                    riscv_pkg::ExcStorePageFault : riscv_pkg::ExcLoadPageFault) &&
                   o_vhead_complete.value == riscv_pkg::FLEN'(f_fault_tval));
         end
       end
