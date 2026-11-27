@@ -241,9 +241,11 @@ module frost_hart #(
   logic data_memory_cached_read_valid, data_memory_cached_read_ready;
   logic data_memory_cached_write_done, data_memory_cached_write_inflight;
 
-  logic [riscv_pkg::XLEN-1:0] cpu_pc_xlen, cpu_data_mem_addr_xlen;
+  logic [riscv_pkg::XLEN-1:0] cpu_pc_xlen, cpu_data_mem_addr_xlen, cpu_uncached_addr_xlen;
   assign program_counter = cpu_pc_xlen;
   assign data_memory_address = cpu_data_mem_addr_xlen[riscv_pkg::PhysAddrBits-1:0];
+  logic [riscv_pkg::PhysAddrBits-1:0] uncached_memory_address;
+  assign uncached_memory_address = cpu_uncached_addr_xlen[riscv_pkg::PhysAddrBits-1:0];
   logic data_memory_cached_read_error, walk_line_resp_error, iup_resp_error;
   logic uncached_read_request_ready, uncached_read_enable, uncached_read_ready;
   logic uncached_read_valid, uncached_write_done, uncached_write_inflight;
@@ -467,6 +469,7 @@ module frost_hart #(
       .i_cached_write_done(data_memory_cached_write_done),
       .i_cached_write_inflight(data_memory_cached_write_inflight),
       .i_uncached_read_request_ready(uncached_read_request_ready),
+      .o_uncached_addr(cpu_uncached_addr_xlen),
       .o_uncached_read_enable(uncached_read_enable),
       .o_uncached_read_size(uncached_read_size),
       .i_uncached_read_valid(uncached_read_valid),
@@ -991,9 +994,9 @@ module frost_hart #(
       .i_rst,
       .i_read_enable(uncached_read_enable && !i_fatal_error),
       .o_read_ready(uncached_read_request_ready),
-      .i_read_addr(data_memory_address),
+      .i_read_addr(uncached_memory_address),
       .i_read_size(uncached_read_size),
-      .i_read_device(!riscv_pkg::pma_memory_ok(cpu_data_mem_addr_xlen)),
+      .i_read_device(!riscv_pkg::pma_memory_ok(cpu_uncached_addr_xlen)),
       .o_read_valid(uncached_read_valid),
       .i_read_resp_ready(uncached_read_ready),
       .o_read_data(uncached_read_data),
@@ -1002,10 +1005,10 @@ module frost_hart #(
       // latched flag.
       .i_write_enable((|uncached_write_strb) && !i_fatal_error && !o_uncached_fatal),
       .o_write_ready(),
-      .i_write_addr(data_memory_address),
+      .i_write_addr(uncached_memory_address),
       .i_write_size(uncached_write_size),
       .i_write_buffered(uncached_write_buffered),
-      .i_write_device(!riscv_pkg::pma_memory_ok(cpu_data_mem_addr_xlen)),
+      .i_write_device(!riscv_pkg::pma_memory_ok(cpu_uncached_addr_xlen)),
       .i_write_data(data_memory_write_data),
       .i_write_strb(uncached_write_strb),
       .o_write_done(uncached_write_done),

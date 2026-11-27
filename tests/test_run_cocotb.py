@@ -1777,6 +1777,78 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
         include_in_pytest=False,
     ),
+    "vec_uncached_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_uncached_test",
+        nic_mac_clocks=False,
+        description=(
+            "Uncached vector loads and stores across low BRAM, FIFO0/FIFO1/MTIME, "
+            "Svpbmt NC/IO, low-BRAM L0 coherence and LR/SC, faults, and mid-run "
+            "timer interrupts; VLEN 256"
+        ),
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+    ),
+    "vec_uncached_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_uncached_test",
+        nic_mac_clocks=False,
+        description="Uncached vector loads and stores at VLEN 128; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=128"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_uncached_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_uncached_test",
+        nic_mac_clocks=False,
+        description="Uncached vector loads and stores at VLEN 512; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_uncached_grant_test_v256": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_uncached_grant_test",
+        nic_mac_clocks=False,
+        description=(
+            "Buffered scalar low-BRAM stores immediately before uncached vector "
+            "loads and stores across forms and widths, exercising the registered "
+            "uncached-port grant; VLEN 256"
+        ),
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=256"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+    ),
+    "vec_uncached_grant_test_v128": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_uncached_grant_test",
+        nic_mac_clocks=False,
+        description="Buffered scalar store before uncached vector accesses at VLEN 128; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=128"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+        include_in_pytest=False,
+    ),
+    "vec_uncached_grant_test_v512": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_uncached_grant_test",
+        nic_mac_clocks=False,
+        description="Buffered scalar store before uncached vector accesses at VLEN 512; CLI-only",
+        verilator_extra_args=("--assert", "-GVECTOR=1", "-GVLEN=512"),
+        rerun_after_reset=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
+        include_in_pytest=False,
+    ),
     "vec_vtype_handoff_test_v128": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3821,8 +3893,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_head_mmu",
         hdl_toplevel_module="vec_head_mmu",
         description=(
-            "Head vector translation, commit shield, partial faults and mid-run "
-            "interrupt boundaries at VLEN 128"
+            "Head vector translation, walk-fault cause and latency, commit shield, "
+            "partial faults, mid-run interrupt boundaries, and uncached element runs (all forms, "
+            "registered grant, Svpbmt NC/IO, faults and IRQ vstart) at VLEN 128"
         ),
         verilator_extra_args=("--assert", "-GVLEN=128"),
     ),
@@ -3830,8 +3903,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_head_mmu",
         hdl_toplevel_module="vec_head_mmu",
         description=(
-            "Head vector translation, commit shield, partial faults and mid-run "
-            "interrupt boundaries at VLEN 256"
+            "Head vector translation, walk-fault cause and latency, commit shield, "
+            "partial faults, mid-run interrupt boundaries, and uncached element runs (all forms, "
+            "registered grant, Svpbmt NC/IO, faults and IRQ vstart) at VLEN 256"
         ),
         verilator_extra_args=("--assert", "-GVLEN=256"),
     ),
@@ -3839,8 +3913,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.vector.test_vec_head_mmu",
         hdl_toplevel_module="vec_head_mmu",
         description=(
-            "Head vector translation, commit shield, partial faults and mid-run "
-            "interrupt boundaries at VLEN 512"
+            "Head vector translation, walk-fault cause and latency, commit shield, "
+            "partial faults, mid-run interrupt boundaries, and uncached element runs (all forms, "
+            "registered grant, Svpbmt NC/IO, faults and IRQ vstart) at VLEN 512"
         ),
         verilator_extra_args=("--assert", "-GVLEN=512"),
     ),
@@ -6749,10 +6824,10 @@ for _program, (_what, _budget, _cflags) in VECTOR_BRING_UP_PROGRAMS.items():
                 *((("EXTRA_CFLAGS", _cflags),) if _cflags else ()),
             ),
         )
-# Vector loads and stores reach only cached DDR, so a bring-up program whose
-# vector code touches its static data or its stack needs the DDR tier, where a
-# program built with the vector extension has its stack in cached DDR as well:
-# vec_ldst also runs that way.
+# Misaligned vector loads and stores execute only in cached DDR (low BRAM
+# enforces natural alignment), so vec_ldst also runs in the DDR tier where a
+# program built with the vector extension places its static data and stack in
+# cached DDR.
 for _vlen in (128, 256, 512):
     TEST_REGISTRY[f"vec_ldst_ddr_v{_vlen}"] = CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

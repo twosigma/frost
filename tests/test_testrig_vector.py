@@ -275,7 +275,7 @@ def test_vector_directed_replay(
     plan = test_testrig.prepare_inputs(arguments, tmp_path, config)
     trace_dir = tmp_path / "vector"
     assert plan.command == ["-d", str(trace_dir)]
-    expected = (41, instructions + 25874) if vector_directed else (15, instructions)
+    expected = (42, instructions + 26827) if vector_directed else (15, instructions)
     assert (plan.traces, plan.instructions) == expected
     assert len(list(trace_dir.glob("vector_42_*.S"))) == 12
     for family in ("integer", "fp", "memory"):
@@ -299,6 +299,7 @@ def test_vector_directed_replay(
         ("vector_indexed.S", 1924, 645),
         ("vector_fof.S", 326, 208),
         ("vector_vstart_resume.S", 838, 338),
+        ("vector_uncached.S", 953, 493),
         ("vector_int_widen_narrow.S", 1753, 871),
         ("vector_fixed_point.S", 1701, 1206),
         ("vector_fp_single.S", 1446, 1068),
@@ -810,13 +811,16 @@ def _check_vector_store_readbacks(traces: Iterable[Path]) -> None:
             "vector_segment.S",
             "vector_whole_reg.S",
             "vector_vstart_resume.S",
+            "vector_uncached.S",
         ):
             assert stores, f"{trace.name}: expected vector stores"
             _check_vector_mem_store_readbacks(
                 trace,
                 blocks,
                 words,
-                allow_vstart_write=(trace.name == "vector_vstart_resume.S"),
+                allow_vstart_write=(
+                    trace.name in ("vector_vstart_resume.S", "vector_uncached.S")
+                ),
             )
             continue
         if trace.name != "vector_cached_store.S":
@@ -5048,6 +5052,57 @@ def test_vector_vstart_resume_two_sail_agree(tmp_path: Path, vlen: int) -> None:
     traces = tmp_path / "vstart"
     traces.mkdir()
     src = VERIF_DIR / "testrig" / "vector_vstart_resume.S"
+    (traces / src.name).write_bytes(src.read_bytes())
+    result = _compare_two_sail(tmp_path, traces, vlen, vlen)
+    assert result.returncode == 0 and "No Failure" in result.stdout, (
+        result.stdout[-2000:] + result.stderr[-2000:]
+    )
+
+
+def test_vector_uncached_words_match_assembler(tmp_path: Path) -> None:
+    """Every instruction word in vector_uncached.S matches riscv64-linux-gcc."""
+    gcc = shutil.which("riscv64-linux-gcc")
+    objdump = shutil.which("riscv64-linux-objdump")
+    if gcc is None or objdump is None:
+        pytest.skip("riscv64-linux-gcc is not installed (it is in the frost image)")
+    entries = []
+    for line in (VERIF_DIR / "testrig" / "vector_uncached.S").read_text().splitlines():
+        match = WORD.match(line)
+        if match:
+            entries.append((int(match.group(1), 16), match.group(2)))
+    source = tmp_path / "uncached.S"
+    source.write_text("\n".join(text.split("  #")[0] for _, text in entries) + "\n")
+    obj = tmp_path / "uncached.o"
+    subprocess.run(
+        [
+            gcc,
+            "-march=rv64imafdv_zicsr",
+            "-mabi=lp64d",
+            "-c",
+            str(source),
+            "-o",
+            str(obj),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    raw = subprocess.run(
+        [objdump, "-d", str(obj)], check=True, capture_output=True, text=True
+    ).stdout
+    words = [
+        int(match.group(1), 16)
+        for match in re.finditer(r"^\s+[0-9a-f]+:\s+([0-9a-f]{8})\s", raw, re.MULTILINE)
+    ]
+    assert words == [word for word, _ in entries]
+
+
+@pytest.mark.parametrize("vlen", vector.VECTOR_LENGTHS)
+def test_vector_uncached_two_sail_agree(tmp_path: Path, vlen: int) -> None:
+    """Two Sail instances agree on vector_uncached.S at each VLEN."""
+    traces = tmp_path / "uncached"
+    traces.mkdir()
+    src = VERIF_DIR / "testrig" / "vector_uncached.S"
     (traces / src.name).write_bytes(src.read_bytes())
     result = _compare_two_sail(tmp_path, traces, vlen, vlen)
     assert result.returncode == 0 and "No Failure" in result.stdout, (
