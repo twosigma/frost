@@ -1289,11 +1289,13 @@ module vec_unit #(
       end
       assert (!(push && (count_q == ($clog2(Depth) + 1)'(Depth))))
       else $error("vec_unit: VIQ overflow on cpush_q push");
-      assert (!alloc_q_live || !alloc_q_is_varith ||
-              ((alloc_q_insn[11:7] & ((5'd1 << alloc_wlog2) - 5'd1)) == 5'd0))
+      assert (!push ||
+              ((cpush_vd_q & ((5'd1 << cpush_wlog2_q) - 5'd1)) == 5'd0))
       else
         $error(
-            "vec_unit: misaligned varith vd %0d for wr_log2 %0d", alloc_q_insn[11:7], alloc_wlog2
+            "vec_unit: misaligned committed varith vd %0d for wr_log2 %0d",
+            cpush_vd_q,
+            cpush_wlog2_q
         );
       assert (!vhead_vrf_read_en || vhead_port_claim_q)
       else $error("vec_unit: vhead_vrf_read_en asserted without vhead_port_claim_q");
