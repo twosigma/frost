@@ -15,6 +15,7 @@
 """Check flash images, boot-stage bounds and programming without hardware."""
 
 import ctypes
+import os
 from pathlib import Path
 import re
 import struct
@@ -151,8 +152,10 @@ def test_flash_prepare_does_not_discover_hardware(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Preparation uses argv paths and never acquires a cable."""
+    comp_dir = tmp_path / "comps"
+    comp_dir.mkdir()
     boot = tmp_path / "boot image.bin"
-    boot.write_bytes(bytes(0x400000))
+    packer.build_flash_image(tmp_path, boot, components(comp_dir))
     bit = tmp_path / "fpga image.bit"
     bit.write_bytes(b"bit")
     calls: list[list[str]] = []
@@ -355,3 +358,422 @@ def test_flash_packer_vector_selects_vector_dtb(
     )
     packer.main()
     assert captured == [({}, True)]
+
+
+def test_flash_vlen_selection_and_mismatch_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Flash Makefile, make_flash_image.py, and program_flash.py support only default VLEN 256."""
+    # 1. sw/uboot/Makefile allows VLEN=256 (or omitted) with VECTOR=1 and refuses non-256 VLENs.
+    for make_vars, expected_target, expected_err in (
+        (["VECTOR=1", "VLEN=256"], "frost_vector.dtb", None),
+        (["VECTOR=1"], "frost_vector.dtb", None),
+        (
+            ["VECTOR=1", "VLEN=128"],
+            None,
+            "non-default VLENs are supported over JTAG loading only",
+        ),
+        (
+            ["VECTOR=1", "VLEN=512"],
+            None,
+            "non-default VLENs are supported over JTAG loading only",
+        ),
+        (
+            ["VECTOR=1", "VLEN=64"],
+            None,
+            "non-default VLENs are supported over JTAG loading only",
+        ),
+        (["VECTOR=0", "VLEN=128"], None, "VLEN requires VECTOR=1"),
+    ):
+        res = subprocess.run(
+            ["make", "-n", "-C", str(ROOT / "sw/uboot"), "dtb", *make_vars],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if expected_err is not None:
+            assert res.returncode != 0
+            assert expected_err in res.stderr
+        else:
+            assert expected_target is not None
+            assert res.returncode == 0, res.stderr
+            assert expected_target in res.stdout
+
+    # Ambient VLEN in the caller environment must not break scalar U-Boot builds.
+    ambient_res = subprocess.run(
+        ["make", "-n", "-C", str(ROOT / "sw/uboot"), "dtb", "VECTOR=0"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={**os.environ, "VLEN": "512"},
+    )
+    assert ambient_res.returncode == 0, ambient_res.stderr
+    assert "frost.dtb" in ambient_res.stdout
+
+    # 2. Build DTBs for scalar, VLEN=256, and VLEN=128/512.
+    import zlib
+
+    meta_mod = load_module("vcu118_meta_flash_test", "fpga/common/vcu118_metadata.py")
+    packer_mod = load_module(
+        "frost_boot_image_flash_test",
+        "linux/buildroot-external/board/frost/frost_boot_image.py",
+    )
+    fake_repo = tmp_path / "repo"
+    for part in packer.PARTITIONS:
+        target = fake_repo / str(part["default_file"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"X" * 64)
+
+    dtb_blobs: dict[int, bytes] = {}
+    for vlen in (128, 256, 512):
+        sub = tmp_path / f"dtb_{vlen}"
+        sub.mkdir()
+        dts = packer_mod.gen_dts(
+            clk_hz=162_500_000,
+            initrd_range=None,
+            bootargs="",
+            model=f"flash-v{vlen}",
+            board="vcu118",
+            vector=True,
+            vlen=vlen,
+        )
+        dtb_blobs[vlen] = packer_mod.compile_dtb(dts, sub, "dtc")
+    (fake_repo / packer.VECTOR_DTB_FILE).write_bytes(dtb_blobs[256])
+    (fake_repo / "dtb_128.dtb").write_bytes(dtb_blobs[128])
+    (fake_repo / "dtb_512.dtb").write_bytes(dtb_blobs[512])
+
+    scalar_sub = tmp_path / "dtb_scalar"
+    scalar_sub.mkdir()
+    scalar_bytes = packer_mod.compile_dtb(
+        (ROOT / "boards/vcu118/dts/frost_vcu118.dts").read_text(), scalar_sub, "dtc"
+    )
+    (fake_repo / "boards/vcu118/frost.dtb").write_bytes(scalar_bytes)
+
+    # make_flash_image.py packs frost_vector.dtb for --vector / --vector --vlen 256.
+    flash_256 = tmp_path / "flash_256.bin"
+    packer.build_flash_image(fake_repo, flash_256, vector=True, vlen=256)
+    meta_mod.verify_dtb_vector_config(
+        meta_mod.extract_dtb_from_flash_image(flash_256),
+        expected_vector=True,
+        expected_vlen=256,
+        source="flash_256",
+    )
+    flash_scalar = tmp_path / "flash_scalar.bin"
+    packer.build_flash_image(fake_repo, flash_scalar, vector=False)
+
+    # make_flash_image.py refuses non-256 --vlen (both helper and CLI), --vlen without
+    # --vector, and non-256 --dtb payloads with a clear JTAG-only message.
+    for bad_vlen in (128, 512):
+        with pytest.raises(
+            ValueError, match="non-default VLENs are supported over JTAG loading only"
+        ):
+            packer.build_flash_image(
+                fake_repo, tmp_path / f"bad_{bad_vlen}.bin", vector=True, vlen=bad_vlen
+            )
+        with monkeypatch.context() as mp:
+            mp.setattr(
+                sys,
+                "argv",
+                [
+                    "make_flash_image.py",
+                    "-o",
+                    str(tmp_path / f"cli_{bad_vlen}.bin"),
+                    "--vector",
+                    "--vlen",
+                    str(bad_vlen),
+                ],
+            )
+            with pytest.raises(SystemExit) as stopped:
+                packer.main()
+            assert stopped.value.code == 2
+            assert (
+                "non-default VLENs are supported over JTAG loading only"
+                in capsys.readouterr().err
+            )
+
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            sys,
+            "argv",
+            ["make_flash_image.py", "-o", str(tmp_path / "bad.bin"), "--vlen", "256"],
+        )
+        with pytest.raises(SystemExit) as stopped:
+            packer.main()
+        assert stopped.value.code == 2
+        assert "--vlen requires --vector" in capsys.readouterr().err
+
+    with pytest.raises(
+        ValueError, match="non-default VLENs are supported over JTAG loading only"
+    ):
+        packer.build_flash_image(
+            fake_repo,
+            tmp_path / "mismatch_dtb.bin",
+            {"DTB": fake_repo / "dtb_128.dtb"},
+            vector=True,
+        )
+
+    # Craft 4 MiB flash images containing non-256 (VLEN-128 / VLEN-512) DTB partitions.
+    dtb_off = 0x200000
+    flash_128 = tmp_path / "flash_128.bin"
+    flash_512 = tmp_path / "flash_512.bin"
+    for target_flash, dtb_bytes in (
+        (flash_128, dtb_blobs[128]),
+        (flash_512, dtb_blobs[512]),
+    ):
+        raw_non256 = bytearray(flash_256.read_bytes())
+        hdr = packer.make_header(
+            0x8220_0000, 0x8220_0000, len(dtb_bytes), zlib.crc32(dtb_bytes)
+        )
+        raw_non256[dtb_off : dtb_off + 0x100000] = b"\xff" * 0x100000
+        raw_non256[dtb_off : dtb_off + packer.HEADER_SIZE + len(dtb_bytes)] = (
+            hdr + dtb_bytes
+        )
+        target_flash.write_bytes(raw_non256)
+
+    # program_flash.py rejects non-256 bitstreams, --vlen != 256, and non-256 boot images
+    # even when --fpga-image has no metadata sidecar and no --vlen is passed.
+    bit_128 = tmp_path / "vcu118_frost_128.bit"
+    bit_128.write_bytes(b"v128-bit")
+    meta_mod.write_vcu118_bitstream_metadata(
+        bit_128, vector=True, vlen=128, cpu_clock_hz=162_500_000
+    )
+    bit_256 = tmp_path / "vcu118_frost_256.bit"
+    bit_256.write_bytes(b"v256-bit")
+    meta_mod.write_vcu118_bitstream_metadata(
+        bit_256, vector=True, vlen=256, cpu_clock_hz=162_500_000
+    )
+    bit_no_sidecar = tmp_path / "unannotated.bit"
+    bit_no_sidecar.write_bytes(b"unannotated-bit")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            programmer, "select_target", lambda *a, **k: pytest.fail("cable touched")
+        )
+        mp.setattr(
+            programmer.subprocess, "run", lambda *a, **k: pytest.fail("vivado touched")
+        )
+        for bad_argv in (
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_256),
+                "--fpga-image",
+                str(bit_128),
+                "--output-dir",
+                str(tmp_path / "out_bit128"),
+                "--prepare-only",
+            ],
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_256),
+                "--boot-only",
+                "--vlen",
+                "128",
+                "--output-dir",
+                str(tmp_path / "out_boot_v128_flag"),
+                "--prepare-only",
+            ],
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_256),
+                "--fpga-image",
+                str(bit_256),
+                "--vlen",
+                "512",
+                "--output-dir",
+                str(tmp_path / "out_fpga_v512_flag"),
+                "--prepare-only",
+            ],
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_128),
+                "--boot-only",
+                "--output-dir",
+                str(tmp_path / "out_boot128_img"),
+                "--prepare-only",
+            ],
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_128),
+                "--fpga-image",
+                str(bit_no_sidecar),
+                "--output-dir",
+                str(tmp_path / "out_nosidecar_128"),
+                "--prepare-only",
+            ],
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_512),
+                "--fpga-image",
+                str(bit_no_sidecar),
+                "--output-dir",
+                str(tmp_path / "out_nosidecar_512"),
+                "--prepare-only",
+            ],
+        ):
+            mp.setattr(sys, "argv", bad_argv)
+            with pytest.raises(SystemExit) as stopped:
+                programmer.main()
+            assert stopped.value.code == 2
+            assert (
+                "non-default VLENs are supported over JTAG loading only"
+                in capsys.readouterr().err
+            )
+
+        # Mismatched scalar boot image vs VLEN-256 bitstream is also refused.
+        mp.setattr(
+            sys,
+            "argv",
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_scalar),
+                "--fpga-image",
+                str(bit_256),
+                "--output-dir",
+                str(tmp_path / "out_scalar_mismatch"),
+                "--prepare-only",
+            ],
+        )
+        with pytest.raises(SystemExit) as stopped:
+            programmer.main()
+        assert stopped.value.code == 2
+        assert "requires 'v'" in capsys.readouterr().err
+
+        # Default VLEN-256 --boot-only and --fpga-image prepare succeed cleanly without touching hardware.
+        for ok_argv in (
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_256),
+                "--boot-only",
+                "--output-dir",
+                str(tmp_path / "out_boot256_ok"),
+                "--prepare-only",
+            ],
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_256),
+                "--fpga-image",
+                str(bit_256),
+                "--vlen",
+                "256",
+                "--output-dir",
+                str(tmp_path / "out_fpga256_ok"),
+                "--prepare-only",
+            ],
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_scalar),
+                "--boot-only",
+                "--output-dir",
+                str(tmp_path / "out_boot_scalar_ok"),
+                "--prepare-only",
+            ],
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_256),
+                "--fpga-image",
+                str(bit_no_sidecar),
+                "--output-dir",
+                str(tmp_path / "out_nosidecar_256_ok"),
+                "--prepare-only",
+            ],
+            [
+                "program_flash.py",
+                "--boot-image",
+                str(flash_scalar),
+                "--fpga-image",
+                str(bit_no_sidecar),
+                "--output-dir",
+                str(tmp_path / "out_nosidecar_scalar_ok"),
+                "--prepare-only",
+            ],
+        ):
+            prep_calls: list[list[str]] = []
+            mp.setattr(
+                programmer.subprocess, "run", lambda cmd, **k: prep_calls.append(cmd)
+            )
+            mp.setattr(sys, "argv", ok_argv)
+            programmer.main()
+            assert len(prep_calls) == 1 and prep_calls[0][-4] == "prepare"
+
+    # Damaged DTB partition FRST headers (bad magic or bad version) are refused
+    # before Vivado both with and without --vlen.
+    bad_magic = tmp_path / "bad_magic.bin"
+    raw_bad_magic = bytearray(flash_256.read_bytes())
+    raw_bad_magic[dtb_off : dtb_off + 4] = b"NOPE"
+    bad_magic.write_bytes(raw_bad_magic)
+
+    bad_version = tmp_path / "bad_version.bin"
+    raw_bad_ver = bytearray(flash_256.read_bytes())
+    raw_bad_ver[dtb_off + 4 : dtb_off + 8] = struct.pack("<I", 99)
+    bad_version.write_bytes(raw_bad_ver)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            programmer, "select_target", lambda *a, **k: pytest.fail("cable touched")
+        )
+        mp.setattr(
+            programmer.subprocess, "run", lambda *a, **k: pytest.fail("vivado touched")
+        )
+        for bad_boot in (bad_magic, bad_version):
+            for bad_argv in (
+                [
+                    "program_flash.py",
+                    "--boot-image",
+                    str(bad_boot),
+                    "--fpga-image",
+                    str(bit_no_sidecar),
+                    "--output-dir",
+                    str(tmp_path / "out_damaged_fpga"),
+                    "--prepare-only",
+                ],
+                [
+                    "program_flash.py",
+                    "--boot-image",
+                    str(bad_boot),
+                    "--boot-only",
+                    "--output-dir",
+                    str(tmp_path / "out_damaged_bootonly"),
+                    "--prepare-only",
+                ],
+                [
+                    "program_flash.py",
+                    "--boot-image",
+                    str(bad_boot),
+                    "--boot-only",
+                    "--vlen",
+                    "256",
+                    "--output-dir",
+                    str(tmp_path / "out_damaged_bootonly_v256"),
+                    "--prepare-only",
+                ],
+                [
+                    "program_flash.py",
+                    "--boot-image",
+                    str(bad_boot),
+                    "--fpga-image",
+                    str(bit_no_sidecar),
+                    "--vlen",
+                    "256",
+                    "--output-dir",
+                    str(tmp_path / "out_damaged_fpga_v256"),
+                    "--prepare-only",
+                ],
+            ):
+                mp.setattr(sys, "argv", bad_argv)
+                with pytest.raises(SystemExit) as stopped:
+                    programmer.main()
+                assert stopped.value.code == 2
+                assert "invalid FRST header" in capsys.readouterr().err

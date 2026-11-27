@@ -21,9 +21,8 @@
  * top-of-stack pointer, plus a saturating count of valid entries. A push onto
  * a full stack overwrites the oldest entry.
  *
- * branch_prediction_controller reads the top entry as the target of a BTB hit
- * typed as a return, and IF drives the operations for the packets PD takes
- * whose used prediction came from a typed entry, and for the calls and
+ * fetch_btb_2w reads the top entry as the target of a BTB hit
+ * typed as a return, and IF drives the operations for the packets whose used prediction came from a typed entry, and for the calls and
  * returns PD redirects for the backing BTB:
  *
  *   push       a call: write the link address above the top

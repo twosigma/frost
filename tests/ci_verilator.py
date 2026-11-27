@@ -180,6 +180,12 @@ VERILATOR_MATRIX: dict[str, Any] = {
             "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
             "pytest_filter": "[store_fill_bench]",
         },
+        {
+            "name": "Real Programs (Node reuse)",
+            "coverage": [],
+            "pytest_mark": "cocotb and cocotb_real_program and not coremark_pro",
+            "pytest_filter": "[node_reuse_test]",
+        },
         # One register stage between the hart and the cluster memory
         # (MEMORY_LINK_STAGES=1).
         {
@@ -357,6 +363,7 @@ VERILATOR_MATRIX: dict[str, Any] = {
                 "[cbo_zero_pages_thrash] or [cbo_zero_pages_thrash_sync] or "
                 "[cbo_zero_pages_board] or [cbo_zero_pages_board_ddr] or "
                 "[cbo_zero_bench] or [full_line_test] or [store_fill_bench] or "
+                "[node_reuse_test] or "
                 "[fencei_jit_bench] or [ddr_bench_link1] or [ddr_atomic_test_link1] or "
                 "[ddr_mlp_test_link1] or [coremark_link1] or [csr_test_link1] or "
                 "[dma_torture_link1] or [ptw_coherence_test_link1] or "

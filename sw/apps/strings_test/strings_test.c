@@ -17,6 +17,7 @@
 /** Tests for the in-tree string, character and integer-conversion routines. */
 
 #include "ctype.h"
+#include "memcpy_check.h"
 #include "stdlib.h"
 #include "string.h"
 #include "uart.h"
@@ -81,6 +82,29 @@ static void test_memcpy(void)
 
     char *ret = memcpy(dst, src, 5);
     check("return value", ret == dst);
+}
+
+/* Lengths 0 to 17 and around the 16, 32, 64 and 80 byte block boundaries, at
+ * every src and dst offset 0 to 7, with guard bytes and a byte-copy reference
+ * (see memcpy_check.h). The full 0 to 80 sweep is too slow for the RTL
+ * simulation; tests/test_libc_memcpy.py runs it under Spike. */
+static unsigned char check_src[80 + 2 * MEMCPY_CHECK_GUARD + 8] __attribute__((aligned(16)));
+static unsigned char check_dst[80 + 2 * MEMCPY_CHECK_GUARD + 8] __attribute__((aligned(16)));
+
+static void test_memcpy_memset_exhaustive(void)
+{
+    uart_printf("\n=== memcpy and memset, all lengths and offsets ===\n");
+
+    uint32_t copy_bad = 0;
+    uint32_t fill_bad = 0;
+    for (size_t n = 0; n <= 80; n++) {
+        if (n > 17 && n != 31 && n != 32 && n != 33 && n != 63 && n != 64 && n != 65 && n != 80)
+            continue;
+        copy_bad += memcpy_check_one(memcpy, check_src, check_dst, n);
+        fill_bad += memset_check_one(memset, check_dst, n);
+    }
+    check("memcpy block-edge lengths, offsets 0-7", copy_bad == 0);
+    check("memset block-edge lengths, offsets 0-7", fill_bad == 0);
 }
 
 static void test_memmove(void)
@@ -540,6 +564,7 @@ int main(void)
 
     test_memset();
     test_memcpy();
+    test_memcpy_memset_exhaustive();
     test_memmove();
     test_memcmp();
     test_strlen();

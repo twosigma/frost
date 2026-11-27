@@ -61,19 +61,15 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("l0_store_boundary_twin", "boundary_twin"): 60,
     ("coherence_store_bank", "coh_store_bank_class_bmc"): 3600,
     ("coherence_dma_ingress", "coh_dma_ingress_soc_prove"): 3120,
-    ("pd_target_candidate_twin", "pdt_twin"): 60,
     ("decoded_bundle_queue_twin", "dbq_twin"): 60,
     ("cached_tier_adapter_twin", "cached_tier_twin"): 60,
     ("cached_tier_adapter_twin", "cached_tier_unsplit"): 60,
     ("coherent_store_pma_twin", "store_pma_twin_ddr30"): 60,
     ("coherent_store_pma_twin", "store_pma_twin_ddr31"): 60,
-    ("control_flow_tracker_twin", "cft_twin"): 60,
     ("data_mem_request_router_twin", "router_twin"): 60,
     ("csr_file_twin", "csr_twin"): 60,
     ("csr_file_twin", "csr_twin_vector"): 60,
     ("fp_engine_twin", "fp_engine_twin"): 60,
-    ("pc_controller_twin", "pc_controller_twin"): 120,
-    ("pc_controller_twin", "pc_controller_twin_slot2"): 120,
     ("store_queue_twin", "sq_twin"): 120,
     ("store_queue_twin", "sq_twin_cpu"): 120,
     ("id_stage_kill_equiv", "id_kill_equiv"): 120,
@@ -88,7 +84,6 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d_twin", "l1d_twin_multi"): 600,
     ("coherence_l1d_twin", "l1d_twin_stream"): 600,
     ("reservation_station_twin", "rs_twin_indexed"): 600,
-    ("branch_predictor_twin", "bp_twin"): 900,
     ("coherence_home_twin", "home_twin_small"): 600,
     ("coherence_home_twin", "home_twin_four"): 2400,
     ("coherence_home_twin", "home_twin_addr40"): 600,
@@ -193,7 +188,10 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_store_boundary", "bmc_intervening_other_value"): 15840,
     ("coherence_store_boundary", "bmc_intervening_fatal"): 1200,
     ("coherence_store_boundary", "bmc_amo_same"): 6600,
-    ("coherence_store_boundary", "bmc_amo_other"): 9600,
+    ("coherence_store_boundary", "bmc_amo_other"): 6900,
+    ("coherence_store_boundary", "bmc_amo_other_home_state"): 600,
+    ("coherence_store_boundary", "bmc_amo_other_home_id"): 13800,
+    ("coherence_store_boundary", "bmc_amo_other_c2b"): 5400,
     ("coherence_store_boundary", "bmc_amo_same_owner"): 3000,
     ("coherence_store_boundary", "bmc_amo_same_fatal"): 3000,
     ("coherence_store_boundary", "bmc_amo_other_fatal"): 4800,
@@ -356,6 +354,9 @@ FORMAL_TARGETS = [
             "bmc_amo_same_fatal",
             "prove_amo_same_fatal_sticky",
             "bmc_amo_other",
+            "bmc_amo_other_home_state",
+            "bmc_amo_other_home_id",
+            "bmc_amo_other_c2b",
             "bmc_amo_other_fatal",
             "prove_amo_other_fatal_sticky",
             "bmc_sc",
@@ -937,12 +938,6 @@ FORMAL_TARGETS = [
         tasks=("bmc", "bmc_cpu"),
     ),
     FormalTarget(
-        "pc_pending_capture.sby",
-        "Pending-prediction capture matches reference clear/set/hold priority, including "
-        "walked-past entries",
-        tasks=("bmc", "bmc_integrated"),
-    ),
-    FormalTarget(
         "rs_issue_clear.sby",
         "RS second-issue entry clearing matches the reference across station sizes",
         tasks=("bmc", "bmc4", "bmc8", "bmc16", "bmc32"),
@@ -952,11 +947,6 @@ FORMAL_TARGETS = [
         "Dispatch CDB deferral matches the reference with insertion-time repair on or "
         "off",
         tasks=("bmc", "bmc_repair"),
-    ),
-    FormalTarget(
-        "control_flow_holdoff.sby",
-        "Reset and redirect holdoffs match the reference with late prediction flags",
-        tasks=("bmc",),
     ),
     FormalTarget(
         "rob_retire_stall.sby",
@@ -980,17 +970,6 @@ FORMAL_TARGETS = [
         "Sscofpmf counter overflow, OF stickiness, inhibits, privilege attribution "
         "and LCOFIP updates hold from arbitrary state",
         tasks=("prove", "prove_integrated", "prove_perf_off"),
-    ),
-    FormalTarget(
-        "pc_increment_relation.sby",
-        "PC increment comparisons and selection match full-width arithmetic, including "
-        "wraparound",
-        tasks=("generic32", "generic64"),
-    ),
-    FormalTarget(
-        "pc_increment_holdoff.sby",
-        "Sequential fetch PCs match the reference under reset and redirect holdoffs",
-        tasks=("bmc", "bmc_xilinx"),
     ),
     FormalTarget(
         "rs_raw_pretag.sby",
@@ -1167,17 +1146,6 @@ FORMAL_TARGETS = [
     FormalTarget(
         "lq_cached_hold.sby",
         "Cached-load hold state matches the full slot-mask reference",
-        tasks=("bmc",),
-    ),
-    FormalTarget(
-        "prediction_metadata_output.sby",
-        "Prediction taken bits match the reference and apply only to the matching "
-        "packet",
-        tasks=("bmc",),
-    ),
-    FormalTarget(
-        "c_ext_buffer_next.sby",
-        "Compressed-instruction slot-2 buffer updates match reference priority",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -1663,12 +1631,6 @@ FORMAL_TARGETS = [
         tasks=("prove",),
     ),
     FormalTarget(
-        "served_window_coverage.sby",
-        "Per-provider fetch-window coverage and guard match full-address and "
-        "aligner references across portable/Xilinx twins for 32/64-bit addresses",
-        tasks=("bmc", "bmc_xilinx", "bmc_32", "bmc_32_xilinx", "prove", "cover"),
-    ),
-    FormalTarget(
         "rs_primary_payload.sby",
         "Primary RS payload storage and selection match the reference",
         tasks=("bmc16", "bmc8", "bmc4", "prove"),
@@ -1841,11 +1803,6 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover", "bmc_256", "cover_256"),
     ),
     FormalTarget(
-        "branch_prediction_alias.sby",
-        "Branch-prediction slot aliases match base-PC offset arithmetic",
-        tasks=("bmc",),
-    ),
-    FormalTarget(
         "backing_btb.sby",
         "Backing BTB lookups match a mirror of its sets, every set holds each "
         "valid tag once, a redirect drops held and outstanding reads, and training holds current "
@@ -1888,6 +1845,12 @@ FORMAL_TARGETS = [
         "backing_btb_twin.sby",
         "Every backing lookup result, including misses, held and shifted reads, "
         "and the pins of all five RAMs match the original backing BTB",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "backing_btb_precompare_twin.sby",
+        "Backing BTB with F0 window tag pre-comparison matches post-compare "
+        "on all legacy outputs, RAM pins, shared state, and four-halfword window outputs",
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
@@ -1963,19 +1926,8 @@ FORMAL_TARGETS = [
         "if_slot2_precompute.sby",
         "IF precomputed slot-2 TAGE coverage, lookup select, branch flag, target "
         "candidates, PC step, and bubble/fault pairing match direct references "
-        "across live and stall-replayed packets",
+        "across empty bypass, partial bypass, and queued packets",
         tasks=("if_slot2_precompute_bmc", "if_slot2_precompute_cover"),
-    ),
-    FormalTarget(
-        "slot2_prediction_capture.sby",
-        "A staged slot-2 candidate and its metadata survive stalls, are consumed "
-        "only with replay, and are cancelled by reset or recovery",
-        tasks=("prove", "cover"),
-    ),
-    FormalTarget(
-        "c_ext_state_cofactor.sby",
-        "Compressed-instruction buffer state matches reference handoff priority",
-        tasks=("bmc",),
     ),
     FormalTarget(
         "immu_page_offset.sby",
@@ -2009,91 +1961,27 @@ FORMAL_TARGETS = [
         tasks=("bmc", "bmc_1g", "bmc_64g", "bmc_128g", "bmc_xlen32", "bmc_xlen72"),
     ),
     FormalTarget(
-        "fetch_pc_mux.sby",
-        "Fetch-PC prediction selection matches reference priority",
-        tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
-    ),
-    FormalTarget(
-        "fetch_redirect.sby",
-        "Registered fetch redirects match reference selection",
-        tasks=("bmc", "prove", "cover"),
-    ),
-    FormalTarget(
-        "pc_redirect_catchup_producer.sby",
-        "PC-controller catch-up redirects satisfy the consumer requirements",
-        tasks=("x32", "x64", "x66"),
-    ),
-    FormalTarget(
-        "pc_redirect_catchup_consumer.sby",
-        "Fetch redirects match the reference when sequential catch-up requests are "
-        "omitted",
-        tasks=("prove",),
-    ),
-    FormalTarget(
         "pc_tage_events.sby",
-        "Registered history events match PC-load qualification",
+        "Decoupled fetch PC priority, load/hold, registered history events, and retarget pulses match reference",
         tasks=("pc_tage_events_prove", "pc_tage_events_cover"),
     ),
     FormalTarget(
-        "pc_register_mux.sby",
-        "Architectural PC and pending-relation selection match reference priority",
-        tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
-    ),
-    FormalTarget(
-        "pc_holdoff_cofactor.sby",
-        "Pending-fetch holdoff enables match the reference",
-        tasks=("bmc",),
-    ),
-    FormalTarget(
-        "pc_holdoff_tag.sby",
-        "Captured pending-prediction tags preserve reference holdoff behavior",
-        tasks=("prove", "prove_xlen32", "prove_xlen72", "cover"),
-    ),
-    FormalTarget(
-        "btb_pending_relation.sby",
-        "Raw slot-2 relations match per-candidate targets including uncovered rows",
-        tasks=("bmc", "bmc_btb_index1", "bmc_btb_index3"),
-    ),
-    FormalTarget(
-        "btb_tag_compare.sby",
-        "Grouped BTB lookup and update comparisons match full-width tags",
-        tasks=("bmc", "bmc_small_btb"),
-    ),
-    FormalTarget(
-        "branch_prediction_disable.sby",
-        "Branch-prediction guards and metadata obey staged and live disable rules, "
-        "and slot-2 target relations match direct compares",
-        tasks=("bmc",),
-    ),
-    FormalTarget(
         "btb_invalidate_hold.sby",
-        "BTB invalidate holds for four cycles, clears every slot-1 and slot-2 valid "
-        "array and staged valid flop, and drops updates arriving during the hold",
+        "BTB invalidate holds for four cycles in decoupled if_stage, clears both valid "
+        "banks of fetch_btb_2w, and drops updates arriving during the hold",
         tasks=("prove", "cover"),
     ),
     FormalTarget(
-        "prediction_handoff.sby",
-        "Pending-prediction handoff preserves slot-2 veto and state masking",
-        tasks=("bmc", "cover", "prove"),
-    ),
-    FormalTarget(
-        "prediction_release.sby",
-        "Pending-prediction release preserves state masking, fetch holdoffs, and the "
-        "registered PC relations, including walked-past entries, and the instruction "
-        "buffer takes only pc_reg's word",
-        tasks=("bmc", "cover", "prove"),
-    ),
-    FormalTarget(
         "if_prediction_walk_past.sby",
-        "Fetch stage preserves pc_reg continuity and emits no real packet while "
-        "post-prediction holdoff holds pc_reg, including walked-past pending predictions; "
-        "covers real slot-2 packets, an indirect hit after a reserved compressed parcel, and a hit across the target-address region",
+        "Decoupled fetch stage enforces false-BTB resteer, slot-2 ordering, drain-availability exactness, and emitted PC continuity; "
+        "covers interior-halfword false-BTB resteer, real slot-2 packets, an indirect hit after a reserved compressed parcel, and a hit across the target-address region",
         tasks=("bmc", "continuity", "cover"),
     ),
     FormalTarget(
-        "prediction_metadata_tracker.sby",
-        "Prediction validity and payloads stay with the matching packet",
-        tasks=("bmc", "cover", "prove"),
+        "fetch_parcel_queue.sby",
+        "Decoupled front-end parcel queue preserves FIFO parcel order, metadata "
+        "ownership, 0-cycle empty and partial bypass, stop-fetch threshold, and flush clearing",
+        tasks=("bmc", "cover"),
     ),
     FormalTarget(
         "fp_shim.sby",
@@ -2253,32 +2141,9 @@ FORMAL_TARGETS = [
         tasks=("fp_engine_twin",),
     ),
     FormalTarget(
-        "control_flow_tracker_twin.sby",
-        "Control-flow tracker: primitive and portable forms are equivalent.",
-        tasks=("cft_twin",),
-    ),
-    FormalTarget(
-        "pd_target_candidate_twin.sby",
-        "Predecode target candidate: primitive and portable forms are equivalent.",
-        tasks=("pdt_twin",),
-    ),
-    FormalTarget(
         "data_mem_request_router_twin.sby",
         "Data memory request router: primitive and portable forms are equivalent.",
         tasks=("router_twin",),
-    ),
-    FormalTarget(
-        "branch_predictor_twin.sby",
-        "Branch predictor: primitive and portable forms are equivalent.",
-        tasks=("bp_twin",),
-    ),
-    FormalTarget(
-        "pc_controller_twin.sby",
-        "PC controller: primitive and portable forms are equivalent.",
-        tasks=(
-            "pc_controller_twin",
-            "pc_controller_twin_slot2",
-        ),
     ),
     FormalTarget(
         "store_queue_twin.sby",
@@ -2958,6 +2823,18 @@ SBY_TASKS = [
         "Fatal persistence after initial reset for the 140-frame AMO safety check.",
     ),
     ("bmc_amo_other", "Different-sector store and AMO credit, drain and ownership."),
+    (
+        "bmc_amo_other_home_state",
+        "Different-sector AMO home grant and completion ordering before the home consumes it.",
+    ),
+    (
+        "bmc_amo_other_home_id",
+        "Different-sector AMO completion identity matches the home demand.",
+    ),
+    (
+        "bmc_amo_other_c2b",
+        "Different-sector AMO write-busy exclusion and store acknowledgement.",
+    ),
     (
         "bmc_amo_other_fatal",
         "Different-sector fatal status at frame 139, paired with fatal persistence induction.",
@@ -4328,28 +4205,8 @@ SBY_TASKS = [
         "FP engine primitive form equals its portable form.",
     ),
     (
-        "cft_twin",
-        "Control-flow tracker primitive form equals its portable form.",
-    ),
-    (
-        "pdt_twin",
-        "Predecode target adder primitive form equals its portable form.",
-    ),
-    (
         "router_twin",
         "Router MMIO drain gate primitive form equals its portable form.",
-    ),
-    (
-        "bp_twin",
-        "Branch predictor primitive form equals its portable form.",
-    ),
-    (
-        "pc_controller_twin",
-        "PC controller, increment calculator and control-flow tracker primitive forms equal their portable forms.",
-    ),
-    (
-        "pc_controller_twin_slot2",
-        "Same with slot-2 pending handoff excluded.",
     ),
     (
         "sq_twin",
@@ -4479,10 +4336,8 @@ SBY_TASK_MODE_OVERRIDES: dict[str, str] = {
     "array_uram": "prove",
     "array_uram32": "prove",
     "array_uram_row": "prove",
-    "bp_twin": "bmc",
     "cached_tier_twin": "bmc",
     "cached_tier_unsplit": "bmc",
-    "cft_twin": "bmc",
     "completions_default": "prove",
     "completions_three": "prove",
     "completions_two": "prove",
@@ -4528,9 +4383,6 @@ SBY_TASK_MODE_OVERRIDES: dict[str, str] = {
     "p01": "prove",
     "p10": "prove",
     "p11": "prove",
-    "pc_controller_twin": "bmc",
-    "pc_controller_twin_slot2": "bmc",
-    "pdt_twin": "bmc",
     "request_equiv32": "prove",
     "request_equiv56": "prove",
     "request_equiv_ptw": "prove",
@@ -5167,6 +5019,13 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         ),
         "coherence_store_boundary_bmc_amo_same": "Store boundary AMO same",
         "coherence_store_boundary_bmc_amo_other": "Store boundary AMO other",
+        "coherence_store_boundary_bmc_amo_other_c2b": "Store boundary AMO other C2b",
+        "coherence_store_boundary_bmc_amo_other_home_state": (
+            "Store boundary AMO other C2b"
+        ),
+        "coherence_store_boundary_bmc_amo_other_home_id": (
+            "Store boundary AMO other home"
+        ),
         "coherence_store_boundary_bmc_sc": "Store boundary",
     }
     # Shards sized directly from their tasks' allowances plus CI setup; the
@@ -5306,7 +5165,7 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         )
     for test_id, expected_shard in (
         ("backing_btb_bmc_four_way", "Frontend and predictor"),
-        ("prediction_handoff_bmc", "Frontend and predictor"),
+        ("fetch_parcel_queue_bmc", "Frontend and predictor"),
         ("predictor_fetch_contract_cover_backing", "Frontend and predictor"),
         ("cache_flash_valid_bmc_fast", "Block proofs"),
         ("rs_payload_twin_bmc_operands", "Block proofs"),
@@ -5502,36 +5361,6 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
             ],
         },
     ),
-    "branch_prediction_alias": (
-        "opt -purge prunes predictor state outside the alias comparison",
-        {
-            "bmc": ["opt -purge"],
-        },
-    ),
-    "branch_prediction_disable": (
-        "not converted: plain opt after its setundef",
-        {
-            "bmc": ["opt"],
-        },
-    ),
-    "branch_predictor_twin": (
-        "equiv_struct merges structurally equal cells and equiv_simple reads undefined bits as zero, after both forms open with free_undefined.ys",
-        {
-            "bp_twin": ["equiv_struct -icells", "equiv_simple"],
-        },
-    ),
-    "btb_pending_relation": (
-        "not converted: plain opt after its setundef",
-        {
-            "bmc bmc_btb_index1 bmc_btb_index3": ["opt"],
-        },
-    ),
-    "btb_tag_compare": (
-        "not converted: plain opt after its setundef",
-        {
-            "bmc bmc_small_btb": ["opt"],
-        },
-    ),
     "cache_flash_valid": (
         "runs memory_map and opt without -keepdc after the opening",
         {
@@ -5665,7 +5494,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_store_boundary": (
         "plain memory_map and opt: its BMC tasks run them before their setundef, its cover and sticky tasks have none",
         {
-            "bmc_four_control bmc_four_value_0 bmc_four_value_1 bmc_four_value_2 bmc_four_value_3 bmc_intervening_same_flow bmc_intervening_other_flow bmc_intervening_same_value bmc_intervening_other_value bmc_intervening_fatal bmc_load_same bmc_load_other bmc_load_same_probe_launch bmc_probe_kept_other bmc_probe_kept_same bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_fatal bmc_sc bmc_old": [
+            "bmc_four_control bmc_four_value_0 bmc_four_value_1 bmc_four_value_2 bmc_four_value_3 bmc_intervening_same_flow bmc_intervening_other_flow bmc_intervening_same_value bmc_intervening_other_value bmc_intervening_fatal bmc_load_same bmc_load_other bmc_load_same_probe_launch bmc_probe_kept_other bmc_probe_kept_same bmc_amo_same bmc_amo_same_owner bmc_amo_same_fatal bmc_amo_other bmc_amo_other_home_state bmc_amo_other_home_id bmc_amo_other_c2b bmc_amo_other_fatal bmc_sc bmc_old": [
                 "memory_map",
                 "opt",
                 "opt -fast",
@@ -5713,12 +5542,6 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
             "store_pma_twin_ddr30 store_pma_twin_ddr31": ["equiv_simple"],
         },
     ),
-    "control_flow_tracker_twin": (
-        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
-        {
-            "cft_twin": ["equiv_simple"],
-        },
-    ),
     "csr_file_twin": (
         "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
@@ -5757,12 +5580,6 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
         {
             "dmmu_twin": ["equiv_simple"],
-        },
-    ),
-    "fetch_pc_mux": (
-        "not converted: plain opt after its setundef",
-        {
-            "bmc bmc_integrated bmc_xilinx bmc_integrated_xilinx": ["opt"],
         },
     ),
     "fp_engine_twin": (
@@ -5862,54 +5679,6 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
         "runs opt -fast without -keepdc after the opening",
         {
             "bmc cover": ["opt -fast"],
-        },
-    ),
-    "pc_controller_twin": (
-        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
-        {
-            "pc_controller_twin pc_controller_twin_slot2": ["equiv_simple"],
-        },
-    ),
-    "pc_holdoff_cofactor": (
-        "not converted: plain opt after its setundef",
-        {
-            "bmc": ["opt"],
-        },
-    ),
-    "pc_holdoff_tag": (
-        "not converted: plain opt after its setundef",
-        {
-            "prove prove_xlen32 prove_xlen72 cover": ["opt"],
-        },
-    ),
-    "pc_pending_capture": (
-        "not converted: plain opt after its setundef",
-        {
-            "bmc bmc_integrated": ["opt"],
-        },
-    ),
-    "pc_redirect_catchup_producer": (
-        "not converted: plain opt after its setundef",
-        {
-            "x32 x64 x66": ["opt"],
-        },
-    ),
-    "pc_register_mux": (
-        "not converted: plain opt after its setundef",
-        {
-            "bmc bmc_integrated bmc_xilinx bmc_integrated_xilinx": ["opt"],
-        },
-    ),
-    "pc_tage_events": (
-        "not converted: plain opt after its setundef",
-        {
-            "pc_tage_events_prove pc_tage_events_cover": ["opt"],
-        },
-    ),
-    "pd_target_candidate_twin": (
-        "equiv_simple reads undefined bits as zero, so every comparison point is opened first",
-        {
-            "pdt_twin": ["equiv_simple"],
         },
     ),
     "ras_checkpoint": (
@@ -6512,18 +6281,6 @@ ID_KILL_EXTRA_CHECKS = (
 
 # Each declaration pins both forms, their state cuts and the full point proof.
 TWIN_COMPARISONS = {
-    ("pd_target_candidate_twin", "pdt_twin"): TwinComparison(
-        primitive_points=16,
-        all_points=16,
-        top="pd_target_candidate",
-        gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv pd_target_candidate.sv",),
-        gate_inputs=(
-            "read_verilog -formal +/xilinx/cells_sim.v",
-            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv pd_target_candidate.sv",
-        ),
-        registers=0,
-        clock=None,
-    ),
     ("decoded_bundle_queue_twin", "dbq_twin"): TwinComparison(
         primitive_points=3,
         all_points=109,
@@ -6642,18 +6399,6 @@ TWIN_COMPARISONS = {
         gold_only_free=29,
         gate_only_free=29,
     ),
-    ("control_flow_tracker_twin", "cft_twin"): TwinComparison(
-        primitive_points=1,
-        all_points=20,
-        top="control_flow_tracker",
-        gold_inputs=("read -sv -D SYNTHESIS riscv_pkg.sv control_flow_tracker.sv",),
-        gate_inputs=(
-            "read_verilog -formal +/xilinx/cells_sim.v",
-            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv control_flow_tracker.sv",
-        ),
-        registers=4,
-        clock="i_clk",
-    ),
     ("data_mem_request_router_twin", "router_twin"): TwinComparison(
         primitive_points=1,
         all_points=990,
@@ -6699,46 +6444,6 @@ TWIN_COMPARISONS = {
         clock="i_clk",
         gold_only_free=1402,
         gate_only_free=1402,
-    ),
-    ("pc_controller_twin", "pc_controller_twin"): TwinComparison(
-        primitive_points=3708,
-        all_points=11638,
-        top="pc_controller",
-        gold_inputs=(
-            "read -sv -D SYNTHESIS riscv_pkg.sv control_flow_tracker.sv "
-            "pc_reg_precompute.sv pc_increment_calculator.sv pc_controller.sv",
-        ),
-        gate_inputs=(
-            "read_verilog -formal +/xilinx/cells_sim.v",
-            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
-            "control_flow_tracker.sv pc_reg_precompute.sv pc_increment_calculator.sv "
-            "pc_controller.sv",
-        ),
-        registers=28,
-        clock="i_clk",
-        gold_only_free=80,
-        gate_only_free=75,
-    ),
-    ("pc_controller_twin", "pc_controller_twin_slot2"): TwinComparison(
-        primitive_points=3708,
-        all_points=11638,
-        top="pc_controller",
-        gold_inputs=(
-            "read -sv -D SYNTHESIS riscv_pkg.sv control_flow_tracker.sv "
-            "pc_reg_precompute.sv pc_increment_calculator.sv pc_controller.sv",
-            "chparam -set PENDING_HANDOFF_EXCLUDES_SLOT2 1 pc_controller",
-        ),
-        gate_inputs=(
-            "read_verilog -formal +/xilinx/cells_sim.v",
-            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
-            "control_flow_tracker.sv pc_reg_precompute.sv pc_increment_calculator.sv "
-            "pc_controller.sv",
-            "chparam -set PENDING_HANDOFF_EXCLUDES_SLOT2 1 pc_controller",
-        ),
-        registers=28,
-        clock="i_clk",
-        gold_only_free=80,
-        gate_only_free=75,
     ),
     ("coherence_home_engine_twin", "home_engine_twin32"): TwinComparison(
         primitive_points=1,
@@ -7051,32 +6756,6 @@ TWIN_COMPARISONS = {
         pre_initialized_nets=18,
         initialized_nets=139,
     ),
-    ("branch_predictor_twin", "bp_twin"): TwinComparison(
-        primitive_points=220,
-        all_points=126988,
-        top="branch_predictor",
-        gold_inputs=(
-            "read -sv -D SYNTHESIS riscv_pkg.sv sdp_dist_ram.sv sdp_block_ram.sv "
-            "backing_btb.sv branch_predictor.sv direction_predictor.sv "
-            "tage_predictor.sv return_address_stack.sv",
-        ),
-        gate_inputs=(
-            "read_verilog -formal +/xilinx/cells_sim.v",
-            "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
-            "sdp_dist_ram.sv sdp_block_ram.sv backing_btb.sv branch_predictor.sv "
-            "direction_predictor.sv tage_predictor.sv return_address_stack.sv",
-        ),
-        registers=4882,
-        clock="i_clk",
-        gold_only_free=60,
-        gate_only_free=60,
-        equiv_free=4,
-        hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
-        clean_hidden=True,
-        initialized_nets=3840,
-        delete_after_copy=True,
-        equiv_struct=True,
-    ),
     ("id_stage_kill_equiv", "id_kill_equiv"): TwinComparison(
         primitive_points=None,
         all_points=7375,
@@ -7200,6 +6879,12 @@ PREDICTOR_ASSERTION_TASKS = {
             "backing_btb_twin",
             ("backing_btb_twin.sv",),
             "3cacf9d4afa13311be049f7f63f15a2151e1ae01d7d51dc96f6020ffad85152e",
+            (5, 2, 5),
+        ),
+        (
+            "backing_btb_precompare_twin",
+            ("backing_btb_precompare_twin.sv",),
+            "777714c9bf56804cd01fe961492502723f4f20dccd7088c09451d50ca557b852",
             (5, 2, 5),
         ),
         (
@@ -8683,11 +8368,11 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
     ),
     (
         "flag",
-        "branch_predictor_twin",
+        "dmmu_twin",
         (
             (
-                "select -assert-count 60 t:$anyseq\nrename -top gold\n",
-                "select -assert-count 60 t:$anyseq\nsetundef -one\nrename -top gold\n",
+                "select -assert-count 220 t:$anyseq\nrename -top gold\n",
+                "select -assert-count 220 t:$anyseq\nsetundef -one\nrename -top gold\n",
             ),
         ),
     ),
@@ -8915,11 +8600,6 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
                 "proof: autoname t:$anyseq\nproof: opt -fast -keepdc\n",
             ),
         ),
-    ),
-    (
-        "flag",
-        "pd_target_candidate_twin",
-        (("rename -top gold\n", "autoname t:$anyseq\nrename -top gold\n"),),
     ),
     (
         "flag",
@@ -9946,7 +9626,7 @@ def test_generated_sby_corpus_matches_symbiyosys(tmp_path: Path) -> None:
         "coherence_home_forward_pins.sby",
         "coherence_link.sby",
         "nic_irq.sby",
-        "control_flow_tracker_twin.sby",
+        "dmmu_twin.sby",
         "axi_coherent_bridge.sby",
         "rs_payload_twin.sby",
     )
@@ -12270,6 +11950,79 @@ def test_store_boundary_four_and_intervening_partitions_complete() -> None:
             validator(altered)
 
 
+def test_store_boundary_amo_other_partitions_complete() -> None:
+    """Require disjoint, exhaustive assertion partitions for bmc_amo_other."""
+    root = Path(__file__).resolve().parents[1]
+    sby_path = root / FORMAL_DIR / "coherence_store_boundary.sby"
+    configs = {
+        name: cfg.sections(sby_path.parent)
+        for name, cfg in sby_config.resolved(sby_path).items()
+    }
+    flow_name = "bmc_amo_other"
+    kept_names = (
+        "bmc_amo_other_home_state",
+        "bmc_amo_other_home_id",
+        "bmc_amo_other_c2b",
+    )
+    names = (flow_name, *kept_names)
+    total = "select -assert-count 19 t:$check r:FLAVOR=assert %i"
+    keep_prefix = "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+
+    def partition_lines(script: list[str]) -> list[str]:
+        return [
+            line
+            for line in script
+            if line.startswith(("select -assert-", "chformal -assert -remove "))
+        ]
+
+    def checks(line: str) -> list[str]:
+        return [word[2:] for word in line.split() if word.startswith("c:")]
+
+    parts = {name: partition_lines(configs[name]["[script]"]) for name in names}
+    # The flow task removes the fatal assertion (checked by bmc_amo_other_fatal)
+    # and every assertion another task keeps; each of those tasks keeps only its own.
+    flow = parts[flow_name]
+    assert flow[0] == total
+    assert flow[1].startswith("chformal -assert -remove c:")
+    removed = checks(flow[1])
+    kept: list[str] = []
+    for name in kept_names:
+        lines = parts[name]
+        assert lines[0] == total
+        assert lines[1].startswith(keep_prefix)
+        assert lines[1].endswith(" %d")
+        own = checks(lines[1])
+        assert lines[2] == (
+            f"select -assert-count {len(own)} t:$check r:FLAVOR=assert %i"
+        )
+        assert len(lines) == 3
+        kept += own
+    assert len(kept) == len(set(kept)) == 4
+    assert flow[2] == "select -assert-count 14 t:$check r:FLAVOR=assert %i"
+    assert len(flow) == 3
+    # 14 + 4 + the fatal assertion = all 19.
+    assert sorted(removed) == sorted([*kept, "p_no_fatal"])
+    # The fatal assertion's own task keeps exactly p_no_fatal.
+    fatal = partition_lines(configs["bmc_amo_other_fatal"]["[script]"])
+    assert fatal[0] == total
+    assert checks(fatal[1]) == ["p_no_fatal"]
+    # The tasks share one model and prove with no assumptions or cutpoints.
+    models = [
+        [line for line in configs[name]["[script]"] if line not in parts[name]]
+        for name in names
+    ]
+    assert all(model == models[0] for model in models)
+    for name in names:
+        assert not any(
+            line.startswith(("cutpoint ", "connect ", "chformal -assert2assume"))
+            for line in configs[name]["[script]"]
+        )
+        assert configs[name]["[engines]"] == ["abc bmc3 -c"]
+        opts = dict(line.split(maxsplit=1) for line in configs[name]["[options]"])
+        assert opts["mode"] == "bmc"
+        assert opts["depth"] == "140"
+
+
 def test_local_data_partition_models_match() -> None:
     """Keep every scheduled real-array assertion at its original depth."""
     reference = l1d_task_config("coh_l1d_local_cover")
@@ -13458,16 +13211,17 @@ def test_twin_port_shape(tmp_path: Path, field: str, value: object) -> None:
         name: {"ports": {"y": port}, "cells": {}, "netnames": {}}
         for name, port in (("gold", gold), ("gate", gate))
     }
-    path.write_text(json.dumps({"modules": modules}))
-    check_twin_interfaces(
-        path, TWIN_COMPARISONS["pd_target_candidate_twin", "pdt_twin"]
+    spec = replace(
+        TWIN_COMPARISONS["decoded_bundle_queue_twin", "dbq_twin"],
+        registers=0,
+        clock=None,
     )
+    path.write_text(json.dumps({"modules": modules}))
+    check_twin_interfaces(path, spec)
     gate[field] = value
     path.write_text(json.dumps({"modules": modules}))
     with pytest.raises(ValueError, match="compiled twin ports differ"):
-        check_twin_interfaces(
-            path, TWIN_COMPARISONS["pd_target_candidate_twin", "pdt_twin"]
-        )
+        check_twin_interfaces(path, spec)
 
 
 @pytest.mark.parametrize("other", [("b", "a"), ("a",), ("a", "b", "c")])
@@ -13476,6 +13230,11 @@ def test_twin_compiled_port_order_and_membership(
 ) -> None:
     """Even an extra or reordered port changes the compiled interface."""
     path = tmp_path / "twin_ports.json"
+    spec = replace(
+        TWIN_COMPARISONS["decoded_bundle_queue_twin", "dbq_twin"],
+        registers=0,
+        clock=None,
+    )
     modules = {
         form: {
             "ports": {
@@ -13489,9 +13248,7 @@ def test_twin_compiled_port_order_and_membership(
     }
     path.write_text(json.dumps({"modules": modules}))
     with pytest.raises(ValueError, match="compiled twin ports differ"):
-        check_twin_interfaces(
-            path, TWIN_COMPARISONS["pd_target_candidate_twin", "pdt_twin"]
-        )
+        check_twin_interfaces(path, spec)
 
 
 @pytest.mark.parametrize(
@@ -14236,14 +13993,14 @@ def test_in_script_twin_cannot_take_a_predicate_exemption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The equivalence comparison always checks every input, including predicate operands."""
-    target = next(t for t in FORMAL_TARGETS if t.name == "pd_target_candidate_twin")
+    target = next(t for t in FORMAL_TARGETS if t.name == "decoded_bundle_queue_twin")
     (task,) = target.tasks
     monkeypatch.setattr(
         sys.modules[__name__],
         "HIGH_IMPEDANCE_PENDING",
         (
             PredicateExemption(
-                "pd_target_candidate.sv",
+                "decoded_bundle_queue.sv",
                 "top.check",
                 "$isunknown ( a )",
                 ((target.name, task),),
@@ -14334,24 +14091,23 @@ def test_new_paired_assertion_harness_requires_full_comparison(tmp_path: Path) -
 
 
 def test_twin_gate_carry_rejects_high_impedance(tmp_path: Path) -> None:
-    """A Z carry-in can compare equal to zero if it reaches the point solver."""
-    runner, target, staged = _stage_twin(tmp_path, "pd_target_candidate_twin")
+    """A Z input can compare equal to zero if it reaches the point solver."""
+    runner, target, staged = _stage_twin(tmp_path, "decoded_bundle_queue_twin")
     (task,) = target.tasks
     clean = runner.run_formal(target, task)
     assert clean.returncode == 0, clean.stdout + clean.stderr
     cfg = sby_config.source(staged).task(task)
-    rtl = staged.parent / cfg.files["pd_target_candidate.sv"]
+    rtl = staged.parent / cfg.files["decoded_bundle_queue.sv"]
     source = rtl.read_text()
-    carry = "assign chain_ci = 1'b0;"
-    assert source.count(carry) == 1
-    rtl.write_text(source.replace(carry, "assign chain_ci = 1'bz;"))
+    pin = ".I0(i_stall_flush),"
+    assert source.count(pin) == 1
+    rtl.write_text(source.replace(pin, ".I0(1'bz),"))
     result = runner.run_formal(target, task)
     assert result.returncode != 0
     assert (
-        "High-impedance constant in elaborated module pd_target_candidate"
+        "High-impedance constant in elaborated module decoded_bundle_queue"
         in result.stdout
     )
-    assert "gen_chain[0].chain_ci" in result.stdout
 
 
 def test_twin_forms_reject_erased_init_and_missing_clock(tmp_path: Path) -> None:
@@ -14487,7 +14243,7 @@ def test_twin_solver_pass_requires_compiled_interface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A successful solver run still needs its compiled gold and gate port artifact."""
-    runner, target, _ = _stage_twin(tmp_path, "pd_target_candidate_twin")
+    runner, target, _ = _stage_twin(tmp_path, "decoded_bundle_queue_twin")
     check = check_twin_interfaces
 
     def remove_artifact(path: Path, comparison: TwinComparison) -> None:
@@ -14528,12 +14284,12 @@ def test_twin_register_edge_selected_in_common_code(tmp_path: Path) -> None:
     ("original", "changed", "reason"),
     [
         ("write_json twin_ports.json", "", "expected compiled twin_ports.json"),
-        ("pdt_twin: select -assert-min 16 t:$equiv", "", "declared floors"),
+        ("dbq_twin: select -assert-min 109 t:$equiv", "", "declared floors"),
         ("equiv_simple\n", "equiv_simple @blk\n", "unselected proof"),
         ("equiv_status -assert\n", "equiv_status -assert @blk\n", "unselected proof"),
         (
-            "hierarchy -check -top pd_target_candidate",
-            "opt_clean\nhierarchy -check -top pd_target_candidate",
+            "hierarchy -check -top decoded_bundle_queue",
+            "opt_clean\nhierarchy -check -top decoded_bundle_queue",
             "requires hierarchy",
         ),
     ],
@@ -14542,7 +14298,7 @@ def test_twin_input_contract_through_runner(
     tmp_path: Path, original: str, changed: str, reason: str
 ) -> None:
     """Reject a missing interface, a partial point proof or an early transformation."""
-    runner, target, staged = _stage_twin(tmp_path, "pd_target_candidate_twin")
+    runner, target, staged = _stage_twin(tmp_path, "decoded_bundle_queue_twin")
     source = staged.read_text()
     assert original in source
     staged.write_text(source.replace(original, changed, 1))
@@ -14555,15 +14311,15 @@ def test_unregistered_twin_declaration_through_registry_and_runner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, omit_comparison: bool
 ) -> None:
     """A new registered script using the same comparison must declare its points and ports."""
-    runner, original, staged = _stage_twin(tmp_path, "pd_target_candidate_twin")
+    runner, original, staged = _stage_twin(tmp_path, "decoded_bundle_queue_twin")
     if omit_comparison:
         source = staged.read_text()
         before = source.index("[script]")
         after = source.index("[files]", before)
         staged.write_text(
             source[:before] + "[script]\n"
-            "read -sv -D SYNTHESIS riscv_pkg.sv pd_target_candidate.sv\n"
-            "prep -top pd_target_candidate\n\n" + source[after:]
+            "read -sv -D SYNTHESIS riscv_pkg.sv decoded_bundle_queue.sv\n"
+            "prep -top decoded_bundle_queue\n\n" + source[after:]
         )
     target = replace(
         original,
@@ -14674,7 +14430,10 @@ def test_fatal_frame_validation(
         ("coherence_store_boundary", "bmc_intervening_other_value", 15840),
         ("coherence_store_boundary", "bmc_intervening_fatal", 1200),
         ("coherence_store_boundary", "bmc_amo_same", 6600),
-        ("coherence_store_boundary", "bmc_amo_other", 9600),
+        ("coherence_store_boundary", "bmc_amo_other", 6900),
+        ("coherence_store_boundary", "bmc_amo_other_home_state", 600),
+        ("coherence_store_boundary", "bmc_amo_other_home_id", 13800),
+        ("coherence_store_boundary", "bmc_amo_other_c2b", 5400),
         ("coherence_store_boundary", "bmc_amo_same_owner", 3000),
         ("coherence_store_boundary", "bmc_amo_same_fatal", 3000),
         ("coherence_store_boundary", "bmc_amo_other_fatal", 4800),

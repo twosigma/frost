@@ -1,0 +1,29 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 8
+cover: mode cover
+cover: depth 10
+
+[engines]
+smtbmc boolector
+
+[script]
+read_slang --top fetch_parcel_queue --single-unit -DSYNTHESIS -DFORMAL -GPARCEL_WIDTH=4 -GMETA_WIDTH=4 sdp_dist_ram.sv fetch_parcel_queue.sv
+hierarchy -top fetch_parcel_queue
+script free_undefined.ys
+prep -top fetch_parcel_queue
+select -assert-count 31 t:$check r:FLAVOR=assert %i
+select -assert-count 6 t:$check r:FLAVOR=assume %i
+select -assert-count 6 t:$check r:FLAVOR=cover %i
+select -assert-none t:$assume
+bmc: chformal -cover -remove
+cover: chformal -assert -remove
+
+[files]
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/fetch_parcel_queue.sv
+free_undefined.ys

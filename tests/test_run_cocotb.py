@@ -568,6 +568,55 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
         verilator_extra_args=("--assert",),
     ),
+    "node_reuse_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="node_reuse_test",
+        nic_mac_clocks=False,
+        description=(
+            "Slab-like 256-byte node reuse: memset, memcpy, cbo.zero and partial "
+            "stores on nodes that share L1D and L2 sets, checked against a shadow"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "12000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "node_reuse_dup_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="node_reuse_test",
+        nic_mac_clocks=False,
+        description=(
+            "node_reuse_test with __mt_dup's node copy: two zero memsets, memcpy "
+            "from the node below in the page, slot stores; pages share L1D sets"
+        ),
+        include_in_pytest=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "12000000"), ("EXTRA_CFLAGS", "-DNODE_DUP")),
+        verilator_extra_args=("--assert",),
+    ),
+    "node_reuse_test_board": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="node_reuse_test",
+        nic_mac_clocks=False,
+        description=(
+            "node_reuse_test with 4 MiB L2, asynchronous CPU/SoC clocks, "
+            "wide DDR, DDR latency jitter and reordering"
+        ),
+        include_in_pytest=False,
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "12000000"),
+            ("FROST_CPU_PERIOD_PS", "1500"),
+            ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36"),
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
+            "-GL2_CACHE_BYTES=4194304",
+            "-GDDR_MODEL_LATENCY_JITTER=24",
+            "-GDDR_MODEL_REORDER=1",
+        ),
+    ),
     "full_line_test_board": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -3130,7 +3179,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="strings_test",
         nic_mac_clocks=False,
-        description="String, character, and integer-conversion library checks",
+        description=(
+            "String, character, and integer-conversion library checks, including "
+            "memcpy and memset at block-edge lengths and every offset 0 to 7"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "6000000"),),
     ),
     "ras_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -4746,6 +4799,41 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="Full-line stores in a two-set L1D: twins replace Modified victims",
     ),
+    **{
+        f"coherence_stale_line{suffix}": CocotbRunConfig(
+            verilator_extra_args=("--assert", *params),
+            python_test_module="cocotb_tests.cache.test_coherence_stale_line",
+            hdl_toplevel_module="coherence_cluster_test_harness",
+            description=f"Slab-like node reuse with full-line stores{text}",
+            # Upstream's stream-prefetch timing tests in the same module run in
+            # coherence_stale_line_prefetch_l2.
+            extra_env=(
+                *env,
+                (
+                    "COCOTB_TEST_FILTER",
+                    "(node_reuse_random|node_copy_beside_stream|zero_twin_beside_stream)$",
+                ),
+            ),
+            include_in_pytest=suffix in ("", "_pressure"),
+        )
+        for suffix, params, env, text in (
+            ("", ("-GL1D_MISSES=3",), (), ""),
+            (
+                "_pressure",
+                ("-GL1D_MISSES=3", "-GL1D_CACHE_BYTES=128", "-GL1D_WAYS=1"),
+                (("STALE_L1D", "128"),),
+                " in a two-set L1D",
+            ),
+            ("_misses8", ("-GL1D_MISSES=8",), (), " and eight L1D endpoints"),
+            ("_stages", ("-GL1D_MISSES=3", "-GLINK_STAGES=1"), (), " and link stages"),
+            (
+                "_prefetch",
+                ("-GL1D_MISSES=8", "-GL1D_STREAM_PREFETCH=1"),
+                (),
+                " and the L1D stream prefetcher",
+            ),
+        )
+    },
     **{
         f"coherence_full_line_perf_{flag}": CocotbRunConfig(
             verilator_extra_args=(
@@ -6406,11 +6494,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="return_address_stack",
         description="Return-stack prediction, checkpoints, and recovery",
     ),
-    "branch_predictor": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.branch_prediction.test_branch_predictor",
-        hdl_toplevel_module="branch_predictor",
-        description="Branch-target lookup and predictor training",
-    ),
     "backing_btb": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_backing_btb",
         hdl_toplevel_module="backing_btb",
@@ -6422,11 +6505,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Backing BTB with four ways",
         verilator_extra_args=("-GWAYS=4",),
     ),
-    "direction_predictor": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.branch_prediction.test_direction_predictor",
-        hdl_toplevel_module="direction_predictor",
-        description="Branch-direction prediction and training",
-    ),
     "tage_predictor": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_tage_predictor",
         hdl_toplevel_module="tage_predictor",
@@ -6436,36 +6514,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_ittage_predictor",
         hdl_toplevel_module="ittage_predictor",
         description="Indirect target prediction, allocation, confidence and replacement",
-    ),
-    "branch_prediction_controller": CocotbRunConfig(
-        python_test_module=(
-            "cocotb_tests.if_stage.branch_prediction.test_branch_prediction_controller"
-        ),
-        hdl_toplevel_module="branch_prediction_controller",
-        description="Branch-prediction control and metadata through stalls and "
-        "redirects",
-    ),
-    "prediction_metadata_tracker": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.branch_prediction.test_prediction_metadata_tracker",
-        hdl_toplevel_module="prediction_metadata_tracker",
-        description="Prediction metadata stays with the right instruction through "
-        "stalls and replay",
-    ),
-    "control_flow_tracker": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_control_flow_tracker",
-        hdl_toplevel_module="control_flow_tracker",
-        description="Fetch holdoffs after reset and control-flow redirects",
-    ),
-    "pc_increment_calculator": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_pc_increment_calculator",
-        hdl_toplevel_module="pc_increment_calculator",
-        description="Fetch PC increments across bundle shapes, holdoffs, and address "
-        "wraparound",
-    ),
-    "pc_controller": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_pc_controller",
-        hdl_toplevel_module="pc_controller",
-        description="Fetch PC selection, stalls, and redirect priority",
     ),
     "dmmu": CocotbRunConfig(
         python_test_module="cocotb_tests.test_dmmu",
@@ -6498,11 +6546,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("FROST_DDR_CAPACITY_LOG2_BYTES", "30"),),
         verilator_extra_args=("-DFROST_DDR_CAPACITY_LOG2_BYTES=30", "--assert"),
     ),
-    "instruction_aligner": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
-        hdl_toplevel_module="instruction_aligner",
-        description="Instruction alignment and metadata selection across fetch windows",
-    ),
     "rvc_decompressor": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
         hdl_toplevel_module="rvc_decompressor",
@@ -6510,12 +6553,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "RV64C/Zcb/Zcmop expansion and illegal flags match the specification "
             "oracle and predecode mirror for every parcel"
         ),
-    ),
-    "c_ext_state": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_c_ext_state",
-        hdl_toplevel_module="c_ext_state",
-        description="Compressed-instruction buffering through stalls and control-flow "
-        "changes",
     ),
     "if_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_if_stage",
@@ -6966,8 +7003,6 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "axi_coherent_bridge",
         "axi_coherent_bridge_32",
         "branch_jump_unit",
-        "branch_prediction_controller",
-        "branch_predictor",
         "branch_resolution",
         "cached_tier_adapter_split",
         "cdc_mailbox",
@@ -7014,7 +7049,6 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "coherent_cpu_local_contention",
         "coherent_stream_order",
         "commit_actions",
-        "control_flow_tracker",
         "cpu_axi_master",
         "cpu_memory_fabric_line",
         "cpu_top_writethrough_custom_map",
@@ -7027,7 +7061,6 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "decoded_bundle_queue_depth2",
         "decoded_bundle_queue_split_stall",
         "directed_traps",
-        "direction_predictor",
         "divider",
         "dma_errors",
         "dmmu",
@@ -7082,10 +7115,8 @@ UNIT_TESTS_IN_JOB_B = frozenset(
         "ooo_pipeline_control",
         "ooo_register_files",
         "packed_tag_uram_13_clear",
-        "pc_increment_calculator",
         "pd_stage",
         "perf_counter_aggregator",
-        "prediction_metadata_tracker",
         "ptw_walk_cache",
         "register_alias_table",
         "reorder_buffer",

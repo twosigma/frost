@@ -20,7 +20,7 @@
  *
  * Path history. Every taken control-flow instruction shifts the low two
  * word-address bits of its target, PC[3:2], into a 64-bit history. The
- * lookup history follows the fetch stream: pc_controller registers which
+ * lookup history follows the fetch stream: fetch_pc_decoupled registers which
  * arm loaded the fetch PC, and the next cycle
  *   - a predicted-taken arm (slot 1 or slot 2) pushes the new fetch PC's
  *     bits, since the fetch PC now holds the target;
@@ -84,7 +84,7 @@ module tage_history #(
     input logic i_clk,
     input logic i_rst,
 
-    // Fetch-side events registered in pc_controller, and the fetch PC's
+    // Fetch-side events registered in fetch_pc_decoupled, and the fetch PC's
     // [3:2] for a push.
     input  logic                 i_hist_push,
     input  logic [          4:1] i_hist_restore_arm,

@@ -153,8 +153,16 @@ module tage_predictor #(
 
   // [table][bank]
   logic [TABLES-1:0][1:0][INDEX_BITS-1:0] lookup_index;
-  logic [TABLES-1:0][1:0][TAG_BITS-1:0] lookup_tag;
-  logic [TABLES-1:0][1:0][EntryBits-1:0] lookup_entry;
+  logic [TABLES-1:0][1:0][  TAG_BITS-1:0] lookup_tag;
+  logic [TABLES-1:0][1:0][ EntryBits-1:0] lookup_entry;
+
+  // Training is idle during reset. A power-up write can only change
+  // speculative predictions; branch resolution corrects any wrong prediction.
+`ifdef FROST_RANDOM_START
+  localparam bit RandomStart = 1'b1;
+`else
+  localparam bit RandomStart = 1'b0;
+`endif
 
   // ===========================================================================
   // Tables: per table and bank, a lookup read copy and a training read copy
@@ -166,7 +174,16 @@ module tage_predictor #(
   logic write_bank;
   logic [TABLES-1:0][INDEX_BITS-1:0] write_index;
   logic [TABLES-1:0][EntryBits-1:0] write_entry;
+  (* max_fanout = 16, equivalent_register_removal = "no" *) logic [TABLES-1:0][1:0] write_we_q =
+      RandomStart ? 'x : '0;
+  (* max_fanout = 32 *) logic [TABLES-1:0][INDEX_BITS-1:0] write_index_q;
+  logic [TABLES-1:0][EntryBits-1:0] write_entry_q;
   assign train_read_index = i_train_lookup.index;
+  assign write_index      = write_index_q;
+  assign write_entry      = write_entry_q;
+  for (genvar t = 0; t < TABLES; t++) begin : gen_write_any_vec
+    assign write_any[t] = |write_we_q[t];
+  end
 
   for (genvar b = 0; b < 2; b++) begin : gen_bank
     logic [LOOKUP_HI:2] bank_word;
@@ -187,7 +204,7 @@ module tage_predictor #(
       assign lookup_index[t][b] =
           bank_word[3+:INDEX_BITS] ^ bank_word[3+INDEX_BITS+:INDEX_BITS] ^ folded_index;
       assign lookup_tag[t][b] = hash_tag(bank_word, i_lookup_hist & Mask);
-      assign write_enable = write_any[t] && (write_bank == 1'(b));
+      assign write_enable = write_we_q[t][b];
       sdp_dist_ram #(
           .ADDR_WIDTH(INDEX_BITS),
           .DATA_WIDTH(EntryBits)
@@ -321,13 +338,64 @@ module tage_predictor #(
     end
   end
 
-  // Training is idle during reset. A power-up write can only change
-  // speculative predictions; branch resolution corrects any wrong prediction.
-`ifdef FROST_RANDOM_START
-  localparam bit RandomStart = 1'b1;
-`else
-  localparam bit RandomStart = 1'b0;
-`endif
+  // Precompute allocation, usefulness decay, write enables, and updated entries
+  // in the read stage so every distributed RAM write port is driven directly
+  // from registered flops with no combinational fanout cone.
+  logic [TABLES-1:0] read_useful;
+  logic [TABLES-1:0] read_alloc;
+  logic [TABLES-1:0] read_useful_down;
+  logic [TABLES-1:0] read_write_any;
+  logic [TABLES-1:0][1:0] read_write_we;
+  logic [TABLES-1:0][EntryBits-1:0] read_write_entry;
+  for (genvar t = 0; t < TABLES; t++) begin : gen_read_useful
+    entry_t read_u_s;
+    assign read_u_s = read_entry[t];
+    assign read_useful[t] = |read_u_s.useful;
+  end
+  always_comb begin
+    read_alloc = '0;
+    for (int t = 0; t < TABLES; t++) begin
+      if (i_train_mispredicted && read_above[t] && !read_provider[t] && !read_owned[t] &&
+          !read_useful[t] && (read_alloc == '0))
+        read_alloc[t] = 1'b1;
+    end
+    read_useful_down = '0;
+    if (read_alloc == '0) begin
+      for (int t = 0; t < TABLES; t++)
+      read_useful_down[t] = i_train_mispredicted && read_above[t] && !read_provider[t];
+    end
+  end
+  for (genvar t = 0; t < TABLES; t++) begin : gen_read_write
+    entry_t r_entry;
+    entry_t r_updated;
+    assign r_entry = read_entry[t];
+    always_comb begin
+      r_updated = r_entry;
+      if (read_provider[t]) begin
+        if (read_owned[t]) begin
+          r_updated.ctr = counter_step(r_entry.ctr, i_train_taken);
+          if (read_useful_update) begin
+            if (read_useful_value)
+              r_updated.useful = (&r_entry.useful) ? r_entry.useful : r_entry.useful + 1'b1;
+            else r_updated.useful = (r_entry.useful == '0) ? r_entry.useful : r_entry.useful - 1'b1;
+          end
+        end
+      end else if (read_alloc[t]) begin
+        r_updated.valid  = 1'b1;
+        r_updated.tag    = i_train_lookup.tag[t];
+        r_updated.ctr    = i_train_taken ? CtrWeakTaken : CtrWeakNotTaken;
+        r_updated.useful = '0;
+      end else if (read_useful_down[t] && (r_entry.useful != '0)) begin
+        r_updated.useful = r_entry.useful - 1'b1;
+      end
+    end
+    assign read_write_entry[t] = r_updated;
+    // A provider that does not own its entry writes the entry back as read.
+    assign read_write_any[t] = i_train_valid && (read_provider[t] || read_alloc[t] ||
+                                                 (read_useful_down[t] && read_useful[t]));
+    assign read_write_we[t][0] = read_write_any[t] && !i_train_bank;
+    assign read_write_we[t][1] = read_write_any[t] && i_train_bank;
+  end
 
   logic train_valid_q = RandomStart ? 'x : 1'b0;
   riscv_pkg::tage_lookup_t train_lookup_q;
@@ -338,6 +406,8 @@ module tage_predictor #(
   logic [TABLES-1:0] owned;  // the saved entry still holds the branch
   logic useful_update;
   logic useful_value;
+  logic [TABLES-1:0] alloc;
+  logic [TABLES-1:0] useful_down;
   always_ff @(posedge i_clk) begin
     train_valid_q        <= i_train_valid;
     train_lookup_q       <= i_train_lookup;
@@ -350,59 +420,17 @@ module tage_predictor #(
     owned                <= read_owned;
     useful_update        <= read_useful_update;
     useful_value         <= read_useful_value;
-  end
-  assign write_index = train_lookup_q.index;
-
-  // Write stage: allocation and update from the registered qualifiers.
-  logic [TABLES-1:0] useful;
-  logic [TABLES-1:0] alloc;
-  logic [TABLES-1:0] useful_down;
-  always_comb begin
-    // The shortest free table above the provider; if none, every candidate
-    // counts its usefulness down.
-    alloc = '0;
-    for (int t = 0; t < TABLES; t++) begin
-      if (train_mispredicted_q && above[t] && !provider[t] && !owned[t] && !useful[t] &&
-          (alloc == '0))
-        alloc[t] = 1'b1;
-    end
-    useful_down = '0;
-    if (alloc == '0) begin
-      for (int t = 0; t < TABLES; t++)
-      useful_down[t] = train_mispredicted_q && above[t] && !provider[t];
-    end
+    alloc                <= read_alloc;
+    useful_down          <= read_useful_down;
+    write_we_q           <= read_write_we;
+    write_index_q        <= i_train_lookup.index;
+    write_entry_q        <= read_write_entry;
   end
 
+  // Keep per-table entry alias for formal copy-convergence inspection.
   for (genvar t = 0; t < TABLES; t++) begin : gen_write
     entry_t entry;
-    entry_t updated;
     assign entry = cur[t];
-    assign useful[t] = |entry.useful;
-    always_comb begin
-      updated = entry;
-      if (provider[t]) begin
-        if (owned[t]) begin
-          updated.ctr = counter_step(entry.ctr, train_taken_q);
-          if (useful_update) begin
-            if (useful_value) updated.useful = (&entry.useful) ? entry.useful : entry.useful + 1'b1;
-            else updated.useful = (entry.useful == '0) ? entry.useful : entry.useful - 1'b1;
-          end
-        end
-      end else if (alloc[t]) begin
-        updated.valid  = 1'b1;
-        updated.tag    = train_lookup_q.tag[t];
-        updated.ctr    = train_taken_q ? CtrWeakTaken : CtrWeakNotTaken;
-        updated.useful = '0;
-      end else if (useful_down[t] && (entry.useful != '0)) begin
-        updated.useful = entry.useful - 1'b1;
-      end
-    end
-    assign write_entry[t] = updated;
-    // A provider that does not own its entry writes the entry back as read
-    // (next keeps cur then: no allocation or usefulness change happens in a
-    // table that provided).
-    assign write_any[t] = train_valid_q && (provider[t] || alloc[t] ||
-                                            (useful_down[t] && (entry.useful != '0)));
   end
 
 `ifndef SYNTHESIS

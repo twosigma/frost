@@ -2786,6 +2786,47 @@ def test_vcu118_vector_loader_options_and_clocks(
             162_500_000 if vector_flag else 200_000_000
         )
 
+    # A --vlen vector build exports FROST_LINUX_VLEN; scalar builds and the default clear it.
+    for vector_flag, vlen, expected_vlen_env in (
+        (True, 128, "128"),
+        (True, None, None),
+        (False, 128, None),
+    ):
+        captured_envs = []
+        monkeypatch.setenv("FROST_LINUX_VLEN", "512")
+        assert loader.compile_app_for_board(
+            "linux_boot",
+            ROOT / "sw/apps/linux_boot",
+            162_500_000 if vector_flag else 200_000_000,
+            10800,
+            ddr_bytes=1 << 31,
+            board="vcu118",
+            vector=vector_flag,
+            vlen=vlen,
+        )
+        assert captured_envs[-1].get("FROST_LINUX_VLEN") == expected_vlen_env
+    monkeypatch.delenv("FROST_LINUX_VLEN", raising=False)
+
+    # The CLI passes linux_boot's --vlen through only on a vcu118 vector build.
+    seen_vlen: list[int | None] = []
+
+    def capture_vlen(*args: Any, **kwargs: Any) -> bool:
+        seen_vlen.append(kwargs.get("vlen"))
+        return True
+
+    with monkeypatch.context() as mp:
+        mp.setattr(loader, "compile_app_for_board", capture_vlen)
+        for argv, expected in (
+            (
+                ["vcu118", "linux_boot", "--vector", "--vlen", "128", "--build-only"],
+                128,
+            ),
+            (["vcu118", "linux_boot", "--vector", "--build-only"], None),
+        ):
+            mp.setattr(sys, "argv", ["load_software.py", *argv])
+            loader.main()
+            assert seen_vlen[-1] == expected
+
     # Error paths: x3 --no-vector, scalar vcu118 + vector app, --list-targets --vector.
     for bad_argv, expected_err in (
         (
@@ -2794,9 +2835,418 @@ def test_vcu118_vector_loader_options_and_clocks(
         ),
         (["vcu118", "vec_arith_test"], "vec_arith_test is not supported on vcu118"),
         (["vcu118", "--list-targets", "--vector"], "cannot be combined"),
+        (
+            ["vcu118", "linux_boot", "--vlen", "128", "--build-only"],
+            "--vlen with linux_boot needs a vcu118 --vector build",
+        ),
+        (
+            ["vcu118", "linux_boot", "--vector", "--vlen", "0", "--build-only"],
+            "--vlen with linux_boot must be one of 128, 256, 512",
+        ),
     ):
         monkeypatch.setattr(sys, "argv", ["load_software.py", *bad_argv])
         with pytest.raises(SystemExit) as stopped:
             loader.main()
         assert stopped.value.code == 2
         assert expected_err in capsys.readouterr().err
+
+
+def _minimal_isa_dtb(tmp_path: Path, name: str, *, vector: bool, vlen: int) -> Path:
+    """Compile or build a minimal FDT advertising the given vector ISA state."""
+    packer_mod = load_module(
+        "frost_boot_image_managed_test",
+        "linux/buildroot-external/board/frost/frost_boot_image.py",
+    )
+    dts = packer_mod.gen_dts(
+        clk_hz=162_500_000 if vector else 200_000_000,
+        initrd_range=None,
+        bootargs="",
+        model="frost",
+        board="vcu118",
+        vector=vector,
+        vlen=vlen if vector else 256,
+    )
+    out = tmp_path / name
+    out.mkdir(parents=True, exist_ok=True)
+    packer_mod.compile_dtb(dts, out, "dtc")
+    return out / "frost.dtb"
+
+
+def test_vcu118_bitstream_metadata_and_dtb_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Loader and programmer enforce recorded VCU118 VLEN across Linux, apps, custom DTBs, and prebuilt images."""
+    vcu118_meta = load_module("vcu118_metadata_test", "fpga/common/vcu118_metadata.py")
+    fake_root = tmp_path / "repo"
+    (fake_root / "fpga/build/vcu118/work").mkdir(parents=True)
+    (fake_root / "sw/apps/linux_boot").mkdir(parents=True)
+    (fake_root / "sw/apps/vec_fp_test").mkdir(parents=True)
+    (fake_root / "boards/vcu118").mkdir(parents=True)
+    (fake_root / "boards/vcu118/vcu118_frost.sv").write_text(
+        (ROOT / "boards/vcu118/vcu118_frost.sv").read_text(), encoding="utf-8"
+    )
+    (fake_root / "boards/xilinx_frost_subsystem.sv").write_text(
+        (ROOT / "boards/xilinx_frost_subsystem.sv").read_text(), encoding="utf-8"
+    )
+    (fake_root / "fpga/build/vcu118_ddr_bd.tcl").symlink_to(
+        ROOT / "fpga/build/vcu118_ddr_bd.tcl"
+    )
+
+    # Program a VLEN-128 bitstream from an external build directory and verify programmed_bitstream.json.
+    ext_work = tmp_path / "ext_build/work"
+    ext_work.mkdir(parents=True)
+    ext_bit = ext_work / "vcu118_frost.bit"
+    ext_bit.write_bytes(b"vcu118-v128-bitstream")
+    vcu118_meta.write_vcu118_bitstream_metadata(
+        ext_bit, vector=True, vlen=128, cpu_clock_hz=162_500_000
+    )
+    monkeypatch.setattr(programmer, "select_target", lambda *a, **k: TARGET)
+    with monkeypatch.context() as mp:
+        mp.setattr(programmer.subprocess, "run", lambda *a, **k: None)
+        vcu118_meta.record_programmed_vcu118_bitstream(fake_root, ext_bit)
+    recorded = vcu118_meta.read_vcu118_bitstream_metadata(fake_root)
+    assert (
+        recorded is not None and recorded["vlen"] == 128 and recorded["vector"] is True
+    )
+
+    # Finding 1 regression: running a later --stop-after synth at VLEN 512 must NOT wipe
+    # programmed_bitstream.json or vcu118_frost.bit.json, and must never infer VLEN 512.
+    work_bit = fake_root / "fpga/build/vcu118/work/vcu118_frost.bit"
+    work_bit.write_bytes(b"vcu118-local-v128")
+    vcu118_meta.write_vcu118_bitstream_metadata(
+        work_bit, vector=True, vlen=128, cpu_clock_hz=162_500_000
+    )
+    vcu118_meta.write_vcu118_netlist_config(
+        fake_root / "fpga/build/vcu118/work",
+        vector=True,
+        vlen=512,
+        cpu_clock_hz=162_500_000,
+        misaligned_hw=True,
+    )
+    work_sidecar = vcu118_meta.read_bitstream_sidecar(work_bit)
+    assert work_sidecar is not None and work_sidecar["vlen"] == 128
+    recorded_after_synth = vcu118_meta.read_vcu118_bitstream_metadata(fake_root)
+    assert recorded_after_synth is not None and recorded_after_synth["vlen"] == 128
+
+    # An un-annotated .bit next to VLEN-512 netlist config must NOT be relabeled as 512,
+    # and programming it must clear any stale VLEN inference from work_dir/vcu118_frost.bit.
+    unannotated_bit = fake_root / "fpga/build/vcu118/work/legacy_no_sidecar.bit"
+    unannotated_bit.write_bytes(b"legacy-unannotated")
+    assert vcu118_meta.read_bitstream_sidecar(unannotated_bit) is None
+    vcu118_meta.record_programmed_vcu118_bitstream(fake_root, unannotated_bit)
+    assert vcu118_meta.read_vcu118_bitstream_metadata(fake_root) is None
+
+    # Removing programmed_bitstream.json leaves netlist-only dirs returning None (never 512),
+    # while restoring VLEN-128 ext_bit restores the active board record.
+    (
+        fake_root
+        / "fpga/build/vcu118/work"
+        / vcu118_meta.VCU118_PROGRAMMED_METADATA_NAME
+    ).unlink()
+    work_bit.unlink()
+    (fake_root / "fpga/build/vcu118/work/vcu118_frost.bit.json").unlink()
+    assert vcu118_meta.read_vcu118_bitstream_metadata(fake_root) is None
+    vcu118_meta.record_programmed_vcu118_bitstream(fake_root, ext_bit)
+
+    # Corrupted SHA-256 sidecar is rejected by program_bitstream.py before cable access.
+    ext_bit.write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="SHA-256"):
+        vcu118_meta.read_bitstream_sidecar(ext_bit)
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            programmer, "select_target", lambda *a, **k: pytest.fail("cable touched")
+        )
+        mp.setattr(
+            sys,
+            "argv",
+            ["program_bitstream.py", "vcu118", "--bitstream", str(ext_bit)],
+        )
+        with pytest.raises(SystemExit) as stopped:
+            programmer.main()
+        assert stopped.value.code == 2
+        assert "SHA-256" in capsys.readouterr().err
+
+    monkeypatch.setattr(loader, "PROJECT_ROOT", fake_root)
+    monkeypatch.setattr(loader, "_linux_boot_preflight", lambda: None)
+    monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a, **k: {})
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    monkeypatch.delenv("FROST_LINUX_DTB", raising=False)
+    monkeypatch.delenv("FROST_LINUX_VLEN", raising=False)
+    monkeypatch.delenv("FROST_LINUX_PREBUILT", raising=False)
+
+    # 1. With VLEN-128 metadata recorded, `linux_boot --vector` without --vlen inherits 128.
+    seen_linux_vlen: list[int | None] = []
+
+    def capture_compile(*args: Any, **kwargs: Any) -> bool:
+        seen_linux_vlen.append(kwargs.get("vlen"))
+        return True
+
+    with monkeypatch.context() as mp:
+        mp.setattr(loader, "compile_app_for_board", capture_compile)
+        mp.setattr(
+            sys,
+            "argv",
+            ["load_software.py", "vcu118", "linux_boot", "--vector", "--build-only"],
+        )
+        loader.main()
+    assert seen_linux_vlen == [128]
+
+    # 2. vec_fp_test --vector without --vlen also inherits VEC_VLEN=128.
+    seen_app_cflags: list[str] = []
+
+    def capture_app(*args: Any, **kwargs: Any) -> bool:
+        seen_app_cflags.append((args[4] or {}).get("EXTRA_CFLAGS", ""))
+        return True
+
+    with monkeypatch.context() as mp:
+        mp.setattr(loader, "compile_app_for_board", capture_app)
+        mp.setattr(
+            sys,
+            "argv",
+            ["load_software.py", "vcu118", "vec_fp_test", "--vector", "--build-only"],
+        )
+        loader.main()
+    assert seen_app_cflags == ["-DVEC_VLEN=128"]
+
+    # Finding 2 regression: ordinary (non-VEC_VLEN_APPS) apps work with --vector
+    # on a recorded VLEN-128 build instead of inheriting meta_vlen and failing.
+    (fake_root / "sw/apps/hello_world").mkdir(parents=True)
+    hello_calls: list[dict[str, str] | None] = []
+
+    def capture_hello(*args: Any, **kwargs: Any) -> bool:
+        hello_calls.append(args[4])
+        return True
+
+    with monkeypatch.context() as mp:
+        mp.setattr(loader, "compile_app_for_board", capture_hello)
+        mp.setattr(
+            sys,
+            "argv",
+            ["load_software.py", "vcu118", "hello_world", "--vector", "--build-only"],
+        )
+        loader.main()
+    assert hello_calls == [{}]
+
+    # Explicit --vlen on an ordinary app is still rejected.
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            sys,
+            "argv",
+            [
+                "load_software.py",
+                "vcu118",
+                "hello_world",
+                "--vector",
+                "--vlen",
+                "128",
+                "--build-only",
+            ],
+        )
+        with pytest.raises(SystemExit) as stopped:
+            loader.main()
+        assert stopped.value.code == 2
+        assert (
+            "--vlen is only valid for vector-width applications"
+            in capsys.readouterr().err
+        )
+
+    # 3. Refusal paths: mismatched --vlen, omitted --vector, scalar --no-vector,
+    # mismatched FROST_LINUX_VLEN, mismatched FROST_LINUX_DTB, and mismatched prebuilt sw_ddr.mem.
+    dtb_128 = _minimal_isa_dtb(tmp_path, "dtb128", vector=True, vlen=128)
+    dtb_256 = _minimal_isa_dtb(tmp_path, "dtb256", vector=True, vlen=256)
+    dtb_scalar = _minimal_isa_dtb(tmp_path, "dtbsc", vector=False, vlen=256)
+
+    for argv, env_vars, expected_err in (
+        (
+            ["vcu118", "linux_boot", "--vector", "--vlen", "256", "--build-only"],
+            {},
+            "does not match recorded VCU118 bitstream VLEN 128",
+        ),
+        (
+            ["vcu118", "vec_fp_test", "--vector", "--vlen", "256", "--build-only"],
+            {},
+            "does not match recorded VCU118 bitstream VLEN 128",
+        ),
+        (
+            ["vcu118", "linux_boot", "--build-only"],
+            {},
+            "recorded VCU118 bitstream is a vector build (VLEN=128); pass --vector",
+        ),
+        (
+            ["vcu118", "linux_boot", "--no-vector", "--build-only"],
+            {},
+            "pass --vector instead of --no-vector",
+        ),
+        (
+            ["vcu118", "linux_boot", "--vector", "--build-only"],
+            {"FROST_LINUX_VLEN": "256"},
+            "FROST_LINUX_VLEN=256 does not match selected VLEN 128",
+        ),
+        (
+            ["vcu118", "linux_boot", "--vector", "--build-only"],
+            {"FROST_LINUX_DTB": str(dtb_256)},
+            "advertises VLEN 256, expected VLEN 128",
+        ),
+        (
+            ["vcu118", "linux_boot", "--vector", "--build-only"],
+            {"FROST_LINUX_DTB": str(dtb_scalar)},
+            "requires 'v'",
+        ),
+    ):
+        with monkeypatch.context() as mp:
+            for k, v in env_vars.items():
+                mp.setenv(k, v)
+            mp.setattr(sys, "argv", ["load_software.py", *argv])
+            with pytest.raises(SystemExit) as stopped:
+                loader.main()
+            assert stopped.value.code == 2
+            assert expected_err in capsys.readouterr().err
+
+    # Finding 5 regression: end-to-end unmocked Linux packaging with FROST_LINUX_DTB
+    # on a recorded VLEN-128 build (real makeclean/make -> frost_boot_image.py).
+    linux_make_dir = fake_root / "sw/apps/linux_boot"
+    (linux_make_dir / "Makefile").symlink_to(ROOT / "sw/apps/linux_boot/Makefile")
+    (fake_root / "sw/common").mkdir(parents=True)
+    (fake_root / "sw/common/make_dword_mem.py").symlink_to(
+        ROOT / "sw/common/make_dword_mem.py"
+    )
+    (fake_root / "linux").mkdir(parents=True)
+    (fake_root / "linux/buildroot-external").symlink_to(
+        ROOT / "linux/buildroot-external"
+    )
+    (fake_root / "linux/build-mmu/images").mkdir(parents=True)
+    (fake_root / "linux/build-mmu/images/rootfs.cpio").write_bytes(b"cpio")
+    (fake_root / "linux/build-mmu/images/fw_jump.bin").write_bytes(bytes(range(64)) * 4)
+    (fake_root / "linux/opensbi_build.py").write_text(
+        "import argparse, pathlib\n"
+        "p = argparse.ArgumentParser(); p.add_argument('--out', required=True)\n"
+        "a, _ = p.parse_known_args()\n"
+        "d = pathlib.Path(a.out) / 'platform/generic/firmware'; d.mkdir(parents=True, exist_ok=True)\n"
+        "(d / 'fw_jump.bin').write_bytes(bytes(range(64)) * 4)\n"
+        "(d / 'fw_jump.elf').write_bytes(b'ELF')\n",
+        encoding="utf-8",
+    )
+    fake_kernel = tmp_path / "Image"
+    fake_kernel.write_bytes(b"LINUX" + bytes(4096))
+    (fake_root / "linux/debian_kernel.py").write_text(
+        f"import sys\nprint({str(fake_kernel)!r})\n", encoding="utf-8"
+    )
+
+    packer_mod = load_module(
+        "frost_boot_image_prebuilt_test",
+        "linux/buildroot-external/board/frost/frost_boot_image.py",
+    )
+    nfs_custom_dir = tmp_path / "custom_nfs_128_build"
+    nfs_custom_dir.mkdir()
+    nfs_custom_128 = tmp_path / "custom_nfs_v128.dtb"
+    nfs_custom_128.write_bytes(
+        packer_mod.compile_dtb(
+            packer_mod.gen_dts(
+                clk_hz=162_500_000,
+                initrd_range=None,
+                bootargs=packer_mod.nfsroot_bootargs("192.0.2.1:/export"),
+                model="test-custom-v128",
+                board="vcu118",
+                vector=True,
+                vlen=128,
+            ),
+            nfs_custom_dir,
+            "dtc",
+        )
+    )
+    with monkeypatch.context() as mp:
+        mp.setenv("FROST_LINUX_DTB", str(nfs_custom_128))
+        mp.setenv("FROST_LINUX_KERNEL", str(fake_kernel))
+        mp.setenv("FROST_LINUX_NFSROOT", "192.0.2.1:/export")
+        mp.setattr(
+            sys,
+            "argv",
+            ["load_software.py", "vcu118", "linux_boot", "--vector", "--build-only"],
+        )
+        loader.main()
+    vcu118_meta.verify_dtb_vector_config(
+        vcu118_meta.extract_dtb_from_sw_ddr_txt(linux_make_dir / "sw_ddr.txt"),
+        expected_vector=True,
+        expected_vlen=128,
+        source="real packaged sw_ddr.txt",
+    )
+    vcu118_meta.verify_dtb_vector_config(
+        vcu118_meta.extract_dtb_from_sw_ddr_mem(linux_make_dir / "sw_ddr.mem"),
+        expected_vector=True,
+        expected_vlen=128,
+        source="real packaged sw_ddr.mem",
+    )
+
+    # Finding 3 regression: prebuilt sw_ddr.txt (what load_software.tcl actually loads)
+    # is validated directly, so a VLEN-128 sw_ddr.mem beside a stale VLEN-256 sw_ddr.txt
+    # must be refused.
+    prebuilt_dir = fake_root / "sw/apps/linux_boot"
+    layout = packer_mod.plan_layout(0x1000)
+    packer_mod.write_images(
+        prebuilt_dir,
+        layout,
+        b"\x13\x00\x00\x00" * 4,
+        b"\x00" * 64,
+        b"\x00" * 64,
+        dtb_256.read_bytes(),
+        None,
+    )
+    saved_txt_256 = (prebuilt_dir / "sw_ddr.txt").read_bytes()
+    packer_mod.write_images(
+        prebuilt_dir,
+        layout,
+        b"\x13\x00\x00\x00" * 4,
+        b"\x00" * 64,
+        b"\x00" * 64,
+        dtb_128.read_bytes(),
+        None,
+    )
+    (prebuilt_dir / "sw_ddr.txt").write_bytes(saved_txt_256)
+    with monkeypatch.context() as mp:
+        mp.setenv("FROST_LINUX_PREBUILT", "1")
+        mp.setattr(
+            sys,
+            "argv",
+            ["load_software.py", "vcu118", "linux_boot", "--vector", "--build-only"],
+        )
+        with pytest.raises(SystemExit) as stopped:
+            loader.main()
+        assert stopped.value.code == 2
+        assert "advertises VLEN 256, expected VLEN 128" in capsys.readouterr().err
+
+    # Prebuilt sw_ddr.mem without sw_ddr.txt must also be refused because Tcl loads sw_ddr.txt.
+    (prebuilt_dir / "sw_ddr.txt").unlink()
+    with monkeypatch.context() as mp:
+        mp.setenv("FROST_LINUX_PREBUILT", "1")
+        mp.setattr(
+            sys,
+            "argv",
+            ["load_software.py", "vcu118", "linux_boot", "--vector", "--build-only"],
+        )
+        with pytest.raises(SystemExit) as stopped:
+            loader.main()
+        assert stopped.value.code == 2
+        assert "FROST_LINUX_PREBUILT=1 requires" in capsys.readouterr().err
+
+    packer_mod.write_images(
+        prebuilt_dir,
+        layout,
+        b"\x13\x00\x00\x00" * 4,
+        b"\x00" * 64,
+        b"\x00" * 64,
+        dtb_128.read_bytes(),
+        None,
+    )
+    with monkeypatch.context() as mp:
+        mp.setenv("FROST_LINUX_PREBUILT", "1")
+        mp.setattr(loader, "compile_app_for_board", capture_compile)
+        mp.setattr(
+            sys,
+            "argv",
+            ["load_software.py", "vcu118", "linux_boot", "--vector", "--build-only"],
+        )
+        loader.main()

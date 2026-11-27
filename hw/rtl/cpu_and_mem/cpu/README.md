@@ -87,53 +87,62 @@ in `frost_hart.sv`.
 
 ### Pipeline
 
-IF receives a 64-bit window each cycle: the 32-bit word at the fetch PC and
-the word after it. It cuts up to two instructions from the window, assembling
-a 32-bit instruction that starts in the upper half of a word from both words
-in the same cycle. Fetch providers expand compressed instructions as part of
-predecode (see [Instruction fetch providers](#instruction-fetch-providers)).
-IF builds slot 2 from the RV64C expansion, PD does the same for slot 1 and extracts
-source registers early, and ID decodes both slots. Decoded bundles wait in the
+IF is decoupled around a 16-halfword, 8-window parcel queue (`fetch_parcel_queue`)
+with zero-cycle empty and partial bypass. It runs in three loosely coupled parts:
+
+- **Fetch (`F0`)**: `fetch_pc_decoupled` drives the live fetch PC (`o_pc`) ahead
+  of decode while instruction memory, `immu`, the two-bank fast BTB
+  (`fetch_btb_2w`), the four-bank bimodal direction predictor (`fetch_dir_4b`),
+  `backing_btb`, `tage_predictor`, and `ittage_predictor` look up the 64-bit
+  window `{W+1, W}` in parallel. A taken fast-BTB hit steers `o_pc` to the
+  predicted target immediately on the launching edge (or steps to `W+2` first
+  for a 32-bit branch spanning out of the upper halfword of `W+1`).
+- **Validate (`F1`)**: When the 64-bit window arrives with its predecode
+  sideband, F1 compares the provider's registered served-word tag against the
+  launched request (`f1_req_q.pc`), walks the four halfwords' instruction
+  boundaries (carrying a spanning 32-bit instruction across sequential windows),
+  validates any F0 fast-BTB prediction against real instruction boundaries,
+  size, control-flow opcode class, and fetch faults, and pushes 1 to 4 packed
+  halfword parcels plus one window metadata entry into `fetch_parcel_queue`. A
+  served-word mismatch or false fast-BTB hit triggers an F1 resteer.
+- **Drain**: Drain views the head four parcels of `fetch_parcel_queue` (bypassing
+  directly from F1 with zero added cycles when the queue is empty or holds fewer
+  than four halfwords), aligns and pairs slot 1 and slot 2 across window
+  boundaries, assembles 32-bit instructions that span words or windows, expands
+  slot 2 from the predecode sideband, computes PD's split target candidates, and
+  advances the queue by 1 to 4 halfwords when PD accepts the bundle.
+
+Fetch providers expand compressed instructions as part of predecode (see
+[Instruction fetch providers](#instruction-fetch-providers)). IF builds slot 2
+from the RV64C expansion, PD does the same for slot 1 and extracts source
+registers early, and ID decodes both slots. Decoded bundles wait in the
 [decoded bundle queue](cpu_ooo/frontend_control/README.md) until dispatch
 renames them. While `mstatus.FS` is Off, ID decodes every F/D instruction as
 illegal, so it reaches dispatch as an illegal-instruction marker and never
 touches memory or FP state; the [CSR-write flush](#csr-writes) keeps that
 decode in step with FS.
 
-IF keeps two PCs. The fetch PC (`o_pc`) addresses instruction memory and the
-slot-1 BTB lookup. `pc_reg` is the PC of the packet IF emits, normally one
-cycle behind. A taken slot-1 prediction moves the fetch PC to the target at
-once, and `pc_reg` follows one cycle later, after the branch itself has been
-emitted; a taken slot-2 prediction moves both PCs at once. A two-instruction
-bundle advances `pc_reg` by 4, 6, or 8 bytes, a single instruction by 2 or 4.
-
-The architectural-PC mux receives raw live slot-2 validity and staged/live
-cofactors separately. The Xilinx implementation keeps saved replay in its
-no-live arm and applies raw live validity in the final F7. The
-complete staged select is replay OR (valid AND staged cofactor); the complete
-live select is valid AND live cofactor. Redirect and live/staged priorities
-remain the same.
-
-Reset loads both PCs with the boot address at their flops. `pc_controller`
-picks the next fetch PC in this priority: trap or xRET, FENCE-class flush
-(FENCE.I, SFENCE.VMA, or a
-[translation-changing CSR write](#csr-writes)), misprediction recovery, PD
-redirect, served-window resteer, hold while no window arrives, slot-2
-prediction, slot-1 prediction, the pending-prediction arms, lower-parcel
-resteer catch-up, then the sequential PC.
+Reset loads `o_pc` with the boot address at the flop and clears the parcel queue.
+`fetch_pc_decoupled` picks the next fetch PC in this priority: trap or xRET,
+FENCE-class flush (FENCE.I, SFENCE.VMA, or a
+[translation-changing CSR write](#csr-writes)), misprediction recovery, unstalled
+PD redirect, F1 validation resteer (served-word tag mismatch or false fast-BTB
+hit), hold when neither an F0 launch nor a collapsed-lead accept fires,
+spanning-branch BTB target completion, F0 or collapsed-lead fast-BTB taken
+prediction, then the sequential next 64-bit window (`{o_pc[XLEN-1:2] + 2, 2'b00}`).
 
 ### Branch prediction
 
 | Structure | Size | Predicts | Trained by |
 |-----------|------|----------|------------|
-| BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches, JALs and JALRs; an entry is typed as a call, a return, or both | Mispredicted conditional branches, JALs and JALRs; correctly predicted conditional branches at commit |
-| Backing BTB | 1024 entries, two-way set-associative | Target of a JAL or JALR the BTB did not predict taken, through a PD redirect | Mispredicted JALs and JALRs at recovery. A PD redirect that uses an entry refreshes its replacement state |
-| Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`), and of a backing BTB redirect for one | IF, when it hands PD a packet predicted from a typed entry, and for a backing BTB redirect: a call (JAL or JALR writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
-| Bimodal direction predictor | 1024 2-bit counters | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match | Each conditional branch at commit |
-| Tagged direction predictor | Four tables of 1024 entries, hashed with 12, 24, 64 and 128 bits of direction history; 10-bit tags, 3-bit counters, 2-bit usefulness | Direction of conditional branches in either slot whose lookup matches a tag, either way | Each conditional branch at commit, at the entries its lookup read |
-| Indirect target predictor | Three tables of 256 entries, hashed with 8, 24 and 64 bits of path history; 11-bit tags, 2-bit confidence | Target of a JALR that is not a return, in either slot, through a PD redirect when it differs from the BTB's | Each JALR at commit, at the entries its lookup read |
+| Fast BTB (`fetch_btb_2w`) | 256 entries, direct-mapped in two 128-entry even/odd word banks, 2-bit counters | First taken branch, JAL, or JALR across both adjacent words `W` and `W+1` of a 64-bit fetch window; typed as a call, return, or swap | Mispredicted conditional branches, JALs, and JALRs; correctly predicted conditional branches at commit (registered one cycle) |
+| Backing BTB (`backing_btb`) | 1024 entries, two-way set-associative | Target of a JAL or JALR in any of the window's four halfwords that the fast BTB did not predict taken, through a PD redirect | Mispredicted JALs and JALRs at recovery. A PD redirect that uses an entry refreshes its replacement state |
+| Return address stack (`return_address_stack`) | 8 entries | Target of a fast-BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or coroutine swap (`jalr t0, 0(ra)`), and of a backing BTB redirect for one | Speculative F0 calls/returns (registered one cycle); restored uniformly from EX recovery, unstalled PD redirects, or F1 resteers/span-tail faults |
+| Bimodal direction predictor (`fetch_dir_4b`) | 1024 2-bit counters in four halfword banks | Direction of slot-1 conditional branches without a taken BTB prediction or a tagged match (looked up for all four halfwords in F0 and carried with each parcel) | Each conditional branch at commit |
+| Tagged direction predictor (`tage_predictor`) | Four tables of 1024 entries, hashed with 12, 24, 64 and 128 bits of direction history; 10-bit tags, 3-bit counters, 2-bit usefulness | Direction of conditional branches in either slot whose lookup matches a tag, either way (captured per window in F1 and carried in parcel-queue metadata) | Each conditional branch at commit, at the entries its lookup read |
+| Indirect target predictor (`ittage_predictor`) | Three tables of 256 entries, hashed with 8, 24 and 64 bits of path history; 11-bit tags, 2-bit confidence | Target of a JALR that is not a return, in either slot, through a PD redirect when it differs from the BTB's | Each JALR at commit, at the entries its lookup read |
 
-A return is predicted like any BTB hit, from the lookup at its fetch PC, but
+A return is predicted like any BTB hit, from the lookup at its fetch window, but
 its entry is typed, so its target is the top of the return address stack
 while the stack holds an entry (the BTB target, the return's last target,
 otherwise). Any other JALR, such as an indirect call through a function
@@ -147,50 +156,41 @@ unpredicted JALR is in the front end (slot 1 of IF, PD, or
 ID, or the decoded queue) and a conditional branch or JALR is unresolved,
 `ooo_pipeline_control` stalls the front end to limit wrong-path fetch.
 
-The BTB is indexed by PC[9:2]. Its tags include PC[1], so a lookup at one
-halfword of a word never hits an entry trained for the other. A hit predicts
-taken when the upper counter bit is set. The slot-1 lookup reads the fetch PC
-and accepts both compressed and 32-bit entries at a halfword PC: every slot-1
-prediction at an odd PC pends so only the packet at that PC takes it one-wide,
-and served-window coverage refuses an upper-half 32-bit packet until its second
-word is present.
-To track a pending prediction, slot-2 raw rows and the forwarded payload each form their five-bit
-PC relation and apply return typing before coverage selects a row. An uncovered
-row relates a zero low target in the served PC's upper region. The controller
-receives the selected relation alongside the unchanged target outputs.
+The fast BTB (`fetch_btb_2w`) splits its 256 entries into even (`PC[2]=0`) and
+odd (`PC[2]=1`) word banks of 128 entries each so a single F0 lookup inspects
+both adjacent words `W` and `W+1` in parallel without separate slot-2 BTB
+copies. Tags include `PC[1]`, so lower and upper halfwords never alias. Hits in
+`W` require `tag_hw >= o_pc[1]`; hits in `W+1` are suppressed when `W+1` wraps
+into the next tag block. Word `W` has priority over `W+1` when both predict
+taken. A predicted-taken 32-bit branch starting in the upper halfword of `W+1`
+(position 3) flags `o_is_span`, so F0 fetches `W+2` sequentially to supply its
+upper halfword (`span_tail`) before steering to the predicted target. A taken
+branch in any position of the 64-bit window steers `o_pc` on the F0 launch edge
+with zero fetch bubble, and F1 truncates parcels after the predicted branch.
+A JAL that misses both the fast BTB and the backing BTB mispredicts once;
+recovery trains both tables so its next execution hits. With `EarlyJalRecovery`
+set, a mispredicted JAL stages at allocation and launches early recovery once
+older branches and JALRs resolve and no checkpointed branch or JALR issues;
+otherwise it recovers at commit.
 
-Slot 2 has three BTB copies of its own, keyed by the PC of the instruction
-before it (+2 and +4, plus a copy rotated by one index for a slot 2 in the
-next word). They are read a cycle ahead, so the lookup adds no fetch cycle,
-but a taken slot-2 prediction costs one bubble because fetch has already
-requested the next sequential window (plus PD's redirect bubbles if a tagged
-match vetoes it there). At a halfword PC, a slot-2 hit predicts
-only if the entry was trained for an instruction of the same size: slot 2
-redirects both PCs immediately without a pending handoff, and a 32-bit
-instruction in the second word's upper half does not fit the 64-bit window. A
-JAL that misses both the BTB and the backing BTB mispredicts once; recovery
-trains both tables so its next execution hits. With `EarlyJalRecovery` set, a
-mispredicted JAL stages at allocation and launches early recovery once older
-branches and JALRs resolve and no checkpointed branch or JALR issues; otherwise
-it recovers at commit.
-
-BTB tags are fetch PCs, with no ASID or translation mode, and nothing
-corrects a taken hit on an instruction that is not control flow: PD and the
-branch unit check only branches and jumps.
+BTB tags are fetch PCs, with no ASID or translation mode. F1 validates every
+taken fast-BTB hit against the fetched window's real instruction boundaries,
+compressed/native size, control-flow opcode class, and fetch faults, cancelling
+any stale hit on an interior halfword or non-control instruction and resteering
+fetch sequentially.
 
 #### Fast-lookup training, flushes, and safety guards
 
-The BTB learns from three prioritized sources selected by
-`ex_comb_synthesizer` and registered one cycle in
-`branch_prediction_controller`: early misprediction recovery
-(conditional branches, JALRs when `EarlyJalrRecovery` is set, and allocated
-JALs when `EarlyJalRecovery` is set),
-commit-time misprediction recovery (conditional branches, JALs, and JALRs),
-and correctly predicted conditional branches at commit. Whenever the
-selected update trains a JAL or JALR, it also trains the backing BTB.
-Training before retirement is by design: an early recovery writes the BTB
-(and, for a JAL or JALR, the backing BTB) as soon as recovery fires,
-while older instructions in the reorder buffer are uncommitted.
+The fast BTB learns from three prioritized sources selected by
+`ex_comb_synthesizer` and registered one cycle in `if_stage`: early
+misprediction recovery (conditional branches, JALRs when `EarlyJalrRecovery` is
+set, and allocated JALs when `EarlyJalRecovery` is set), commit-time
+misprediction recovery (conditional branches, JALs, and JALRs), and correctly
+predicted conditional branches at commit. Whenever the selected update trains a
+JAL or JALR, it also trains the backing BTB. Training before retirement is by
+design: an early recovery writes the fast BTB (and, for a JAL or JALR, the
+backing BTB) as soon as recovery fires, while older instructions in the reorder
+buffer are uncommitted.
 
 A later redirect from an older branch or jump does not clear the BTB or
 cancel an update already registered for it, so an entry trained by an
@@ -216,22 +216,22 @@ never architectural correctness, because four guards hold:
    resolution checks the direction and full target of every conditional branch
    and JALR, turning any stale direction or target into a recovery redirect.
 2. If wrong-path fetch trains an entry at the interior halfword of a 32-bit
-   instruction that is not control flow (compressed, or at an odd halfword also
-   32-bit), the slot-1 prediction pends and fetch walk-past squashes the stale
-   target window and resteers fetch once the architectural PC steps past that
-   halfword, delivering the 32-bit instruction unchanged.
+   instruction, at a size mismatch, or at a non-control instruction, F1
+   boundary and opcode validation cancels `btb_predicted_taken` on all pushed
+   parcels, pushes the full window unchanged, restores the speculative RAS
+   checkpoint, and resteers `o_pc` to the next sequential window (or cancels a
+   pending spanning target).
 3. Under Sv39 without a `satp` change, supervisor and user execute permissions
-   are disjoint. At lookup time, fetch suppresses BTB predictions whenever
-   either word of the served fetch window faults, when the live fetch PC's
-   first word faults, or while an unresolved translation holds fetch, and
-   `immu` and `fetch_provider` restrict physical instruction reads to
-   executable PMA memory (`pma_fetch_ok`, excluding device and MMIO regions),
-   delivering a fault-tagged window without issuing a bus read for any
-   non-executable or unmapped target. At packet assembly, `if_stage` also
-   clears `btb_predicted_taken` in both slots whenever `fetch_fault` is set
-   (including an upper-half 32-bit instruction whose second word faults across
-   a page boundary), so PD and the return address stack take no prediction side
-   effect from a faulted packet.
+   are disjoint. At F0 lookup time, fetch suppresses fast-BTB predictions
+   whenever `o_pc`'s first word faults or is outside executable PMA memory
+   (`pma_fetch_ok`, excluding device and MMIO regions), and `immu` and
+   `fetch_provider` deliver a fault-tagged window without issuing a bus read
+   for any non-executable or unmapped target. At F1 validation, any fault on a
+   predicted branch's bytes cancels the fast-BTB hit, and at drain assembly
+   `if_stage` clears `btb_predicted_taken` in both slots whenever `fetch_fault`
+   is set (including an upper-half 32-bit instruction whose second word faults
+   across a page boundary), so PD and the return address stack take no
+   prediction side effect from a faulted packet.
 4. Every architecturally fenced code or translation-space change clears every
    BTB valid array and holds the clear for four cycles so no in-flight
    pre-flush update can reinstall an entry from old code.
@@ -244,9 +244,9 @@ resolution or commit recovery checks every jump target.
 
 This rule does not change the existing limitation: after code is rewritten
 without FENCE.I or a valid executable mapping is replaced without
-SFENCE.VMA, a stale taken BTB hit on an instruction that is no longer a
-branch or jump is not corrected, whether that entry came from early
-recovery or retirement (see the
+SFENCE.VMA, a stale taken BTB hit on a different control-flow instruction at
+the same address and size costs a misprediction recovery, while a stale hit on
+a non-control instruction is caught and resteered in F1 (see the
 [roadmap](../../../../ROADMAP.md#possible-future-work)).
 
 PD can change the direction fetch followed for a conditional branch in either
@@ -283,7 +283,7 @@ mispredictions per 1,000 instructions in the trace model, so there is none).
 The path history: every taken control-flow instruction shifts bits [3:2] of
 its target into a 64-bit history, which the indirect target predictor
 hashes. Its lookup history follows fetch: `tage_history`
-pushes the target the cycle after `pc_controller` loads a predicted one, and
+pushes the target the cycle after `fetch_pc_decoupled` loads a predicted one, and
 each redirect restores the history to its point in the program. The
 controller captures push and restore events with the PC load and captures
 zero for a held PC. A trap, xRET, FENCE-class flush, or commit-time recovery
@@ -377,35 +377,21 @@ way the set's replacement state names; a target in another 4 GiB region
 invalidates the entry, as in the BTB. Reset clears one set per cycle, and
 the backing BTB makes no predictions until every set is clear.
 
-The lookup follows the fetch PC: the set of `o_pc`'s word, and the set after
-it for a slot 2 in the next word, read on the edge that requests the window.
-When IF serves that window the next cycle, the registered tags are compared
-with the packet's PC, so a packet whose set was not read gets no backing hit,
-and neither does a slot 2 in the word after the last set. The hit, size and
-type come from the registered tags, and the target from the target array
-read on the same edge. The backing BTB also holds the last read whose set
-was the served packet's (its tags, targets and set index). When the newest
-read is for another set and the held one is for the packet's set, the held
-read answers, compared with the packet's PC in the same way. The first packet
-after a redirect often waits in the holdoff while `o_pc` has already moved on
-to the next window, so without the held read a jump or return in that packet
-lost the hit it had in its first cycle and mispredicted (from cached DDR,
-every such return did). A fetch retarget discards the outstanding and held reads. Within a fetch path,
-a held read can predate training writes made since;
-an entry it still shows costs at most a misprediction. The fetch PC also often
-sits at a halfword of the word before the window IF then serves (in compressed
-code, `o_pc` 0x902 and then `pc_reg` 0x904), so the read is for the set before
-the packet's word. The second image holds the set after the read one, which is
-the packet word's set, so slot 1 and a slot 2 in the same word are served
-from it; without this second image the backing BTB misses in that case (in
-CoreMark-PRO core the JALs it catches were a third of the
-mispredictions left after the indirect target predictor). IF passes PD each
-slot's hit, size, type and target, kept across stall replay like the packet.
-Slot 2's type and target also come for each size of slot 1, formed from the
-answering read's tags and the packet's PC alone. PD uses slot 1's size to form the slot-2
-backing address. It captures the slot-1 backing address beside the branch or slot-2
-address, then chooses between them with the registered owner. PD registers a candidate for a
-slot-1 or slot-2 JAL or JALR whose backing entry has the instruction's size.
+The lookup follows the fetch PC (`o_pc`): the set of `o_pc`'s word and the set
+after it read on the edge that launches the 64-bit window. When that window
+arrives in F1, `backing_btb`'s window-lookup outputs (`o_win_hit`,
+`o_win_compressed`, `o_win_return`, `o_win_target`) compare the registered tags
+against all four halfwords of `f1_win_pc` (`W` and `W+1`), and `if_stage` packs
+each halfword's backing hit, size, return type, and target into its
+`fetch_parcel_queue` parcel (or holds the lookup in `f1_pred_hold_q` across
+multi-cycle fetch misses). Because each parcel carries its own backing result
+through the queue, stalls and cross-window pairing preserve the exact backing
+hit without re-reading the array; `if_stage` still exposes slot 2's return type
+and target by slot-1 size directly from the head parcel views (`view1` for
+compressed slot 1, `view2` for native slot 1) and gates `o_backing_hit[1]` on
+staying within slot 1's 4 GiB physical-address region. A fetch redirect discards
+outstanding reads. PD registers a candidate for a slot-1 or slot-2 JAL or JALR
+whose backing entry has the instruction's size.
 When the slot's BTB prediction was not taken, the candidate fires the PD
 redirect, which costs the PD redirect's two bubbles instead of a
 misprediction recovery, ID gives the instruction the prediction, and IF
@@ -417,7 +403,8 @@ address, a return pops, and a coroutine swap does both. An entry trained on
 a return targets the top entry of the packet's recovery point while the
 stack holds an entry, and its stored target otherwise; an entry whose type
 does not match the instruction at its PC costs only a misprediction. IF
-performs the operation once, in the redirect's first cycle (see [Return
+performs the restore and post-restore operation on the unstalled cycle that
+releases the redirecting bundle from PD (see [Return
 address stack recovery](#return-address-stack-recovery)). A build that
 disables branch prediction gets no backing redirects. A jump the backing BTB
 predicts is not copied into the BTB: its correct prediction sends no update,
@@ -437,15 +424,17 @@ IF pairs two instructions only when all of these hold:
 - Slot 2 is not a native SYSTEM (other than a may-be-operation), MISC-MEM,
   AMO, FP-compute (OP-FP or fused multiply-add) or vector instruction (OP-V, OP-VE,
   or LOAD-FP and STORE-FP with a vector width). It may be a branch or jump:
-  the slot-2 BTB lookup, the tagged direction predictor (through a PD
-  redirect), or the backing BTB can predict it, while the bimodal fallback
-  covers slot 1 only.
-- Slot 2 fits in the window. A 32-bit slot 2 that would start in the upper
-  half of the second word does not.
-- No transient condition intervenes, such as an unsafe window read, an
-  instruction-buffer case the aligner does not pair, or a
-  [pending prediction](#pending-prediction-handoff) that needs a one-wide
-  packet.
+  the fast BTB (for any halfword in the window), the tagged direction predictor
+  (through a PD redirect), or the backing BTB can predict it, while the bimodal
+  fallback covers slot 1 only.
+- Enough parcels are available in `fetch_parcel_queue` (including zero-cycle
+  empty and partial bypass from the arriving F1 window) to cover both
+  instructions' halfwords. Because the queue stitches parcels across 64-bit
+  window boundaries, a pair can straddle two consecutive windows without a
+  window-boundary bubble.
+- Neither slot 1 nor slot 2 carries a fetch fault (a faulting slot 2 is
+  deferred and emitted alone as slot 1 on the next cycle so the fault attaches
+  to the right PC).
 
 A CSR instruction reads and writes its CSR at commit, and its CDB broadcast
 carries only its write operand, so dispatch holds everything younger until the
@@ -487,11 +476,14 @@ executable under the configured PMA. The standalone
 CPU defaults to strict uncached access. The fixed-latency `low_bram_fetch_presenter`
 serves only the positional TestRIG fixture and component tests.
 
-IF tolerates any provider latency. When no valid window arrives, IF emits NOP
-bubbles and freezes its PC and per-packet state while the provider keeps
-working on the owed request. Redirects retarget the provider, except a slot-1
-prediction made before the branch itself reached IF: that branch's window is
-still owed and must arrive first.
+IF tolerates any provider latency. When no valid window arrives, F0 holds `o_pc`
+and F1 retains its launched request (`f1_req_q` and `f1_pred_hold_q`) while the
+provider completes the owed fetch, and drain continues emptying any buffered
+parcels from `fetch_parcel_queue` (emitting NOP bubbles only once the queue is
+empty). A collapsed-lead fetch (when a miss arrives while `f1_req_valid_q` is
+clear) arms `collapsed_armed_q` and accepts the returning window without adding
+a launch cycle. Redirects and F1 resteers retarget the provider via
+`o_fetch_redirect` / `o_fetch_cached_retarget`.
 
 Every 32-bit word carries 80 bits of predecode metadata: 12 fetch-control
 bits (instruction size, pairing, and slot-2 eligibility) and, for each
@@ -1327,178 +1319,101 @@ read port and a byte-enabled write port serve the memory side.
 These front-end hazards are easy to reintroduce. The code comments at each
 site have the details.
 
-### Pending-prediction handoff
+### F1 fast-BTB validation, spanning branches, and false-BTB resteer
 
-A slot-1 prediction is made at the fetch PC, before `pc_reg` reaches the
-branch. When the branch sits in the upper half of a word (including a 32-bit
-branch or call that spans into the next word across a word, line, or page
-boundary), the target is a halfword address, or `pc_reg` would otherwise step
-past the branch, the prediction must wait for that exact packet through stalls,
-bubbles, and slow windows, or it attaches to a neighbor. `pc_controller` holds
-a one-deep pending {branch PC, target} pair and `prediction_metadata_tracker`
-holds the metadata. Only the packet at the saved PC consumes them; it is
-emitted one-wide, and its bimodal index is recomputed from that PC. After a
-non-crossing handoff, target holdoff steps the fetch PC to `target + 4`,
-preserving halfword parity so fetch keeps a four-byte lead at halfword targets
-too. A prediction made while the branch's own packet is already being emitted,
-which happens when variable latency closes the gap between the two PCs, never
-pends.
+F0 predicts from `fetch_btb_2w` before instruction bytes return, so F1 checks
+every arriving window's registered fast-BTB hit (`f1_req_q`) against the real
+instruction stream before pushing parcels into `fetch_parcel_queue`:
 
-IF disables prediction on served-window faults and on a fault on the fetch PC's
-first word, keeping second-word faults off the next-PC path. An upper-half
-32-bit branch or call whose second word faults in an unmapped or inaccessible
-page can therefore predict at fetch time and later arrive at `pc_reg` as a
-fetch fault (`fetch_fault_hi`, `xtval = PC + 2`). Packet assembly clears
-`btb_predicted_taken` whenever `fetch_fault` is set, so PD and the return
-address stack take no prediction side effect from a faulted packet.
+- **Boundary, size, and opcode check**: Walking the four halfwords from the
+  window's entry halfword (`f1_start_off_q` or `f1_carry_hi_q` from a spanning
+  32-bit instruction in the prior window), F1 requires the predicted halfword
+  `f1_btb_pos` to be a real instruction start, match `f1_src_btb_comp`, decode
+  as a control-flow opcode, and be fault-free. If wrong-path code trained an
+  entry on the interior halfword of a 32-bit instruction or a non-control
+  instruction, F1 clears `btb_predicted_taken` on every pushed parcel, pushes
+  all parcels of the window unchanged, restores the window's RAS checkpoint,
+  and triggers an F1 resteer (`arm 5`) to `{f1_req_q.pc[XLEN-1:2] + 2, 2'b00}`
+  (or cancels a pending spanning target if `btb_is_span` was set).
+- **Spanning 32-bit branches**: A predicted-taken 32-bit branch starting at
+  halfword 3 (`W+1` upper halfword) flags `btb_is_span`. F0 records its target
+  and call/return metadata in `span_btb_pending_q` and steps sequentially to
+  `W+2` so its upper halfword arrives in the next window (`span_tail`, pushing
+  one parcel) before steering `o_pc` to the predicted target. If `W+2` faults at
+  F0 (`f0_span_fault_veto`), F0 suppresses the spanning redirect and any RAS
+  push/pop, and tags `f1_req_q.span_veto` so F1 marks the upper halfword
+  faulting (`fetch_fault_hi`, `xtval = PC + 2`), restores RAS, and clears
+  `btb_predicted_taken` at drain.
 
-Instruction streams can overlap: a 32-bit instruction at `P-2` contains the
-halfword at `P`, which another path through the same bytes can execute as an
-instruction and train into the BTB. While an unkilled prediction is pending,
-`pc_controller` blocks new slot-1 BTB predictions in only two cases: the entry
-is one `pc_reg` has walked past, or it is a crossing entry and `pc_reg` is at
-its predecessor `P-2`, even when a released predecessor drops the shared
-pending prediction disable. Every other pending entry does not block slot 1.
-If a 32-bit instruction at `P-2` is released there and slot 2 at `P+2`
-predicts taken, that
-slot-2 redirect retires the pending entry and kills its saved metadata on the
-same edge. Otherwise a lookup at `P` that hit while IF emitted the 32-bit
-instruction leaves `pc_reg` past `P` instead of stopping there. From that cycle
-the pending prediction is inactive: it hands nothing off, holds nothing back,
-never moves `pc_reg` back onto `P`, and its saved metadata attaches to no
-packet. Its valid bit stays set through stalls and fetch gaps, so the
-registered redirect the predictor still holds cannot move `pc_reg` to the old
-target, and clears on the first cycle with neither a stall nor a fetch gap,
-including a served-window resteer cycle in which `pc_reg` holds. Because the
-lookup at `P` already moved `o_pc` to the phantom target, IF treats an active
-walk-past cycle as a served-window rejection, squashing the packet while
-`pc_reg` holds and resteering `o_pc` back to `pc_reg`'s word even if the
-phantom target's window would otherwise cover `pc_reg` through the instruction
-buffer. Within `pc_controller`, a prediction accepted on the unstalled edge an
-entry clears replaces it atomically, though IF suppresses new slot-1 lookups
-until the walked-past entry has cleared and `o_pc` has resteered.
+### Parcel-queue backpressure, zero-cycle bypass, and stalls
 
-`pc_controller` registers how `pc_reg` relates to the saved PC one edge early,
-which keeps the wide compares out of the PC loop. For a slot-2 redirect,
-`branch_prediction_controller` relates the live BTB target and stack top.
-`branch_predictor` relates each raw or forwarded staged payload, then applies
-coverage to the candidate relations. The controller selects the position and
-applies the RAS relation in one final gate when the entry is a return and the
-stack is nonempty.
+`fetch_parcel_queue` holds up to 16 halfwords across four parity-interleaved FF
+banks and 8 window metadata records across two distributed-RAM banks. When the
+queue is empty or holds fewer than four halfwords, drain bypasses parcels and
+window metadata directly from F1 in the same cycle so CoreMark-critical paths
+incur zero added fetch latency. Registered backpressure `o_stop_fetch` asserts
+once next parcel occupancy reaches `STOP_PARCEL_THRESH` (8) or metadata
+occupancy reaches `STOP_META_THRESH` (7), guaranteeing headroom for both the
+arriving F1 window and one in-flight fetch. While `i_pipeline_ctrl.stall` is
+high, drain holds the head bundle stable on `o_from_if_to_pd` /
+`o_from_if_to_pd_2` (`q_pop_count = 0`) while F0/F1 keep filling the queue up
+to the headroom threshold; no separate stall-replay latches are required. Any
+flush (`any_redirect` or reset) clears all queue pointers, occupancy, and
+`o_stop_fetch` synchronously at the flop.
 
-The controller supplies staged and live slot-2 target cofactors, with the
-live cofactor including the slot-1 alias check. Staged taken bits and the live
-fallback join parallel candidate qualifiers before common prediction permission.
-Separate sums for each slot-2 position let the live cofactor select the decoded
-+4 position with permission and ownership. IF passes full live validity and
-saved replay separately; pc_reg applies validity in the final data select.
-The shifted BTB payloads retain their one-gate row/forwarding selection for
-target data. Pending-PC relations use parallel raw-payload comparisons and
-select the relation after those same masks arrive.
+### Served-window tag check and retries
 
-The prediction-metadata valid flag precomputes hold/load and the PD redirect's
-non-target permission. In the Xilinx implementation, the wide PD target match,
-flush and slot-2 suppression meet in one final LUT6. Same-target stalled PD
-redirects retain metadata under the same taken/valid conditions as before.
-
-### Stalled slot-2 predictions
-
-A validated staged slot-2 candidate is captured with its packet on the first
-stall edge, including its target, call/return type, and pending-PC relations.
-The BTB may read other rows during the stall. Releasing the saved packet uses
-the captured candidate once, redirects fetch, and marks that packet predicted
-taken. A held packet makes no RAS operation. Reset, flush, PD redirect,
-execute recovery, trap, xRET, and FENCE-class redirects cancel the candidate;
-prediction disable blocks its consumption.
-
-### Served-window check and retries
-
-A provider can present a stale window, or one a word behind `pc_reg`.
-`served_window_coverage.sv` compares `pc_reg` with the word addresses each
-provider registers beside its payload. A window missing any byte of the packet
-becomes a NOP bubble, makes no prediction, and resteers fetch to `pc_reg`'s
-word. When `pc_reg` is in the upper half of that word, the retry's BTB lookup
-names the parcel before it, which is off the program path, so `pc_controller`
-flags the lookup, `branch_prediction_controller` ignores that BTB entry, and
-IF gives the packet a not-taken direction with its own bimodal index. With
-the fixed-latency test provider no program reaches the resteer; the
-`served_window_resteer_fetch_fuzz` test reaches it under the fetch-latency
-fuzz.
-
-### Aliased BTB lookups
-
-When the fetch PC equals the slot-2 position (`pc_reg` + 2 or + 4), for
-example on the first window after a fetch gap, the slot-1 and slot-2 lookups
-name the same instruction, and one branch could get two predictions.
-`branch_prediction_controller` gives the alias to slot 2 only, so a typed
-entry's push or pop also happens once, with the packet that carries the
-prediction.
+A provider can present a stale window after a redirect or cache miss. F1
+compares both providers' registered 62-bit served-word tags
+(`i_served_word_low` / `i_served_word_high`) against `f1_req_q.pc[XLEN-1:2]`
+in parallel chunked trees. A mismatch drops the arriving window without pushing
+to `fetch_parcel_queue`, leaves `o_fetch_live_claim` low, restores RAS, and
+resteers `o_pc` back to `f1_req_q.pc` (`arm 5`), suppressing F0 prediction on
+the retried launch (`f1_resteer_nopred_q`). The `served_window_resteer_fetch_fuzz`
+test exercises this path under randomized fetch-latency fuzzing.
 
 ### Return address stack recovery
 
-The stack moves only when PD takes a packet whose used prediction came from a
-typed BTB entry, or when PD redirects a call or return for the backing BTB: a
-packet squashed in IF, dropped by a flush or a PD redirect, or held by a
-stall never pushes or pops, and a stall replay pushes or pops once. At most
-one packet of a bundle can, because an instruction predicted taken ends the
-bundle. The recovery point that packet and its bundle partner carry is the
-stack state before their own operation: the top-of-stack pointer, the valid
-count, and the top entry. Restoring it keeps every older call pushed and
-every older return popped, and recovery then replays the mispredicted
-instruction's own push or pop. IF registers each operation, so the stack
-sees it the cycle after PD takes the packet and stores it on that cycle's
-edge; meanwhile the stack's outputs apply it to the stored state, so lookups
-and recovery points from that cycle on include it. A backing BTB redirect's
-operation takes the same registers in the redirect's first cycle, in which
-IF accepts no packet, so the stack sees it one cycle later than a typed
-BTB prediction's; the packets in IF and PD in the meantime are wrong-path
-ones that the redirect drops. The operation happens once even when a stall
-holds the redirect. A flush in that first cycle drops it. An older
-mispredicted branch restores its own stack checkpoint. With early JALR or JAL
-recovery enabled, dispatch saves each instruction's stack checkpoint under its
-ROB tag. On
-a full flush with a live head, the stack restores the head's pointer,
-valid count and full return address, without replaying the discarded
-head's operation. Adjacent tags use opposite banks so both dispatch slots
-can save their checkpoints on the same edge. The restore takes the existing
-recovery register and does not stall fetch.
+F0 updates `return_address_stack` speculatively on a launched call, return, or
+coroutine swap predicted by `fetch_btb_2w` (or completed by a spanning branch),
+suppressing any RAS operation when `o_pc`'s first word faults or a redirect or
+F1 restore fires. Each F0 operation is registered by one cycle (`f0_ras_push_q`,
+`f0_ras_pop_q`, `f0_ras_link_q`) to match `return_address_stack`'s pending-op
+contract, so `o_top`/`o_tos`/`o_valid_count` reflect the prior cycle's op with
+zero-cycle bypass while supplying the exact pre-op recovery point for the
+launching window. Each window stores its pre-window RAS checkpoint
+(`ras_ckpt_tos`, `ras_ckpt_cnt`, `ras_ckpt_top`) in `fetch_parcel_queue`
+metadata and forwards it to PD and ROB dispatch.
 
-The restore also writes the recovery point's top entry back. A wrong path
-that pops and then pushes overwrites that entry: a mispredicted branch just
-before a return, whose wrong path returns and runs into the caller's next
-call, would otherwise leave the correct path's return predicting that call's
-link address. An entry below the top that a deeper wrong path overwrites (two
-pops, then a push) stays damaged. A restore that replays a call writes two
-neighboring entries on one edge, the restored top and the pushed link address
-above it, so the entries alternate between two distributed-RAM banks by
-pointer parity.
-
-A typed lookup reads the top of the stack before any operation in the same
-cycle. That is safe because no younger lookup's prediction survives a cycle
-in which PD takes a typed packet: registered slot-1 metadata implies the
-prediction holdoff, a pending-prediction handoff blocks prediction, a stall
-replay blocks live lookup predictions, a slot-2 prediction kills the
-same-cycle slot-1 prediction, and a collapsed-lead packet carries its own
-lookup. if_stage asserts this, and branch_prediction_controller asserts that
-no operation is pending in a restore cycle, which would replace it, or in the
-cycle after: IF accepts no packet in the flush or the redirect bubble.
+Three sources restore the stack through one unified registered restore stage
+(`ras_restore_q`, in priority order): EX misprediction or full-flush recovery
+(`i_from_ex_comb.ras_misprediction`), an unstalled PD redirect (`pd_ras_restore`,
+firing once on the cycle that releases the redirecting bundle from PD and
+replaying the redirecting call/return/swap), and an F1 resteer or spanning-tail
+fault (`f1_ras_restore_comb`). While `ras_restore_q` commits into `u_ras`,
+`if_stage` forwards the post-restore top, pointer, count, and cached-region
+shadow bit for non-pure-pop restores (and gates F0 prediction during a pure-pop
+restore while reading the live stack on the next cycle). A parallel 8-bit
+`ras_cached_q` FF shadow tracks each stack entry's cached-region membership in
+lockstep with `u_ras` so `fetch_btb_2w`'s bare-mode tier check stays off
+`u_ras` RAM. On a full flush with a live ROB head, `u_ras_flush_checkpoint`
+restores the head's pointer, valid count, and full return address without
+replaying the discarded head's operation.
 
 ### BTB training order
 
 BTB writes come from early recovery, commit-time recovery, and correct-branch
 commits, and each is a read-modify-write of a 2-bit counter.
-`ex_comb_synthesizer` picks one per cycle in that priority and
-`branch_prediction_controller` registers it, so training lands one cycle late
-but in order, and back-to-back updates to one entry see each other. A slot-1
-correct-branch update that loses its cycle is dropped, and a waiting slot-2
-update is replaced by a newer one; both cost accuracy only. The backing BTB
-registers the selected update when it trains a JAL or JALR, and otherwise a
-refresh, reads its set, finds its way, and writes the set two cycles after
-the BTB writes; a refresh that misses writes nothing. A request that reads
-the set being written takes the written set, and one to the same set as an
-update in the stage ahead of it is dropped, which costs accuracy only.
+`ex_comb_synthesizer` picks one per cycle in that priority and `if_stage`
+registers the update by one cycle before writing `fetch_btb_2w`, so training
+lands in order and back-to-back updates see each other via parallel early/late
+counter RMW banks. A slot-1 correct-branch update that loses its cycle is
+dropped, and a waiting slot-2 update is replaced by a newer one; both cost
+accuracy only. The backing BTB registers the selected JAL/JALR update (or a
+registered PD refresh), reads its set, finds its way, and writes the set two
+cycles later; a refresh that misses writes nothing.
 
-A JAL or JALR can train both the BTB and the backing BTB on early recovery
+A JAL or JALR can train both the fast BTB and the backing BTB on early recovery
 before retirement. If an older instruction subsequently traps on
 the same side of bare-versus-Sv39 fetch, the trained target remains in both
 tables after the jump is squashed (see
@@ -1565,29 +1480,31 @@ The fast-lookup training contract is pinned per mechanism:
 | Mechanism | Proofs and tests |
 |-----------|------------------|
 | Decode admission and branch resolution | `early_redirect_completion` and `branch_prediction_resolution` formal proofs, plus `fast_btb_contract_test` (entries surviving same-side M-to-M traps/returns and `mstatus` writes, with the retired-PC check `next_pc_expected_q` armed and per-case reach assertions) |
-| Walk-past handling | `if_prediction_walk_past` formal proof, the `pc_controller` and `if_stage` walk-past benches (including flushed compressed and 32-bit interior-halfword entries with a covering phantom target), live `p_held_post_prediction_pc_emits_no_real_packet` in `if_stage`, `odd_halfword_pred_test`, and `fast_btb_contract_test` |
-| Fault suppression and fault-packet veto | `if_fault_ras_veto` formal proof, `if_stage` (`test_faulting_fetch_suppresses_trained_btb_redirect`, including spanning second-word faults, and `test_slot2_fault_suppresses_trained_call_and_replay_ras`, covering live, spanning, and stall-replayed slot-2 calls), `odd_halfword_pred_test`, and live `p_prediction_pma_fault_cofactor_exact` in `if_stage`. Because slot 2 has no pending-prediction path and `served_fault_any` disables `prediction_common` on every served-window fault, the explicit `o_from_if_to_pd_2.fetch_fault` veto in packet assembly is redundant in intact `if_stage` (`if_fault_ras_veto:prove_slot2_veto_redundant`) and serves as a defensive guard pinned with `branch_prediction_controller` abstracted by `if_fault_ras_veto:prove`; the directed test pins the observable behavior of faulting slot-2 calls |
-| Invalidation events and four-cycle hold | `btb_invalidate_hold` formal proof, `branch_predictor` and `branch_prediction_controller` benches (hold length and clear-over-update priority), `btb_mode_alias_test` (bare/Sv39 switch), `smc_predict_test` (`FENCE.I`), `debug_progbuf_btb_test` (Debug Mode), and `fast_btb_contract_test` (`SFENCE.VMA` and `satp` writes, with the retired-PC check `next_pc_expected_q` and reach assertions) |
+| Parcel-queue FIFO, bypass, and false-BTB resteer | `fetch_parcel_queue` formal proof (FIFO order, metadata ownership, zero-cycle empty and partial bypass, `o_stop_fetch` threshold assertion, flush clearing, and free-bank write enables under caller headroom assumptions), `if_prediction_walk_past` formal proof (interior-halfword / size / opcode / fault false-BTB resteer, slot-2 ordering, drain-availability exactness, and emitted PC continuity), `if_stage` simulation headroom assertions and unit bench, `odd_halfword_pred_test`, and `fast_btb_contract_test` |
+| Fault suppression and fault-packet veto | `if_fault_ras_veto` formal proof (`bmc`, `cover`, `prove`, and `prove_slot2_veto_redundant` proving intact `if_stage` never pairs a faulting slot 2, clears `btb_predicted_taken` on fetch faults, vetoes F0 spanning RAS ops on word-0 faults, and restores RAS on spanning second-word faults), `if_stage` unit bench, and `odd_halfword_pred_test` |
+| Invalidation events and four-cycle hold | `btb_invalidate_hold` formal proof, `if_stage` unit bench (`test_btb_invalidate_four_cycle_hold`), `btb_mode_alias_test` (bare/Sv39 switch), `smc_predict_test` (`FENCE.I`), `debug_progbuf_btb_test` (Debug Mode), and `fast_btb_contract_test` (`SFENCE.VMA` and `satp` writes, with the retired-PC check `next_pc_expected_q` and reach assertions) |
 | Backing BTB no-clear-all vetoes | `pd_backing_redirect` formal proof (`prove_indirect`), `pd_stage` bench (non-jump, illegal, fault, bubble, and size-mismatch vetoes in both slots), live `p_pd_redirect_registered_veto_exact` and `p_pd_redirect_target_boundary_exact` in `pd_stage`, and `fast_btb_contract_test` |
 
 Most front-end modules and `cpu_ooo` glue submodules have their own cocotb
-bench, such as `branch_predictor`, `pc_controller`, `instruction_aligner`,
-`fetch_provider`, `immu`, and `decoded_bundle_queue`. Whole-program tests run
-the integrated core; the `*_fetch_fuzz` variants, such as
-`branch_pred_test_fetch_fuzz`, add random fetch gaps with `FETCH_VALID_FUZZ=1`.
-The `if_stage` tests also cover a PD redirect arriving during a fetch gap
-after a BTB prediction: the redirect bubble must survive the gap and stalls,
-and the first target bundle must be emitted exactly once. Both the
-`pc_controller` and `if_stage` benches cover walk-past orderings across both
-instruction slots, including a flush in a walk-past cycle, a fetch gap during
-walk-past, an even-address slot-2 redirect to `P`, a slot-2 redirect to
-`P - 2`, a stall inside the slot-2 redirect bubble, a stall-replayed
-slot-2 prediction retiring a pending entry, and an odd-address predecessor
-release blocking a live slot-1 BTB hit at `P - 2`.
-Formal targets cover the PC muxes and holdoffs, the pending-prediction
-handoff, predictor aliasing, RV64C predecode (`rvc_predecode` checks every
-16-bit parcel against the reference decompressor), the TLBs and walker, and the
-CSR file and trap unit.
+bench, such as `if_stage`, `backing_btb`, `return_address_stack`, `tage_predictor`,
+`ittage_predictor`, `fetch_provider`, `immu`, and `decoded_bundle_queue`.
+Whole-program tests run the integrated core; the `*_fetch_fuzz` variants, such as
+`branch_pred_test_fetch_fuzz`, `odd_halfword_pred_test_fetch_fuzz`, and
+`served_window_resteer_fetch_fuzz`, add random fetch gaps with
+`FETCH_VALID_FUZZ=1`.
+The `if_stage` bench covers reset, zero-cycle empty and partial bypass across
+native, compressed, and cross-window spanning instructions, parcel-queue
+buffering and `o_stop_fetch` backpressure under stall, multi-cycle fetch gaps
+and collapsed-lead acceptance, served-word tag-mismatch resteers, F0 fast-BTB
+prediction and spanning-branch completion, interior-halfword false-BTB resteers,
+RAS call/return/restore, fetch faults and slot-2 fault deferral, PD redirect
+stall gating and trap priority, four-cycle BTB invalidation hold, and backing
+BTB window lookups.
+Formal targets cover the decoupled parcel queue (`fetch_parcel_queue`), packet
+and predecode contracts (`predictor_fetch_contract`, `if_slot2_precompute`,
+`if_prediction_walk_past`, `if_fault_ras_veto`), RV64C predecode
+(`rvc_predecode` checks every 16-bit parcel against the reference decompressor),
+the TLBs and walker, and the CSR file and trap unit.
 
 A simulation check in `cpu_ooo` follows the architectural PC across every
 retirement, so it runs in every whole-program test. Each instruction that

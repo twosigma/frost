@@ -103,6 +103,13 @@ PACK_ARGS += --no-vector
 else ifneq ($(FROST_LINUX_VECTOR),)
 $(error FROST_LINUX_VECTOR must be 0 or 1 (got '$(FROST_LINUX_VECTOR)'))
 endif
+# A vector build at another VLEN (build.py --vlen) names Zvl*b up to it.
+ifneq ($(FROST_LINUX_VLEN),)
+ifneq ($(filter 128 256 512,$(FROST_LINUX_VLEN)),$(FROST_LINUX_VLEN))
+$(error FROST_LINUX_VLEN must be 128, 256 or 512 (got '$(FROST_LINUX_VLEN)'))
+endif
+PACK_ARGS += --vlen $(FROST_LINUX_VLEN)
+endif
 PACK_ARGS += $(if $(FROST_LINUX_MAC),--mac "$(FROST_LINUX_MAC)")
 # The packer takes FROST_INITRD from the environment as its --initrd default,
 # which would give an NFS root an initramfs; only the variables above choose it.

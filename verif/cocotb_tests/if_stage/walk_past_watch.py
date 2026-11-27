@@ -28,7 +28,7 @@ async def watch(dut: Any, clock: Any, start: int, end: int) -> None:
     retirement_errors = 0
     while True:
         await FallingEdge(clock)
-        pc_reg = int(stage.pc_reg.value)
+        s1_pc = int(stage.s1_pc.value)
         if (
             int(cpu.next_pc_check_armed_q.value)
             and int(cpu.rob_commit_valid_raw.value)
@@ -39,22 +39,19 @@ async def watch(dut: Any, clock: Any, start: int, end: int) -> None:
             if actual != expected:
                 dut._log.info("WALK NEXT-PC actual=%#x expected=%#x", actual, expected)
                 retirement_errors += 1
-        if start <= pc_reg < end and lines < 256:
+        if start <= s1_pc < end and lines < 256:
             dut._log.info(
-                "WALK pc=%#x reg=%#x next=%#x pending=%d owner=%#x after=%d "
-                "stall=%d progress=%d holdoff=%d nop=%d wcs=%d pred=%d selr=%d",
+                "WALK pc=%#x s1_pc=%#x next=%#x f0_launch=%d f1_accept=%d "
+                "f0_btb=%d false_btb=%d resteer=%d stop=%d s1_valid=%d",
                 int(stage.pc.value),
-                pc_reg,
-                int(pc_control.next_pc_reg.value),
-                int(pc_control.pending_prediction_valid.value),
-                int(stage.pending_prediction_pc.value),
-                int(pc_control.pc_reg_after_pending.value),
-                int(stage.if_stage_stall.value),
-                int(stage.fetch_progress.value),
-                int(stage.prediction_holdoff.value),
-                int(stage.sel_nop.value),
-                int(stage.window_cannot_serve_pc_reg.value),
-                int(stage.prediction_used.value),
-                int(pc_control.sel_prediction_r.value),
+                s1_pc,
+                int(pc_control.next_pc.value),
+                int(stage.f0_launch.value),
+                int(stage.f1_accept.value),
+                int(stage.f0_btb_valid.value),
+                int(stage.f1_false_btb.value),
+                int(stage.f1_resteer.value),
+                int(stage.q_stop_fetch.value),
+                int(stage.s1_valid.value),
             )
             lines += 1

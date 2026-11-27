@@ -17,7 +17,7 @@
 /*
  * immu: instruction-side Sv39 translation of the fetch PC.
  *
- * Translate pc_controller's registered fetch PC (i_pc), for timing.
+ * Translate fetch_pc_decoupled's registered fetch PC (i_pc), for timing.
  *
  * With translation off (Bare mode or M-mode), the outputs are a combinational,
  * cycle-exact function of i_pc and never bubble:
@@ -70,7 +70,7 @@ module immu #(
     // it raises (Svvptc).
     input logic i_full_flush = 1'b0,
 
-    // pc_controller's registered fetch PC. The page and privilege tag hides
+    // fetch_pc_decoupled's registered fetch PC. The page and privilege tag hides
     // unrelated translations; crossing windows require the exact PC tag.
     // The Bare outputs are formed directly from this input.
     input logic [XLEN-1:0] i_pc,

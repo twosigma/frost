@@ -28,6 +28,10 @@ from hw_target import (
     select_target,
     validate_target_args,
 )
+from vcu118_metadata import (
+    read_bitstream_sidecar,
+    record_programmed_vcu118_bitstream,
+)
 
 
 def main() -> None:
@@ -102,6 +106,11 @@ def main() -> None:
             stream.read(1)
     except OSError as error:
         parser.error(f"cannot read bitstream: {error}")
+    if args.board == "vcu118":
+        try:
+            read_bitstream_sidecar(bitstream)
+        except ValueError as error:
+            parser.error(str(error))
 
     selected_target = select_target(
         args.vivado_path,
@@ -132,6 +141,8 @@ def main() -> None:
     ]
 
     subprocess.run(vivado_command, check=True)
+    if args.board == "vcu118":
+        record_programmed_vcu118_bitstream(project_root, bitstream)
 
 
 if __name__ == "__main__":

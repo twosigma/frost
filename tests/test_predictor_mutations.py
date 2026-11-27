@@ -42,8 +42,8 @@ MUTATIONS = {
     "fetch_slot2_branch": Mutation(
         "predictor_fetch_contract",
         "if_stage.sv",
-        "slot2_is_cond_branch_saved_q : slot2_is_cond_branch_live;",
-        "slot2_is_cond_branch_saved_q : !slot2_is_cond_branch_live;",
+        "(s2_instr[6:0] == riscv_pkg::OPC_BRANCH) && (s2_instr[14:13] != 2'b01);",
+        "!((s2_instr[6:0] == riscv_pkg::OPC_BRANCH) && (s2_instr[14:13] != 2'b01));",
         ("p_s2_branch",),
     ),
     "direction_index": Mutation(
