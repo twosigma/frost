@@ -696,7 +696,7 @@ reaching port-0 ALU2 redirect (`p_alu_held_result_presents_via_alu2`,
 `p_alu_redirect_port1_idle`, `p_alu_redirect_packet`), held-ALU-result commit
 stalls (`p_commit_waits_for_held_alu_result`,
 `p_commit_2_waits_for_held_alu_result`), and staged faulting loads in
-`mem_wakeup_merge`. `bmc_depth6` checks all 773 station and non-commit-bus
+`mem_wakeup_merge`. `bmc_depth6` checks all 774 station and non-commit-bus
 wrapper assertions with the same 56 assumptions and free `i_fu_complete_*`
 ports. A non-faulting load reaches its staged result at frame 6, so
 `p_int_early_load_matches_mem`, `p_fp_early_load_matches_mem`,

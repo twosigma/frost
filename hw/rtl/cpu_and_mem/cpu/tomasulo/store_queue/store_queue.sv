@@ -2172,13 +2172,15 @@ endmodule
       // Bank arbitration ({half, parity}) matches the data-path write buses
       // below so sq_addr_valid only rises for the source that owns the bank.
       for (int unsigned i = 0; i < DEPTH; i++) begin
-        int unsigned b;
-        b = ((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1);
         if (i_addr_update.valid && addr_upd_match[i]) begin
           sq_addr_valid[i] <= 1'b1;
-        end else if (i_early_addr_update.valid && !bank_upd_cap[b] && addr_early1_match[i]) begin
+        end else if (i_early_addr_update.valid &&
+                     !bank_upd_cap[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)] &&
+                     addr_early1_match[i]) begin
           sq_addr_valid[i] <= 1'b1;
-        end else if (i_early_addr_update_2.valid && !bank_upd_cap[b] && !bank_early1_cap[b] &&
+        end else if (i_early_addr_update_2.valid &&
+                     !bank_upd_cap[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)] &&
+                     !bank_early1_cap[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)] &&
                      addr_early2_match[i]) begin
           sq_addr_valid[i] <= 1'b1;
         end
@@ -2537,13 +2539,11 @@ endmodule
     // Banked Address Update (MEM_RS issue > early slot 1 > early slot 2)
     // -----------------------------------------------------------------
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      int unsigned b;
-      b = ((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1);
       if (entry_bank_we[i]) begin
-        sq_address[i]      <= bank_wr_addr[b];
-        sq_is_mmio[i]      <= bank_wr_mmio[b];
-        sq_is_cached_q[i]  <= bank_wr_cached[b];
-        sq_normal_buf_q[i] <= bank_wr_nbuf[b];
+        sq_address[i]      <= bank_wr_addr[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)];
+        sq_is_mmio[i]      <= bank_wr_mmio[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)];
+        sq_is_cached_q[i]  <= bank_wr_cached[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)];
+        sq_normal_buf_q[i] <= bank_wr_nbuf[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)];
       end
     end
 

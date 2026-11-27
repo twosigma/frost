@@ -36,8 +36,8 @@ cpu: select -assert-count 174 t:$dff
 select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
 expose -dff -cut store_queue/w:*
 select -assert-none store_queue/t:$dff %co:+[Q] store_queue/w:* %i %co1 store_queue/t:* %i
-~cpu: select -assert-count 330 t:$anyseq
-cpu: select -assert-count 333 t:$anyseq
+~cpu: select -assert-count 314 t:$anyseq
+cpu: select -assert-count 317 t:$anyseq
 rename -top gold
 design -stash gold
 design -reset
@@ -66,8 +66,8 @@ cpu: select -assert-count 174 t:$dff
 select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
 expose -dff -cut store_queue/w:*
 select -assert-none store_queue/t:$dff %co:+[Q] store_queue/w:* %i %co1 store_queue/t:* %i
-~cpu: select -assert-count 330 t:$anyseq
-cpu: select -assert-count 333 t:$anyseq
+~cpu: select -assert-count 314 t:$anyseq
+cpu: select -assert-count 317 t:$anyseq
 rename -top gate
 design -stash gate
 design -reset
@@ -82,12 +82,12 @@ equiv_make gold gate equiv
 delete gold gate twin_both
 setundef -anyseq
 select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate
-~cpu: select -assert-count 660 t:$anyseq
-~cpu: select -assert-count 330 t:$anyseq n:*_gold %i
-~cpu: select -assert-count 330 t:$anyseq n:*_gate %i
-cpu: select -assert-count 666 t:$anyseq
-cpu: select -assert-count 333 t:$anyseq n:*_gold %i
-cpu: select -assert-count 333 t:$anyseq n:*_gate %i
+~cpu: select -assert-count 628 t:$anyseq
+~cpu: select -assert-count 314 t:$anyseq n:*_gold %i
+~cpu: select -assert-count 314 t:$anyseq n:*_gate %i
+cpu: select -assert-count 634 t:$anyseq
+cpu: select -assert-count 317 t:$anyseq n:*_gold %i
+cpu: select -assert-count 317 t:$anyseq n:*_gate %i
 select -set prim t:* a:from_prim %i
 select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
 # o_cache_invalidate_valid ORs two registers (Zicbom's pulse), so it is no point.

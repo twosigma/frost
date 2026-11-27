@@ -670,7 +670,7 @@ module sq_early_addr_pipeline (
     p_slot2_address_exact : assert (address_final[1] == sq_early_addr_update_2.address);
   end
 `endif
-  assign o_sq_early_addr_capture_valid   = sq_early_addr_valid_q || sq_early_addr_repair_ready_q;
+  assign o_sq_early_addr_capture_valid = sq_early_addr_valid_q || sq_early_addr_repair_ready_q;
   assign o_sq_early_addr_capture_valid_2 = sq_early_addr_valid_2_q ||
       sq_early_addr_repair_ready_2_q;
 
