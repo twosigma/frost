@@ -96,6 +96,10 @@ compact_covers: select -clear
 setundef -anyseq
 opt_clean
 check -assert
+cover_siblings: select -assert-count 16 t:$check r:FLAVOR=assert %i
+cover_rows: select -assert-count 16 t:$check r:FLAVOR=assert %i
+cover_siblings: select -assert-count 1 t:$check r:FLAVOR=cover %i
+cover_rows: select -assert-count 1 t:$check r:FLAVOR=cover %i
 
 [files]
 coherence_store_home_formal.sv

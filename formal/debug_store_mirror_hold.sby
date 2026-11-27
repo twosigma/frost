@@ -18,6 +18,7 @@ wide: chparam -set ADDR_WIDTH 32 debug_store_mirror_hold
 hierarchy -top debug_store_mirror_hold
 script free_undefined.ys
 prep -top debug_store_mirror_hold
+select -assert-count 2 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/debug/debug_store_mirror_hold.sv

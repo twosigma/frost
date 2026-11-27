@@ -16,6 +16,8 @@ read -formal -sv line_size_adapter.sv
 hierarchy -top line_size_adapter
 script free_undefined.ys
 prep -top line_size_adapter
+select -assert-count 7 t:$check r:FLAVOR=assert %i
+select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/line_size_adapter.sv

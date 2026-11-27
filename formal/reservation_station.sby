@@ -43,6 +43,9 @@ tag_indexed: chparam -set PREPARE_ISSUE_CONTROLS 1 -set TAG_INDEXED_BRANCH_PAYLO
 hierarchy -top reservation_station
 script free_undefined.ys
 prep -top reservation_station
+~tag_indexed: select -assert-count 148 t:$check r:FLAVOR=assert %i
+select -assert-count 15 t:$check r:FLAVOR=cover %i
+tag_indexed: select -assert-count 167 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

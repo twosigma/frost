@@ -130,6 +130,26 @@ credit8: chparam -set SLOTS 8 coherence_miss_credit
 credit: hierarchy -top coherence_miss_credit
 credit: script free_undefined.ys
 credit: prep -top coherence_miss_credit
+arm_select: select -assert-count 2 t:$check r:FLAVOR=assert %i
+arm_pair: select -assert-count 29 t:$check r:FLAVOR=assert %i
+arm_pair: select -assert-count 4 t:$check r:FLAVOR=cover %i
+coh_c_payload_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+coh_c_payload_wide_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+coh_read_flags_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+coh_read_owners1_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+coh_read_owners3_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+coh_read_owners4_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+coh_read_owners8_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+coh_miss_credit1_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+coh_miss_credit3_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+coh_miss_credit4_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+coh_miss_credit8_prove: select -assert-count 1 t:$check r:FLAVOR=assert %i
+reader: select -assert-count 24 t:$check r:FLAVOR=assert %i
+reader: select -assert-count 9 t:$check r:FLAVOR=cover %i
+guard: select -assert-count 12 t:$check r:FLAVOR=assert %i
+guard: select -assert-count 2 t:$check r:FLAVOR=cover %i
+select: select -assert-count 4 t:$check r:FLAVOR=assert %i
+grant_select: select -assert-count 5 t:$check r:FLAVOR=assert %i
 
 [files]
 coherent_atomic_select_formal.sv

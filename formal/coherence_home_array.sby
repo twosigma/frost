@@ -168,6 +168,12 @@ opt -keepdc
 proof: techmap
 proof: opt -keepdc
 proof: setundef -undriven -anyseq
+~uram_cover: select -assert-count 23 t:$check r:FLAVOR=assert %i
+uram_cover: select -assert-count 26 t:$check r:FLAVOR=assert %i
+bram: select -assert-count 2 t:$check r:FLAVOR=cover %i
+bram_covers: select -assert-count 2 t:$check r:FLAVOR=cover %i
+uram: select -assert-count 3 t:$check r:FLAVOR=cover %i
+uram_cover: select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/ram/sdp_block_ram.sv

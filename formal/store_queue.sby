@@ -29,6 +29,8 @@ cover_trusted: chparam -set TRUST_DISPATCH_VALID 1 -set CACHE_NORMAL_MEMORY 1 -s
 hierarchy -top store_queue
 script free_undefined.ys
 prep -top store_queue
+select -assert-count 83 t:$check r:FLAVOR=assert %i
+select -assert-count 29 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

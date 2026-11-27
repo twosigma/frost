@@ -8061,6 +8061,78 @@ def test_check_count_guards_specify_flavor() -> None:
     assert unqualified_check_count_guards(qualified) == []
 
 
+def has_property_count_guard(commands: list[sby_config.ParsedCommand]) -> bool:
+    """Report whether parsed commands include an assertion or cover count guard."""
+    for cmd in commands:
+        if cmd.form.id not in ("select_assert_count", "select_assert_min"):
+            continue
+        selection = cmd.args[3:]
+        if "t:$check" in selection and any(
+            tok in ("r:FLAVOR=assert", "r:FLAVOR=cover") for tok in selection
+        ):
+            return True
+        if "t:$assert" in selection or "t:$cover" in selection:
+            return True
+        if any(tok.startswith(("c:", "@")) for tok in selection):
+            return True
+    return False
+
+
+def shared_opening_count_guard_gaps(sby_path: Path) -> list[str]:
+    """Return task gaps where a shared-opening property script lacks a count guard."""
+    gaps: list[str] = []
+    for task, cfg in sby_config.resolved(sby_path).items():
+        parsed = cfg.parsed(sby_path.parent, expand_opening=False)
+        if any(cmd.args == tuple(UNDEFINED_OPENING_MARK) for cmd in parsed) and not (
+            has_property_count_guard(parsed)
+        ):
+            gaps.append(task or "-")
+    return gaps
+
+
+def test_shared_opening_scripts_have_count_guards(tmp_path: Path) -> None:
+    """Every non-twin script with the shared opening guards its assert or cover count."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
+    twin_targets = {target for target, _ in TWIN_COMPARISONS}
+    lacking: list[str] = []
+    for sby_path in sorted(formal.glob("*.sby")):
+        if sby_path.stem in twin_targets:
+            continue
+        for task in shared_opening_count_guard_gaps(sby_path):
+            lacking.append(f"{sby_path.name} {task}")
+    assert not lacking, lacking
+
+    assert not has_property_count_guard(
+        sby_config.parse_script_lines(
+            ["select -assert-count 2 t:$check r:FLAVOR=assume %i"]
+        )
+    )
+    assert has_property_count_guard(
+        sby_config.parse_script_lines(
+            ["select -assert-count 2 t:$check r:FLAVOR=assert %i"]
+        )
+    )
+    assert has_property_count_guard(
+        sby_config.parse_script_lines(["select -assert-count 2 t:$cover"])
+    )
+    (tmp_path / UNDEFINED_OPENING_FILE).write_bytes(
+        (formal / UNDEFINED_OPENING_FILE).read_bytes()
+    )
+    sample = formal / "alu_shift_hint.sby"
+    mutated = tmp_path / sample.name
+    text = sample.read_text(encoding="ascii")
+    stripped = (
+        "\n".join(
+            line for line in text.splitlines() if "select -assert-count" not in line
+        )
+        + "\n"
+    )
+    assert stripped != text
+    mutated.write_text(stripped, encoding="ascii")
+    assert shared_opening_count_guard_gaps(mutated) == ["bmc"]
+
+
 DONT_CARE_NO_STATE = (
     "select -assert-none t:*ff* t:*FF* t:*latch* t:*LATCH* t:$sr t:$_SR_* t:$mem* "
     "t:$anyinit t:$fsm"

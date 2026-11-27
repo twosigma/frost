@@ -687,6 +687,10 @@ conflict: setundef -anyseq
 conflict: chformal -lower
 conflict: select -assert-count 1 t:$assert
 conflict: sat -seq 2 -prove-asserts -verify -timeout 60
+covers: select -assert-count 227 t:$check r:FLAVOR=assert %i
+covers: select -assert-count 9 t:$check r:FLAVOR=cover %i
+localcovers: select -assert-count 238 t:$check r:FLAVOR=assert %i
+localcovers: select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_read_stream.sv

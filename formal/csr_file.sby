@@ -37,6 +37,16 @@ prep -top csr_file
 # Keep the original standalone assumptions and isolate the PMM assertions.
 pm_mode_bmc: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_pm_mode_exact c:p_pm_mode_not_reserved c:p_pmm_not_reserved %u %u %d
 pm_mode_bmc: select -assert-count 3 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 186 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 186 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 31 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 31 t:$check r:FLAVOR=cover %i
+bmc_perf_off: select -assert-count 31 t:$check r:FLAVOR=cover %i
+bmc_perf_off: select -assert-count 191 t:$check r:FLAVOR=assert %i
+vector_bmc: select -assert-count 190 t:$check r:FLAVOR=assert %i
+vector_cover: select -assert-count 190 t:$check r:FLAVOR=assert %i
+vector_bmc: select -assert-count 48 t:$check r:FLAVOR=cover %i
+vector_cover: select -assert-count 48 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

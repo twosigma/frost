@@ -17,6 +17,7 @@ vector_bmc: chparam -set VECTOR 1 instr_operand_classifier_equiv
 hierarchy -top instr_operand_classifier_equiv
 script free_undefined.ys
 prep -top instr_operand_classifier_equiv
+select -assert-count 26 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

@@ -23,6 +23,9 @@ mem: chparam -set MEM_SLOT 1 mul_adapter_grant
 hierarchy -top mul_adapter_grant
 script free_undefined.ys
 prep -top mul_adapter_grant
+select -assert-count 4 t:$check r:FLAVOR=assert %i
+~mem: select -assert-count 4 t:$check r:FLAVOR=cover %i
+mem: select -assert-count 5 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

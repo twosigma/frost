@@ -56,6 +56,12 @@ bmc_fast_ways1: select -assert-count 6 t:$check r:FLAVOR=assert %i
 bmc_fast_ways1: select -assert-count 3 t:$check r:FLAVOR=cover %i
 bmc_hw: select -assert-count 6 t:$check r:FLAVOR=assert %i
 bmc_hw: select -assert-count 3 t:$check r:FLAVOR=cover %i
+cover_fast: select -assert-count 6 t:$check r:FLAVOR=assert %i
+cover_fast_ways1: select -assert-count 6 t:$check r:FLAVOR=assert %i
+cover_hw: select -assert-count 6 t:$check r:FLAVOR=assert %i
+cover_fast: select -assert-count 3 t:$check r:FLAVOR=cover %i
+cover_fast_ways1: select -assert-count 3 t:$check r:FLAVOR=cover %i
+cover_hw: select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/cache_perf_pkg.sv
