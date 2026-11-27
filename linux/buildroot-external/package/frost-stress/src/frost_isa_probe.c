@@ -43,6 +43,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/futex.h>
 #include <sched.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -1765,6 +1766,25 @@ struct first_use_shm {
     struct ext_reg_state p2_snap;
 };
 
+/*
+ * The child sleeps in futex wait while the parent configures tracefs (a long
+ * walk of the kernel symbol table on a one-hart system); spinning there would
+ * take the single CPU from that work and be counted in the setup budget.
+ * The futex word lives in a shared mapping, so the operations are the
+ * non-private ones.
+ */
+static void first_use_cmd_wait_nonzero(volatile uint32_t *cmd)
+{
+    while (__atomic_load_n(cmd, __ATOMIC_ACQUIRE) == 0U) {
+        (void) syscall(SYS_futex, (uint32_t *) cmd, FUTEX_WAIT, 0U, NULL, NULL, 0);
+    }
+}
+
+static void first_use_cmd_wake(volatile uint32_t *cmd)
+{
+    (void) syscall(SYS_futex, (uint32_t *) cmd, FUTEX_WAKE, 1, NULL, NULL, 0);
+}
+
 static int worker_first_use(int shm_fd, uint64_t expected_vlenb)
 {
     size_t map_sz = align_page_size(sizeof(struct first_use_shm));
@@ -1792,10 +1812,13 @@ static int worker_first_use(int shm_fd, uint64_t expected_vlenb)
     uint64_t p2_avl = (expected_vlenb / 4U) - 1U;
     shm->child_pid = getpid();
 
-    /* From here through phase 2 completion, execute zero syscalls. */
+    /*
+     * The wait for the Phase 1 release is a futex sleep: it runs before any
+     * vector instruction, so it cannot reach the first-use handler. From the
+     * release through phase 2 completion, execute zero syscalls.
+     */
     __atomic_store_n(&shm->state, 1U, __ATOMIC_RELEASE);
-    while (__atomic_load_n(&shm->cmd, __ATOMIC_ACQUIRE) == 0U) {
-    }
+    first_use_cmd_wait_nonzero(&shm->cmd);
     if (__atomic_load_n(&shm->cmd, __ATOMIC_ACQUIRE) != 1U)
         return 23;
 
@@ -2123,6 +2146,7 @@ static int run_first_use(const char *run_id, uint64_t expected_vlenb)
     /* Release Phase 1. */
     probe_progress(run_id, "first-use", "phase1_release");
     __atomic_store_n(&shm->cmd, 1U, __ATOMIC_RELEASE);
+    first_use_cmd_wake(&shm->cmd);
     bool p1_polled = false;
     while (__atomic_load_n(&shm->state, __ATOMIC_ACQUIRE) < 2U) {
         int st = 0;

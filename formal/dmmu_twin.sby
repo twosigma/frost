@@ -4,7 +4,7 @@ dmmu_twin dmmu
 [options]
 mode bmc
 depth 1
-timeout 240
+timeout 600
 
 [engines]
 smtbmc boolector
@@ -26,11 +26,11 @@ opt_clean
 check -assert
 select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
 select -assert-none i:* o:* %i
-select -assert-count 195 t:$dff
+select -assert-count 463 t:$dff
 select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
 expose -dff -cut dmmu/w:*
 select -assert-none dmmu/t:$dff %co:+[Q] dmmu/w:* %i %co1 dmmu/t:* %i
-select -assert-count 171 t:$anyseq
+select -assert-count 220 t:$anyseq
 rename -top gold
 design -stash gold
 design -reset
@@ -51,11 +51,11 @@ opt_clean
 check -assert
 select -assert-none a:init t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
 select -assert-none i:* o:* %i
-select -assert-count 195 t:$dff
+select -assert-count 463 t:$dff
 select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
 expose -dff -cut dmmu/w:*
 select -assert-none dmmu/t:$dff %co:+[Q] dmmu/w:* %i %co1 dmmu/t:* %i
-select -assert-count 171 t:$anyseq
+select -assert-count 220 t:$anyseq
 rename -top gate
 design -stash gate
 design -reset
@@ -70,13 +70,13 @@ equiv_make gold gate equiv
 delete gold gate twin_both
 setundef -anyseq
 select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate
-dmmu_twin: select -assert-count 342 t:$anyseq
-select -assert-count 171 t:$anyseq n:*_gold %i
-select -assert-count 171 t:$anyseq n:*_gate %i
+dmmu_twin: select -assert-count 440 t:$anyseq
+select -assert-count 220 t:$anyseq n:*_gold %i
+select -assert-count 220 t:$anyseq n:*_gate %i
 select -set prim t:* a:from_prim %i
 select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
 dmmu_twin: select -assert-min 600 @blk
-dmmu_twin: select -assert-min 11870 t:$equiv
+dmmu_twin: select -assert-min 28926 t:$equiv
 equiv_simple
 equiv_status -assert
 design -reset

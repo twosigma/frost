@@ -128,6 +128,10 @@ depth6_wakeup: connect -nomap -set i_fu_complete_4 81'b0
 depth6_wakeup: connect -nomap -set i_fu_complete_5 81'b0
 depth6_wakeup: connect -nomap -set i_fu_complete_6 81'b0
 depth6_wakeup: connect -nomap -set i_fu_complete_7 81'b0
+# The FU completion covers need no address translation. Tying it off keeps
+# the data MMU's S1 cache and its DTLB refill out of their search; a witness
+# without translation is also one for the free environment.
+cover_fu_depth6: connect -nomap -set i_translation_active 1'b0
 depth6_cover: chformal -assert -remove
 cover_depth6: chformal -cover -remove t:$check r:FLAVOR=cover %i c:cover_d6_env_* %d
 cover_wakeup_depth6: chformal -cover -remove t:$check r:FLAVOR=cover %i c:cover_d6_w_* %d

@@ -1582,7 +1582,9 @@ jobs:
               (coherent_local_atomic and sc_bmc)
             timeout_minutes: 125
           # The coherence home, prefetch requester at every request cap,
-          # endpoints, coherent CPU interfaces and hart covers.
+          # endpoints and the remaining coherent CPU interface tasks; the hart
+          # caches, CPU interface, DMA ingress and home completion tasks run
+          # in the next job.
           - shard: Coherence
             pytest_filter: >-
               ((coherence_ or coherent_) and not
@@ -1590,9 +1592,23 @@ jobs:
               coherence_store_home or coherence_link or coherence_sc_wa or coherent_local_atomic or coh_hart_maint_prove or
               coh_hart_maint_owned_prove or coh_hart_maint_free_ or coherence_array_equiv or coherence_array_progress or
               coherence_store_bank or
-              coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))) or
+              coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx) or
+              coherent_hart_cache or coherent_cpu or coherence_dma_ingress or
+              coherence_home_completions)) or
               (coherent_local_atomic and amo_cover)
-            timeout_minutes: 330
+            timeout_minutes: 230
+          # The hart cache covers and induction, CPU interface, DMA ingress and
+          # home completion tasks: about 120 minutes of tasks.
+          - shard: Coherence harts and CPU
+            pytest_filter: >-
+              (coherent_hart_cache or coherent_cpu or coherence_dma_ingress or
+              coherence_home_completions) and not
+              (axi_coherent_bridge or coherence_l1d or coherence_store_boundary or
+              coherence_store_home or coherence_link or coherence_sc_wa or coherent_local_atomic or coh_hart_maint_prove or
+              coh_hart_maint_owned_prove or coh_hart_maint_free_ or coherence_array_equiv or coherence_array_progress or
+              coherence_store_bank or
+              coh_array4_port_bmc or coherence_home_coh_home_ or _twin or (coh_read_select and xilinx))
+            timeout_minutes: 210
           # Home task limits total 334 minutes plus twenty minutes for image setup.
           - shard: Coherence home
             pytest_filter: coherence_home_coh_home_ and not fast
@@ -1654,7 +1670,7 @@ jobs:
           # allowances in total, leaving setup and solver headroom.
           - shard: Coherence L1D data stores and ways
             pytest_filter: coh_l1d_store_ or coh_l1d_ways_data
-            timeout_minutes: 270
+            timeout_minutes: 250
           # The L1D control BMCs and single-endpoint cover with cbo.zero writes,
           # and the matching full-line and withdrawn-put control BMCs, each run
           # in dedicated jobs sized from their task allowances.
@@ -1793,16 +1809,28 @@ jobs:
           - shard: Store boundary intervening other value
             pytest_filter: coherence_store_boundary_bmc_intervening_other_value
             timeout_minutes: 284
-          # The AMO flow BMCs have 110- and 160-minute allowances with
-          # free_undefined.ys, each in its own job with 20 minutes of setup.
+          # The AMO flow BMCs each have their own job with 20 minutes of setup.
+          # The same-sector flow BMC has a 110-minute allowance. The
+          # different-sector assertions split into the flow BMC (115 minutes), the
+          # C2b write-busy BMC (90 minutes) with the home grant-state BMC (10
+          # minutes), and the home completion-identity BMC (230 minutes).
           - shard: Store boundary AMO same
             pytest_filter: >-
               coherence_store_boundary and bmc_amo_same and not (fatal or owner)
             timeout_minutes: 130
           - shard: Store boundary AMO other
             pytest_filter: >-
-              coherence_store_boundary and bmc_amo_other and not fatal
-            timeout_minutes: 180
+              coherence_store_boundary and bmc_amo_other and not
+              (fatal or home or c2b)
+            timeout_minutes: 135
+          - shard: Store boundary AMO other C2b
+            pytest_filter: >-
+              coherence_store_boundary and
+              (bmc_amo_other_c2b or bmc_amo_other_home_state)
+            timeout_minutes: 120
+          - shard: Store boundary AMO other home
+            pytest_filter: coherence_store_boundary and bmc_amo_other_home_id
+            timeout_minutes: 250
           # The AMO fatal checks (50 and 80 minutes) and sticky inductions
           # (2 minutes each) run in their own 150-minute job.
           - shard: Store boundary AMO fatal
@@ -1896,7 +1924,7 @@ jobs:
             pytest_filter: >-
               (load_queue_ and not load_queue_amo and not
               (coherence_ or coherent_ or _twin)) or test_lq_port1_amo_mutations
-            timeout_minutes: 150
+            timeout_minutes: 170
           # The load queue's helper blocks, its AMO datapath and the range
           # holds at its address-update port.
           - shard: Load queue blocks

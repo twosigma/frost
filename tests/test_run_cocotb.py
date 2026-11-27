@@ -568,6 +568,55 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
         verilator_extra_args=("--assert",),
     ),
+    "node_reuse_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="node_reuse_test",
+        nic_mac_clocks=False,
+        description=(
+            "Slab-like 256-byte node reuse: memset, memcpy, cbo.zero and partial "
+            "stores on nodes that share L1D and L2 sets, checked against a shadow"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "12000000"),),
+        verilator_extra_args=("--assert",),
+    ),
+    "node_reuse_dup_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="node_reuse_test",
+        nic_mac_clocks=False,
+        description=(
+            "node_reuse_test with __mt_dup's node copy: two zero memsets, memcpy "
+            "from the node below in the page, slot stores; pages share L1D sets"
+        ),
+        include_in_pytest=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "12000000"), ("EXTRA_CFLAGS", "-DNODE_DUP")),
+        verilator_extra_args=("--assert",),
+    ),
+    "node_reuse_test_board": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="node_reuse_test",
+        nic_mac_clocks=False,
+        description=(
+            "node_reuse_test with 4 MiB L2, asynchronous CPU/SoC clocks, "
+            "wide DDR, DDR latency jitter and reordering"
+        ),
+        include_in_pytest=False,
+        extra_env=(
+            ("COCOTB_MAX_CYCLES", "12000000"),
+            ("FROST_CPU_PERIOD_PS", "1500"),
+            ("EXTRA_CFLAGS", "-DFROST_DDR_CAPACITY_LOG2_BYTES=36"),
+        ),
+        verilator_extra_args=(
+            "--assert",
+            "-DFROST_WIDE_DDR_TEST",
+            "-DFROST_DDR_CAPACITY_LOG2_BYTES=36",
+            "-GL2_CACHE_BYTES=4194304",
+            "-GDDR_MODEL_LATENCY_JITTER=24",
+            "-GDDR_MODEL_REORDER=1",
+        ),
+    ),
     "full_line_test_board": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -2882,6 +2931,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Sv39 TLB capacity, walk depth, and address space switch timing",
         extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
     ),
+    "mmu_resident": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mmu_resident",
+        rerun_after_reset=False,
+        nic_mac_clocks=False,
+        include_in_pytest=False,
+        description=(
+            "Sv39 timing of a 32 KiB chase and a patrol-style superpage scan after "
+            "superpage traffic pushes their 4 KiB pages out of the DTLB"
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "3000000"),),
+    ),
     "ptw_coherence_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -4662,6 +4724,41 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="coherence_cluster_test_harness",
         description="Full-line stores in a two-set L1D: twins replace Modified victims",
     ),
+    **{
+        f"coherence_stale_line{suffix}": CocotbRunConfig(
+            verilator_extra_args=("--assert", *params),
+            python_test_module="cocotb_tests.cache.test_coherence_stale_line",
+            hdl_toplevel_module="coherence_cluster_test_harness",
+            description=f"Slab-like node reuse with full-line stores{text}",
+            # Upstream's stream-prefetch timing tests in the same module run in
+            # coherence_stale_line_prefetch_l2.
+            extra_env=(
+                *env,
+                (
+                    "COCOTB_TEST_FILTER",
+                    "(node_reuse_random|node_copy_beside_stream|zero_twin_beside_stream)$",
+                ),
+            ),
+            include_in_pytest=suffix in ("", "_pressure"),
+        )
+        for suffix, params, env, text in (
+            ("", ("-GL1D_MISSES=3",), (), ""),
+            (
+                "_pressure",
+                ("-GL1D_MISSES=3", "-GL1D_CACHE_BYTES=128", "-GL1D_WAYS=1"),
+                (("STALE_L1D", "128"),),
+                " in a two-set L1D",
+            ),
+            ("_misses8", ("-GL1D_MISSES=8",), (), " and eight L1D endpoints"),
+            ("_stages", ("-GL1D_MISSES=3", "-GLINK_STAGES=1"), (), " and link stages"),
+            (
+                "_prefetch",
+                ("-GL1D_MISSES=8", "-GL1D_STREAM_PREFETCH=1"),
+                (),
+                " and the L1D stream prefetcher",
+            ),
+        )
+    },
     **{
         f"coherence_full_line_perf_{flag}": CocotbRunConfig(
             verilator_extra_args=(

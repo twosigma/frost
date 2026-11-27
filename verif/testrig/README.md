@@ -687,8 +687,9 @@ out-of-range leaf PPNs), non-canonical virtual addresses, and the `mstatus.TVM`
 and `mstatus.TSR` trap-intercept bits. Strands run across M (`MPRV=1`), S, and
 U modes, delegate traps selectively to S-mode, read `mtval`/`stval`,
 `mepc`/`sepc`, and `mcause`/`scause` into integer registers, switch ASIDs
-without `SFENCE.VMA` while spilling the 16-entry L1 DTLB into the 512-entry L2
-TLB and wrapping the 32-entry superpage side array, and mutate cached PTEs
+without `SFENCE.VMA` while spilling the 16-entry L1 DTLB into the 256-entry S1
+4 KiB cache and the 2,048-entry L2 TLB and wrapping the 32-entry superpage side
+array, and mutate cached PTEs
 followed by all four `SFENCE.VMA` forms (`(x0, x0)`, `(va, x0)`, `(x0, asid)`,
 `(va, asid)`).
 
@@ -714,8 +715,9 @@ Several architectural and harness rules keep the comparison deterministic:
   `cbo.clean`. This gives both implementations the same value to reload after
   invalidation. The directed cache tests exercise discarding a dirty block.
 - Sail walks page tables in memory on every access, whereas FROST caches
-  translations across its L1 ITLB, L1 DTLB, L2 TLB, superpage array, and walk
-  cache. Each non-zero ASID binds to one root table, valid-PTE edits pair with
+  translations across its L1 ITLB, L1 DTLB, 256-entry S1 4 KiB data cache,
+  2,048-entry L2 TLB, superpage array, and walk cache. Each non-zero ASID binds
+  to one root table, valid-PTE edits pair with
   a matching `SFENCE.VMA`, and `Svvptc` invalid-to-valid upgrades install the
   leaf in the fault handler and drain committed stores via `mret` or `sret`
   without a fence.

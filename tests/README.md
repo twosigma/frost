@@ -671,6 +671,17 @@ invalidations, walks, coherent reads, and L0 events as JSONL. Allocation identit
 distinguish reused ROB tags. Fetch events identify page transitions. Set the
 variable inside the container invocation.
 
+`mmu_resident` is a manual benchmark too. Each of its loops warms a 4 KiB
+working set that fits the DTLB, optionally loads once from 16 superpages,
+which install in the DTLB and push the set out of it, and then times a
+32 KiB DCPerf-style pointer chase or a 1,024-line scan through a superpage
+that stores each word it reads to a 4 KiB stack page. Because an S1 cache hit
+refills the DTLB, the sweep costs a few cycles; without the refill, every
+access to the pushed-out pages would resolve in S1 and the stack page's
+stores would lose their early address. It checks the chase's final index and
+the scan's counters, reports cycles through UART, and marks each timed window
+in `sscratch` as `mmu_reach` does.
+
 `FROST_PTW_COHERENCE_TRACE` captures PTE addresses and responses, accepted
 ReadOncePTW requests, and home probe data as JSONL without application markers.
 
@@ -1957,9 +1968,11 @@ The four-record store-boundary BMC runs to depth 114 with a 300-minute
 allowance in its own 330-minute job. Its depth-120 cover task reaches handoff
 at frame 57 and drain at frame 92; restoring the BMC to depth 120 is an open
 [verification item](../ROADMAP.md#verification). The intervening-load BMC
-keeps depth 140 and has 330 minutes in its own 350-minute job. AMO flow tasks
-share a 180-minute job; SC and the remaining boundary cases share a
-240-minute job. Store-home BMCs and covers share a 240-minute job. The
+keeps depth 140 and has 330 minutes in its own 350-minute job. The same-sector AMO flow
+BMC has its own job, and the different-sector AMO assertions run as four
+tasks in three jobs (the flow BMC, the C2b write-busy and home grant-state
+BMCs, and the home completion-identity BMC); SC and the remaining boundary
+cases share a 240-minute job. Store-home BMCs and covers share a 240-minute job. The
 [formal guide](../formal/README.md) records every task's allowance and the
 other CI job limits. `--verbose` prints solver output.
 
@@ -2173,6 +2186,9 @@ all of them.
 | `load_queue` | `cover_dma_write_hits_lr_in_flight` | A DMA write to the line of an LR in flight, which then sets no reservation |
 | `load_queue` | `cover_dma_write_hits_load_in_flight` | A DMA write to the line of a cached load in flight, whose data then does not fill the L0 |
 | `load_queue` | `cover_head_load_evicts_staged_load` | The ROB-head load takes the staging register from a younger staged load |
+| `load_queue` | `cover_nonhead_load_evicts_staged_load` | An older non-head load takes the staging register from a younger staged load |
+| `load_queue` | `cover_oldest_higher_slot_selected` | An older non-head eligible load at a higher physical index beats a younger lower-index load |
+| `load_queue` | `cover_cdb_oldest_higher_slot_selected` | An older data-ready load at a higher physical index beats a younger lower-index load for CDB issue |
 | `load_queue` | `cover_staged_load_yields_to_amo` | A staged load gives up the staging register to an older AMO that has not written |
 | `load_queue` | `cover_load_waits_for_unforwardable_store` | A load overlaps an older store that cannot forward to it, so it waits |
 | `load_queue` | `cover_cached_load_slots_full` | Every cached-load slot is busy, so no load launches |
@@ -2273,7 +2289,7 @@ and Fast Python Tests jobs locally.
 | TestRIG | Four jobs at the default 1 GiB aperture compare FROST with Sail using `--tests 100`, `--atomics 200`, `--mmu 40`, `--cmo 80`, `--fp-ext 60`, and `--zcb 50`. The first job also replays the saved counterexamples and runs `--crypto 50`, `--svinval 50`, `--sscofpmf`, and `--wfi` |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |
 | Tooling | Lint, fast Python tests (which include the ASIC flow's macro mapping and placement checks) and synthesis; the Xilinx target's partitions run in two synthesis jobs and the other synthesis tests in a third; the generic target and each Xilinx partition [reuse](#reusing-formal-and-synthesis-results) earlier passes |
-| Formal verification | The 68 jobs cover CSR profiling on and off (two jobs), the ROB, coherence, coherence home (two jobs), store lookup banks, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (fifteen jobs), L1D free stream, hart maintenance, hart snapshot ownership, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), frontend and predictor, block proofs, floating-point and vector memory, ROB retirement successor, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
+| Formal verification | The 71 jobs cover CSR profiling on and off (two jobs), the ROB, coherence (two jobs), coherence home (two jobs), store lookup banks, coherent-array equivalence (two jobs), store home, hart and home links (two jobs), L1D control and multi-endpoint control (two jobs), L1D data (three jobs), L1D zero (control, multi-endpoint, cover, payload and stream, schedules, and two hinted-stream jobs), L1D full-line (control, multi-endpoint, payload, covers, and holds), L1D withdrawn puts (full-line control, zero-line control, and payloads), L1D local real-array (three jobs), L1D scripted and no-store holds (two jobs), L1D and bridges, store boundary (seventeen jobs), L1D free stream, hart maintenance, hart snapshot ownership, primitive forms, vector (CSR, legality, memory unit, and vtype tracker), line client links (two jobs), memory management (page table walker, TLBs, MMUs, and interrupt controllers), load queue (its own proofs and its helper blocks), frontend and predictor, block proofs, floating-point and vector memory, ROB retirement successor, and Other tasks. The hart maintenance job runs the maintenance proof, its ownership induction, the independent unbounded stream payload proof, and the scripted control and store-free L1D stream BMCs. The Other tasks job collects the remaining small equivalence and block proofs. See the [formal guide](../formal/README.md) for budgets. Tasks [reuse](#reusing-formal-and-synthesis-results) earlier passes |
 | ASIC flow | [OpenROAD](../asic/README.md) synthesis and floorplanning on Nangate45, with OpenRAM's SRAM macros, in a separate workflow, which a newer push to `main` does not cancel; the rest of the flow, to GDS, runs with `./asic/orfs.py run` outside CI |
 | Linux | Firmware and root filesystem build; QEMU boots with 256 MiB and with 3 GiB to check Linux memory use above 4 GiB |
 | Coverage | One job merges coverage from 33 jobs into a report |

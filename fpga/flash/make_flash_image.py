@@ -26,7 +26,14 @@ SPI Flash Layout:
 import argparse
 from pathlib import Path
 import struct
+import sys
 import zlib
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "common"))
+from vcu118_metadata import (  # noqa: E402
+    VCU118_DEFAULT_VECTOR_VLEN,
+    verify_dtb_vector_config,
+)
 
 IMAGE_MAGIC_FROST = 0x54535246  # "FRST"
 IMAGE_VERSION = 1
@@ -90,8 +97,21 @@ def build_flash_image(
     components: dict[str, Path] | None = None,
     *,
     vector: bool = False,
+    vlen: int | None = None,
 ) -> None:
     """Pack validated payloads into four nonoverlapping flash partitions."""
+    if vlen is not None:
+        if not vector:
+            raise ValueError(
+                "--vlen requires --vector; flash supports only default VLEN 256 "
+                "(non-default VLENs are supported over JTAG loading only)"
+            )
+        if vlen != VCU118_DEFAULT_VECTOR_VLEN:
+            raise ValueError(
+                f"--vlen {vlen} is not supported in flash images; flash supports "
+                "only default VLEN 256 (non-default VLENs are supported over JTAG loading only)"
+            )
+    effective_vlen = VCU118_DEFAULT_VECTOR_VLEN if vector else 0
     image = bytearray(b"\xff" * 0x400000)
     for part in PARTITIONS:
         name = str(part["name"])
@@ -108,6 +128,18 @@ def build_flash_image(
                 raise ValueError("DTB: expected a flattened device tree")
             if int.from_bytes(payload[4:8], "big") != len(payload):
                 raise ValueError("DTB: total size does not match the payload")
+            try:
+                verify_dtb_vector_config(
+                    payload,
+                    expected_vector=vector,
+                    expected_vlen=effective_vlen,
+                    source=str(source),
+                    require_cpu_isa=False,
+                )
+            except ValueError as error:
+                raise ValueError(
+                    f"{error} (non-default VLENs are supported over JTAG loading only)"
+                ) from error
         header = make_header(
             int(part["load_addr"]),
             int(part["entry_addr"]),
@@ -131,9 +163,25 @@ def main() -> None:
     parser.add_argument(
         "--vector",
         action="store_true",
-        help="Use the opt-in VCU118 vector DTB (boards/vcu118/frost_vector.dtb) when --dtb is omitted",
+        help="Use the opt-in VCU118 VLEN-256 vector DTB (boards/vcu118/frost_vector.dtb) when --dtb is omitted",
+    )
+    parser.add_argument(
+        "--vlen",
+        type=int,
+        default=None,
+        help="Vector register length in bits (flash supports only default VLEN 256; non-default VLENs are supported over JTAG loading only)",
     )
     args = parser.parse_args()
+    if args.vlen is not None and not args.vector:
+        parser.error(
+            "--vlen requires --vector; flash supports only default VLEN 256 "
+            "(non-default VLENs are supported over JTAG loading only)"
+        )
+    if args.vlen is not None and args.vlen != VCU118_DEFAULT_VECTOR_VLEN:
+        parser.error(
+            f"--vlen {args.vlen} is not supported in flash images; flash supports "
+            "only default VLEN 256 (non-default VLENs are supported over JTAG loading only)"
+        )
     components = {
         name: path
         for name, path in (
@@ -145,11 +193,14 @@ def main() -> None:
         if path is not None
     }
     try:
+        kwargs: dict[str, object] = {"vector": args.vector}
+        if args.vlen is not None:
+            kwargs["vlen"] = args.vlen
         build_flash_image(
             Path(__file__).resolve().parents[2],
             args.output,
             components,
-            vector=args.vector,
+            **kwargs,  # type: ignore[arg-type]
         )
     except (ValueError, OSError) as error:
         parser.error(str(error))

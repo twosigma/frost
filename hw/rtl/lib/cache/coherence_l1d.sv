@@ -1365,7 +1365,7 @@ module coherence_l1d #(
   assign local_ready = grant_valid || atomic_write_q || twin_ready ||
       (atomic_q && atomic_sc_q && !request_live && (!sc_home_q || (!any_live && wb_free))) ||
       store_head_ready || look_ready ||
-      (rd_candidate && &read_probe_count_q) || maint_eligible ||
+      (rd_candidate && read_probe_count_q[1]) || maint_eligible ||
       (i_sc_valid && !atomic_q && !pending_q && !request_live &&
        !o_sc_result_valid && i_atomic_protected && !store_push);
   assign probe_priority = i_p_valid && !local_turn_q;
@@ -2443,9 +2443,9 @@ module coherence_l1d #(
       for (int slot = 0; slot < 4; slot++) begin
         if (gather_open && 2'(2'(slot) - store_head_index) == 2'(store_count - 3'd1) &&
             gather_grow[slot]) look_blocked[slot] = 1'b1;
-        // The upper record can still take writes: a record is free, or the
-        // store queue claims a combining write.
-        if (pair_open && (store_count != 3'd4 || merge_claim) &&
+        // The upper record can still take combining writes while the pair window
+        // is open, even between back-to-back store claims at four records.
+        if (pair_open &&
             2'(2'(slot) - store_head_index) == 2'(store_count - 3'd2) &&
             gather_pair_wait[slot]) look_blocked[slot] = 1'b1;
         if (HOME_LINE_BYTES == 64 && store_upper[slot] &&
@@ -2503,7 +2503,7 @@ module coherence_l1d #(
       for (int slot = 0; slot < 4; slot++)
       if ((gather_open && 2'(2'(slot) - store_head_index) == 2'(store_count - 3'd1) &&
            gather_grow[slot]) ||
-          (pair_open && (store_count != 3'd4 || merge_claim) &&
+          (pair_open &&
            2'(2'(slot) - store_head_index) == 2'(store_count - 3'd2) &&
            gather_pair_wait[slot]) ||
           (HOME_LINE_BYTES == 64 && store_upper[slot] &&
@@ -5812,7 +5812,7 @@ module coherence_l1d #(
           (active && phase_q == Lookup && operation_q == ReadOp))) assert (!grant_read_turn_q);
       else assert ($stable(grant_read_turn_q));
       if (local_turn_q && grant_valid && active) assert (grant_ready);
-      if (rd_candidate && &read_probe_count_q) assert (local_ready);
+      if (rd_candidate && read_probe_count_q[1]) assert (local_ready);
       if ($past(local_turn_q && active && !grant_valid && atomic_write_q))
         p_bounded_atomic_write_phase : assert (phase_q == Lookup && operation_q == AtomicWriteOp);
       if ($past(active && o_r_valid && !i_r_ready) && active) begin

@@ -1275,6 +1275,45 @@ async def bp_trace(dut: Any) -> None:
         cocotb.log.info(f"BPTRACE c={cycle} {vv} | {on}")
 
 
+async def bp_count(dut: Any) -> None:
+    """Log cumulative retired instructions, branches, mispredictions and PD redirects.
+
+    FROST_BP_COUNT (cycles) sets the logging interval; unset disables the watcher.
+    """
+    every_env = os.environ.get("FROST_BP_COUNT", "")
+    if not every_env:
+        return
+    every = int(every_env)
+    cpu = "cpu_and_memory_subsystem.cpu.hart.cpu_inst"
+    names = {
+        "instret": f"{cpu}.instruction_retired_count",
+        "branches": f"{cpu}.commit_branch_retired_count",
+        "mispredicts": f"{cpu}.commit_branch_mispredict_count",
+        "pdredir": f"{cpu}.pd_stage_inst.pd_redirect_r",
+    }
+    sigs = {}
+    for k, path in names.items():
+        sig = _get_signal(dut, path)
+        if sig is None:
+            cocotb.log.warning(f"bp_count: {path} not resolvable; disabled")
+            return
+        sigs[k] = sig
+    totals = dict.fromkeys(names, 0)
+    cycle = 0
+    while True:
+        await RisingEdge(cpu_clock(dut))
+        cycle += 1
+        for k, sig in sigs.items():
+            totals[k] += _read_int(sig) or 0
+        if cycle % every == 0:
+            ins = totals["instret"]
+            mpki = 1000.0 * totals["mispredicts"] / ins if ins else 0.0
+            cocotb.log.info(
+                f"BPCOUNT c={cycle} instret={ins} branches={totals['branches']} "
+                f"mispredicts={totals['mispredicts']} pdredir={totals['pdredir']} mpki={mpki:.2f}"
+            )
+
+
 async def l0_hit_watch(dut: Any) -> None:
     """Log every L0 fast-path hit served inside a watched absolute window.
 
@@ -5752,6 +5791,7 @@ async def test_real_program(dut: Any) -> None:
     cocotb.start_soon(ddr_write_watch(dut))
     cocotb.start_soon(l0_hit_watch(dut))
     cocotb.start_soon(bp_trace(dut))
+    cocotb.start_soon(bp_count(dut))
 
     uart_driver = None
     debug_monitor = None
