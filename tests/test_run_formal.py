@@ -8351,8 +8351,8 @@ DONT_CARE_MUTATIONS: list[tuple[str, str, tuple[tuple[str, str], ...]]] = [
         "dmmu_twin",
         (
             (
-                "select -assert-count 171 t:$anyseq\nrename -top gold\n",
-                "select -assert-count 171 t:$anyseq\nsetundef -one\nrename -top gold\n",
+                "select -assert-count 220 t:$anyseq\nrename -top gold\n",
+                "select -assert-count 220 t:$anyseq\nsetundef -one\nrename -top gold\n",
             ),
         ),
     ),
