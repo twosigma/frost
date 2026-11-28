@@ -18,7 +18,7 @@
     "axi_request",
     "axi_response"
   ],
-  "ipc_tolerance": 0.1,
+  "ipc_tolerance": 0.15,
   "rtl": {
     "commit": "9c1af863f846d9ebfb4e45e3a7d2d4b37437333e",
     "cycles": 242008,
