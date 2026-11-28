@@ -20,7 +20,7 @@
   ],
   "ipc_tolerance": 0.1,
   "rtl": {
-    "commit": "6acf08be2d4aa007dfe2e1be6fa083776d3c00e5",
+    "commit": "2a851a88c9b1f2c7c096e0e06f7b2279c0d18e4a",
     "cycles": 201392,
     "retired_uops": 226801,
     "dispatched_uops": 240426,
@@ -40,16 +40,16 @@
   },
   "ipc_delta": 0.09780321613518672,
   "instruction_stream": {
-    "sha256": "0e038a0e421ef82af6fa61591eb26199d7793d16ef383cfdd94ab3be200c3e5e",
+    "sha256": "85c7a8cbe814951737c52bbbf4230faff4219c7a8e200bdf20cc74d2f01f5531",
     "schema": "frost-instructions-v1",
     "benchmark": "coremark",
-    "rtl_commit": "6acf08be2d4aa007dfe2e1be6fa083776d3c00e5",
+    "rtl_commit": "2a851a88c9b1f2c7c096e0e06f7b2279c0d18e4a",
     "memory_tier": "bram",
     "start_pc": 23684,
     "stop_pc": 23688,
     "run_number": 1,
     "artifacts": {
-      "sw.elf_sha256": "0f0e6fdd7ed429513402d49b3847d1f935309b562998470483f23eeb9aa8c40b",
+      "sw.elf_sha256": "a09095a091326ebe3a6cee10dddaa1cc3268d96429d2cfcc0e2408bbb07cb3f9",
       "sw.bin_sha256": "d302c201b8c51254daa87617b5274564785d57b7d13c2171d249183feaa26abd"
     },
     "instructions": 226801

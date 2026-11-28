@@ -121,6 +121,21 @@ port 1 accepts only non-branches. Together these source-defined rules produce
 existing approximate station arbitration and shared arithmetic resources;
 it does not claim a full implementation of the RTL backend.
 
+The controlled comparisons use the same corrected instruction stream:
+
+| Scalar replay rules | Cycles | IPC gap | Result |
+|---|---:|---:|---|
+| Execution stages, without registered repair or branch-port restriction | 181,598 | +10.90% | Rejected |
+| Add registered operand repair | 182,433 | +10.39% | Rejected |
+| Add branch issue-port restriction | 183,450 | +9.78% | Pass |
+
+The [first rejected replay](../results/coremark_bram_calibration/without_scalar_rules.json)
+and [repair-only comparison](../results/coremark_bram_calibration/with_operand_repair.json),
+followed by the [passing comparison](../results/coremark_bram_calibration/with_scalar_rules.json),
+retain the measured figures and implementation hashes. The
+[original synthetic failure](../results/coremark_bram_calibration/before_synthetic.json)
+preserves the -13.71% starting point.
+
 The calibration keeps its existing 512-entry L0 and measured ten-cycle
 local-BRAM read configuration. Synthetic workloads retain their established
 abstractions and result fixtures. Replay reports its distinct execution
@@ -169,3 +184,48 @@ updates `ci_baseline.json` only with `--refresh` after a passing comparison.
 It requires the separate stream and manifest for `coremark_bram`, disallows
 substituting `--model-run`, and checks that replay retired the same count.
 The stored baseline alone cannot make a failing comparison pass.
+
+## Reproducing the final comparison
+
+The clean CI-style recapture used
+`2a851a88c9b1f2c7c096e0e06f7b2279c0d18e4a` and reproduced 183,450 replay
+cycles against 201,392 RTL cycles. The
+[final comparison](../results/coremark_bram_calibration/calibration.json),
+[capture manifest](../results/coremark_bram_calibration/manifest.json), and
+[aggregate counters](../results/coremark_bram_calibration/counters.json)
+retain its binary/stream identities and measured figures. Full streams remain
+in `tests/calibration/` locally and in the CI calibration artifact.
+
+All verification ran in `frost:toolchain-linux` through the worktree-aware
+`fr16.sh` wrapper, with `make clean` before cocotb builds. The CI selection was:
+
+```bash
+pytest tests/test_run_cocotb.py \
+  -m 'cocotb and cocotb_real_program and not coremark_pro' \
+  -k '[coremark] or [coremark_profile]' -v --durations=0
+```
+
+Both tests passed, followed by the workflow's `run_calibration.py` command
+with `--instructions`. A separate passing invocation with `--refresh`
+updated the baseline. Startup checks passed 33/33 seeds, 2/2 assertion
+controls and 1/1 withheld control; the final recapture reused those successes
+through the runner's simulator-binary/fixture/seed cache.
+
+The performance, memory, workload, sweep, frontend, capture and contract
+tests passed **194 tests**. Production cocotb directed checks passed **51
+fetch-stage tests**, **one decoded-queue test**, and **42 reservation-station
+tests**. Full pre-commit also passed on the implementation.
+
+The complete CI Fast Python selection passed **4,460 tests**, with three
+skipped and 1,947 deselected:
+
+```bash
+pytest tests -m 'not cocotb and not synthesis and not formal and not slow' \
+  -v --durations=20
+```
+
+`pre-commit run --all-files` passed again with the archived evidence included.
+Local transcripts are in `tests/calibration/`: `mainci9_verified_capture.log`,
+`mainci9_verified_fast.log`, `mainci9_final_source_checks.log`,
+`mainci9_rtl_frontend.log`, `mainci9_rtl_repair.log`, and
+`mainci9_evidence_precommit.log`.

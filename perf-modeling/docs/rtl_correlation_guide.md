@@ -45,7 +45,7 @@ prediction tiers. Aggregate events cannot substitute for these records.
 
 ## 3. How to Extract Traces from Verilator RTL
 
-Trace extraction is integrated into the cocotb test harness (`verif/cocotb_tests/calibration_trace.py`, called from `verif/cocotb_tests/test_real_program.py`). When the target environment variables are set, the testbench activates the calibration monitors exclusively for the timed region of the benchmark. A simulation that lacks a signal the capture reads fails with an error that names the signal.
+Trace extraction is integrated into the cocotb test harness (`verif/cocotb_tests/calibration_trace.py`, called from `verif/cocotb_tests/test_real_program.py`). When the target environment variables are set, the testbench emits aggregate records only inside the timed region. The separate instruction observer also follows earlier register writes to resolve addresses in that region. A simulation that lacks a signal the capture reads fails with an error that names the signal.
 
 ### Example: CoreMark Trace Extraction
 ```bash

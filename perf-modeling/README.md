@@ -125,7 +125,7 @@ The archived RTL results and model comparison below precede the hit-path extensi
 
 ## 4. How to Extract Traces from Verilator RTL
 
-Trace extraction is fully automated and integrated into the FROST test infrastructure (`verif/cocotb_tests/calibration_trace.py`, called from the real-program bench in `verif/cocotb_tests/test_real_program.py`). The monitor activates exclusively during the timed region of the target benchmark and introduces zero simulation timing perturbation.
+Trace extraction is integrated into the FROST test infrastructure (`verif/cocotb_tests/calibration_trace.py`, called from the real-program bench in `verif/cocotb_tests/test_real_program.py`). Aggregate event output is limited to the timed region. The observers read signals without driving the RTL.
 
 `FROST_INSTRUCTION_TRACE_PATH` additionally captures a separate compressed
 instruction stream tied to the loaded binary. Its observer follows register

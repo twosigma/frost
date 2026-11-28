@@ -1,0 +1,381 @@
+{
+  "calibration_status": "valid trace only; fit parameters only with archived directed-case evidence",
+  "check": {
+    "baseline": "perf-modeling/calibration/ci_baseline.json",
+    "deltas": {
+      "model_ipc_since_stored": 0.0,
+      "model_vs_rtl_ipc": -0.1371346737589878,
+      "rtl_cycles_since_stored": -0.1678291626723084,
+      "rtl_ipc_since_stored": 0.16313111698336114,
+      "stored_model_vs_rtl_ipc": 0.0036255107169207434
+    },
+    "failures": [
+      "the model's IPC differs from the RTL's by -13.71%, beyond the tolerance of 10%"
+    ],
+    "model": {
+      "cycles": 3219,
+      "ipc": 0.9717303510406958,
+      "retired_uops": 3128
+    },
+    "passed": false,
+    "rtl": {
+      "cycles": 201392,
+      "dispatched_uops": 240426,
+      "event_counts": {
+        "axi_request": 11665,
+        "axi_response": 11664,
+        "dispatch": 140047,
+        "meta": 1,
+        "retire": 128705
+      },
+      "ipc": 1.1261668785254628,
+      "retired_uops": 226801
+    }
+  },
+  "cycle_delta": 198173,
+  "model": {
+    "configuration": {
+      "alu_cycles": 1,
+      "alu_issue_width": 2,
+      "axi_data_bytes": 64,
+      "axi_id_bits": 5,
+      "axi_id_pool_size": 32,
+      "branch_recovery_cycles": 2,
+      "cache_fill_cycles": 1,
+      "cache_normal_memory": true,
+      "cache_response_cycles": 1,
+      "cdb_width": 2,
+      "coherence_release_cycles": 4,
+      "cpu_axi_id_bits": 6,
+      "ddr": {
+        "channels": 1,
+        "controller": "behavioral",
+        "cycles_per_line": 1,
+        "id_bits": 5,
+        "interleave_bytes": 64,
+        "jitter_seed": 44257,
+        "latency_cycles": 80,
+        "latency_jitter": 0,
+        "line_bytes": 64,
+        "num_slots": 8,
+        "reorder": false
+      },
+      "decoded_queue_bundles": 4,
+      "dispatch_width": 2,
+      "early_load_wakeup": true,
+      "int_rs_entries": 16,
+      "l0_cache_depth": 512,
+      "l1_data_cycles": 2,
+      "l1_line_bytes": 32,
+      "l1_tag_cycles": 1,
+      "l1_write_cycles": 1,
+      "l1d_bimodal_insert": true,
+      "l1d_bytes": 131072,
+      "l1d_hit_path": true,
+      "l1d_id_bits": 4,
+      "l1d_lookahead_hints": false,
+      "l1d_lookahead_sectors": 8,
+      "l1d_lookahead_slots": 2,
+      "l1d_mshrs": 8,
+      "l1d_read_slots": 8,
+      "l1d_request_cycles": 1,
+      "l1d_response_cycles": 2,
+      "l1d_return_cycles": 2,
+      "l1d_store_lookahead": true,
+      "l1d_store_records": 4,
+      "l1d_ways": 4,
+      "l1d_wb_slots": 2,
+      "l1i_bytes": 16384,
+      "l1i_mshrs": 2,
+      "l1i_ways": 4,
+      "l2_bimodal_insert": false,
+      "l2_bytes": 2097152,
+      "l2_data_cycles": 6,
+      "l2_id_bits": 5,
+      "l2_line_bytes": 64,
+      "l2_mshrs": 8,
+      "l2_prefetch": true,
+      "l2_prefetch_distance": 8,
+      "l2_prefetch_inflight": 3,
+      "l2_prefetch_streams": 4,
+      "l2_tag_cycles": 3,
+      "l2_waiters": 2,
+      "l2_ways": 4,
+      "l2_wb_slots": 2,
+      "load_issue_width": 1,
+      "load_queue_entries": 8,
+      "mem_rs_entries": 8,
+      "name": "rtl_baseline",
+      "normal_fetch_lines": 256,
+      "prefetch_page_bytes": 4096,
+      "retire_width": 2,
+      "rob_entries": 32,
+      "soc": {
+        "bram_base": 0,
+        "bram_bytes": 262144,
+        "ddr_aw_register_cycles": 1,
+        "ddr_base": 2147483648,
+        "ddr_bytes": 1073741824,
+        "local_bram_read_cycles": 10,
+        "local_bram_write_cycles": 1,
+        "local_mmio_cycles": 2,
+        "local_wide_fetch_cycles": 5,
+        "mmio_base": 1073741824,
+        "mmio_bytes": 268435456
+      },
+      "store_drain_cycles": 3,
+      "store_queue_entries": 8
+    },
+    "cpu_top": {
+      "axi_master": {
+        "inflight_cycles": 0
+      },
+      "l1d": {
+        "occupancy": {
+          "mshrs": 0,
+          "store_records": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "l1i": {
+        "occupancy": {
+          "mshrs": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "l2": {
+        "occupancy": {
+          "mshrs": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "line_size_adapter": {},
+      "pipeline": {
+        "max_occupancy": {
+          "int_rs": 16,
+          "lq": 8,
+          "mem_rs": 7,
+          "rob": 32,
+          "sq": 2
+        },
+        "stats": {
+          "branch_mispredicts": 1,
+          "cdb_contention": 1155,
+          "completed": 3128,
+          "dispatch_stall_int_rs": 28,
+          "dispatch_stall_lq": 1379,
+          "dispatch_stall_rob": 282,
+          "dispatched": 3128,
+          "early_load_tokens": 353,
+          "frontend_recovery_stall": 2,
+          "l0_fills": 192,
+          "l0_hits": 1024,
+          "l0_misses": 5016,
+          "l0_store_updates": 48,
+          "load_local_backpressure": 4824,
+          "load_store_disambiguation_stall": 2483,
+          "loads_issued": 1216,
+          "local_loads": 192,
+          "local_stores": 99,
+          "retire_head_not_ready": 1846,
+          "retired": 3128,
+          "store_drain_backpressure": 99,
+          "stores_drained": 99
+        }
+      },
+      "prefetcher": {}
+    },
+    "cycles": 3219,
+    "ipc": 0.9717303510406958,
+    "memory": {
+      "axi": {
+        "inflight_cycles": 0
+      },
+      "ddr": {
+        "configuration": {
+          "channels": 1,
+          "controller": "behavioral",
+          "cycles_per_line": 1,
+          "id_bits": 5,
+          "interleave_bytes": 64,
+          "jitter_seed": 44257,
+          "latency_cycles": 80,
+          "latency_jitter": 0,
+          "line_bytes": 64,
+          "num_slots": 8,
+          "reorder": false
+        },
+        "effective_slots": 8,
+        "inflight_reads": 0,
+        "inflight_writes": 0,
+        "kind": "frost_single_channel_axi_ddr",
+        "stats": {}
+      },
+      "l1d": {
+        "occupancy": {
+          "mshrs": 0,
+          "store_records": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "l1i": {
+        "occupancy": {
+          "mshrs": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "l2": {
+        "occupancy": {
+          "mshrs": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "line_size_adapter": {},
+      "prefetcher": {},
+      "soc": {
+        "configuration": {
+          "bram_base": 0,
+          "bram_bytes": 262144,
+          "ddr_aw_register_cycles": 1,
+          "ddr_base": 2147483648,
+          "ddr_bytes": 1073741824,
+          "local_bram_read_cycles": 10,
+          "local_bram_write_cycles": 1,
+          "local_mmio_cycles": 2,
+          "local_wide_fetch_cycles": 5,
+          "mmio_base": 1073741824,
+          "mmio_bytes": 268435456
+        },
+        "ddr": {
+          "configuration": {
+            "channels": 1,
+            "controller": "behavioral",
+            "cycles_per_line": 1,
+            "id_bits": 5,
+            "interleave_bytes": 64,
+            "jitter_seed": 44257,
+            "latency_cycles": 80,
+            "latency_jitter": 0,
+            "line_bytes": 64,
+            "num_slots": 8,
+            "reorder": false
+          },
+          "effective_slots": 8,
+          "inflight_reads": 0,
+          "inflight_writes": 0,
+          "kind": "frost_single_channel_axi_ddr",
+          "stats": {}
+        },
+        "kind": "frost_soc_top",
+        "stats": {
+          "local_bram_reads": 192,
+          "local_bram_writes": 99,
+          "local_port_backpressure": 4923
+        }
+      }
+    },
+    "micro_ops": 3128,
+    "micro_ops_per_second": 46281,
+    "model_version": "1.0",
+    "pipeline": {
+      "max_occupancy": {
+        "int_rs": 16,
+        "lq": 8,
+        "mem_rs": 7,
+        "rob": 32,
+        "sq": 2
+      },
+      "stats": {
+        "branch_mispredicts": 1,
+        "cdb_contention": 1155,
+        "completed": 3128,
+        "dispatch_stall_int_rs": 28,
+        "dispatch_stall_lq": 1379,
+        "dispatch_stall_rob": 282,
+        "dispatched": 3128,
+        "early_load_tokens": 353,
+        "frontend_recovery_stall": 2,
+        "l0_fills": 192,
+        "l0_hits": 1024,
+        "l0_misses": 5016,
+        "l0_store_updates": 48,
+        "load_local_backpressure": 4824,
+        "load_store_disambiguation_stall": 2483,
+        "loads_issued": 1216,
+        "local_loads": 192,
+        "local_stores": 99,
+        "retire_head_not_ready": 1846,
+        "retired": 3128,
+        "store_drain_backpressure": 99,
+        "stores_drained": 99
+      }
+    },
+    "retired": 3128,
+    "seed": 11,
+    "simulated_cycles_per_second": 47627,
+    "soc_top": {
+      "configuration": {
+        "bram_base": 0,
+        "bram_bytes": 262144,
+        "ddr_aw_register_cycles": 1,
+        "ddr_base": 2147483648,
+        "ddr_bytes": 1073741824,
+        "local_bram_read_cycles": 10,
+        "local_bram_write_cycles": 1,
+        "local_mmio_cycles": 2,
+        "local_wide_fetch_cycles": 5,
+        "mmio_base": 1073741824,
+        "mmio_bytes": 268435456
+      },
+      "ddr": {
+        "configuration": {
+          "channels": 1,
+          "controller": "behavioral",
+          "cycles_per_line": 1,
+          "id_bits": 5,
+          "interleave_bytes": 64,
+          "jitter_seed": 44257,
+          "latency_cycles": 80,
+          "latency_jitter": 0,
+          "line_bytes": 64,
+          "num_slots": 8,
+          "reorder": false
+        },
+        "effective_slots": 8,
+        "inflight_reads": 0,
+        "inflight_writes": 0,
+        "kind": "frost_single_channel_axi_ddr",
+        "stats": {}
+      },
+      "kind": "frost_soc_top",
+      "stats": {
+        "local_bram_reads": 192,
+        "local_bram_writes": 99,
+        "local_port_backpressure": 4923
+      }
+    },
+    "wall_time_seconds": 0.067587,
+    "workload": "coremark_bram"
+  },
+  "observed": {
+    "cycles_observed": 201392,
+    "event_counts": {
+      "axi_request": 11665,
+      "axi_response": 11664,
+      "dispatch": 140047,
+      "meta": 1,
+      "retire": 128705
+    },
+    "retired_uops": 226801
+  },
+  "retired_uop_delta": 223673,
+  "rtl_commit": "201e1911850c0185b96cd8f0fddce651666f08d0",
+  "status": "comparison-recorded",
+  "trace": "tests/calibration/coremark.jsonl"
+}
