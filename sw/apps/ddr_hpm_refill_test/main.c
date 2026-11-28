@@ -31,8 +31,9 @@
  *      and formal properties check exact request-to-pulse accounting.
  *   D  L2-missing scattered reads: one load in each of 32 untouched 4 KiB
  *      pages reads exactly 32 lines from memory on demand, with no prefetch
- *      (the prefetchers stay within a page and need a stream). Reading the
- *      same lines again reads none.
+ *      (the prefetchers stay within a page and need a stream). The address
+ *      index wraps within those pages even on a speculative loop iteration.
+ *      Reading the same lines again reads none.
  *   S  L2-missing stream: one load per 64-byte line over two untouched pages
  *      reads each of their 128 lines from memory exactly once, on demand or
  *      by a prefetch, and the L2 prefetcher takes part.
@@ -261,12 +262,20 @@ static uintptr_t region(uintptr_t offset)
     return CACHED_BASE + 0x1000000 + run_offset + offset;
 }
 
-/* One load in each of `pages` pages, at a different line in each. */
-static uint64_t scatter(uintptr_t base, unsigned long pages)
+/* One load in each of SCATTER_PAGES pages, at a different line in each.
+ * A mispredicted loop backedge can issue loads beyond the final iteration;
+ * L2 demand reads count even when those loads are later squashed. Bound both
+ * parts of the address with a data dependency so speculative iterations only
+ * revisit the measured lines. Inline assembly keeps the mask: the compiler
+ * can remove a C mask using the loop's architectural index range. */
+static uint64_t scatter(uintptr_t base)
 {
     uint64_t s = 0;
-    for (unsigned long i = 0; i < pages; i++)
-        s += *(volatile uint64_t *) (base + i * 4096 + ((i * 7) % 64) * 64);
+    for (unsigned long i = 0; i < SCATTER_PAGES; i++) {
+        unsigned long page;
+        __asm__("andi %0, %1, %2" : "=r"(page) : "r"(i), "i"(SCATTER_PAGES - 1));
+        s += *(volatile uint64_t *) (base + page * 4096 + ((page * 7) % 64) * 64);
+    }
     return s;
 }
 
@@ -328,7 +337,7 @@ int main(void)
     uintptr_t scatter_base = region(0x10000);
     settle(64);
     unsigned long d0 = csr_read_num(0xB06), p0 = csr_read_num(0xB05);
-    sum += scatter(scatter_base, SCATTER_PAGES);
+    sum += scatter(scatter_base);
     settle(2000);
     unsigned long d_scatter = csr_read_num(0xB06) - d0;
     unsigned long p_scatter = csr_read_num(0xB05) - p0;
@@ -336,9 +345,13 @@ int main(void)
     expect_eq("D scatter-demand", d_scatter, SCATTER_PAGES);
     expect_eq("D scatter-prefetch", p_scatter, 0);
     d0 = csr_read_num(0xB06);
-    sum += scatter(scatter_base, SCATTER_PAGES);
+    p0 = csr_read_num(0xB05);
+    sum += scatter(scatter_base);
     settle(64);
-    expect_eq("D warm-scatter-demand", csr_read_num(0xB06) - d0, 0);
+    unsigned long d_warm = csr_read_num(0xB06) - d0;
+    unsigned long p_warm = csr_read_num(0xB05) - p0;
+    expect_eq("D warm-scatter-demand", d_warm, 0);
+    expect_eq("D warm-scatter-prefetch", p_warm, 0);
 
     /* S: a stream over two untouched pages reads each line once. */
     uintptr_t stream_base = region(0x100000);
@@ -357,7 +370,7 @@ int main(void)
     /* O: the demand event wraps counter 6 and raises LCOFIP. */
     csr_write_num(0x344, csr_read_num(0x344) & ~LCOF);
     csr_write_num(0xB06, 0ul - 4);
-    sum += scatter(region(0x200000), SCATTER_PAGES);
+    sum += scatter(region(0x200000));
     settle(2000);
     expect_eq("O wrapped-count", csr_read_num(0xB06), SCATTER_PAGES - 4);
     expect_eq("O of-set", csr_read_num(0x326), OF | SEL_L2_DEMAND);
