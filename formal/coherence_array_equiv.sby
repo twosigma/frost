@@ -46,6 +46,9 @@ script free_undefined.ys
 prep -top coherence_array_equiv
 select -assert-count 3 c:p_equiv_*
 select -assert-count 2 c:c_equiv_store_*
+select -assert-count 25 t:$check r:FLAVOR=assert %i
+~port: select -assert-count 11 t:$check r:FLAVOR=cover %i
+port: select -assert-count 17 t:$check r:FLAVOR=cover %i
 # Out-of-range bits of the four-way selections are unreachable constants.
 memory_map -keepdc
 opt -keepdc

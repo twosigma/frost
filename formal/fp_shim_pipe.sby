@@ -23,6 +23,8 @@ chparam -set PIPELINE 1 -set LAUNCH_SQUASH 1 fp_shim
 hierarchy -top fp_shim
 script free_undefined.ys
 prep -top fp_shim
+select -assert-count 38 t:$check r:FLAVOR=assert %i
+select -assert-count 10 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

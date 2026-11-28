@@ -56,15 +56,21 @@ MUTATIONS = {
     "indirect_correct": Mutation(
         "ittage_predictor_twin",
         "ittage_predictor.sv",
-        "if (correct_q[t]) begin",
-        "if (!correct_q[t]) begin",
+        # Target correctness now selects the owned provider's read-stage update.
+        "if (read_provider[t]) begin\n"
+        "        if (read_owned[t]) begin\n"
+        "          if (read_correct[t]) begin",
+        "if (read_provider[t]) begin\n"
+        "        if (read_owned[t]) begin\n"
+        "          if (!read_correct[t]) begin",
         ("p_write_data",),
     ),
     "backing_redirect": Mutation(
         "backing_btb_twin",
         "backing_btb.sv",
-        "if (i_reset || sweep_active || i_redirect) begin",
-        "if (i_reset || sweep_active) begin",
+        # The window-hit clear has the same guard; mutate only held-read validity.
+        "if (i_reset || sweep_active || i_redirect) begin\n      held_valid_q <= 1'b0;",
+        "if (i_reset || sweep_active) begin\n      held_valid_q <= 1'b0;",
         ("p_held_select", "p_registers"),
     ),
     "direction_history": Mutation(

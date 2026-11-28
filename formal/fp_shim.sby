@@ -19,6 +19,8 @@ read -formal -sv fp_shim.sv
 hierarchy -top fp_shim
 script free_undefined.ys
 prep -top fp_shim
+select -assert-count 8 t:$check r:FLAVOR=assert %i
+select -assert-count 4 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

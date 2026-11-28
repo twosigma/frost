@@ -25,6 +25,9 @@ prove: read -formal -D MA_ENGINE_REQUEST_PROOF -sv ma_engine.sv
 hierarchy -top ma_engine
 script free_undefined.ys
 prep -top ma_engine
+~prove: select -assert-count 19 t:$check r:FLAVOR=assert %i
+~prove: select -assert-count 5 t:$check r:FLAVOR=cover %i
+prove: select -assert-count 2 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

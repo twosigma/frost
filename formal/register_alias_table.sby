@@ -18,6 +18,8 @@ read -formal -sv register_alias_table.sv
 hierarchy -top register_alias_table
 script free_undefined.ys
 prep -top register_alias_table
+select -assert-count 20 t:$check r:FLAVOR=assert %i
+select -assert-count 5 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

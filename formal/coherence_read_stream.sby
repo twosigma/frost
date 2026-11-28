@@ -18,6 +18,8 @@ chparam -set ADDR_WIDTH 56 coherence_read_stream
 hierarchy -top coherence_read_stream
 script free_undefined.ys
 prep -top coherence_read_stream
+select -assert-count 17 t:$check r:FLAVOR=assert %i
+select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_read_stream.sv

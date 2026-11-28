@@ -27,6 +27,9 @@ setattr -unset keep *
 setattr -mod -unset keep_hierarchy *
 setundef -undriven -anyseq
 prep -flatten -top if_prediction_walk_past_formal
+~continuity: select -assert-count 8 t:$check r:FLAVOR=assert %i
+~continuity: select -assert-count 4 t:$check r:FLAVOR=cover %i
+continuity: select -assert-count 9 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

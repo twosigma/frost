@@ -28,6 +28,10 @@ saturation: hierarchy -top coherence_store_saturation_formal
 saturation: script free_undefined.ys
 saturation: prep -flatten -top coherence_store_saturation_formal
 saturation: chformal -cover -remove c:*dut*
+~saturation: select -assert-count 69 t:$check r:FLAVOR=assert %i
+~saturation: select -assert-count 10 t:$check r:FLAVOR=cover %i
+saturation: select -assert-count 80 t:$check r:FLAVOR=assert %i
+saturation: select -assert-count 1 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_store_buffer.sv

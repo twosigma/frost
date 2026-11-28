@@ -30,6 +30,8 @@ read -formal -sv coherence_prefetch_pause.sv coherence_prefetch_pause_formal.sv
 hierarchy -top coherence_prefetch_pause_formal
 script free_undefined.ys
 prep -top coherence_prefetch_pause_formal
+select -assert-count 6 t:$check r:FLAVOR=assert %i
+select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_prefetch_pause.sv

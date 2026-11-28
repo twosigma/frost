@@ -17,6 +17,7 @@ read -formal -sv -D SYNTHESIS low_bram_fetch_presenter.sv low_bram_presenter_tie
 hierarchy -top low_bram_presenter_tier_equiv
 script free_undefined.ys
 prep -top low_bram_presenter_tier_equiv
+select -assert-count 8 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
