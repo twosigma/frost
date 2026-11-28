@@ -32,8 +32,8 @@
 // its data stays invalid and cannot forward. With a zero mtvec base,
 // alignment is unchecked and a misaligned store forwards incorrect byte lanes.
 //
-// Register the winning index and byte offset, then select the payload from
-// store_queue's FF data mirror during the LQ consume cycle.
+// Register the winning index and byte offset, then read the payload from
+// store_queue's forwarding data RAM during the LQ consume cycle.
 // =============================================================================
 module sq_forwarding_unit #(
     parameter int unsigned DEPTH = riscv_pkg::SqDepth
@@ -83,7 +83,12 @@ module sq_forwarding_unit #(
     // A Zicbom entry supplies the physical DDR address underlying its mapping.
     input logic [(DEPTH*riscv_pkg::XLEN)-1:0] sq_address_flat,
     input logic [(DEPTH*2)-1:0] sq_size_flat,
-    input logic [(DEPTH*riscv_pkg::FLEN)-1:0] sq_data_fwd_flat,
+
+    // Forwarding data RAM read port: store_queue reads at o_sq_data_fwd_idx
+    // (registered winning slot) and returns the raw store payload during the
+    // LQ consume cycle.
+    output logic [  $clog2(DEPTH)-1:0] o_sq_data_fwd_idx,
+    input  logic [riscv_pkg::FLEN-1:0] i_sq_data_fwd_data,
 
     output logic o_sq_all_older_addrs_known,
     output riscv_pkg::sq_forward_result_t o_sq_forward
@@ -95,30 +100,6 @@ module sq_forwarding_unit #(
   localparam int unsigned MemSizeWidth = 2;
   localparam int unsigned DwordAddrWidth = XLEN - 3;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
-
-  typedef struct packed {
-    logic                valid;
-    // Ring distance from i_sq_head_idx, not ROB-tag age (see Block 2).
-    logic [IdxWidth-1:0] age;
-    logic                can_forward;
-    logic [IdxWidth-1:0] idx;
-    logic [2:0]          store_off;
-  } fwd_winner_t;
-
-  function automatic fwd_winner_t choose_newer_winner(input fwd_winner_t lhs,
-                                                      input fwd_winner_t rhs);
-    begin
-      if (!lhs.valid) begin
-        choose_newer_winner = rhs;
-      end else if (!rhs.valid) begin
-        choose_newer_winner = lhs;
-      end else if (rhs.age >= lhs.age) begin
-        choose_newer_winner = rhs;
-      end else begin
-        choose_newer_winner = lhs;
-      end
-    end
-  endfunction
 
   (* equivalent_register_removal = "no", max_fanout = 16 *)
   logic [ReorderBufferTagWidth-1:0] rob_head_tag_q;
@@ -187,22 +168,19 @@ module sq_forwarding_unit #(
   logic [DEPTH-1:0] fwd_can_forward_mask;
   logic [ReorderBufferTagWidth:0] fwd_load_age;
   logic [ReorderBufferTagWidth:0] fwd_entry_age[DEPTH];
-  logic [IdxWidth-1:0] fwd_entry_slot_age[DEPTH];
 `ifdef FORMAL
-  // Reference payload computed by the scan: each forwardable entry's store
-  // data shifted to its byte lanes. The formal check at the end of the module
-  // compares the registered-metadata select against it.
-  logic [FLEN-1:0] fwd_entry_data_reference[DEPTH];
+  // Ring distance from the SQ head, the linear selector's rank.
+  logic [IdxWidth-1:0] fwd_entry_slot_age[DEPTH];
 `endif
 `ifndef FORMAL
-  // Heap-ordered reduction tree in a flat array for Yosys compatibility:
-  // node[1] is the winner; node[2*k] and node[2*k+1] are node[k]'s children.
-  // Leaves occupy node[FwdTreeWidth .. FwdTreeWidth+DEPTH-1]; padding is
-  // invalid. SQ ring pointers require a power-of-two DEPTH.
-  localparam int unsigned FwdTreeLevels = $clog2(DEPTH);
-  localparam int unsigned FwdTreeWidth  = 1 << FwdTreeLevels;
-  fwd_winner_t fwd_node[2*FwdTreeWidth];
-  fwd_winner_t fwd_winner;
+  // Fixed-priority newest selection (Block 2). SQ ring pointers require a
+  // power-of-two DEPTH.
+  logic [DEPTH-1:0] fwd_below_head;
+  logic [DEPTH-1:0] fwd_wrapped_oh, fwd_unwrapped_oh;
+  logic fwd_any_wrapped;
+  logic fwd_wrapped_can_fwd, fwd_unwrapped_can_fwd;
+  logic [IdxWidth-1:0] fwd_wrapped_idx, fwd_unwrapped_idx;
+  logic [2:0] fwd_wrapped_store_off, fwd_unwrapped_store_off;
 `endif
 
   assign fwd_load_byte_mask = gen_byte_en(i_sq_check_addr[2:0], i_sq_check_size);
@@ -219,9 +197,6 @@ module sq_forwarding_unit #(
     logic [ReorderBufferTagWidth-1:0] entry_rob_tag;
     logic [XLEN-1:0] entry_address;
     riscv_pkg::mem_size_e entry_size;
-`ifdef FORMAL
-    logic [FLEN-1:0] entry_data_reference;
-`endif
     // Each quarter uses an identical registered address copy for fanout.
     logic [XLEN-1:0] sq_check_addr_for_entry;
     logic [DwordAddrWidth-1:0] sq_check_dword_for_entry;
@@ -235,9 +210,6 @@ module sq_forwarding_unit #(
       load_byte_mask = fwd_load_byte_mask;
       entry_rob_tag = sq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
       entry_address = sq_address_flat[i*XLEN+:XLEN];
-`ifdef FORMAL
-      entry_data_reference = sq_data_fwd_flat[i*FLEN+:FLEN];
-`endif
       entry_size = riscv_pkg::mem_size_e'(sq_size_flat[i*MemSizeWidth+:MemSizeWidth]);
       if (i < (DEPTH / 4)) begin
         sq_check_addr_for_entry = i_sq_check_addr;
@@ -254,15 +226,14 @@ module sq_forwarding_unit #(
       block_probe_addr = sq_is_cmo[i] && riscv_pkg::pma_pbmt_alias_ok(sq_check_addr_for_entry) ?
           riscv_pkg::pbmt_alias_real(sq_check_addr_for_entry) : sq_check_addr_for_entry;
       fwd_entry_age[i] = {1'b0, entry_rob_tag} - {1'b0, rob_head_tag_q};
+`ifdef FORMAL
       // Program-order rank for winner selection: ring distance from the SQ
       // head.  DEPTH is a power of two, so the subtraction wraps modulo DEPTH.
       fwd_entry_slot_age[i] = IdxWidth'(i) - i_sq_head_idx;
+`endif
       fwd_addr_unknown_mask[i] = 1'b0;
       fwd_conflict_mask[i] = 1'b0;
       fwd_can_forward_mask[i] = 1'b0;
-`ifdef FORMAL
-      fwd_entry_data_reference[i] = '0;
-`endif
 
       // Count both commit pulses before sq_committed updates, so a younger
       // load cannot pass a committing store regardless of ROB-head timing.
@@ -298,9 +269,6 @@ module sq_forwarding_unit #(
             if (sq_data_valid[i] && !sq_is_mmio[i] && !sq_is_sc[i] && !sq_is_zero[i] &&
                 ((store_byte_mask & load_byte_mask) == load_byte_mask)) begin
               fwd_can_forward_mask[i] = 1'b1;
-`ifdef FORMAL
-              fwd_entry_data_reference[i] = entry_data_reference << {entry_address[2:0], 3'b000};
-`endif
             end
           end
         end
@@ -322,12 +290,11 @@ module sq_forwarding_unit #(
   // its ROB tag has been reused, and tag age would then rank it newest and
   // forward stale data.
 `ifdef FORMAL
-  // Yosys treats fields of the tree's unpacked struct array as implicit wires.
-  // Use an equivalent linear selector for formal builds.
+  // Linear reference selector for formal builds; tree_equiv proves the
+  // synthesis selector below equivalent to it.
   logic fwd_formal_winner_valid;
   logic [IdxWidth-1:0] fwd_formal_winner_age;
   logic [2:0] fwd_formal_winner_store_off;
-  logic [FLEN-1:0] fwd_selected_data_reference;
 
   always_comb begin
     fwd_formal_winner_valid     = 1'b0;
@@ -335,7 +302,6 @@ module sq_forwarding_unit #(
     fwd_formal_winner_store_off = '0;
     fwd_can_fwd                 = 1'b0;
     fwd_match_idx               = '0;
-    fwd_selected_data_reference = '0;
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
       if (fwd_conflict_mask[i] &&
@@ -345,38 +311,49 @@ module sq_forwarding_unit #(
         fwd_formal_winner_store_off = sq_address_flat[i*XLEN+:3];
         fwd_can_fwd                 = fwd_can_forward_mask[i];
         fwd_match_idx               = IdxWidth'(i);
-        fwd_selected_data_reference = fwd_entry_data_reference[i];
       end
     end
   end
   assign fwd_winner_store_off = fwd_formal_winner_store_off;
 `else
-  // Use a balanced tree for timing.
+  // Ring distance from the head is i - head for an entry at or above the head
+  // and i - head + DEPTH for one below it (wrapped), so every wrapped entry is
+  // newer than every unwrapped one, and within each half a higher index is
+  // newer. The newest conflict is therefore the highest-index wrapped conflict
+  // if any, else the highest-index unwrapped one: two fixed-priority picks with
+  // no age comparison, formed in parallel from the conflict mask and the
+  // registered head, and a final select by whether any wrapped entry conflicts.
+  // With no conflict, index and offset are zero, as for the linear selector.
   always_comb begin
-    // Default unused nodes and padding to invalid to avoid latches.
-    for (int unsigned n = 0; n < 2 * FwdTreeWidth; n++) begin
-      fwd_node[n] = '0;
-    end
-
+    logic [DEPTH-1:0] wrapped_mask, unwrapped_mask, above_mask;
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      fwd_node[FwdTreeWidth+i].valid       = fwd_conflict_mask[i];
-      fwd_node[FwdTreeWidth+i].age         = fwd_entry_slot_age[i];
-      fwd_node[FwdTreeWidth+i].can_forward = fwd_can_forward_mask[i];
-      fwd_node[FwdTreeWidth+i].idx         = IdxWidth'(i);
-      fwd_node[FwdTreeWidth+i].store_off   = sq_address_flat[i*XLEN+:3];
+      fwd_below_head[i] = IdxWidth'(i) < i_sq_head_idx;
     end
-
-    // Descending order so both children are final before their parent.
-    for (int n = int'(FwdTreeWidth) - 1; n >= 1; n--) begin
-      fwd_node[n] = choose_newer_winner(fwd_node[2*n], fwd_node[(2*n)+1]);
+    wrapped_mask = fwd_conflict_mask & fwd_below_head;
+    unwrapped_mask = fwd_conflict_mask & ~fwd_below_head;
+    fwd_any_wrapped = |wrapped_mask;
+    fwd_wrapped_can_fwd = 1'b0;
+    fwd_unwrapped_can_fwd = 1'b0;
+    fwd_wrapped_idx = '0;
+    fwd_unwrapped_idx = '0;
+    fwd_wrapped_store_off = '0;
+    fwd_unwrapped_store_off = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      // Entries above i; empty for the last entry.
+      above_mask = ~((DEPTH'(2) << i) - DEPTH'(1));
+      fwd_wrapped_oh[i] = wrapped_mask[i] && !(|(wrapped_mask & above_mask));
+      fwd_unwrapped_oh[i] = unwrapped_mask[i] && !(|(unwrapped_mask & above_mask));
+      fwd_wrapped_can_fwd |= fwd_wrapped_oh[i] && fwd_can_forward_mask[i];
+      fwd_unwrapped_can_fwd |= fwd_unwrapped_oh[i] && fwd_can_forward_mask[i];
+      fwd_wrapped_idx |= fwd_wrapped_oh[i] ? IdxWidth'(i) : '0;
+      fwd_unwrapped_idx |= fwd_unwrapped_oh[i] ? IdxWidth'(i) : '0;
+      fwd_wrapped_store_off |= fwd_wrapped_oh[i] ? sq_address_flat[i*XLEN+:3] : 3'b000;
+      fwd_unwrapped_store_off |= fwd_unwrapped_oh[i] ? sq_address_flat[i*XLEN+:3] : 3'b000;
     end
-
-    fwd_winner    = fwd_node[1];
-
-    fwd_can_fwd   = fwd_winner.valid && fwd_winner.can_forward;
-    fwd_match_idx = fwd_winner.idx;
+    fwd_can_fwd   = fwd_any_wrapped ? fwd_wrapped_can_fwd : fwd_unwrapped_can_fwd;
+    fwd_match_idx = fwd_any_wrapped ? fwd_wrapped_idx : fwd_unwrapped_idx;
   end
-  assign fwd_winner_store_off = fwd_winner.store_off;
+  assign fwd_winner_store_off = fwd_any_wrapped ? fwd_wrapped_store_off : fwd_unwrapped_store_off;
 `endif
 
   // Block 3: register forwarding results for the following LQ cycle.
@@ -402,8 +379,8 @@ module sq_forwarding_unit #(
   end
 
   // The winner metadata uses the same capture enable as match/can_forward.
-  // Data is selected from the write-once per-entry FF mirror after this edge,
-  // during the LQ consume cycle. A forwardable entry's mirror cannot be
+  // Data is read from store_queue's write-once forwarding RAM after this edge,
+  // during the LQ consume cycle. A forwardable entry's row cannot be
   // overwritten before the consumer edge: sq_data_we requires the entry's
   // sq_data_valid to be clear, while can_forward requires it to be set.
   // Capturing store_off here also keeps a same-edge free, flush, or slot reuse
@@ -420,34 +397,16 @@ module sq_forwarding_unit #(
     end
   end
 
-  logic [FLEN-1:0] fwd_selected_raw_q;
-  always_comb begin
-    fwd_selected_raw_q = sq_data_fwd_flat[fwd_match_idx_q*FLEN+:FLEN];
+  assign o_sq_data_fwd_idx = fwd_match_idx_q;
 
-    // Consumers require can_forward. Shift into the store's byte lanes;
-    // coverage qualification lets the load read only lanes the store wrote.
-    o_sq_forward.data  = fwd_selected_raw_q << {fwd_winner_store_off_q, 3'b000};
-  end
+  // Consumers require can_forward. Shift into the store's byte lanes;
+  // coverage qualification lets the load read only lanes the store wrote.
+  assign o_sq_forward.data = i_sq_data_fwd_data << {fwd_winner_store_off_q, 3'b000};
 
 `ifdef FORMAL
-  // Register the reference payload on the same edge as the winner metadata.
-  // The assertion checks both that the metadata select reproduces it and the
-  // store_queue contract that a selected write-once mirror stays stable
-  // through the following LQ consume cycle.
-  logic [FLEN-1:0] fwd_selected_data_reference_q;
-  always_ff @(posedge i_clk) begin
-    if (i_sq_check_capture_valid) begin
-      fwd_selected_data_reference_q <= fwd_selected_data_reference;
-    end
-  end
-
-  always_comb begin
-    if (i_rst_n && o_sq_forward.can_forward) begin
-      p_registered_metadata_data_exact :
-      assert (o_sq_forward.data == fwd_selected_data_reference_q);
-    end
-  end
-
+  // Capture-time forwarding-RAM stability and shifted data equality are
+  // checked around the real u_sq_data_fwd instance in store_queue.sv, and
+  // against the ring-order reference in formal/sq_forwarding_unit_formal.sv.
   always_ff @(posedge i_clk) begin
     if (i_rst_n) begin
       cover_forward_aligned : cover (o_sq_forward.can_forward && fwd_winner_store_off_q == 3'b000);

@@ -9,17 +9,19 @@ depth 1
 smtbmc boolector
 
 [script]
-read -formal -sv riscv_pkg.sv
+read -formal -sv riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv
 read -formal -sv -D SC_HEAD_QUERY_LOCAL_PROOF sc_pending_unit.sv
 hierarchy -top sc_pending_unit
 script free_undefined.ys
 prep -top sc_pending_unit -flatten
-select -assert-count 11 t:$check r:FLAVOR=assert %i
+select -assert-count 4 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
 write_json prepared_model.json
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv
 free_undefined.ys

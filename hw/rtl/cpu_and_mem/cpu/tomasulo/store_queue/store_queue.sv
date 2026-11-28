@@ -66,7 +66,7 @@ module store_queue #(
     output logic fire,
 `else
     parameter bit CACHE_NORMAL_MEMORY = 1'b0,
-    parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 8
+    parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 16
     // Rely on dispatch to check SQ room. Its conservative registered full flags
     // give no credit for same-cycle frees, so !dispatch_full_q implies !full.
     // This permits omitting the local room checks.
@@ -133,9 +133,13 @@ module store_queue #(
     // Early Address Update (from pipelined dispatch-time address computation)
     // =========================================================================
     // Each dispatch slot supplies an update. Their distinct ROB tags each match
-    // at most one SQ entry, so simultaneous writes cannot collide.
+    // at most one SQ entry, so simultaneous writes cannot collide. The packet
+    // address drives entries 0 .. DEPTH/2-1; i_early_addr_hi* carries an
+    // identical copy for entries DEPTH/2 .. DEPTH-1 to split fan-out.
     input riscv_pkg::sq_addr_update_t i_early_addr_update,
     input riscv_pkg::sq_addr_update_t i_early_addr_update_2,
+    input logic [riscv_pkg::XLEN-1:0] i_early_addr_hi,
+    input logic [riscv_pkg::XLEN-1:0] i_early_addr_hi_2,
     // Payload-only enables for persistent early-address repair. They may
     // refresh address/is_mmio while packet.valid is low; sq_addr_valid remains
     // the visibility control and is set only by packet.valid below.
@@ -300,6 +304,8 @@ module store_queue #(
   localparam int unsigned IdxWidth = $clog2(DEPTH);
   localparam int unsigned PtrWidth = IdxWidth + 1;  // Extra MSB for full/empty
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
+  localparam int unsigned HalfDepth = DEPTH / 2;
+  localparam int unsigned HalfCountWidth = $clog2(HalfDepth + 1);
   localparam int unsigned MemSizeWidth = 2;
 
   // ===========================================================================
@@ -310,11 +316,11 @@ module store_queue #(
   function automatic logic is_younger(input logic [ReorderBufferTagWidth-1:0] entry_tag,
                                       input logic [ReorderBufferTagWidth-1:0] flush_tag,
                                       input logic [ReorderBufferTagWidth-1:0] head);
-    logic [ReorderBufferTagWidth:0] entry_age;
-    logic [ReorderBufferTagWidth:0] flush_age;
+    logic [ReorderBufferTagWidth-1:0] entry_age;
+    logic [ReorderBufferTagWidth-1:0] flush_age;
     begin
-      entry_age  = {1'b0, entry_tag} - {1'b0, head};
-      flush_age  = {1'b0, flush_tag} - {1'b0, head};
+      entry_age  = entry_tag - head;
+      flush_age  = flush_tag - head;
       is_younger = entry_age > flush_age;
     end
   endfunction
@@ -374,6 +380,8 @@ module store_queue #(
   logic                 [                DEPTH-1:0] sq_addr_valid;
   logic                 [                DEPTH-1:0] sq_data_valid;
   logic                 [                DEPTH-1:0] sq_is_mmio;
+  logic                 [                DEPTH-1:0] sq_is_cached_q;
+  logic                 [                DEPTH-1:0] sq_normal_buf_q;
   logic                 [                DEPTH-1:0] sq_committed;
   logic                 [                DEPTH-1:0] sq_sent;
   logic                 [                DEPTH-1:0] sq_is_sc;
@@ -394,59 +402,87 @@ module store_queue #(
   // sq_data storage
   // ===========================================================================
   // Write only while sq_data_valid is clear, so visible payloads never change.
-  // The drain reads LUTRAM at drain_idx_q. Forwarding reads a per-entry FF
-  // mirror after registering the winning index. Valid flags gate reads;
-  // allocation need not zero the payload.
+  // Both drain and forwarding read dedicated distributed RAM copies
+  // (u_sq_data_drain at drain_idx_q and u_sq_data_fwd at the forwarding
+  // unit's registered winning index). Valid flags gate reads; allocation need
+  // not zero the payload.
 
-  // Write port: resolved CAM match index from data_update
-  logic                                             sq_data_we;
-  logic                 [             IdxWidth-1:0] sq_data_wr_idx;
+  // Write port: per-entry CAM match from data_update. Both distributed RAMs
+  // share the same write enable and nibble-encoded highest-index write address.
+  logic [   DEPTH-1:0] sq_data_tag_match;
+  logic                sq_data_we;
+  logic [IdxWidth-1:0] sq_data_wr_idx;
 
   always_comb begin
-    sq_data_we     = 1'b0;
-    sq_data_wr_idx = '0;
     // Reset and a full flush clear entry validity on this edge, so a
     // coincident payload write remains hidden.
     // A Zicbom entry is never data-valid and frees only when it drains, so
     // after commit it can still hold a ROB tag that a younger store reuses.
     // It takes no payload, as in the control CAM below.
-    if (i_data_update_capture_valid) begin
+    for (int i = 0; i < DEPTH; i++) begin
+      sq_data_tag_match[i] = sq_valid[i] && !sq_data_valid[i] && !sq_is_cmo[i] &&
+          (sq_rob_tag[i] == i_data_update.rob_tag);
+    end
+  end
+
+  if (DEPTH == 16) begin : gen_sq_data_wr_idx_16
+    logic [3:0] nib_any, nib_hi, nib_lo;
+    always_comb begin
+      for (int n = 0; n < 4; n++) begin
+        nib_any[n] = |sq_data_tag_match[4*n+:4];
+        nib_hi[n]  = sq_data_tag_match[4*n+3] || sq_data_tag_match[4*n+2];
+        nib_lo[n]  = sq_data_tag_match[4*n+3] ||
+            (!sq_data_tag_match[4*n+2] && sq_data_tag_match[4*n+1]);
+      end
+      sq_data_we        = i_data_update_capture_valid && (|nib_any);
+      sq_data_wr_idx[3] = nib_any[3] || nib_any[2];
+      sq_data_wr_idx[2] = nib_any[3] || (!nib_any[2] && nib_any[1]);
+      if (nib_any[3]) sq_data_wr_idx[1:0] = {nib_hi[3], nib_lo[3]};
+      else if (nib_any[2]) sq_data_wr_idx[1:0] = {nib_hi[2], nib_lo[2]};
+      else if (nib_any[1]) sq_data_wr_idx[1:0] = {nib_hi[1], nib_lo[1]};
+      else sq_data_wr_idx[1:0] = {nib_hi[0], nib_lo[0]};
+    end
+  end else begin : gen_sq_data_wr_idx_generic
+    always_comb begin
+      sq_data_we     = i_data_update_capture_valid && (|sq_data_tag_match);
+      sq_data_wr_idx = '0;
       for (int i = 0; i < DEPTH; i++) begin
-        if (sq_valid[i] && !sq_data_valid[i] && !sq_is_cmo[i] &&
-            sq_rob_tag[i] == i_data_update.rob_tag) begin
-          sq_data_we     = 1'b1;
-          sq_data_wr_idx = IdxWidth'(i);
-        end
+        if (sq_data_tag_match[i]) sq_data_wr_idx = IdxWidth'(i);
       end
     end
   end
 
+`ifndef SYNTHESIS
+  logic                sq_data_we_reference;
+  logic [IdxWidth-1:0] sq_data_wr_idx_reference;
+  always_comb begin
+    sq_data_we_reference     = i_data_update_capture_valid && (|sq_data_tag_match);
+    sq_data_wr_idx_reference = '0;
+    for (int i = 0; i < DEPTH; i++) begin
+      if (sq_data_tag_match[i]) sq_data_wr_idx_reference = IdxWidth'(i);
+    end
+  end
+`endif
+
   // Read outputs
   logic [IdxWidth-1:0] drain_idx_q;  // drain cursor (see Drain Cursor below)
   logic [FLEN-1:0] sq_data_drain_rd;  // read at drain_idx_q (drain cursor)
+  logic [IdxWidth-1:0] sq_data_fwd_rd_idx;  // registered winning index from forwarding unit
+  logic [FLEN-1:0] sq_data_fwd_rd;  // read at sq_data_fwd_rd_idx (LQ consume cycle)
 
-  logic [FLEN-1:0] sq_data_fwd_entry[DEPTH];
-  logic [(DEPTH*FLEN)-1:0] sq_data_fwd_flat;
-
-`ifdef FROST_RANDOM_START
-  initial begin
-    for (int row = 0; row < DEPTH; row++)
-    for (int chunk = 0; chunk < (FLEN + 31) / 32; chunk++)
-    sq_data_fwd_entry[row] = (sq_data_fwd_entry[row] << 32) | FLEN'($urandom);
-  end
-`else
-  initial for (int i = 0; i < DEPTH; i++) sq_data_fwd_entry[i] = '0;
-`endif
-
-  always_ff @(posedge i_clk) begin
-    if (sq_data_we) begin
-      sq_data_fwd_entry[sq_data_wr_idx] <= i_data_update.data;
-    end
-  end
-
-  for (genvar i = 0; i < DEPTH; i++) begin : gen_sq_data_fwd_flat
-    assign sq_data_fwd_flat[i*FLEN+:FLEN] = sq_data_fwd_entry[i];
-  end
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IdxWidth),
+      .DATA_WIDTH(FLEN)
+  ) u_sq_data_fwd (
+      .i_clk,
+      .i_write_enable (sq_data_we),
+      .i_write_address(sq_data_wr_idx),
+      .i_write_data   (i_data_update.data),
+      // Forwarding-side read: addressed by the registered winning index from
+      // sq_forwarding_unit during the LQ consume cycle.
+      .i_read_address (sq_data_fwd_rd_idx),
+      .o_read_data    (sq_data_fwd_rd)
+  );
 
   sdp_dist_ram #(
       .ADDR_WIDTH(IdxWidth),
@@ -472,10 +508,16 @@ module store_queue #(
   // Limit fanout to dispatch and front-end stall logic.
   (* max_fanout = 32 *)logic                  dispatch_full_q;
   (* max_fanout = 32 *)logic                  dispatch_full_for_2_q;
-  // Update live count on the same edge and events as sq_valid. Register it
-  // for timing because LQ issue consumes empty.
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_q;
-  logic [CountWidth-1:0] live_count_next;
+  // Keep per-half live counts on the same edge and events as sq_valid,
+  // splitting the removal popcount and subtraction across halves.
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_q;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_q;
+  logic [HalfCountWidth-1:0] live_count_lo_next;
+  logic [HalfCountWidth-1:0] live_count_hi_next;
+  logic [HalfCountWidth-1:0] live_remove_lo_count;
+  logic [HalfCountWidth-1:0] live_remove_hi_count;
+  logic [CountWidth-1:0] live_count_sum;
+  logic [CountWidth-1:0] live_count_next_sum;
   logic [CountWidth-1:0] live_remove_count;
   // Kept so the removal counts read each entry's mask gate directly (see the
   // staged mask below).
@@ -483,14 +525,19 @@ module store_queue #(
   logic [     DEPTH-1:0] sc_discard_remove_mask;
   logic                  drain_remove_valid;
   logic                  committed_empty_q;
-  // Precompute counts for no request, one request, and a pair, then select
-  // with dispatch valids for timing. Either lone slot uses alloc_room_1;
-  // a pair also uses alloc_room_2.
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_if_none;
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_if_one;
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_if_both;
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_alloc_one;
-  (* keep = "true" *)logic [CountWidth-1:0] live_count_alloc_both;
+  // Precompute per-half counts for no request, one request, and a pair, then
+  // select with dispatch valids. Either lone slot uses alloc_room_1; a pair
+  // also uses alloc_room_2.
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_if_none;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_if_one;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_if_both;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_alloc_one;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_lo_alloc_both;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_if_none;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_if_one;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_if_both;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_alloc_one;
+  (* keep = "true" *)logic [HalfCountWidth-1:0] live_count_hi_alloc_both;
 
   logic [CountWidth-1:0] dispatch_count_if_none;
   logic [CountWidth-1:0] dispatch_count_if_one;
@@ -513,11 +560,11 @@ module store_queue #(
   // slot 2 takes the first when alone and the second in a pair.
   logic [     DEPTH-1:0] first_target_oh;
   logic [     DEPTH-1:0] second_target_oh;
-  (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] first_room_oh;
-  (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] second_room_oh;
-  (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] slot1_alloc_oh;
-  (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] slot2_alloc_oh;
-  (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] alloc_oh;
+  (* keep = "true" *)logic [     DEPTH-1:0] first_room_oh;
+  (* keep = "true" *)logic [     DEPTH-1:0] second_room_oh;
+  (* keep = "true", max_fanout = 32 *)logic [     DEPTH-1:0] slot1_alloc_oh;
+  (* keep = "true", max_fanout = 32 *)logic [     DEPTH-1:0] slot2_alloc_oh;
+  (* keep = "true", max_fanout = 32 *)logic [     DEPTH-1:0] alloc_oh;
 
   // Track up to two ordinary Normal writes, or two cached plain writes, in
   // completion order. The legacy port and the L1D complete one cycle later;
@@ -558,7 +605,9 @@ module store_queue #(
   // full_for_2: room for at most 1 more entry, so a 2-wide bundle of two
   // stores would not fit even if neither slot has been allocated yet.
   assign full_for_2 = (window_occupancy >= PtrWidth'(DEPTH - 1));
-  assign empty = (live_count_q == CountWidth'(0));
+  assign empty = (live_count_lo_q == HalfCountWidth'(0)) &&
+      (live_count_hi_q == HalfCountWidth'(0));
+  assign live_count_sum = CountWidth'(live_count_lo_q) + CountWidth'(live_count_hi_q);
 
   assign o_full = full;
   assign o_full_for_2 = full_for_2;
@@ -566,8 +615,8 @@ module store_queue #(
   assign o_dispatch_full_for_2 = dispatch_full_for_2_q;
   assign o_empty = empty;
   assign o_dispatch_empty = empty;
-  assign o_count = live_count_q;
-  assign o_dispatch_count = live_count_q;
+  assign o_count = live_count_sum;
+  assign o_dispatch_count = live_count_sum;
 
   // When both slots allocate, slot 1 takes tail and slot 2 takes tail+1.
   // Either slot alone takes tail.
@@ -771,7 +820,7 @@ module store_queue #(
 
   // ===========================================================================
   // Store-to-load forwarding -> sq_forwarding_unit.sv.
-  // The SQ forwarding data mirror stays here.
+  // The SQ forwarding data RAM stays here.
   // ===========================================================================
   sq_forwarding_unit #(
       .DEPTH(DEPTH)
@@ -807,7 +856,8 @@ module store_queue #(
       .sq_rob_tag_flat           (sq_rob_tag_flat),
       .sq_address_flat           (sq_address_flat),
       .sq_size_flat              (sq_size_flat),
-      .sq_data_fwd_flat          (sq_data_fwd_flat),
+      .o_sq_data_fwd_idx         (sq_data_fwd_rd_idx),
+      .i_sq_data_fwd_data        (sq_data_fwd_rd),
       .o_sq_all_older_addrs_known(o_sq_all_older_addrs_known),
       .o_sq_forward              (o_sq_forward)
   );
@@ -857,43 +907,122 @@ module store_queue #(
       drain_mask_post_fire_above_head[i] =
           drain_mask_post_fire[i] && (IdxWidth'(i) >= head_ptr[IdxWidth-1:0]);
     end
+  end
 
-    drain_base_first_above_idx   = '0;
-    drain_base_first_above_found = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_base_above_head[i] && !drain_base_first_above_found) begin
-        drain_base_first_above_idx   = IdxWidth'(i);
-        drain_base_first_above_found = 1'b1;
+  // Priority-encode the four drain masks. At 16 entries, fold four-entry
+  // nibbles in parallel before the top selection so the scans do not ripple
+  // across all 16 entries.
+  if (DEPTH == 16) begin : gen_drain_scan_16
+    logic [3:0] ba_any, ba_hi, ba_lo;
+    logic [3:0] bany_any, bany_hi, bany_lo;
+    logic [3:0] pa_any, pa_hi, pa_lo;
+    logic [3:0] pany_any, pany_hi, pany_lo;
+    always_comb begin
+      for (int n = 0; n < 4; n++) begin
+        ba_any[n] = |drain_mask_base_above_head[4*n+:4];
+        ba_hi[n] = !drain_mask_base_above_head[4*n] && !drain_mask_base_above_head[4*n+1] &&
+            (drain_mask_base_above_head[4*n+2] || drain_mask_base_above_head[4*n+3]);
+        ba_lo[n] = !drain_mask_base_above_head[4*n] &&
+            (drain_mask_base_above_head[4*n+1] ||
+             (!drain_mask_base_above_head[4*n+2] && drain_mask_base_above_head[4*n+3]));
+
+        bany_any[n] = |drain_mask_base[4*n+:4];
+        bany_hi[n] = !drain_mask_base[4*n] && !drain_mask_base[4*n+1] &&
+            (drain_mask_base[4*n+2] || drain_mask_base[4*n+3]);
+        bany_lo[n] = !drain_mask_base[4*n] &&
+            (drain_mask_base[4*n+1] || (!drain_mask_base[4*n+2] && drain_mask_base[4*n+3]));
+
+        pa_any[n] = |drain_mask_post_fire_above_head[4*n+:4];
+        pa_hi[n] = !drain_mask_post_fire_above_head[4*n] &&
+            !drain_mask_post_fire_above_head[4*n+1] &&
+            (drain_mask_post_fire_above_head[4*n+2] || drain_mask_post_fire_above_head[4*n+3]);
+        pa_lo[n] = !drain_mask_post_fire_above_head[4*n] &&
+            (drain_mask_post_fire_above_head[4*n+1] ||
+             (!drain_mask_post_fire_above_head[4*n+2] && drain_mask_post_fire_above_head[4*n+3]));
+
+        pany_any[n] = |drain_mask_post_fire[4*n+:4];
+        pany_hi[n] = !drain_mask_post_fire[4*n] && !drain_mask_post_fire[4*n+1] &&
+            (drain_mask_post_fire[4*n+2] || drain_mask_post_fire[4*n+3]);
+        pany_lo[n] = !drain_mask_post_fire[4*n] &&
+            (drain_mask_post_fire[4*n+1] ||
+             (!drain_mask_post_fire[4*n+2] && drain_mask_post_fire[4*n+3]));
+      end
+
+      drain_base_first_above_found = |ba_any;
+      drain_base_first_above_idx[3] = !ba_any[0] && !ba_any[1] && (ba_any[2] || ba_any[3]);
+      drain_base_first_above_idx[2] = !ba_any[0] && (ba_any[1] || (!ba_any[2] && ba_any[3]));
+      if (ba_any[0]) drain_base_first_above_idx[1:0] = {ba_hi[0], ba_lo[0]};
+      else if (ba_any[1]) drain_base_first_above_idx[1:0] = {ba_hi[1], ba_lo[1]};
+      else if (ba_any[2]) drain_base_first_above_idx[1:0] = {ba_hi[2], ba_lo[2]};
+      else drain_base_first_above_idx[1:0] = {ba_hi[3], ba_lo[3]};
+
+      drain_base_first_any_found = |bany_any;
+      drain_base_first_any_idx[3] = !bany_any[0] && !bany_any[1] && (bany_any[2] || bany_any[3]);
+      drain_base_first_any_idx[2] = !bany_any[0] && (bany_any[1] || (!bany_any[2] && bany_any[3]));
+      if (bany_any[0]) drain_base_first_any_idx[1:0] = {bany_hi[0], bany_lo[0]};
+      else if (bany_any[1]) drain_base_first_any_idx[1:0] = {bany_hi[1], bany_lo[1]};
+      else if (bany_any[2]) drain_base_first_any_idx[1:0] = {bany_hi[2], bany_lo[2]};
+      else drain_base_first_any_idx[1:0] = {bany_hi[3], bany_lo[3]};
+
+      drain_post_fire_first_above_found = |pa_any;
+      drain_post_fire_first_above_idx[3] = !pa_any[0] && !pa_any[1] && (pa_any[2] || pa_any[3]);
+      drain_post_fire_first_above_idx[2] = !pa_any[0] && (pa_any[1] || (!pa_any[2] && pa_any[3]));
+      if (pa_any[0]) drain_post_fire_first_above_idx[1:0] = {pa_hi[0], pa_lo[0]};
+      else if (pa_any[1]) drain_post_fire_first_above_idx[1:0] = {pa_hi[1], pa_lo[1]};
+      else if (pa_any[2]) drain_post_fire_first_above_idx[1:0] = {pa_hi[2], pa_lo[2]};
+      else drain_post_fire_first_above_idx[1:0] = {pa_hi[3], pa_lo[3]};
+
+      drain_post_fire_first_any_found = |pany_any;
+      drain_post_fire_first_any_idx[3] =
+          !pany_any[0] && !pany_any[1] && (pany_any[2] || pany_any[3]);
+      drain_post_fire_first_any_idx[2] =
+          !pany_any[0] && (pany_any[1] || (!pany_any[2] && pany_any[3]));
+      if (pany_any[0]) drain_post_fire_first_any_idx[1:0] = {pany_hi[0], pany_lo[0]};
+      else if (pany_any[1]) drain_post_fire_first_any_idx[1:0] = {pany_hi[1], pany_lo[1]};
+      else if (pany_any[2]) drain_post_fire_first_any_idx[1:0] = {pany_hi[2], pany_lo[2]};
+      else drain_post_fire_first_any_idx[1:0] = {pany_hi[3], pany_lo[3]};
+    end
+  end else begin : gen_drain_scan_generic
+    always_comb begin
+      drain_base_first_above_idx   = '0;
+      drain_base_first_above_found = 1'b0;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (drain_mask_base_above_head[i] && !drain_base_first_above_found) begin
+          drain_base_first_above_idx   = IdxWidth'(i);
+          drain_base_first_above_found = 1'b1;
+        end
+      end
+
+      drain_base_first_any_idx   = '0;
+      drain_base_first_any_found = 1'b0;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (drain_mask_base[i] && !drain_base_first_any_found) begin
+          drain_base_first_any_idx   = IdxWidth'(i);
+          drain_base_first_any_found = 1'b1;
+        end
+      end
+
+      drain_post_fire_first_above_idx   = '0;
+      drain_post_fire_first_above_found = 1'b0;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (drain_mask_post_fire_above_head[i] && !drain_post_fire_first_above_found) begin
+          drain_post_fire_first_above_idx   = IdxWidth'(i);
+          drain_post_fire_first_above_found = 1'b1;
+        end
+      end
+
+      drain_post_fire_first_any_idx   = '0;
+      drain_post_fire_first_any_found = 1'b0;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (drain_mask_post_fire[i] && !drain_post_fire_first_any_found) begin
+          drain_post_fire_first_any_idx   = IdxWidth'(i);
+          drain_post_fire_first_any_found = 1'b1;
+        end
       end
     end
+  end
 
-    drain_base_first_any_idx   = '0;
-    drain_base_first_any_found = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_base[i] && !drain_base_first_any_found) begin
-        drain_base_first_any_idx   = IdxWidth'(i);
-        drain_base_first_any_found = 1'b1;
-      end
-    end
-
-    drain_post_fire_first_above_idx   = '0;
-    drain_post_fire_first_above_found = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_post_fire_above_head[i] && !drain_post_fire_first_above_found) begin
-        drain_post_fire_first_above_idx   = IdxWidth'(i);
-        drain_post_fire_first_above_found = 1'b1;
-      end
-    end
-
-    drain_post_fire_first_any_idx   = '0;
-    drain_post_fire_first_any_found = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_post_fire[i] && !drain_post_fire_first_any_found) begin
-        drain_post_fire_first_any_idx   = IdxWidth'(i);
-        drain_post_fire_first_any_found = 1'b1;
-      end
-    end
-
+  always_comb begin
     drain_base_idx_d = !drain_base_first_any_found ? head_idx :
         (drain_base_first_above_found ? drain_base_first_above_idx : drain_base_first_any_idx);
     drain_post_fire_idx_d = !drain_post_fire_first_any_found ? head_idx :
@@ -986,6 +1115,15 @@ module store_queue #(
   localparam bit CachedRegionAligned = CachedSize != 0 &&
       (CachedSize & CachedMask) == 0 && (CachedBase & CachedMask) == 0 &&
       CachedLimit > CachedBase;
+  // For an aligned power-of-two cached region, any two cached addresses share
+  // all bits above the region size, so same-sector comparisons need only the
+  // sector offset bits within the region.
+  localparam longint unsigned CachedSizeSafe =
+      CachedRegionAligned ? CACHED_SIZE_BYTES : 64'd64;
+  localparam int unsigned CachedAddrBits =
+      CachedRegionAligned ? $clog2(CachedSizeSafe) : XLEN;
+  localparam int unsigned NextSameSectorBits =
+      (CachedAddrBits > 5) ? (CachedAddrBits - 5) : 1;
   function automatic logic address_is_cached(input logic [XLEN-1:0] addr);
     if (CachedRegionAligned) address_is_cached = (addr & ~CachedMask) == CachedBase;
     else address_is_cached = (addr >= CachedBase) && (addr < CachedLimit);
@@ -997,11 +1135,14 @@ module store_queue #(
   (* keep = "true" *) logic [DEPTH-1:0] sq_precise_class, sq_plain_fast_class;
   logic [DEPTH-1:0] drain_entry_ready, drain_sc_order_ok;
   // Range-ordering holds against the vector memory table, registered. An SC
-  // waits for every older live vector memory instruction.
+  // waits for every older live vector memory instruction. The store queue
+  // drains only at drain_idx_q, so CURSOR_ONLY=1 tracks every entry's
+  // older-VMT row while running sector and overlap checks only for the cursor.
   logic [DEPTH-1:0] vec_hold_d, vec_hold_q;
   vec_hold_rows #(
       .DEPTH(DEPTH),
       .DIRECT_ADDR(1'b1),
+      .CURSOR_ONLY(1'b1),
       .BLOCK_LSB($clog2(riscv_pkg::CboZeroBlockBytes))
   ) u_vec_hold (
       .i_clk       (i_clk),
@@ -1018,6 +1159,7 @@ module store_queue #(
       .i_size_flat (sq_size_flat),
       .i_addr_valid(sq_addr_valid),
       .i_block_flat(sq_is_zero | sq_is_cmo),
+      .i_cursor_idx(drain_idx_q),
       .i_vmt       (i_vmt),
       .o_hold_d    (vec_hold_d)
   );
@@ -1030,15 +1172,47 @@ module store_queue #(
   assign precommit_shared_ready = uncached_armed_q && i_uncached_store_shield &&
       i_head_side_effects_allowed && !i_flush_en && !i_flush_all &&
       !o_uncached_store_complete.valid;
+  localparam logic [XLEN-1:0] UncachedMask = XLEN'(riscv_pkg::PmaUncachedBytes) - 1'b1;
+  localparam logic [XLEN-1:0] DebugSliceAddr = XLEN'(riscv_pkg::DebugSliceBase);
+  localparam int unsigned UncachedBits =
+      (riscv_pkg::PmaUncachedBytes > 1) ? $clog2(riscv_pkg::PmaUncachedBytes) : 1;
+  localparam bit UncachedRegionAligned = (riscv_pkg::PmaUncachedBytes != 0) &&
+      (riscv_pkg::PmaUncachedBase == 0) &&
+      ((XLEN'(riscv_pkg::PmaUncachedBytes) & UncachedMask) == 0) &&
+      (DebugSliceAddr < XLEN'(riscv_pkg::PmaUncachedBytes)) &&
+      (UncachedBits >= 13) && (UncachedBits <= 24);
+  function automatic logic address_is_normal_buffered(input logic [XLEN-1:0] addr);
+    if (CACHE_NORMAL_MEMORY && UncachedRegionAligned) begin
+      address_is_normal_buffered = (addr[XLEN-1:UncachedBits] == '0) &&
+          (addr[UncachedBits-1:12] != DebugSliceAddr[UncachedBits-1:12]);
+    end else begin
+      address_is_normal_buffered = CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(addr);
+    end
+  endfunction
   for (genvar slot = 0; slot < DEPTH; slot++) begin : gen_cached_class
-    // Resolve PMA, SC and MMIO qualification before selecting the cursor.
-    wire normal_buffered = CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_address[slot]);
-    assign sq_cached_class[slot] = address_is_cached(sq_address[slot]);
-    assign sq_cached_plain_class[slot] = sq_cached_class[slot] && !sq_is_sc[slot] &&
+    // Cached and buffered-Normal class bits are computed when each entry's
+    // address is written (sq_is_cached_q / sq_normal_buf_q), avoiding
+    // per-entry 64-bit range checkers on sq_address.
+`ifndef SYNTHESIS
+    always_comb begin
+      if (i_rst_n && sq_valid[slot] && sq_addr_valid[slot]
+`ifndef FORMAL
+          && !$isunknown({sq_address[slot], sq_is_cached_q[slot], sq_normal_buf_q[slot]})
+`endif
+          ) begin
+        assert (sq_normal_buf_q[slot] ==
+                (CACHE_NORMAL_MEMORY && riscv_pkg::pma_writethrough_ok(sq_address[slot])));
+        assert (sq_is_cached_q[slot] == address_is_cached(sq_address[slot]));
+      end
+    end
+`endif
+    assign sq_cached_class[slot] = sq_is_cached_q[slot];
+    assign sq_cached_plain_class[slot] = sq_is_cached_q[slot] && !sq_is_sc[slot] &&
         !sq_is_zero[slot];
-    assign sq_precise_class[slot] = (!normal_buffered || sq_is_sc[slot]) && !sq_cached_class[slot];
+    assign sq_precise_class[slot] = (!sq_normal_buf_q[slot] || sq_is_sc[slot]) &&
+        !sq_is_cached_q[slot];
     assign sq_plain_fast_class[slot] = (!PRECISE_UNCACHED ||
-        (normal_buffered && !sq_is_sc[slot])) && !sq_is_mmio[slot] && !sq_cached_class[slot];
+        (sq_normal_buf_q[slot] && !sq_is_sc[slot])) && !sq_is_mmio[slot] && !sq_is_cached_q[slot];
     assign drain_entry_ready[slot] = drain_idx_q == IdxWidth'(slot) && sq_valid[slot] &&
         sq_addr_valid[slot] && sq_data_valid[slot] && !sq_sent[slot] && !vec_hold_q[slot];
     assign drain_sc_order_ok[slot] = !i_coherent_sc_pending ||
@@ -1527,19 +1701,21 @@ module store_queue #(
   // registered state and the room-qualified allocation targets; the cursor
   // choices then select one entry for each launch outcome, the allocation's
   // dispatch valids apply next, and the launch selects last.
-  logic [XLEN-6:0] last_write_sector_q;
+  logic [NextSameSectorBits-1:0] last_write_sector_q;
   logic last_write_plain_q, next_same_d;
-  wire [XLEN-6:0] last_write_sector_d = mem_write_fire_next ?
-      sq_address[drain_idx_q][XLEN-1:5] : last_write_sector_q;
+  wire [NextSameSectorBits-1:0] last_write_sector_d = mem_write_fire_next ?
+      sq_address[drain_idx_q][NextSameSectorBits+4:5] : last_write_sector_q;
   wire last_write_plain_d = mem_write_fire_next ?
       sq_cached_plain_class[drain_idx_q] && !drain_is_cmo : last_write_plain_q;
   // Per entry: a valid committed cached plain store with its address, not a
   // Zicbom entry (class); the next write after a cached plain launch from the
   // cursor, in the launching entry's sector (fire); the next write without a
-  // launch, in the last write's sector (hold). Each claim is split by the
-  // entry's sent mark: unsent, or sent and taken by this cycle's first
-  // allocation (sent1) or by a pair's second allocation (sent2).
-  logic [DEPTH-1:0] next_same_class, next_same_fire_entry, next_same_hold_entry;
+  // launch, in the last write's sector (hold). Each claim is formed in
+  // parallel with the cursor scan and kept before splitting by the entry's
+  // sent mark: unsent, or sent and taken by this cycle's first allocation
+  // (sent1) or by a pair's second allocation (sent2).
+  logic [DEPTH-1:0] next_same_class;
+  (* keep = "true" *) logic [DEPTH-1:0] next_same_fire_entry, next_same_hold_entry;
   (* keep = "true" *) logic [DEPTH-1:0] next_same_fire_unsent_e, next_same_fire_sent1_e;
   (* keep = "true" *) logic [DEPTH-1:0] next_same_fire_sent2_e, next_same_hold_unsent_e;
   (* keep = "true" *) logic [DEPTH-1:0] next_same_hold_sent1_e, next_same_hold_sent2_e;
@@ -1549,15 +1725,17 @@ module store_queue #(
   (* keep = "true" *) logic next_same_hold_unsent, next_same_hold_sent1, next_same_hold_sent2;
   (* keep = "true" *) logic next_same_if_fire, next_same_if_hold;
   logic next_same_launch;
+  wire [NextSameSectorBits-1:0] drain_cur_sector =
+      sq_address[drain_idx_q][NextSameSectorBits+4:5];
   always_comb
     for (int i = 0; i < DEPTH; i++) begin
       next_same_class[i] = sq_valid[i] && sq_committed[i] && sq_addr_valid[i] &&
           sq_cached_plain_class[i] && !sq_is_cmo[i];
       next_same_fire_entry[i] = sq_cached_plain_class[drain_idx_q] && !drain_is_cmo &&
           drain_idx_q != IdxWidth'(i) && next_same_class[i] &&
-          sq_address[i][XLEN-1:5] == sq_address[drain_idx_q][XLEN-1:5];
+          sq_address[i][NextSameSectorBits+4:5] == drain_cur_sector;
       next_same_hold_entry[i] = last_write_plain_q && next_same_class[i] &&
-          sq_address[i][XLEN-1:5] == last_write_sector_q;
+          sq_address[i][NextSameSectorBits+4:5] == last_write_sector_q;
       next_same_fire_unsent_e[i] = next_same_fire_entry[i] && !sq_sent[i];
       next_same_fire_sent1_e[i] = next_same_fire_entry[i] && sq_sent[i] && first_room_oh[i];
       next_same_fire_sent2_e[i] = next_same_fire_entry[i] && sq_sent[i] && second_room_oh[i];
@@ -1630,7 +1808,7 @@ module store_queue #(
   assign next_same_reference = last_write_plain_d && sq_valid[drain_idx_d] &&
       !sq_sent_next[drain_idx_d] && sq_committed[drain_idx_d] && sq_addr_valid[drain_idx_d] &&
       sq_cached_plain_class[drain_idx_d] && !sq_is_cmo[drain_idx_d] &&
-      sq_address[drain_idx_d][XLEN-1:5] == last_write_sector_d;
+      sq_address[drain_idx_d][NextSameSectorBits+4:5] == last_write_sector_d;
 `undef SQ_NEXT_SAME_REFERENCE
 `endif
 `ifdef SQ_NEXT_SAME_LOCAL_PROOF
@@ -1808,6 +1986,132 @@ endmodule
   end
 
   // ===========================================================================
+  // Banked Address Write Selection & Classification
+  // ===========================================================================
+  // Precompute address classification once per address write port instead of
+  // running DEPTH parallel 64-bit range checkers on sq_address.
+  logic alloc1_is_cached, alloc1_normal_buf;
+  logic alloc2_is_cached, alloc2_normal_buf;
+  logic early1_is_cached, early1_normal_buf;
+  logic early1_hi_is_cached, early1_hi_normal_buf;
+  logic early2_is_cached, early2_normal_buf;
+  logic early2_hi_is_cached, early2_hi_normal_buf;
+  logic upd_is_cached, upd_normal_buf;
+  assign alloc1_is_cached     = address_is_cached(i_alloc.address);
+  assign alloc1_normal_buf    = address_is_normal_buffered(i_alloc.address);
+  assign alloc2_is_cached     = address_is_cached(i_alloc_2.address);
+  assign alloc2_normal_buf    = address_is_normal_buffered(i_alloc_2.address);
+  assign early1_is_cached     = address_is_cached(i_early_addr_update.address);
+  assign early1_normal_buf    = address_is_normal_buffered(i_early_addr_update.address);
+  assign early1_hi_is_cached  = address_is_cached(i_early_addr_hi);
+  assign early1_hi_normal_buf = address_is_normal_buffered(i_early_addr_hi);
+  assign early2_is_cached     = address_is_cached(i_early_addr_update_2.address);
+  assign early2_normal_buf    = address_is_normal_buffered(i_early_addr_update_2.address);
+  assign early2_hi_is_cached  = address_is_cached(i_early_addr_hi_2);
+  assign early2_hi_normal_buf = address_is_normal_buffered(i_early_addr_hi_2);
+  assign upd_is_cached        = address_is_cached(i_addr_update.address);
+  assign upd_normal_buf       = address_is_normal_buffered(i_addr_update.address);
+
+  // Four address write banks indexed by {half, parity}: banks 0..1 serve the
+  // lower half (entries 0..DEPTH/2-1, even/odd) using i_early_addr_update* and
+  // banks 2..3 serve the upper half (DEPTH/2..DEPTH-1, even/odd) using
+  // i_early_addr_hi*. Dual-store dispatch bundles allocate consecutive tail
+  // entries (opposite parity), so fresh slot-1 and slot-2 early updates never
+  // contend. Within each bank, MEM_RS issue wins over early slot 1, which wins
+  // over early slot 2; a losing opportunistic early update is skipped and
+  // falls back to MEM_RS issue. Keeping the early-only bank buses and entry
+  // enables lets i_addr_update_capture_valid enter a single final LUT into
+  // both bank_wr_addr and each entry's write enable.
+  (* keep = "true" *) logic [DEPTH-1:0] addr_upd_match;
+  logic [DEPTH-1:0] addr_early1_match, addr_early2_match;
+  logic [DEPTH-1:0] addr_early1_cap_oh, addr_early2_cap_oh;
+  (* keep = "true" *) logic [3:0] bank_upd_match;
+  logic [3:0] bank_upd_cap, bank_early1_cap;
+  (* keep = "true" *) logic [DEPTH-1:0] entry_early_we;
+  logic [DEPTH-1:0] entry_bank_we;
+  logic [3:0] bank_early_mmio, bank_early_cached, bank_early_nbuf;
+  logic [3:0] bank_wr_mmio, bank_wr_cached, bank_wr_nbuf;
+  (* keep = "true" *) logic [XLEN-1:0] bank_early_addr[4];
+  (* keep = "true" *) logic [XLEN-1:0] bank_wr_addr[4];
+  always_comb begin
+    bank_upd_match  = '0;
+    bank_early1_cap = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      int unsigned b;
+      b = ((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1);
+      addr_upd_match[i] = sq_valid[i] && !sq_addr_valid[i] &&
+          (sq_rob_tag[i] == i_addr_update.rob_tag);
+      addr_early1_match[i] = sq_valid[i] && !sq_addr_valid[i] &&
+          (sq_rob_tag[i] == i_early_addr_update.rob_tag);
+      addr_early2_match[i] = sq_valid[i] && !sq_addr_valid[i] &&
+          (sq_rob_tag[i] == i_early_addr_update_2.rob_tag);
+      addr_early1_cap_oh[i] = i_early_addr_capture_valid && addr_early1_match[i];
+      addr_early2_cap_oh[i] = i_early_addr_capture_valid_2 && addr_early2_match[i];
+      if (addr_upd_match[i]) bank_upd_match[b] = 1'b1;
+      if (addr_early1_cap_oh[i]) bank_early1_cap[b] = 1'b1;
+    end
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      int unsigned b;
+      b = ((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1);
+      entry_early_we[i] = addr_early1_cap_oh[i] ||
+          (!bank_early1_cap[b] && addr_early2_cap_oh[i]);
+    end
+    bank_upd_cap = {4{i_addr_update_capture_valid}} & bank_upd_match;
+    for (int unsigned b = 0; b < 4; b++) begin
+      bank_early_addr[b] = bank_early1_cap[b] ?
+          ((b < 2) ? i_early_addr_update.address : i_early_addr_hi) :
+          ((b < 2) ? i_early_addr_update_2.address : i_early_addr_hi_2);
+      bank_early_mmio[b] = bank_early1_cap[b] ?
+          i_early_addr_update.is_mmio : i_early_addr_update_2.is_mmio;
+      bank_early_cached[b] = bank_early1_cap[b] ?
+          ((b < 2) ? early1_is_cached : early1_hi_is_cached) :
+          ((b < 2) ? early2_is_cached : early2_hi_is_cached);
+      bank_early_nbuf[b] = bank_early1_cap[b] ?
+          ((b < 2) ? early1_normal_buf : early1_hi_normal_buf) :
+          ((b < 2) ? early2_normal_buf : early2_hi_normal_buf);
+      bank_wr_mmio[b]   = bank_upd_cap[b] ? i_addr_update.is_mmio : bank_early_mmio[b];
+      bank_wr_cached[b] = bank_upd_cap[b] ? upd_is_cached : bank_early_cached[b];
+      bank_wr_nbuf[b]   = bank_upd_cap[b] ? upd_normal_buf : bank_early_nbuf[b];
+    end
+  end
+  for (genvar g_slot = 0; g_slot < DEPTH; g_slot++) begin : gen_entry_bank_we
+    localparam int unsigned Bank = ((g_slot >= (DEPTH / 2)) ? 2 : 0) + (g_slot & 1);
+`ifdef FROST_XILINX_PRIMS
+    (* dont_touch = "true" *) LUT4 #(
+        .INIT(16'hf2aa)
+    ) u_entry_bank_we (
+        .I0(entry_early_we[g_slot]),
+        .I1(bank_upd_match[Bank]),
+        .I2(addr_upd_match[g_slot]),
+        .I3(i_addr_update_capture_valid),
+        .O (entry_bank_we[g_slot])
+    );
+`else
+    assign entry_bank_we[g_slot] = (i_addr_update_capture_valid && addr_upd_match[g_slot]) ||
+        (!(i_addr_update_capture_valid && bank_upd_match[Bank]) && entry_early_we[g_slot]);
+`endif
+  end
+  for (genvar g_bank = 0; g_bank < 4; g_bank++) begin : gen_bank_wr_addr
+    for (genvar g_bit = 0; g_bit < XLEN; g_bit++) begin : gen_bit
+`ifdef FROST_XILINX_PRIMS
+      (* dont_touch = "true" *) LUT4 #(
+          .INIT(16'hcaaa)
+      ) u_bank_wr_addr (
+          .I0(bank_early_addr[g_bank][g_bit]),
+          .I1(i_addr_update.address[g_bit]),
+          .I2(bank_upd_match[g_bank]),
+          .I3(i_addr_update_capture_valid),
+          .O (bank_wr_addr[g_bank][g_bit])
+      );
+`else
+      assign bank_wr_addr[g_bank][g_bit] =
+          (i_addr_update_capture_valid && bank_upd_match[g_bank]) ?
+          i_addr_update.address[g_bit] : bank_early_addr[g_bank][g_bit];
+`endif
+    end
+  end
+
+  // ===========================================================================
   // Sequential Logic
   // ===========================================================================
 
@@ -1865,35 +2169,22 @@ endmodule
       end
 
       // -----------------------------------------------------------------
-      // Early Address Update: pipelined dispatch-time addr (control only)
+      // Address Updates (MEM_RS issue and early-address slots 1 & 2)
       // -----------------------------------------------------------------
-      if (i_early_addr_update.valid) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_addr_valid[i] &&
-              sq_rob_tag[i] == i_early_addr_update.rob_tag) begin
-            sq_addr_valid[i] <= 1'b1;
-          end
-        end
-      end
-
-      // Slot-2 early address update; its tag differs from slot 1's.
-      if (i_early_addr_update_2.valid) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_addr_valid[i] &&
-              sq_rob_tag[i] == i_early_addr_update_2.rob_tag) begin
-            sq_addr_valid[i] <= 1'b1;
-          end
-        end
-      end
-
-      // -----------------------------------------------------------------
-      // Address Update: CAM search for matching rob_tag (control only)
-      // -----------------------------------------------------------------
-      if (i_addr_update.valid) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_addr_update.rob_tag) begin
-            sq_addr_valid[i] <= 1'b1;
-          end
+      // Bank arbitration ({half, parity}) matches the data-path write buses
+      // below so sq_addr_valid only rises for the source that owns the bank.
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (i_addr_update.valid && addr_upd_match[i]) begin
+          sq_addr_valid[i] <= 1'b1;
+        end else if (i_early_addr_update.valid &&
+                     !bank_upd_cap[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)] &&
+                     addr_early1_match[i]) begin
+          sq_addr_valid[i] <= 1'b1;
+        end else if (i_early_addr_update_2.valid &&
+                     !bank_upd_cap[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)] &&
+                     !bank_early1_cap[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)] &&
+                     addr_early2_match[i]) begin
+          sq_addr_valid[i] <= 1'b1;
         end
       end
 
@@ -2079,57 +2370,99 @@ endmodule
 `endif
   `undef SQ_LIVE_REMOVE_CHECK
 
-  // Precompute allocation increments before subtracting removals for timing.
-  assign live_count_alloc_one = live_count_q + CountWidth'(alloc_room_1);
-  assign live_count_alloc_both = live_count_q + CountWidth'(alloc_room_1) +
-      CountWidth'(alloc_room_2);
-  // Count the removals in kept groups of six entries, each count one gate of
-  // its mask bits, so the subtractions below read the group counts directly
-  // instead of a serial count of the whole mask.
-  localparam int unsigned RemoveGroups = (DEPTH + 5) / 6;
-  localparam int unsigned RemovePaddedBits = 6 * RemoveGroups;
-  wire [RemovePaddedBits-1:0] live_remove_mask_padded = RemovePaddedBits'(live_remove_mask);
-  (* keep = "true" *) logic [RemoveGroups-1:0][2:0] live_remove_group_count;
+  // Precompute per-half allocation increments before subtracting each half's
+  // removals. A lone slot allocates at alloc_target (half first_alloc_in_hi);
+  // a pair also places slot 2 at alloc_target_2 (half second_alloc_in_hi).
+  logic first_alloc_in_hi;
+  logic second_alloc_in_hi;
+  assign first_alloc_in_hi = alloc_target[IdxWidth-1];
+  assign second_alloc_in_hi = alloc_target_2[IdxWidth-1];
+  assign live_count_lo_alloc_one = live_count_lo_q +
+      HalfCountWidth'(alloc_room_1 && !first_alloc_in_hi);
+  assign live_count_lo_alloc_both = live_count_lo_alloc_one +
+      HalfCountWidth'(alloc_room_2 && !second_alloc_in_hi);
+  assign live_count_hi_alloc_one = live_count_hi_q +
+      HalfCountWidth'(alloc_room_1 && first_alloc_in_hi);
+  assign live_count_hi_alloc_both = live_count_hi_alloc_one +
+      HalfCountWidth'(alloc_room_2 && second_alloc_in_hi);
+  // Count each half's removals in kept groups of six entries, each count one
+  // gate of its mask bits, so each half's subtraction stays at eight-entry
+  // width.
+  localparam int unsigned HalfRemoveGroups = (HalfDepth + 5) / 6;
+  localparam int unsigned HalfRemovePaddedBits = 6 * HalfRemoveGroups;
+  wire [HalfRemovePaddedBits-1:0] live_remove_lo_padded =
+      HalfRemovePaddedBits'(live_remove_mask[HalfDepth-1:0]);
+  wire [HalfRemovePaddedBits-1:0] live_remove_hi_padded =
+      HalfRemovePaddedBits'(live_remove_mask[DEPTH-1:HalfDepth]);
+  (* keep = "true" *) logic [HalfRemoveGroups-1:0][2:0] live_remove_lo_group_count;
+  (* keep = "true" *) logic [HalfRemoveGroups-1:0][2:0] live_remove_hi_group_count;
   always_comb begin
-    for (int g = 0; g < int'(RemoveGroups); g++) begin
-      live_remove_group_count[g] = '0;
+    for (int g = 0; g < int'(HalfRemoveGroups); g++) begin
+      live_remove_lo_group_count[g] = '0;
+      live_remove_hi_group_count[g] = '0;
       for (int b = 0; b < 6; b++) begin
-        live_remove_group_count[g] = live_remove_group_count[g] +
-            3'(live_remove_mask_padded[6*g+b]);
+        live_remove_lo_group_count[g] = live_remove_lo_group_count[g] +
+            3'(live_remove_lo_padded[6*g+b]);
+        live_remove_hi_group_count[g] = live_remove_hi_group_count[g] +
+            3'(live_remove_hi_padded[6*g+b]);
       end
     end
   end
   always_comb begin
-    live_remove_count = '0;
-    for (int g = 0; g < int'(RemoveGroups); g++) begin
-      live_remove_count = live_remove_count + CountWidth'(live_remove_group_count[g]);
+    live_remove_lo_count = '0;
+    live_remove_hi_count = '0;
+    for (int g = 0; g < int'(HalfRemoveGroups); g++) begin
+      live_remove_lo_count = live_remove_lo_count +
+          HalfCountWidth'(live_remove_lo_group_count[g]);
+      live_remove_hi_count = live_remove_hi_count +
+          HalfCountWidth'(live_remove_hi_group_count[g]);
     end
 
-    live_count_if_none = live_count_q - live_remove_count;
-    live_count_if_one  = live_count_alloc_one - live_remove_count;
-    live_count_if_both = live_count_alloc_both - live_remove_count;
+    live_count_lo_if_none = live_count_lo_q - live_remove_lo_count;
+    live_count_lo_if_one  = live_count_lo_alloc_one - live_remove_lo_count;
+    live_count_lo_if_both = live_count_lo_alloc_both - live_remove_lo_count;
+    live_count_hi_if_none = live_count_hi_q - live_remove_hi_count;
+    live_count_hi_if_one  = live_count_hi_alloc_one - live_remove_hi_count;
+    live_count_hi_if_both = live_count_hi_alloc_both - live_remove_hi_count;
     case ({
       i_alloc.valid, i_alloc_2.valid
     })
-      2'b11: live_count_next = live_count_if_both;
-      2'b10, 2'b01: live_count_next = live_count_if_one;
-      default: live_count_next = live_count_if_none;
+      2'b11: begin
+        live_count_lo_next = live_count_lo_if_both;
+        live_count_hi_next = live_count_hi_if_both;
+      end
+      2'b10, 2'b01: begin
+        live_count_lo_next = live_count_lo_if_one;
+        live_count_hi_next = live_count_hi_if_one;
+      end
+      default: begin
+        live_count_lo_next = live_count_lo_if_none;
+        live_count_hi_next = live_count_hi_if_none;
+      end
     endcase
   end
+  assign live_remove_count = CountWidth'(live_remove_lo_count) + CountWidth'(live_remove_hi_count);
+  assign live_count_next_sum =
+      CountWidth'(live_count_lo_next) + CountWidth'(live_count_hi_next);
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) begin
-      live_count_q <= '0;
+    if (!i_rst_n) begin
+      live_count_lo_q <= '0;
+      live_count_hi_q <= '0;
+    end else if (i_flush_all) begin
+      live_count_lo_q <= '0;
+      live_count_hi_q <= '0;
     end else begin
-      live_count_q <= live_count_next;
+      live_count_lo_q <= live_count_lo_next;
+      live_count_hi_q <= live_count_hi_next;
     end
   end
 
 `ifndef SYNTHESIS
   // Adder form of the live count, compared in simulation and formal with
-  // the selected per-outcome candidate above.
+  // the selected per-outcome candidates above.
   logic [CountWidth-1:0] live_count_next_reference;
-  assign live_count_next_reference = live_count_q + CountWidth'(slot1_alloc_en) +
+  assign live_count_next_reference = live_count_sum + CountWidth'(slot1_alloc_en) +
       CountWidth'(slot2_alloc_en) - live_remove_count;
 `endif
 
@@ -2146,49 +2479,30 @@ endmodule
 `endif
 `endif
 
-  // Keep validity updates separate from other control fields for timing.
+  // Keep validity updates separate from other control fields. Removals
+  // (live_remove_mask) target only currently valid entries while allocations
+  // target only free entries, so precomputing sq_valid_keep[i] lets the two
+  // dispatch valids enter a single final LUT into each sq_valid flop.
+  (* keep = "true" *) logic [DEPTH-1:0] sq_valid_keep;
+  (* keep = "true" *) logic sq_valid_alloc1_en;
+  (* keep = "true" *) logic sq_valid_alloc2_en;
+  assign sq_valid_alloc1_en = i_alloc.valid;
+  assign sq_valid_alloc2_en = i_alloc_2.valid;
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++) begin
+      sq_valid_keep[i] = sq_valid[i] && !live_remove_mask[i];
+    end
+  end
+
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      sq_valid <= '0;
-    end else if (i_flush_all) begin
+    if (!i_rst_n || i_flush_all) begin
       sq_valid <= '0;
     end else begin
-      // Partial flush: invalidate uncommitted entries younger than flush_tag
-      // (all uncommitted entries when flush_all_uncommitted is set).
-      // Committed entries are never flushed (they must complete to memory).
-      if (i_flush_en) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (flush_kill_base[i]) begin
-            sq_valid[i] <= 1'b0;
-          end
-        end
-        // tail_ptr is pulled back over the killed suffix in the control
-        // always_ff (see Flush Tail Pullback).
-      end
-
       for (int i = 0; i < DEPTH; i++) begin
-        if (alloc_oh[i]) begin
-          sq_valid[i] <= 1'b1;
-        end
+        sq_valid[i] <= sq_valid_keep[i] ||
+            (first_room_oh[i] && (sq_valid_alloc1_en || sq_valid_alloc2_en)) ||
+            (second_room_oh[i] && sq_valid_alloc1_en && sq_valid_alloc2_en);
       end
-
-      // Failed SC invalidates its uncommitted SQ entry.
-      if (i_sc_discard) begin
-        for (int i = 0; i < DEPTH; i++) begin
-          if (sc_discard_remove_mask[i]) begin
-            sq_valid[i] <= 1'b0;
-          end
-        end
-      end
-
-      // A completed write frees its SQ entry identified by the in-flight
-      // metadata FIFO head.
-      if (i_mem_write_done && (write_inflight_cnt != 2'd0) && write_completes_entry) begin
-        sq_valid[write_entry_idx] <= 1'b0;
-      end
-
-      // A Zicbom entry frees the cycle after it fires at the drain cursor.
-      if (cmo_free_q) sq_valid[cmo_free_idx_q] <= 1'b0;
     end
   end
 
@@ -2215,46 +2529,23 @@ endmodule
         sq_is_cmo[i]  <= slot1_alloc_oh[i] ? i_alloc.is_cmo : i_alloc_2.is_cmo;
         sq_cmo_kind[i] <= slot1_alloc_oh[i] ? i_alloc.cmo_kind : i_alloc_2.cmo_kind;
         if (slot1_alloc_oh[i] ? i_alloc.addr_valid : i_alloc_2.addr_valid) begin
-          sq_address[i] <= slot1_alloc_oh[i] ? i_alloc.address : i_alloc_2.address;
-          sq_is_mmio[i] <= slot1_alloc_oh[i] ? i_alloc.is_mmio : i_alloc_2.is_mmio;
+          sq_address[i]      <= slot1_alloc_oh[i] ? i_alloc.address : i_alloc_2.address;
+          sq_is_mmio[i]      <= slot1_alloc_oh[i] ? i_alloc.is_mmio : i_alloc_2.is_mmio;
+          sq_is_cached_q[i]  <= slot1_alloc_oh[i] ? alloc1_is_cached : alloc2_is_cached;
+          sq_normal_buf_q[i] <= slot1_alloc_oh[i] ? alloc1_normal_buf : alloc2_normal_buf;
         end
       end
     end
 
     // -----------------------------------------------------------------
-    // Early Address Update: pipelined dispatch-time addr (data only)
+    // Banked Address Update (MEM_RS issue > early slot 1 > early slot 2)
     // -----------------------------------------------------------------
-    if (i_early_addr_capture_valid) begin
-      for (int i = 0; i < DEPTH; i++) begin
-        if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_early_addr_update.rob_tag) begin
-          sq_address[i] <= i_early_addr_update.address;
-          sq_is_mmio[i] <= i_early_addr_update.is_mmio;
-        end
-      end
-    end
-
-    // Slot-2 early address payload.
-    if (i_early_addr_capture_valid_2) begin
-      for (int i = 0; i < DEPTH; i++) begin
-        if (sq_valid[i] && !sq_addr_valid[i] &&
-            sq_rob_tag[i] == i_early_addr_update_2.rob_tag) begin
-          sq_address[i] <= i_early_addr_update_2.address;
-          sq_is_mmio[i] <= i_early_addr_update_2.is_mmio;
-        end
-      end
-    end
-
-    // -----------------------------------------------------------------
-    // Address Update: CAM search for matching rob_tag (data only)
-    // -----------------------------------------------------------------
-    // Written after the early-address loops, so a same-cycle MEM_RS update
-    // to the same entry wins.
-    if (i_addr_update_capture_valid) begin
-      for (int i = 0; i < DEPTH; i++) begin
-        if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_addr_update.rob_tag) begin
-          sq_address[i] <= i_addr_update.address;
-          sq_is_mmio[i] <= i_addr_update.is_mmio;
-        end
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (entry_bank_we[i]) begin
+        sq_address[i]      <= bank_wr_addr[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)];
+        sq_is_mmio[i]      <= bank_wr_mmio[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)];
+        sq_is_cached_q[i]  <= bank_wr_cached[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)];
+        sq_normal_buf_q[i] <= bank_wr_nbuf[((i >= (DEPTH / 2)) ? 2 : 0) + (i & 1)];
       end
     end
 
@@ -2306,11 +2597,16 @@ endmodule
         assert (1'b0) else
 `endif
         $error("SQ: merged allocation pulses differ from the slot pulses");
-      if (live_count_next != live_count_next_reference)
+      if (live_count_next_sum != live_count_next_reference)
 `ifdef FROST_SIM_ASSERTIONS
         assert (1'b0) else
 `endif
         $error("SQ: selected live-count candidate differs from the adder form");
+      if ((|sq_data_tag_match) && (sq_data_wr_idx != sq_data_wr_idx_reference))
+`ifdef FROST_SIM_ASSERTIONS
+        assert (1'b0) else
+`endif
+        $error("SQ: parallel data write index differs from the reference");
       if (live_remove_mask != live_remove_mask_reference)
 `ifdef FROST_SIM_ASSERTIONS
         assert (1'b0) else
@@ -2337,28 +2633,49 @@ endmodule
   // Formal Verification
   // ===========================================================================
 `ifdef SQ_LIVE_COUNT_LOCAL_PROOF
-  logic [CountWidth-1:0] f_count_none, f_count_one, f_count_both;
-  assign f_count_none = live_count_q - live_remove_count;
-  assign f_count_one  = f_count_none + CountWidth'(alloc_room_1);
-  assign f_count_both = f_count_one + CountWidth'(alloc_room_2);
-  // The reference mask counted one entry at a time.
-  logic [CountWidth-1:0] f_remove_count_reference;
+  logic [HalfCountWidth-1:0] f_count_lo_none, f_count_lo_one, f_count_lo_both;
+  logic [HalfCountWidth-1:0] f_count_hi_none, f_count_hi_one, f_count_hi_both;
+  assign f_count_lo_none = live_count_lo_q - live_remove_lo_count;
+  assign f_count_lo_one = f_count_lo_none + HalfCountWidth'(alloc_room_1 && !first_alloc_in_hi);
+  assign f_count_lo_both = f_count_lo_one + HalfCountWidth'(alloc_room_2 && !second_alloc_in_hi);
+  assign f_count_hi_none = live_count_hi_q - live_remove_hi_count;
+  assign f_count_hi_one = f_count_hi_none + HalfCountWidth'(alloc_room_1 && first_alloc_in_hi);
+  assign f_count_hi_both = f_count_hi_one + HalfCountWidth'(alloc_room_2 && second_alloc_in_hi);
+  // The reference mask counted one entry at a time per half.
+  logic [HalfCountWidth-1:0] f_remove_lo_reference, f_remove_hi_reference;
+  logic [HalfCountWidth-1:0] f_alloc_lo_reference, f_alloc_hi_reference;
   always_comb begin
-    f_remove_count_reference = '0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      f_remove_count_reference = f_remove_count_reference +
-          CountWidth'(live_remove_mask_reference[i]);
+    f_remove_lo_reference = '0;
+    f_remove_hi_reference = '0;
+    f_alloc_lo_reference  = '0;
+    f_alloc_hi_reference  = '0;
+    for (int unsigned i = 0; i < HalfDepth; i++) begin
+      f_remove_lo_reference = f_remove_lo_reference +
+          HalfCountWidth'(live_remove_mask_reference[i]);
+      f_remove_hi_reference = f_remove_hi_reference +
+          HalfCountWidth'(live_remove_mask_reference[HalfDepth+i]);
+      f_alloc_lo_reference = f_alloc_lo_reference + HalfCountWidth'(alloc_oh[i]);
+      f_alloc_hi_reference = f_alloc_hi_reference + HalfCountWidth'(alloc_oh[HalfDepth+i]);
     end
   end
+  logic f_halves_in_range;
+  assign f_halves_in_range = (live_count_lo_q <= HalfCountWidth'(HalfDepth)) &&
+      (live_count_hi_q <= HalfCountWidth'(HalfDepth)) &&
+      (f_remove_lo_reference <= live_count_lo_q) &&
+      (f_remove_hi_reference <= live_count_hi_q);
   always_comb begin
-    assert (live_count_if_none == f_count_none);
-    assert (live_count_if_one == f_count_one);
-    assert (live_count_if_both == f_count_both);
-    assert (live_count_next == live_count_q + CountWidth'(slot1_alloc_en) +
-        CountWidth'(slot2_alloc_en) - live_remove_count);
+    assert (live_count_lo_if_none == f_count_lo_none);
+    assert (live_count_lo_if_one == f_count_lo_one);
+    assert (live_count_lo_if_both == f_count_lo_both);
+    assert (live_count_hi_if_none == f_count_hi_none);
+    assert (live_count_hi_if_one == f_count_hi_one);
+    assert (live_count_hi_if_both == f_count_hi_both);
     assert (live_remove_mask == live_remove_mask_reference);
-    assert (live_count_next == live_count_q + CountWidth'(slot1_alloc_en) +
-        CountWidth'(slot2_alloc_en) - f_remove_count_reference);
+    assert (live_count_lo_next == live_count_lo_q + f_alloc_lo_reference - f_remove_lo_reference);
+    assert (live_count_hi_next == live_count_hi_q + f_alloc_hi_reference - f_remove_hi_reference);
+    assert (!f_halves_in_range || (live_count_next_sum == live_count_sum +
+        CountWidth'(slot1_alloc_en) + CountWidth'(slot2_alloc_en) -
+        (CountWidth'(f_remove_lo_reference) + CountWidth'(f_remove_hi_reference))));
   end
 `endif
 
@@ -2406,7 +2723,9 @@ endmodule
       p_slot2_alloc_oh_reference : assert (slot2_alloc_oh == slot2_alloc_oh_reference);
       // The per-outcome count candidates selected by the valids equal the
       // reference adder forms.
-      p_live_count_next_reference : assert (live_count_next == live_count_next_reference);
+      p_live_count_next_reference : assert (live_count_next_sum == live_count_next_reference);
+      p_sq_data_we_reference : assert (sq_data_we == sq_data_we_reference);
+      p_sq_data_wr_idx_reference : assert (sq_data_wr_idx == sq_data_wr_idx_reference);
       p_dispatch_full_next_reference : assert (dispatch_full_next == dispatch_full_next_reference);
       p_dispatch_full_for_2_next_reference :
       assert (dispatch_full_for_2_next == dispatch_full_for_2_next_reference);
@@ -2463,6 +2782,14 @@ endmodule
   // a partial flush clears killed entries' validity. Payload writes to those
   // entries stay hidden.
 
+  // Payload-only capture enables are supersets of the corresponding visibility
+  // valids (asserted in tomasulo_wrapper and sq_early_addr_pipeline).
+  always_comb begin
+    assume (!i_addr_update.valid || i_addr_update_capture_valid);
+    assume (!i_early_addr_update.valid || i_early_addr_capture_valid);
+    assume (!i_early_addr_update_2.valid || i_early_addr_capture_valid_2);
+  end
+
   // Memory write done only when at least one write is in flight
   always_comb begin
     assume (!i_mem_write_done || (write_inflight_cnt != 2'd0));
@@ -2485,13 +2812,18 @@ endmodule
   // Combinational assertions
   // -------------------------------------------------------------------------
 
-  // Number of valid entries.
+  // Number of valid entries, total and per half.
   logic [CountWidth-1:0] f_valid_count;
+  logic [HalfCountWidth-1:0] f_valid_count_lo, f_valid_count_hi;
   always_comb begin
-    f_valid_count = '0;
-    for (int i = 0; i < DEPTH; i++) begin
-      f_valid_count = f_valid_count + {{(CountWidth - 1) {1'b0}}, sq_valid[i]};
+    f_valid_count_lo = '0;
+    f_valid_count_hi = '0;
+    for (int i = 0; i < HalfDepth; i++) begin
+      f_valid_count_lo = f_valid_count_lo + {{(HalfCountWidth - 1) {1'b0}}, sq_valid[i]};
+      f_valid_count_hi =
+          f_valid_count_hi + {{(HalfCountWidth - 1) {1'b0}}, sq_valid[HalfDepth+i]};
     end
+    f_valid_count = CountWidth'(f_valid_count_lo) + CountWidth'(f_valid_count_hi);
   end
 
   // Dead slots count toward the ring window, so full && empty can be transient.
@@ -2519,13 +2851,17 @@ endmodule
   // count consistent with valid entries
   always_comb begin
     if (i_rst_n) begin
+      p_count_lo_consistent : assert (live_count_lo_q == f_valid_count_lo);
+      p_count_hi_consistent : assert (live_count_hi_q == f_valid_count_hi);
       p_count_consistent : assert (o_count == f_valid_count);
       p_empty_matches_valid : assert (o_empty == (f_valid_count == CountWidth'(0)));
       p_dispatch_count_exact : assert (o_dispatch_count == f_valid_count);
       p_dispatch_empty_exact : assert (o_dispatch_empty == o_empty);
-      p_live_remove_bounded : assert (live_remove_count <= live_count_q);
+      p_live_remove_lo_bounded : assert (live_remove_lo_count <= live_count_lo_q);
+      p_live_remove_hi_bounded : assert (live_remove_hi_count <= live_count_hi_q);
       if (!i_flush_all) begin
-        p_live_count_next_bounded : assert (live_count_next <= CountWidth'(DEPTH));
+        p_live_count_lo_next_bounded : assert (live_count_lo_next <= HalfCountWidth'(HalfDepth));
+        p_live_count_hi_next_bounded : assert (live_count_hi_next <= HalfCountWidth'(HalfDepth));
       end
     end
   end
@@ -2708,6 +3044,69 @@ endmodule
     end
   end
 
+  // Independent capture-time forwarding-data reference around u_sq_data_fwd.
+  // Tracks one universally quantified slot (f_fwd_watch_slot) and payload bit
+  // (f_fwd_watch_bit) directly from the architectural write-once slot-match
+  // rule (without sharing sq_data_tag_match, sq_data_we, or sq_data_wr_idx)
+  // and latches its pre-edge payload bit, byte offset, and forwarding
+  // eligibility on i_sq_check_capture_valid. Comparing against the real
+  // u_sq_data_fwd output and o_sq_forward.data on the consume cycle proves for
+  // every slot and bit that the selected RAM row holds its pre-edge payload
+  // across the capture edge and is shifted by the pre-edge byte offset.
+  (* anyconst *) logic [IdxWidth-1:0] f_fwd_watch_slot;
+  (* anyconst *) logic [$clog2(FLEN)-1:0] f_fwd_watch_bit;
+  logic [   DEPTH-1:0] f_data_match;
+  logic [IdxWidth-1:0] f_data_wr_idx;
+  always_comb begin
+    f_data_wr_idx = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      f_data_match[i] = sq_valid[i] && !sq_data_valid[i] && !sq_is_cmo[i] &&
+          (sq_rob_tag[i] == i_data_update.rob_tag);
+      if (f_data_match[i]) f_data_wr_idx = IdxWidth'(i);
+    end
+  end
+
+  logic f_fwd_watch_bit_q;
+  initial f_fwd_watch_bit_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_data_update_capture_valid && (|f_data_match) && (f_data_wr_idx == f_fwd_watch_slot)) begin
+      f_fwd_watch_bit_q <= i_data_update.data[f_fwd_watch_bit];
+    end
+  end
+
+  logic       f_fwd_capture_eligible_q;
+  logic       f_fwd_capture_bit_q;
+  logic [2:0] f_fwd_capture_off_q;
+  always_ff @(posedge i_clk) begin
+    if (i_sq_check_capture_valid) begin
+      f_fwd_capture_eligible_q <= sq_valid[f_fwd_watch_slot] && sq_addr_valid[f_fwd_watch_slot] &&
+          sq_data_valid[f_fwd_watch_slot] && !sq_is_mmio[f_fwd_watch_slot] &&
+          !sq_is_sc[f_fwd_watch_slot] && !sq_is_zero[f_fwd_watch_slot] &&
+          !sq_is_cmo[f_fwd_watch_slot];
+      f_fwd_capture_bit_q <= f_fwd_watch_bit_q;
+      f_fwd_capture_off_q <= sq_address[f_fwd_watch_slot][2:0];
+    end
+  end
+
+  logic [3:0] f_fwd_out_byte;
+  assign f_fwd_out_byte = {1'b0, f_fwd_watch_bit[5:3]} + {1'b0, f_fwd_capture_off_q};
+
+  always_comb begin
+    if (i_rst_n && o_sq_forward.can_forward && (sq_data_fwd_rd_idx == f_fwd_watch_slot)) begin
+      p_fwd_watch_eligible : assert (f_fwd_capture_eligible_q);
+      p_fwd_ram_stable_across_capture :
+      assert (sq_data_fwd_rd[f_fwd_watch_bit] == f_fwd_capture_bit_q);
+      if (!f_fwd_out_byte[3]) begin
+        p_fwd_data_matches_capture :
+        assert (o_sq_forward.data[{f_fwd_out_byte[2:0], f_fwd_watch_bit[2:0]}] ==
+            f_fwd_capture_bit_q);
+      end
+      if (f_fwd_watch_bit[5:3] < f_fwd_capture_off_q) begin
+        p_fwd_data_low_lanes_zero : assert (o_sq_forward.data[f_fwd_watch_bit] == 1'b0);
+      end
+    end
+  end
+
   // Committed entries are never flushed: after a partial flush, every entry
   // that was committed and valid before it is still valid or already sent.
   logic [DEPTH-1:0] f_committed_before;
@@ -2787,6 +3186,9 @@ endmodule
       cover_cmo_inval_pulse : cover (cmo_inval_pulse_q && o_cache_invalidate_block);
       cover_forward_match : cover (o_sq_forward.match);
       cover_forward_data : cover (o_sq_forward.can_forward);
+      cover_forward_watch_slot :
+      cover (o_sq_forward.can_forward && (sq_data_fwd_rd_idx == f_fwd_watch_slot) &&
+          (o_sq_forward.data != '0));
       cover_full : cover (full);
       cover_flush_nonempty : cover (i_flush_en && |sq_valid);
 
@@ -2875,6 +3277,30 @@ endmodule
       end
     end
   end
+
+`ifdef VERILATOR
+  // Capture-time check around the real u_sq_data_fwd RAM in simulation: sample
+  // the winning slot's pre-edge RAM payload and byte offset at capture time and
+  // verify that the consume-cycle RAM read and shifted forwarding output still
+  // match (catching any post-edge overwrite or bypass under FROST_RANDOM_START).
+  logic [FLEN-1:0] sim_fwd_capture_raw_q;
+  logic [FLEN-1:0] sim_fwd_capture_data_q;
+  always_ff @(posedge i_clk) begin
+    if (i_sq_check_capture_valid) begin
+      sim_fwd_capture_raw_q <= u_sq_data_fwd.ram[sq_forwarding_unit_inst.fwd_match_idx];
+      sim_fwd_capture_data_q <= u_sq_data_fwd.ram[sq_forwarding_unit_inst.fwd_match_idx] <<
+          {sq_forwarding_unit_inst.fwd_winner_store_off, 3'b000};
+    end
+    if (reset_seen_q && i_rst_n && o_sq_forward.can_forward) begin
+      a_fwd_ram_stable_across_capture :
+      assert (sq_data_fwd_rd === sim_fwd_capture_raw_q)
+      else $error("SQ forwarding RAM payload changed across capture edge");
+      a_fwd_data_matches_capture :
+      assert (o_sq_forward.data === sim_fwd_capture_data_q)
+      else $error("SQ forwarded data does not match capture-time RAM payload");
+    end
+  end
+`endif  // VERILATOR
 `endif  // FORMAL
 `endif  // SYNTHESIS
 

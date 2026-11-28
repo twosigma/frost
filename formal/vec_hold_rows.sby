@@ -1,8 +1,10 @@
 [tasks]
 vhold_lq_bmc
 vhold_sq_bmc
+vhold_sq_cursor_bmc
 vhold_lq_cover cover_tasks
 cover cover_tasks
+vhold_sq_cursor_cover cover_tasks
 
 [options]
 vhold_lq_bmc: aigsmt boolector
@@ -10,6 +12,8 @@ vhold_lq_bmc: mode bmc
 vhold_lq_bmc: depth 8
 vhold_sq_bmc: mode bmc
 vhold_sq_bmc: depth 8
+vhold_sq_cursor_bmc: mode bmc
+vhold_sq_cursor_bmc: depth 8
 cover_tasks: mode cover
 cover_tasks: depth 16
 timeout 1800
@@ -18,6 +22,7 @@ timeout 1800
 cover_tasks: smtbmc boolector
 vhold_lq_bmc: abc bmc3
 vhold_sq_bmc: smtbmc boolector
+vhold_sq_cursor_bmc: smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
@@ -25,6 +30,8 @@ read -formal -sv vec_hold_rows.sv
 read -formal -sv vec_hold_rows_formal.sv
 cover: chparam -set DIRECT_ADDR 1 vec_hold_rows_formal
 vhold_sq_bmc: chparam -set DIRECT_ADDR 1 vec_hold_rows_formal
+vhold_sq_cursor_bmc: chparam -set DIRECT_ADDR 1 -set CURSOR_ONLY 1 vec_hold_rows_formal
+vhold_sq_cursor_cover: chparam -set DIRECT_ADDR 1 -set CURSOR_ONLY 1 vec_hold_rows_formal
 hierarchy -top vec_hold_rows_formal
 script free_undefined.ys
 prep -top vec_hold_rows_formal
@@ -32,7 +39,9 @@ select -assert-count 3 t:$check r:FLAVOR=assert %i
 vhold_lq_bmc: select -assert-count 8 t:$check r:FLAVOR=cover %i
 vhold_lq_cover: select -assert-count 8 t:$check r:FLAVOR=cover %i
 vhold_sq_bmc: select -assert-count 9 t:$check r:FLAVOR=cover %i
+vhold_sq_cursor_bmc: select -assert-count 9 t:$check r:FLAVOR=cover %i
 cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
+vhold_sq_cursor_cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

@@ -32,7 +32,7 @@ lq: timeout 360
 smtbmc boolector
 
 [script]
-read -sv riscv_pkg.sv vec_hold_rows.sv
+read -sv riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv mwp_dist_ram.sv
 sc: read -formal -sv -D COHERENT_SC_LOCAL_PROOF sc_pending_unit.sv
 sc_small: chparam -set CACHED_BASE 8192 -set CACHED_SIZE_BYTES 4096 sc_pending_unit
 sc_offset: chparam -set CACHED_BASE 2147483680 -set CACHED_SIZE_BYTES 8192 sc_pending_unit
@@ -42,7 +42,7 @@ sc_wrap: chparam -set CACHED_BASE 64'hfffffffffffff000 -set CACHED_SIZE_BYTES 40
 sc: hierarchy -top sc_pending_unit
 sc: script free_undefined.ys
 sc: prep -flatten -top sc_pending_unit
-lq: read -sv sdp_dist_ram.sv mwp_dist_ram.sv load_unit.sv lq_l0_cache.sv coherent_l0_flags.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv
+lq: read -sv load_unit.sv lq_l0_cache.sv coherent_l0_flags.sv lq_issue_selector.sv coherent_lq_issue_selector.sv coherent_lq_candidate_select.sv
 lq: read -formal -sv coherent_lq_address_store.sv
 lq: read -formal -sv -D F_LQ_PREMATCH_ONLY -D COHERENT_LQ_LOCAL_PROOF -D F_LQ_RESPONSE_FINAL_PROOF load_queue.sv
 forward: chparam -set ENABLE_SQ_FORWARD_FAST_PATH 1 load_queue
@@ -71,12 +71,12 @@ address_class: hierarchy -top coherent_lq_address_store
 address_class: script free_undefined.ys
 address_class: prep -flatten -top coherent_lq_address_store
 coh_address_class_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_selected_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_class_small_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_class_offset_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_class_size_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_class_zero_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_class_wrap_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
+coh_sc_selected_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+coh_sc_class_small_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+coh_sc_class_offset_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+coh_sc_class_size_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+coh_sc_class_zero_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+coh_sc_class_wrap_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
 candidate: select -assert-count 1 t:$check r:FLAVOR=assert %i
 lq: select -assert-count 97 t:$check r:FLAVOR=assert %i
 selector: select -assert-count 4 t:$check r:FLAVOR=assert %i

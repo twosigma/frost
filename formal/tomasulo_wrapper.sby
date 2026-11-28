@@ -136,11 +136,11 @@ depth6_cover: chformal -assert -remove
 cover_depth6: chformal -cover -remove t:$check r:FLAVOR=cover %i c:cover_d6_env_* %d
 cover_wakeup_depth6: chformal -cover -remove t:$check r:FLAVOR=cover %i c:cover_d6_w_* %d
 cover_fu_depth6: chformal -cover -remove t:$check r:FLAVOR=cover %i c:cover_d6_fu_* %d
-bmc_depth6: select -assert-count 773 t:$check r:FLAVOR=assert %i
+bmc_depth6: select -assert-count 774 t:$check r:FLAVOR=assert %i
 bmc_depth6: select -assert-count 56 t:$check r:FLAVOR=assume %i
 bmc_wakeup_depth6: select -assert-count 44 t:$check r:FLAVOR=assert %i
 depth6_wakeup: select -assert-count 57 t:$check r:FLAVOR=assume %i
-fp_repair_bmc_depth6: select -assert-count 809 t:$check r:FLAVOR=assert %i
+fp_repair_bmc_depth6: select -assert-count 810 t:$check r:FLAVOR=assert %i
 fp_repair_bmc_depth6: select -assert-count 62 t:$check r:FLAVOR=assume %i
 cover_depth6: select -assert-count 56 t:$check r:FLAVOR=assume %i
 cover_depth6: select -assert-count 4 t:$check r:FLAVOR=cover %i
@@ -166,10 +166,10 @@ cover: select -assert-count 15 t:$check r:FLAVOR=cover %i
 cover_alu_issue: chformal -assert -remove
 cover_alu_issue: chformal -cover -remove t:$check r:FLAVOR=cover %i c:cover_port0_through_alu2_* c:cover_head_done_result_held %u %d
 cover_alu_issue: select -assert-count 3 t:$check r:FLAVOR=cover %i
-bmc: select -assert-count 787 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 788 t:$check r:FLAVOR=assert %i
 bmc: select -assert-count 18 t:$check r:FLAVOR=cover %i
 fp_repair_bmc: select -assert-count 18 t:$check r:FLAVOR=cover %i
-fp_repair_bmc: select -assert-count 823 t:$check r:FLAVOR=assert %i
+fp_repair_bmc: select -assert-count 824 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

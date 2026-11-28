@@ -1294,7 +1294,14 @@ FORMAL_TARGETS = [
         "atomic scalar entry or one with an unknown address, unknown vector range, "
         "or overlap. A settled hold has such a cause in either queue. The cleanup "
         "covers forbid head advancement on rollback edges",
-        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "vhold_lq_cover", "cover"),
+        tasks=(
+            "vhold_lq_bmc",
+            "vhold_sq_bmc",
+            "vhold_sq_cursor_bmc",
+            "vhold_lq_cover",
+            "cover",
+            "vhold_sq_cursor_cover",
+        ),
     ),
     FormalTarget(
         "vec_vmt.sby",
@@ -3789,8 +3796,16 @@ SBY_TASKS = [
         "Vector range holds with the store queue's per-entry addresses, 8 frames.",
     ),
     (
+        "vhold_sq_cursor_bmc",
+        "Vector range holds with cursor-only overlap checks for the store queue, 8 frames.",
+    ),
+    (
         "vhold_lq_cover",
         "Vector range-hold reachability with the load queue's address-update port, 16 frames.",
+    ),
+    (
+        "vhold_sq_cursor_cover",
+        "Vector range-hold reachability with cursor-only overlap checks for the store queue, 16 frames.",
     ),
     (
         "vmt_bmc",
@@ -4302,7 +4317,7 @@ SBY_TASKS = [
     ),
     (
         "tree_equiv",
-        "Store-queue forwarding balanced winner tree equals the linear formal selector.",
+        "Store-queue forwarding fixed-priority newest pick equals the linear formal selector.",
     ),
     (
         "int_prove",
@@ -6619,8 +6634,8 @@ TWIN_COMPARISONS = {
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
     ),
     ("store_queue_twin", "sq_twin"): TwinComparison(
-        primitive_points=87,
-        all_points=9057,
+        primitive_points=1414,
+        all_points=12903,
         top="store_queue",
         gold_inputs=(
             "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
@@ -6631,17 +6646,17 @@ TWIN_COMPARISONS = {
             "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
             "vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv",
         ),
-        registers=117,
+        registers=170,
         clock="i_clk",
-        gold_only_free=243,
-        gate_only_free=243,
+        gold_only_free=314,
+        gate_only_free=314,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
-        initialized_nets=16,
+        initialized_nets=32,
     ),
     ("store_queue_twin", "sq_twin_cpu"): TwinComparison(
-        primitive_points=87,
-        all_points=9066,
+        primitive_points=1414,
+        all_points=12912,
         top="store_queue",
         gold_inputs=(
             "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
@@ -6656,13 +6671,13 @@ TWIN_COMPARISONS = {
             "chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 "
             "-set CACHE_NORMAL_MEMORY 1 store_queue",
         ),
-        registers=121,
+        registers=174,
         clock="i_clk",
-        gold_only_free=246,
-        gate_only_free=246,
+        gold_only_free=317,
+        gate_only_free=317,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
-        initialized_nets=16,
+        initialized_nets=32,
     ),
     ("coherence_l1d_twin", "l1d_twin_single"): TwinComparison(
         primitive_points=9,

@@ -21,7 +21,7 @@ setundef -undriven -anyseq
 # No flip-flop simplification or merging, so every register keeps a free value.
 opt -noff -keepdc
 prep -top store_queue
-select -assert-count 6 t:$check r:FLAVOR=assert %i
+select -assert-count 10 t:$check r:FLAVOR=assert %i
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
 # The model holds no memory: an initialized one would not be free.
