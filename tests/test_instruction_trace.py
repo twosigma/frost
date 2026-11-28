@@ -145,17 +145,22 @@ def executable_elf(code: bytes) -> bytes:
     """Build ELF64 headers with executable, non-executable and non-load segments."""
     header = bytearray(64)
     header[:16] = b"\x7fELF\x02\x01\x01" + bytes(9)
-    struct.pack_into("<HHIQQQIHHHHHH", header, 16,
-                     2, 243, 1, 0, 64, 0, 0, 64, 56, 3, 0, 0, 0)
+    struct.pack_into(
+        "<HHIQQQIHHHHHH", header, 16, 2, 243, 1, 0, 64, 0, 0, 64, 56, 3, 0, 0, 0
+    )
     offset = 64 + 3 * 56
-    segments = b"".join(struct.pack("<IIQQQQQQ", typ, flags, offset, va, va,
-                                  len(code), len(code) + 16, 4)
-                        for typ, flags, va in ((1, 5, 0), (1, 6, 4096), (4, 1, 8192)))
+    segments = b"".join(
+        struct.pack(
+            "<IIQQQQQQ", typ, flags, offset, va, va, len(code), len(code) + 16, 4
+        )
+        for typ, flags, va in ((1, 5, 0), (1, 6, 4096), (4, 1, 8192))
+    )
     return bytes(header) + segments + code
 
 
-def make_recorder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                  code: bytes | None = None) -> Any:
+def make_recorder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: bytes | None = None
+) -> Any:
     """Bind packed signal doubles with the same widths as production."""
     layouts = {
         "from_id_to_ex": cpu_structs.ID_TO_EX_FIELDS,
@@ -419,17 +424,32 @@ def test_real_executable_elf_segments(tmp_path: Path) -> None:
         recorder.elf_segments(path)
 
 
-def test_compressed_capture_and_signed_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compressed_capture_and_signed_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Raw compressed parcels bind to ELF while expanded operands resolve an S immediate."""
     store = 0xFE20BC23  # SD x2,-8(x1)
-    cap = make_recorder(tmp_path, monkeypatch, b"\x85\x00" + store.to_bytes(4, "little"))
+    cap = make_recorder(
+        tmp_path, monkeypatch, b"\x85\x00" + store.to_bytes(4, "little")
+    )
     cap.registers[1] = 4096
     cap.registers[2] = 42
-    allocate(cap, 0, 0x00108093, 0, is_compressed=1, insn_bits=0xDEAD0085, uses_int_rs1=1)
+    allocate(
+        cap, 0, 0x00108093, 0, is_compressed=1, insn_bits=0xDEAD0085, uses_int_rs1=1
+    )
     drive(cap, rob_commit_comb=commit(0, 0, 1, 4097))
     cap.sample(True)
-    allocate(cap, 2, store, 1, has_int_dest=0, uses_int_rs1=1, uses_int_rs2=1,
-             is_int_store=1, immediate_s_type=(1 << 64) - 8)
+    allocate(
+        cap,
+        2,
+        store,
+        1,
+        has_int_dest=0,
+        uses_int_rs1=1,
+        uses_int_rs2=1,
+        is_int_store=1,
+        immediate_s_type=(1 << 64) - 8,
+    )
     drive(cap, rob_commit_comb=commit(2, 1, 0, 0))
     cap.sample(True)
     evidence = cap.finish(2)
@@ -440,31 +460,60 @@ def test_compressed_capture_and_signed_store(tmp_path: Path, monkeypatch: pytest
     assert ops[1].memory_bytes == 8 and ops[1].depends_on == (0,)
 
 
-@pytest.mark.parametrize("instruction,taken,predicted,kind", [
-    (0x00008463, False, False, "conditional"),
-    (0x00008463, True, False, "conditional"),
-    (0x00008463, True, True, "conditional"),
-    (0x008000EF, True, False, "jal"),
-    (0x000080E7, True, True, "jalr"),
-])
-def test_retired_branch_outcomes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                instruction: int, taken: bool, predicted: bool, kind: str) -> None:
+@pytest.mark.parametrize(
+    "instruction,taken,predicted,kind",
+    [
+        (0x00008463, False, False, "conditional"),
+        (0x00008463, True, False, "conditional"),
+        (0x00008463, True, True, "conditional"),
+        (0x008000EF, True, False, "jal"),
+        (0x000080E7, True, True, "jalr"),
+    ],
+)
+def test_retired_branch_outcomes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    instruction: int,
+    taken: bool,
+    predicted: bool,
+    kind: str,
+) -> None:
     """Conditional, direct and indirect branches retain actual and predicted targets."""
     cap = make_recorder(tmp_path, monkeypatch, instruction.to_bytes(4, "little"))
-    allocate(cap, 0, instruction, 0, has_int_dest=int(kind != "conditional"),
-             is_branch_or_jump=1, btb_predicted_taken=int(predicted), btb_predicted_target=8)
-    packet = recorder.fields(cpu_structs.COMMIT_FIELDS, commit(0, 0, int(kind != "conditional"), 4))
+    allocate(
+        cap,
+        0,
+        instruction,
+        0,
+        has_int_dest=int(kind != "conditional"),
+        is_branch_or_jump=1,
+        btb_predicted_taken=int(predicted),
+        btb_predicted_target=8,
+    )
+    packet = recorder.fields(
+        cpu_structs.COMMIT_FIELDS, commit(0, 0, int(kind != "conditional"), 4)
+    )
     packet.update(branch_taken=int(taken), branch_target=8)
-    drive(cap, rob_commit_comb=packed_structs.pack_struct(cpu_structs.COMMIT_FIELDS, packet))
+    drive(
+        cap,
+        rob_commit_comb=packed_structs.pack_struct(cpu_structs.COMMIT_FIELDS, packet),
+    )
     cap.sample(True)
     cap.finish(1)
     op = stream_api.read_stream(cap.path).instructions[0]
     assert op.next_pc == (8 if taken else 4)
     assert op.prediction.execute_redirect == (taken != predicted)
-    assert cap.tiers["execute" if taken != predicted else "f0" if predicted else "sequential"] == 1
+    assert (
+        cap.tiers[
+            "execute" if taken != predicted else "f0" if predicted else "sequential"
+        ]
+        == 1
+    )
 
 
-def test_reverse_destination_check_and_zero_noise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reverse_destination_check_and_zero_noise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Unexpected commit destinations fail; x0 is absent from serialized operands."""
     cap = make_recorder(tmp_path, monkeypatch)
     allocate(cap, 0, 0x10B7, 0, has_int_dest=0)
@@ -482,7 +531,9 @@ def test_reverse_destination_check_and_zero_noise(tmp_path: Path, monkeypatch: p
     assert record["sources"] == [] and record["destination"] is None
 
 
-def test_capture_window_and_done_quiescence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_capture_window_and_done_quiescence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Aggregate and instruction capture share the window and stop all VPI work at DONE."""
     import logging
     import cocotb
@@ -495,8 +546,9 @@ def test_capture_window_and_done_quiescence(tmp_path: Path, monkeypatch: pytest.
         old.file.close()
     monkeypatch.setenv("FROST_INSTRUCTION_TRACE_PATH", str(tmp_path / "i.jsonl.gz"))
     monkeypatch.setattr(calibration_trace, "program_directory", lambda _app: tmp_path)
-    aggregate = calibration_trace.CalibrationTrace(old.test_dut, tmp_path / "t.jsonl",
-                                                   "coremark", 1, 3, (4, 8))
+    aggregate = calibration_trace.CalibrationTrace(
+        old.test_dut, tmp_path / "t.jsonl", "coremark", 1, 3, (4, 8)
+    )
     cap = aggregate.instructions
     allocate(cap, 0, 0x10B7, 0)
     drive(cap, rob_commit_comb=commit(0, 0, 1, 4096))
@@ -516,9 +568,14 @@ def test_capture_window_and_done_quiescence(tmp_path: Path, monkeypatch: pytest.
     drive(cap, rob_commit_comb=commit(8, 2, 2, 42))
     _drive(old.test_dut, {f"{CORE}.dbg_commit_valid": 1, f"{CORE}.dbg_commit_pc": 8})
     aggregate.sample(3)
-    assert aggregate.state == "DONE" and cap.count == aggregate.counters["retired_uops"] == 1
+    assert (
+        aggregate.state == "DONE"
+        and cap.count == aggregate.counters["retired_uops"] == 1
+    )
+
     def forbidden(*_args: Any) -> None:
         raise AssertionError("post-window signal access")
+
     monkeypatch.setattr(calibration_trace, "_read", forbidden)
     monkeypatch.setattr(cap, "sample", forbidden)
     aggregate.sample(4)

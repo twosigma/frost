@@ -1,231 +1,158 @@
 # CoreMark front-end calibration
 
-BRAM CoreMark now replays the binary-bound instruction stream captured in the
-same RTL run as the aggregate calibration events. The measured
-comparison passes the unchanged **10% IPC tolerance**:
+BRAM CoreMark replays a binary-bound instruction stream captured alongside
+aggregate RTL events. The revised comparison passes the unchanged **10% IPC
+tolerance** at **+5.37% IPC**. Constants come from RTL structure or the existing
+directed RTL load-chase measurements; no scale factor or fitted penalty is used.
 
-| Measurement | Cycles | Retired instructions | IPC | Replay / RTL IPC minus 1 |
+| Comparison | RTL cycles | Replay cycles | Retired instructions | Replay / RTL IPC minus 1 |
 |---|---:|---:|---:|---:|
-| RTL after #595 | 201,392 | 226,801 | 1.1262 | — |
-| Former synthetic `coremark_bram` | 3,219 | 3,128 | 0.9717 | -13.71% |
-| Binary-bound replay | 183,450 | 226,801 | 1.2363 | +9.78% |
+| Reviewed implementation, previous capture | 201,392 | 183,450 | 226,801 | +9.78% |
+| Reviewed implementation, fresh capture | 200,797 | 182,373 | 226,801 | +10.10% |
+| Revised implementation, fresh capture | 200,797 | 190,556 | 226,801 | +5.37% |
 
-The RTL was captured with the CoreMark shard's BRAM configuration, startup
-sweep, coverage disabled, one simulator thread, and
-`46029156161-test-verilator-0` as the startup, random-start and DDR seed.
-Both CoreMark and its profiling test passed, including startup checks.
-The image reports Verilator 5.054, cocotb 2.1.0 and GCC 16.2.0.
-The checked baseline records the full capture and binary identities.
+The fresh capture uses RTL commit
+`200f339eaf5996a5510cf4e0d96adbd4c22e576c`. It has 1,354 execute corrections,
+3,526 PD direction annotations and 581 PD backing annotations. The earlier
+capture had 1,485 execute corrections, so the two rows also include predictor
+variation. Replaying the fresh stream with the reviewed sources gives
+182,373 cycles (+10.10%); all fixes together add 8,183 cycles on that same
+input and reduce the gap to +5.37%. This also confirms that the previous
+0.22-point margin was insufficient for ordinary predictor variation.
+The [same-capture comparison](../results/coremark_bram_calibration/same_capture_comparison.json)
+records both source identities. The binary hashes and recorded predictions are retained with the
+[comparison](../results/coremark_bram_calibration/calibration.json),
+[manifest](../results/coremark_bram_calibration/manifest.json), and
+[counters](../results/coremark_bram_calibration/counters.json).
 
-## Why the synthetic feed could not explain #595
+## Review findings and RTL sources
 
-The earlier investigation at `396b4b44b` reproduced CI run 46029156161,
-job 140659524095. The analytical workload had not changed since `a78866157`,
-yet its gap moved from -8.38% on `5455aacf6` to -13.71% after the RTL's
-decoupled front end landed. Its CoreMark instruction lines were all ready
-before execution. Setting branch recovery to zero changed neither its
-3,219 cycles nor its IPC. There was no modeled fetch delay to remove.
+All primary review findings were confirmed. The changes below remove both
+optimistic omissions and artificial stalls; they were applied together before
+checking the tolerance.
 
-That workload was a pressure pattern, not the compiled program. Aggregate
-dispatch/retire/AXI records could not supply the missing architectural
-dependencies, instruction lengths, data addresses or prediction decisions.
-The replacement changes the workload evidence and represents front-end
-structure explicitly; it does not claim that #595 alone speeds up the old
-idealized feed. The synthetic DDR `coremark` remains a separate sweep workload.
-
-## Instruction evidence and CI cost
-
-`verif/cocotb_tests/instruction_trace.py` observes production allocation and
-retirement, rather than substituting TestRIG's injected instruction platform.
-It associates decoded packets by ROB tag, checks bytes against executable ELF
-segments, follows architectural integer register writes before the window,
-and writes each retired instruction's PC, original bytes/length, sources,
-destination, resolved address/size and branch successor. Slot-2 addresses see
-slot-1 writeback. Wrong-path allocations are discarded by retirement.
-
-Branch annotations record F0 predictions, PD direction/backing/ITTAGE
-redirects and execution correction, including early recovery. Annotations
-follow accepted decode bundles before ROB allocation; producer and allocation
-checks require the final prediction to agree with the ID packet.
-The capture contains 4,195 PD redirects and 1,485 execution corrections;
-the aggregate commit-only misprediction counter is 35 and must not stand in
-for early recoveries.
-
-CI recaptures in the existing simulation instead of storing a full versioned
-stream. This follows compiler, layout and predictor changes without a
-second simulation. The stream is about 1.9 MiB compressed for 226,801
-instructions. CI retains it with the manifest, aggregate events, counters
-and comparison as a three-day artifact. ELF and image SHA-256 hashes bind
-the evidence to the binary; the manifest also hashes the compressed stream.
-The [separate instruction contract](instruction_capture.md) rejects
-truncation, discontinuous PCs, invalid operands, and identity mismatches.
-
-## Front-end structure
-
-`fetch_frontend.py` follows these production rules:
-
-- `if_stage.sv` and `fetch_parcel_queue.sv`: 16 halfword parcels, eight
-  metadata entries, registered stop at eight parcels or seven windows,
-  with space for the arriving window and one in flight. Metadata remains
-  owned until the last parcel of its window drains. Flush clears stop too.
-- F0 has its own cursor, independent of decode stall. Eight-byte windows
-  start on a word boundary; halfword-offset entry supplies three parcels.
-  Taken F0 predictions truncate the window and select the next target.
-  A spanning native instruction retains its first parcel across windows;
-  a spanning taken branch consumes its tail before taking its target.
-- F1 checks provider epoch and served-word identity. Data and synchronous
-  prediction lookup overlap. A miss retains the prediction and accepts
-  returning data on that cycle, without paying a second predictor stage.
-- Drain combines queued and arriving parcels, including zero-cycle empty
-  and partial bypass. It issues up to two instructions/four parcels;
-  control flow ends slot 1's bundle and serializing operations cannot start
-  slot 2. PD/ID feed an actual bounded decoded-bundle queue.
-- `fetch_pc_decoupled.sv` arms 1..5 prioritize trap/xRET, fence, execution,
-  PD, then F1 validation. Provider retarget is registered. The first four
-  clear fetch parcels/F1; PD preserves its branch and older decoded work.
-  F1 tag recovery retries the same window, preserving older parcels;
-  false-BTB recovery retains validated bytes and resteers younger fetch.
-
-Recorded predictions supply decisions, not observed cycle durations.
-Branch recovery waits for the replayed dependency graph. Provider latency
-and pipeline stages determine refill delay. CoreMark's BRAM provider has
-one-cycle window service; the directed provider tests exercise longer fills.
-
-## Scalar execution needed by the real stream
-
-Using real dependencies exposed two shortcuts in the pressure generators.
-They had treated the L0 array's combinational lookup as a one-cycle dependent
-load and every arithmetic operation as one cycle. Replay uses the existing
-directed resident-chase measurement of three cycles per L0-dependent load.
-`reservation_station/README.md` and `reservation_station.sv` specify a
-registered stage between selection and functional-unit launch. With the
-registered CDB, a combinational ALU takes two selection-to-wakeup cycles.
-`multiplier.sv` has six launch-to-result stages; including RS stage 2 gives
-seven. `int_muldiv_shim.sv`'s word multiplier and `cl_multiplier.sv` have
-three stages, giving four from selection. These are source/measurement
-constraints, not an IPC multiplier or a fitted memory-latency reduction.
-
-Replay also follows registered dispatch done repair. The RAT returns a live
-producer's tag even after that producer completes. Dispatch registers the tag;
-one cycle later the station captures the ROB value. INT/MUL/MEM all disable
-`ISSUE_REPAIR_BYPASS`, so selection starts in the second cycle after dispatch.
-A dispatch-cycle CDB match has the same deferred delivery. A resident CDB
-match still bypasses into selection, and already-retired sources do not need
-repair. These rules follow `reservation_station/README.md` and
-`tomasulo_wrapper.sv`'s indexed repair wiring; the directed tests distinguish
-all four situations. The corrected instruction stream without this behavior
-was still +10.90% high, and was rejected without refreshing the baseline.
-The remaining scalar correction restricts branches to integer issue port 0;
-port 1 accepts only non-branches. Together these source-defined rules produce
-183,450 cycles and the passing +9.78% comparison. The replay still uses the
-existing approximate station arbitration and shared arithmetic resources;
-it does not claim a full implementation of the RTL backend.
-
-The controlled comparisons use the same corrected instruction stream:
-
-| Scalar replay rules | Cycles | IPC gap | Result |
-|---|---:|---:|---|
-| Execution stages, without registered repair or branch-port restriction | 181,598 | +10.90% | Rejected |
-| Add registered operand repair | 182,433 | +10.39% | Rejected |
-| Add branch issue-port restriction | 183,450 | +9.78% | Pass |
-
-The [first rejected replay](../results/coremark_bram_calibration/without_scalar_rules.json)
-and [repair-only comparison](../results/coremark_bram_calibration/with_operand_repair.json),
-followed by the [passing comparison](../results/coremark_bram_calibration/with_scalar_rules.json),
-retain the measured figures and implementation hashes. The
-[original synthetic failure](../results/coremark_bram_calibration/before_synthetic.json)
-preserves the -13.71% starting point.
-
-The calibration keeps its existing 512-entry L0 and measured ten-cycle
-local-BRAM read configuration. Synthetic workloads retain their established
-abstractions and result fixtures. Replay reports its distinct execution
-assumptions in the comparison record.
-
-## Validation and remaining limits
-
-`tests/test_perf_frontend.py` checks run-ahead under decode backpressure,
-parcel and metadata stop/capacity, empty and partial bypass, compressed and
-spanning instructions, predicted taken paths, all redirect classes and their
-priority, stale provider epochs and tags, false BTB validation, and refill
-overlapping prediction. It also checks scalar stage constants and the
-three-cycle dependent L0 chase. `tests/test_instruction_trace.py` checks
-binary/manifest/window binding, architectural renaming, same-cycle register
-writes, PD annotation ownership/flush, and malformed/truncated rejection.
-
-The replay cases correspond to existing production fetch-stage checks in
-`verif/cocotb_tests/if_stage/test_if_stage.py`:
-
-| Behavior | RTL directed case |
+| Finding | Correction and source |
 |---|---|
-| Run-ahead and registered queue headroom | `test_stall_buffers_in_parcel_queue_and_asserts_stop_fetch`, `test_parcel_queue_wraparound_and_headroom_stress` |
-| Empty and partial bypass, compressed and spanning instructions | `test_zero_cycle_empty_bypass_native_pair`, `test_compressed_four_parcel_window_and_queue_draining`, `test_spanning_32bit_instruction_and_partial_bypass` |
-| Predicted taken flow and spanning branches | `test_fast_btb_taken_prediction_and_truncation`, `test_spanning_btb_branch_fetches_second_word_then_steers` |
-| Trap/xRET, fence, execution and PD redirects | `test_trap_mret_fence_ex_and_pd_redirect_pulse_both_retargets` |
-| F1 false hits and stale provider tags | `test_false_btb_interior_halfword_triggers_resteer`, `test_served_word_tag_mismatch_triggers_f1_resteer` |
-| Refill overlapping prediction | `test_fetch_gap_and_collapsed_lead_accept`, `test_collapsed_fetch_trap_hold_pause_preserves_fresh_prediction` |
+| Multiply omitted the registered CDB edge | `instruction_execution_cycles` now returns 8 for full-width multiply and 5 for word/carryless multiply. `riscv_pkg.sv` defines `MulPipeDepth=6`; `int_muldiv_shim.sv` defines `WordMulDepth=3`. Add one RS stage-2 edge and one `tomasulo_wrapper.sv` `cdb_bus_q` edge. `DIRECT_MUL=1` and `REGISTER_OUTPUT=0` avoid an additional adapter edge, not the CDB edge. |
+| BRAM fetch misses were absent | `BramFetchProvider` models the 256-line direct cache with 32-byte lines (`frost_hart.sv` `uncached_fetch`, `NormalFetchBytes`, `NORMAL_FETCH_LINES`; `fetch_provider.sv` `DIRECT_LOOKUP`). Both words of an eight-byte window are checked, including line crossings. Two parity fill slots use IDs 34/35 and share `SocTopModel` with data traffic. Returning fills survive redirects; epochs reject stale publication. |
+| Conditional branches used CDB lanes | Conditional branch completion and recovery now bypass CDB arbitration, following `int_alu_shim.sv` `i_issue_writes_cdb_hint`. JALR still writes its link through CDB. All 52,067 conditional branches take the separate path. |
+| Partial dispatch and same-cycle free-to-allocate | Dispatch preflights the whole decoded bundle against registered ROB/station/LQ/SQ/checkpoint occupancy. A blocked second slot stalls both. `dispatch.sv` `slot2_can_fire`, `i_rob_full_for_2`, and station `full_for_2` implement this rule. Slot allocation uses the pre-issue valid vector. |
+| Wrong INT_RS selection and lifetime | Lowest-index allocation/selection; port 0 scans all 16 slots, port 1 scans only the first 8 and excludes branches. Entries leave at issue. See `riscv_pkg.sv` `IntRsIssue2Window` and `reservation_station.sv` `alloc_idx`, `rs_valid`, `issue_fire`. |
+| Shared multiply resources | Four-entry, single-port MUL_RS (`riscv_pkg.sv` `MulRsDepth`), plus `int_muldiv_shim.sv` four live credits and short/full multiply tracker collision exclusion. |
+| JAL consumed INT_RS and CDB | JAL uses `RS_NONE`, completes its link at allocation, and launches recovery separately (`dispatch.sv`, `reorder_buffer.sv`, `early_misprediction_recovery.sv` `jal_q_valid`). |
+| Checkpoint capacity and execution recovery | Twelve checkpoints, retained until retirement (`riscv_pkg.sv` `NumCheckpoints`, RAT checkpoint-free ports). Selection at T reaches stage 2 at T+1; registered `early_mispredict_active` redirects at T+2, independently of CDB. The following backend partial flush blocks another cycle. |
+| Post-window VPI work | `CalibrationTrace.sample` returns immediately in `DONE`, before any commit or instruction reads. Warm-up shadow-register tracking still runs before the window. |
+| Capture destination consistency and x0 noise | Capture compares decoded and committed nonzero integer destinations in both directions. It omits x0 sources and represents x0 destinations as null. Legacy streams with x0 remain readable. |
+| Missing integration coverage | Fast tests exercise `run_instruction_stream`, `run_workload(..., instruction_trace=...)`, the real calibration CLI with `--instructions`, actual ELF64 program headers, compressed parcels, signed S immediates, branch/JAL/JALR retirement, and aggregate/instruction window alignment. |
+| Stale baseline could pass tests | Tests now verify every recorded replay-source SHA-256 against the checked-out source, in addition to binary identity and the 10% gate. |
+| Workstation path and artifact collision | Manifest stores the instruction basename. CLI evidence stores repository-relative paths or basenames, including for absolute arguments. Uploads name only the five evidence files and set `overwrite: true`. Documentation uses repository commands, without private harness or transcript references. |
 
-The recorder's queue-lineage test additionally holds a producer under
-backpressure and allocates an older branch at the same PC on the cycle a
-younger PD override enters ID. Matching redirects by PC alone fails this case.
+The review's additional small edge cases are also addressed: parcel stop uses
+post-pop parcel occupancy but pre-pop-plus-push metadata occupancy, as
+`fetch_parcel_queue.sv` `stop_fetch_p`/`stop_fetch_np` specify; queued PD/F1
+redirects advance surviving PD/ID work instead of freezing it; a producer
+retiring on the dispatch edge still requires registered done-operand repair.
 
-Only the architectural path has instruction semantics. Incorrect predictions
-stop useful fetch until correction; wrong-path execution and cache pollution
-are omitted. The replay starts with empty pipeline/data caches at the window
-boundary while recorded predictor decisions include the RTL's warm-up. It
-retains the existing approximate backend scheduler, store disambiguation
-and memory ordering. F1 false-hit and stale-provider cases have directed
-coverage, not a claim that every speculative validation event is reconstructed
-from the retired stream. Unsupported trapping, FP/atomic and divider behavior
-fails explicitly. This is a calibrated cycle approximation for scalar BRAM
-CoreMark, not a cycle-exact frontend simulator or DDR calibration.
+Two source details refine the review's suggested approximation:
 
-`run_calibration.py` checks current replay against current measured IPC and
-updates `ci_baseline.json` only with `--refresh` after a passing comparison.
-It requires the separate stream and manifest for `coremark_bram`, disallows
-substituting `--model-run`, and checks that replay retired the same count.
-The stored baseline alone cannot make a failing comparison pass.
+- `early_backend_recovery_hold` itself equals `early_mispredict_pending` and
+  lasts one cycle. The following `early_backend_recovery_pending` partial
+  flush separately prevents dispatch/issue. Replay represents the two blocked
+  phases, without describing the named hold signal as two cycles long.
+- Five cycles is not the current complete BRAM wide-read service. In
+  `soc_top.sv`, acceptance enters state 4; state 4 launches the synchronous
+  instruction read; four state-1 cycles collect dwords; state 2 raises the
+  response, giving seven acceptance-to-response cycles. Narrow fast reads
+  and writes take two. State 3 returns to state 0 after the response handshake,
+  adding one cycle before another local request is accepted. Provider miss
+  selection and registered window publication add an edge on each side.
+  Arbitration can extend these durations; no observed mean is substituted
+  for the state machine.
 
-## Reproducing the final comparison
+## Data-path corrections and remaining approximations
 
-The clean CI-style recapture used
-`2a851a88c9b1f2c7c096e0e06f7b2279c0d18e4a` and reproduced 183,450 replay
-cycles against 201,392 RTL cycles. The
-[final comparison](../results/coremark_bram_calibration/calibration.json),
-[capture manifest](../results/coremark_bram_calibration/manifest.json), and
-[aggregate counters](../results/coremark_bram_calibration/counters.json)
-retain its binary/stream identities and measured figures. Full streams remain
-in `tests/calibration/` locally and in the CI calibration artifact.
+The old ten-cycle dependent BRAM chase was incorrectly charged entirely as
+local-port occupancy. CI now uses two cycles of local service plus eight
+cycles for the remainder of that already measured ten-cycle chase
+(8,026 cycles for 800 aliasing loads). The remainder is modeled outside the
+port; this split preserves the directed measurement without turning an
+end-to-end latency into bus occupancy. Its placement as return delay remains
+an approximation of the intermediate LQ/router/result stages.
 
-All verification ran in `frost:toolchain-linux` through the worktree-aware
-`fr16.sh` wrapper, with `make clean` before cocotb builds. The CI selection was:
+Local stores use the SoC handshake rather than the cached L1D launch interval.
+Full aligned dword stores allocate L0, and partial stores update a resident
+dword (`lq_l0_cache.sv` `store_update`). INT load wakeup requires room in its
+early-token lane merge. MEM has a separate third pre-issue token, gated by
+completion ownership; MUL receives registered CDB only
+(`tomasulo_wrapper.sv` `int_issue_wakeup`, `mem_rs_pre_issue_raw_valid`,
+`mem_rs_early_wakeup_enable`, `u_mul_rs`). The prior unconditional early ALU
+wakeup was incorrect. A resident L0 dependent memory chain still takes the
+measured three cycles. Trapping, floating-point, atomic and operand-dependent
+divider instructions remain unsupported and fail explicitly.
+
+Replay still describes only the architectural path. RTL dispatched 239,424
+operations versus 226,801 retired: 12,623 extra operations (5.57% of useful
+work) consume resources in RTL but are absent from replay. Wrong-path cache
+pollution, speculative fetch requests, predictor validation traffic, exact
+CDB arbitration and memory-station selection are not reconstructed. The
+pipeline and data caches start empty at the window boundary. These differences
+can have opposing effects; the residual cannot be assigned entirely to
+wrong-path instructions from instruction counts alone.
+
+| Diagnostic | Fresh RTL | Revised replay |
+|---|---:|---:|
+| Dispatch 0 / 1 / 2 cycles | 61,375 / 39,420 / 100,002 | 58,590 / 37,131 / 94,835 |
+| Backend dispatch stall cycles | 48,067 | 39,173 |
+| Mean ROB occupancy | 20.259 | 19.515 |
+| BRAM fetch line requests | 555 | 471 |
+
+The dispatch mix and occupancy are substantially closer than the reviewed
+37,589 / 64,921 / 80,940 mix and 17.58 mean ROB occupancy. The residual is
+**10,241 cycles**, with 4.63 percentage points of margin inside the gate.
+The measured comparison is scoped to scalar BRAM CoreMark, not DDR fetch
+accuracy or exact cycle equivalence. No constant was selected to reproduce
+the review's estimated +6.72%.
+
+## Capture and reproduction
+
+The instruction recorder binds original bytes to executable ELF `PT_LOAD`
+segments, decodes operands from expanded instructions, tracks both commit
+slots from warm-up, and aligns prediction annotations through accepted decoded
+bundles to ROB allocations. A stop-PC commit is included; later cycles perform
+no instruction sampling. The fast window test verifies this even for calls
+hundreds of thousands of cycles after `DONE`.
+
+The real-program CI shard captures events, counters, manifest and compressed
+instructions in its existing simulation. The standalone equivalent uses the
+repository's pinned Docker image and cleans the simulation build first:
 
 ```bash
-pytest tests/test_run_cocotb.py \
+FROST_COCOTB_MEM_CONFIG=bram \
+FROST_CALIBRATION_TEST=coremark \
+FROST_CALIBRATION_TRACE_PATH=tests/calibration/coremark.jsonl \
+FROST_CALIBRATION_COUNTERS_PATH=tests/calibration/coremark_counters.json \
+FROST_CALIBRATION_MANIFEST_PATH=tests/calibration/coremark_manifest.json \
+FROST_INSTRUCTION_TRACE_PATH=tests/calibration/coremark_instructions.jsonl.gz \
+./scripts/frost.py pytest \
   -m 'cocotb and cocotb_real_program and not coremark_pro' \
   -k '[coremark] or [coremark_profile]' -v --durations=0
+
+./scripts/frost.py run python3 perf-modeling/tools/run_calibration.py \
+  --trace tests/calibration/coremark.jsonl \
+  --instructions tests/calibration/coremark_instructions.jsonl.gz \
+  --counters tests/calibration/coremark_counters.json \
+  --manifest tests/calibration/coremark_manifest.json \
+  --baseline perf-modeling/calibration/ci_baseline.json \
+  --rtl-commit <capture-commit> --out tests/calibration/coremark_calibration.json
 ```
 
-Both tests passed, followed by the workflow's `run_calibration.py` command
-with `--instructions`. A separate passing invocation with `--refresh`
-updated the baseline. Startup checks passed 33/33 seeds, 2/2 assertion
-controls and 1/1 withheld control; the final recapture reused those successes
-through the runner's simulator-binary/fixture/seed cache.
+Add `--refresh` only after a passing comparison to update the stored figures
+and source hashes. The baseline never substitutes for replaying the stream.
+The [old synthetic failure](../results/coremark_bram_calibration/before_synthetic.json)
+and [reviewed comparison](../results/coremark_bram_calibration/with_scalar_rules.json)
+remain historical evidence. The synthetic DDR pressure workload and its
+regenerated deterministic fixtures remain separate from instruction replay.
 
-The performance, memory, workload, sweep, frontend, capture and contract
-tests passed **194 tests**. Production cocotb directed checks passed **51
-fetch-stage tests**, **one decoded-queue test**, and **42 reservation-station
-tests**. Full pre-commit also passed on the implementation.
-
-The complete CI Fast Python selection passed **4,460 tests**, with three
-skipped and 1,947 deselected:
-
-```bash
-pytest tests -m 'not cocotb and not synthesis and not formal and not slow' \
-  -v --durations=20
-```
-
-`pre-commit run --all-files` passed again with the archived evidence included.
-Local transcripts are in `tests/calibration/`: `mainci9_verified_capture.log`,
-`mainci9_verified_fast.log`, `mainci9_final_source_checks.log`,
-`mainci9_rtl_frontend.log`, `mainci9_rtl_repair.log`, and
-`mainci9_evidence_precommit.log`.
+Verification results are recorded with the refreshed comparison. All checks
+use the pinned image; the complete fast selection is
+`pytest tests -m 'not cocotb and not synthesis and not formal and not slow'`.

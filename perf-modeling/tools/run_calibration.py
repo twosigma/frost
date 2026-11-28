@@ -73,6 +73,16 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+def public_path(path: Path) -> str:
+    """Evidence names repository files without exposing checkout directories."""
+    try:
+        return (
+            path.resolve().relative_to(Path(__file__).resolve().parents[2]).as_posix()
+        )
+    except ValueError:
+        return path.name
+
+
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -191,7 +201,7 @@ def main() -> int:
     record.update(
         {
             "rtl_commit": args.rtl_commit,
-            "trace": str(args.trace),
+            "trace": public_path(args.trace),
             "calibration_status": "valid trace only; fit parameters only with archived directed-case evidence",
         }
     )
@@ -218,8 +228,10 @@ def main() -> int:
                 record["frontend"] = model["frontend"]
                 record["replay_execution"] = model["replay_execution"]
                 record["replay_sources"] = model["replay_sources"]
+                record["pipeline"] = model["pipeline"]
+                record["soc_top"] = model["soc_top"]
         record["check"] = {
-            "baseline": str(args.baseline),
+            "baseline": public_path(args.baseline),
             "rtl": rtl,
             "model": modelled,
             "deltas": deltas,
@@ -242,7 +254,7 @@ def main() -> int:
             args.baseline.write_text(
                 json.dumps(baseline, indent=2) + "\n", encoding="utf-8"
             )
-            print(f"Rewrote the figures in {args.baseline}")
+            print(f"Rewrote the figures in {public_path(args.baseline)}")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"

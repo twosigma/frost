@@ -5,12 +5,14 @@
   "model_workload": "coremark_bram",
   "model_seed": 11,
   "model_config": {
-    "soc.local_bram_read_cycles": 10,
-    "l0_cache_depth": 512
+    "l0_cache_depth": 512,
+    "local_load_pipeline_cycles": 8,
+    "soc.local_turnaround_cycles": 1
   },
   "model_config_sources": {
-    "soc.local_bram_read_cycles": "RTL: 10.0 cycles per load of a dependent pointer chase through BRAM data whose nodes alias in the L0 (8026 cycles for 800 loads)",
-    "l0_cache_depth": "RTL: riscv_pkg::NormalLqL0Depth, which platform_top.sv passes when normal-memory caching is on"
+    "l0_cache_depth": "RTL: riscv_pkg::NormalLqL0Depth, which platform_top.sv passes when normal-memory caching is on",
+    "local_load_pipeline_cycles": "RTL dependent BRAM alias chase: 8026 cycles / 800 loads (10 per load), minus 2 cycles of soc_top.sv fast_bram port service; residual stages do not hold the local port.",
+    "soc.local_turnaround_cycles": "RTL soc_top.sv local_resp_valid handshake changes local_state_q from 3 to 0 before the next local_ready acceptance."
   },
   "required_events": [
     "dispatch",
@@ -20,43 +22,43 @@
   ],
   "ipc_tolerance": 0.1,
   "rtl": {
-    "commit": "2a851a88c9b1f2c7c096e0e06f7b2279c0d18e4a",
-    "cycles": 201392,
+    "commit": "200f339eaf5996a5510cf4e0d96adbd4c22e576c",
+    "cycles": 200797,
     "retired_uops": 226801,
-    "dispatched_uops": 240426,
-    "ipc": 1.1261668785254628,
+    "dispatched_uops": 239424,
+    "ipc": 1.1295039268514968,
     "event_counts": {
-      "axi_request": 11665,
-      "axi_response": 11664,
-      "dispatch": 140047,
+      "axi_request": 11674,
+      "axi_response": 11673,
+      "dispatch": 139422,
       "meta": 1,
-      "retire": 128705
+      "retire": 128459
     }
   },
   "model": {
-    "cycles": 183450,
+    "cycles": 190556,
     "retired_uops": 226801,
-    "ipc": 1.2363096211501772
+    "ipc": 1.1902065534541026
   },
-  "ipc_delta": 0.09780321613518672,
+  "ipc_delta": 0.053742731795377585,
   "instruction_stream": {
-    "sha256": "85c7a8cbe814951737c52bbbf4230faff4219c7a8e200bdf20cc74d2f01f5531",
+    "sha256": "bb0ee652c46d5fe32bc903f53c977bb65ea1c1a49f2b27953b42f4ad102a61f6",
     "schema": "frost-instructions-v1",
     "benchmark": "coremark",
-    "rtl_commit": "2a851a88c9b1f2c7c096e0e06f7b2279c0d18e4a",
+    "rtl_commit": "200f339eaf5996a5510cf4e0d96adbd4c22e576c",
     "memory_tier": "bram",
     "start_pc": 23684,
     "stop_pc": 23688,
     "run_number": 1,
     "artifacts": {
-      "sw.elf_sha256": "a09095a091326ebe3a6cee10dddaa1cc3268d96429d2cfcc0e2408bbb07cb3f9",
+      "sw.elf_sha256": "0057d9d36f71d0a4127d778d160641e844aa7a910ff777fb89ccfcf63a475375",
       "sw.bin_sha256": "d302c201b8c51254daa87617b5274564785d57b7d13c2171d249183feaa26abd"
     },
     "instructions": 226801
   },
   "replay_sources": {
-    "frost_perf_model.py": "efd6b0214d7e3c8a890a9bd8a65006bfa743eb910e049acad437c1d41930c399",
-    "fetch_frontend.py": "932c3fced35e2720017a1277f5e495a7e56a763139197c89eaf01401a0a47962",
+    "frost_perf_model.py": "eb2894bf643d272596f3976dfd38192670f9f1a03e249cebdfe506927c658d3c",
+    "fetch_frontend.py": "163cc791719d4b3afb441d506f7894a1fd261ecb26c4948e18bd5446cc401528",
     "instruction_stream.py": "5af08375e1d94aa83a9c54d6992149a93f88bde4ec003dae58e7d2879f26f932"
   }
 }

@@ -428,7 +428,12 @@ jobs:
         with:
           name: calibration-${{ github.sha }}
           overwrite: true
-          path: tests/calibration/
+          path: |
+            tests/calibration/${{ matrix.shard.calibration_test }}.jsonl
+            tests/calibration/${{ matrix.shard.calibration_test }}_counters.json
+            tests/calibration/${{ matrix.shard.calibration_test }}_manifest.json
+            tests/calibration/${{ matrix.shard.calibration_test }}_instructions.jsonl.gz
+            tests/calibration/${{ matrix.shard.calibration_test }}_calibration.json
           retention-days: 3
           if-no-files-found: warn
 

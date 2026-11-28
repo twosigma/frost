@@ -51,6 +51,7 @@ class ParcelQueue:
         self.stop = False
         self.max_parcels = 0
         self.max_metadata = 0
+        self._metadata_before_pop = 0
 
     @property
     def metadata_count(self) -> int:
@@ -65,17 +66,24 @@ class ParcelQueue:
             if len(self.parcels) + len(incoming) > 16 or self.metadata_count == 8:
                 raise OverflowError("fetch parcel or metadata capacity exceeded")
             self.parcels.extend(incoming)
+        self._metadata_before_pop = self.metadata_count
 
     def clock(self) -> None:
-        """Register stop from occupancy after the simultaneous push and pop."""
-        self.stop = len(self.parcels) >= 8 or self.metadata_count >= 7
+        """Parcels use post-pop occupancy; metadata uses pre-pop plus push.
+
+        fetch_parcel_queue.sv stop_fetch_p/stop_fetch_np deliberately do not
+        subtract meta_freed when registering the metadata stop threshold.
+        """
+        self.stop = len(self.parcels) >= 8 or self._metadata_before_pop >= 7
         self.max_parcels = max(self.max_parcels, len(self.parcels))
         self.max_metadata = max(self.max_metadata, self.metadata_count)
+        self._metadata_before_pop = self.metadata_count
 
     def flush(self) -> None:
         """Flush also clears the registered stop bit."""
         self.parcels.clear()
         self.stop = False
+        self._metadata_before_pop = 0
 
 
 @dataclass
@@ -88,7 +96,7 @@ class FetchRequest:
     parcels: list[Parcel]
     next_cursor: tuple[int, int]
     barrier: int | None
-    data_cycle: int
+    data_cycle: int | None
     prediction_cycle: int
     served_pc: int
     collapsed: bool
@@ -98,7 +106,8 @@ class FetchRequest:
 class FetchFrontend:
     """A fetch cursor independent of decode and backend acceptance.
 
-    ``provider_latency`` is launch-to-data availability (one cycle for BRAM).
+    ``provider_latency`` is launch-to-data availability (one cycle on a BRAM hit).
+    Production replay supplies asynchronous ``provider_request`` for local-port fills.
     Predictor lookup takes one cycle concurrently. A miss holds its predictor
     result and consumes returning data immediately, as collapsed_armed_q does.
     ``redirect`` models the registered provider retarget, in addition to the
@@ -110,6 +119,7 @@ class FetchFrontend:
         program: list[Instruction],
         decoded_depth: int = 4,
         provider_latency: Callable[[int], int] | None = None,
+        provider_request: Callable[[int, Callable[[int], None]], None] | None = None,
     ) -> None:
         """Start an empty production front end at the stream's first PC."""
         if decoded_depth < 1:
@@ -117,6 +127,7 @@ class FetchFrontend:
         self.program = program
         self.decoded_depth = decoded_depth
         self.provider_latency = provider_latency or (lambda _pc: 1)
+        self.provider_request = provider_request
         self.queue = ParcelQueue()
         self.cursor = (0, 0)
         self.epoch = 0
@@ -192,7 +203,7 @@ class FetchFrontend:
         latency = self.provider_latency(pc)
         if latency < 1:
             raise ValueError("provider latency must be positive")
-        return FetchRequest(
+        request = FetchRequest(
             pc,
             self.epoch,
             self.cursor,
@@ -204,6 +215,15 @@ class FetchFrontend:
             pc & ~3,
             latency > 1,
         )
+        if self.provider_request is not None:
+            request.data_cycle = None
+
+            def returned(cycle: int) -> None:
+                request.data_cycle = cycle
+                request.collapsed = cycle > request.prediction_cycle
+
+            self.provider_request(pc, returned)
+        return request
 
     def _drain(self) -> tuple[Instruction, ...]:
         bundle: list[Instruction] = []
@@ -242,7 +262,9 @@ class FetchFrontend:
             )
             self.redirects.clear()
             self.redirect(kind, target, cycle)
-            return
+            if kind in {"trap", "fence", "execute"}:
+                self.queue.clock()
+                return
         advance = decode_ready and len(self.decoded) < self.decoded_depth
         if advance:
             if self.id:
@@ -270,7 +292,9 @@ class FetchFrontend:
             if req.epoch != self.epoch:
                 self.stats["stale_provider_reply"] += 1
                 self.f1 = None
-            elif cycle >= max(req.data_cycle, req.prediction_cycle):
+            elif req.data_cycle is not None and cycle >= max(
+                req.data_cycle, req.prediction_cycle
+            ):
                 if req.served_pc != req.pc & ~3:
                     cursor = req.cursor
                     self.redirect("f1_tag", cursor[0], cycle)

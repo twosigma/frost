@@ -20,6 +20,7 @@ events as instructions, and deterministic result fixtures.
 
 import dataclasses
 import importlib.util
+import hashlib
 import json
 import re
 import subprocess
@@ -430,3 +431,7 @@ def test_the_stored_baseline_records_a_passing_measured_comparison() -> None:
     assert delta == pytest.approx(baseline["ipc_delta"])
     assert abs(delta) <= baseline["ipc_tolerance"]
     assert baseline["ipc_tolerance"] == 0.1
+    for name, digest in baseline["replay_sources"].items():
+        assert (
+            hashlib.sha256((PERF_MODELING / name).read_bytes()).hexdigest() == digest
+        ), name

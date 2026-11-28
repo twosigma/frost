@@ -205,7 +205,9 @@ def test_redirect_classes_and_provider_retarget(kind: str) -> None:
     fe.step(2)
     assert fe.f1 is None and fe.cursor == (10, 0)
     assert fe.retarget_until == 3
-    assert len(fe.queue.parcels) == (4 if kind.startswith("f1_") else 0)
+    assert not fe.queue.parcels
+    if kind.startswith("f1_"):
+        assert [insn.index for insn in fe.pd] == [0, 1]
     assert bool(fe.decoded) == (kind not in {"trap", "fence", "execute"})
     assert fe.stats[f"redirect_{kind}"] == 1
 
@@ -292,9 +294,9 @@ def test_execute_recovery_waits_for_branch_operands() -> None:
 def test_native_execution_stages_and_l0_dependency_span() -> None:
     """Replay's scalar stage counts and three-cycle resident chase are explicit."""
     assert model.instruction_execution_cycles(0x00108093) == 2  # ADDI
-    assert model.instruction_execution_cycles(0x021080B3) == 7  # MUL
-    assert model.instruction_execution_cycles(0x021080BB) == 4  # MULW
-    assert model.instruction_execution_cycles(0x0A1090B3) == 4  # CLMUL
+    assert model.instruction_execution_cycles(0x021080B3) == 8  # MUL
+    assert model.instruction_execution_cycles(0x021080BB) == 5  # MULW
+    assert model.instruction_execution_cycles(0x0A1090B3) == 5  # CLMUL
     with pytest.raises(ValueError, match="division"):
         model.instruction_execution_cycles(0x0210C0B3)
     ops = [

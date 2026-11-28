@@ -19,8 +19,8 @@ Wrong-path allocations never enter the output.
 Each JSONL instruction records its consecutive dynamic ID, PC, little-endian
 instruction bytes, length, expanded instruction, kind, architectural source
 and destination registers, resolved data address and access size, branch
-outcome, and architectural next PC. Zero registers and zero addresses are
-preserved. Register dependencies are reconstructed by renaming each source
+outcome, and architectural next PC. Zero addresses are preserved; x0 sources are omitted and x0 destinations
+are null. Older streams containing x0 operands remain readable. Register dependencies are reconstructed by renaming each source
 to its latest preceding architectural writer; writes to x0 create no edge.
 
 Branches carry the recorded F0 decision and target, any PD redirect and its
@@ -39,7 +39,7 @@ increment the commit-time misprediction counter.
 The header records the benchmark, run, memory tier, RTL commit, binary hashes,
 and window endpoints. A required footer seals the instruction count. The
 manifest additionally records the compressed file hash, size, count, and
-prediction tier distribution. `instruction_stream.read_stream` rejects
+prediction tier distribution and the stream basename, never a checkout path. `instruction_stream.read_stream` rejects
 unsealed files, discontinuous PCs, invalid registers/lengths/addresses,
 inconsistent branch decisions, and mismatches against the capture manifest.
 No measured per-instruction cycle delays enter the stream.
@@ -49,7 +49,9 @@ a full versioned stream. Compiler flags, layout, seeds and predictor state
 can change independently of the workload name. Recapture prevents an old
 binary or old prediction behavior from silently calibrating new RTL. The
 verified capture contains 226,801 instructions and occupies about 1.9 MiB
-compressed. Capture adds no simulation and retains only one timed window;
+compressed. Capture stops all signal sampling after the timed window, while warm-up
+continues to establish architectural register values before it. It adds no
+simulation and retains only one timed window;
 the CI artifact directory already contains the larger aggregate event trace.
 Small synthetic instruction fixtures exercise the contract in the fast suite.
 

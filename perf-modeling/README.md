@@ -284,7 +284,8 @@ validates both contracts and their common binary, run and window identity,
 requires equal retirement counts, and checks current replay IPC within 10%
 of measured RTL IPC. Required dispatch, retirement and AXI events and the
 pipeline counter cross-check remain in place. The baseline retains its
-measured ten-cycle local-BRAM reads and production 512-entry L0. Pass or fail,
+measured ten-cycle dependent local-BRAM load path and production 512-entry L0.
+Two cycles occupy the local port; eight account for the remaining pipeline stages. Pass or fail,
 the check prints current and stored figures and deltas. To check a local capture:
 
 ```bash
@@ -389,11 +390,12 @@ empty/partial bypass, compressed/spanning alignment, PD/ID stages and a real
 decoded-bundle queue. Redirect arbitration follows trap/xRET, fence, execute,
 PD and F1 validation priority. PD retains its branch and older decoded work;
 F1 validation preserves older parcels. Refills retain predictor results and
-accept on the returning-data cycle. BRAM supplies a window in one cycle.
+accept on the returning-data cycle. BRAM cache hits supply a window in one cycle; a 256-line direct cache
+services misses through the shared SoC local port.
 
 Recorded F0, PD direction/backing/ITTAGE, and execution decisions determine
 when the correct-path successor can be fetched. Execution recovery waits for
-the branch's dependencies and the configured feedback delay. The replay does
+the branch's dependencies and the RTL stage-2/registered-recovery path. The replay does
 not execute wrong-path instructions or model their cache pollution. It starts
 with empty pipeline and data-cache state at the window boundary. These limits
 remain visible in the residual; the comparison does not establish exact
@@ -401,14 +403,17 @@ cycle equivalence or DDR fetch accuracy.
 
 The real dependency stream also requires scalar execution stages absent from
 the pressure generators: a combinational ALU plus registered RS stage 2 takes
-two selection-to-wakeup cycles, full-width multiply takes seven, and word or
-carry-less multiply takes four. Resident L0 dependent loads take three cycles,
+two selection-to-wakeup cycles, full-width multiply takes eight, and word or
+carry-less multiply takes five (including the registered CDB edge). Resident L0 dependent loads take three cycles,
 as measured by the directed chase. Synthetic workloads retain their existing
 abstract execution settings. A completed producer still live in the ROB needs
 registered operand repair when its consumer dispatches: selection waits until
 the second cycle after dispatch. A resident consumer can still issue on a live
 CDB broadcast, and a retired producer supplies the register-file value directly.
-Branches use integer issue port 0; port 1 accepts only non-branches.
+Branches use integer issue port 0; port 1 accepts only non-branches in the
+lowest eight INT_RS slots. Conditional branches bypass CDB, JAL has no station,
+and multiply uses its own four-entry station. Entries release at issue;
+dispatch admits a complete bundle using registered resource availability.
 Replay rejects operand-dependent division until
 that service is implemented. The [calibration evidence](docs/frontend_calibration.md)
 records the before/after comparison and source references; tolerance remains 10%.
@@ -471,8 +476,9 @@ stream identity with a 10% tolerance. `tools/refresh_baseline.py` recaptures
 and compares before updating any figures. A passing check calibrates only
 this workload and BRAM configuration.
 
-For the current 226,801-instruction capture, RTL takes 201,392 cycles
-(IPC 1.1262) and replay takes 183,450 cycles (IPC 1.2363), a +9.78% IPC gap.
+For the current 226,801-instruction capture, RTL takes 200,797 cycles
+(IPC 1.1295) and replay takes 190,556 cycles (IPC 1.1902), a +5.37% IPC gap.
+The reviewed implementation was +9.78% on its previous capture.
 The former 3,128-operation synthetic BRAM workload missed this RTL by -13.71%.
 The separate synthetic `coremark` workload remains in the DDR sweeps.
 
@@ -490,7 +496,7 @@ python3 perf-modeling/frost_perf_model.py run --workload coremark_bram \
 ```
 
 The standalone replay config equivalent to CI is
-`{"soc":{"local_bram_read_cycles":10},"l0_cache_depth":512}`. CI captures
+`{"soc":{"local_turnaround_cycles":1},"local_load_pipeline_cycles":8,"l0_cache_depth":512}`. CI captures
 predictions anew as RTL changes; a standalone stream retains its recorded
 predictor behavior. The generic instruction replay and synthetic sweeps do
 not acquire this calibration automatically.
@@ -568,5 +574,5 @@ With the home's prefetcher on and no look-ahead hints (the default recorded abov
 ### Open items
 
 - memcpy reads 46% slower than the board (94 against 172 MB/s) without look-ahead hints, against 13% slower with them. The model's hints supplied a share of the copy's read rate that the RTL does not issue, so the board's memcpy rate has another source that the model omits.
-- The model's default local BRAM read is 2 cycles, against 10 measured on the RTL (a dependent pointer chase through BRAM data, with its misses aliased in the L0, takes 10.0 cycles per load). The CI check sets 10 in its baseline.
+- Local BRAM service takes two cycles. CI adds eight cycles outside port occupancy to preserve the measured ten-cycle dependent alias chase; the placement of these intermediate pipeline stages remains approximate.
 - Synthetic workloads retain a one-cycle dependent L0 hit abstraction. Binary-bound BRAM replay uses the measured three-cycle dependent path.
