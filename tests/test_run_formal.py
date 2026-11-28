@@ -1291,12 +1291,21 @@ FORMAL_TARGETS = [
             "bmc",
             "cover",
             "stride_bmc",
+            "stride_fault_e0_bmc",
+            "stride_fault_e2_bmc",
             "stride_cover",
             "index_bmc",
+            "index_fault_e0_bmc",
+            "index_fault_e2_bmc",
             "index_irq_bmc",
+            "index_irq_resume_bmc",
             "index_cover",
             "uncached_bmc",
+            "uncached_fault_bmc",
+            "uncached_irq_bmc",
             "uncached_seg_bmc",
+            "uncached_seg_fault_bmc",
+            "uncached_seg_irq_bmc",
             "uncached_cover",
         ),
     ),
@@ -3849,25 +3858,61 @@ SBY_TASKS = [
     ),
     (
         "stride_bmc",
-        "Strided head run: element order, translation first, precise faults, 60 frames.",
+        "Strided head run (no fault): element order, translation first, pointer masking, retirement, 60 frames.",
+    ),
+    (
+        "stride_fault_e0_bmc",
+        "Strided head run (element-0 page-0/1 fault): translation first, pointer masking, precise fault, 60 frames.",
+    ),
+    (
+        "stride_fault_e2_bmc",
+        "Strided head run (element-2 page-2 fault): elements 0-1 before precise mid-run fault, 60 frames.",
     ),
     ("stride_cover", "Strided head run reachability: retirement, mid-run fault, tag."),
     (
         "index_bmc",
-        "Indexed head run (uninterrupted): index reads, order, translation first, precise faults, 60 frames.",
+        "Indexed head run (uninterrupted, no fault): index reads, order, translation first, retirement, 60 frames.",
+    ),
+    (
+        "index_fault_e0_bmc",
+        "Indexed head run (uninterrupted, element-0 page-0/1 fault): index reads, precise fault, 60 frames.",
+    ),
+    (
+        "index_fault_e2_bmc",
+        "Indexed head run (uninterrupted, element-2 page-2 fault): elements 0-1 before precise mid-run fault, 60 frames.",
     ),
     (
         "index_irq_bmc",
-        "Indexed head run (mid-run interrupts): pause, flush to idle, withdraw and resume, 60 frames.",
+        "Indexed head run (mid-run interrupt pause and flush to idle), 60 frames.",
+    ),
+    (
+        "index_irq_resume_bmc",
+        "Indexed head run (mid-run interrupt withdrawal and resume to completion or fault), 60 frames.",
     ),
     ("index_cover", "Indexed head run reachability: retirement, mid-run fault."),
     (
         "uncached_bmc",
-        "Uncached unit-stride, strided and FoF runs: order, shield, withheld grant, faults, IRQ stop, 36 frames.",
+        "Uncached unit-stride, strided and FoF normal runs: order, shield, withheld grant, retirement, 36 frames.",
+    ),
+    (
+        "uncached_fault_bmc",
+        "Uncached unit-stride, strided and FoF alignment and bus-error faults / FoF trim, 36 frames.",
+    ),
+    (
+        "uncached_irq_bmc",
+        "Uncached unit-stride, strided and FoF mid-run interrupt pause and flush, 36 frames.",
     ),
     (
         "uncached_seg_bmc",
-        "Uncached 2-field segment runs: order, shield, withheld grant, faults, IRQ stop, 44 frames.",
+        "Uncached 2-field segment normal runs: order, shield, withheld grant, retirement, 44 frames.",
+    ),
+    (
+        "uncached_seg_fault_bmc",
+        "Uncached 2-field segment alignment and bus-error faults, 44 frames.",
+    ),
+    (
+        "uncached_seg_irq_bmc",
+        "Uncached 2-field segment mid-run interrupt pause and flush, 44 frames.",
     ),
     (
         "uncached_cover",

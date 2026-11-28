@@ -262,8 +262,8 @@ Test inputs `i_fu_complete_0` to `i_fu_complete_7` also feed the arbiter slots.
 Slots 0 to 5 and 7 fall through to `i_fu_complete_*` only when that slot's
 adapter presents nothing (always for slot 5 when `VECTOR=0`). On slot 6,
 `i_fu_complete_6` takes priority over `u_fp_pipe_adapter`; `cpu_ooo` connects
-`i_fu_complete_6` to the vector unit's ROB-head completions and ties the other
-seven ports to zero.
+`i_fu_complete_6` to the vector unit's scalar and ROB-head completions and ties
+the other seven ports to zero.
 
 ## FP dispatch buffer
 

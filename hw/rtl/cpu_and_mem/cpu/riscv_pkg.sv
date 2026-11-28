@@ -1089,8 +1089,8 @@ package riscv_pkg;
                                 // executes it after commit, INT_RS only completes it
     VARITH_X,                   // V: vector arithmetic with rs1 as its scalar operand, which
                                 // INT_RS passes to the ROB for the engine
-    VTOX,                       // V: vmv.x.s, vcpop.m, vfirst.m: executed at the ROB head
-                                // once the engine is idle; no reservation station
+    VTOX,                       // V: vmv.x.s, vcpop.m, vfirst.m: executed off the ROB head
+                                // once source writes drain; no reservation station
     // RV64I and B-extension word shifts/ops (pinned at 8'd170 for projected_shift_controls)
     ADDIW            = 8'd170,  // Add immediate word (sext32 result)
     SLLIW,                      // Shift left logical immediate word
@@ -1151,7 +1151,8 @@ package riscv_pkg;
     MOP,
     VARITH_F,                   // V: vector FP arithmetic with an f-register scalar operand,
                                 // read at the ROB head; the engine executes it after commit
-    VTOF,                       // V: vfmv.f.s, executed at the ROB head; no reservation station
+    VTOF,                       // V: vfmv.f.s, executed off the ROB head once source writes
+                                // drain; no reservation station
     VARITH_C,                   // Cryptographic element groups
     FLI_H                       // Zfa with Zvfh: load one of 32 half-precision constants
   } instr_op_e;

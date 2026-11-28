@@ -139,3 +139,4 @@
 - Added slab-like node reuse benches (`coherence_stale_line` and `node_reuse_test`) beside full-line stores, `cbo.zero` and DMA, added `FROST_BP_COUNT` branch-misprediction logging to real-program simulation, and stopped the performance model crediting L1D stream look-ahead hints by default
 - Added `--vlen` selection (`128`, `256`, or `512`) to the opt-in VCU118 vector build and software loader, naming matching `Zvl*b` extensions in the generated Linux device tree.
 - Grew the store queue to 16 entries with a fixed-priority ring-order forwarding pick, a fan-out cap on the early store-address copy, and updated forwarding and twin formal proofs.
+- Measured the vector unit with RVV microbenchmarks and handshake tracing, which guided the engine-side vector performance work (group skipping beyond `vl`, pipelined 64-bit-lane multiply/MAC and pipelined reductions, group-ALU pipelining with VMU overlap, and off-head vector-to-scalar execution).
