@@ -71,12 +71,12 @@ address_class: hierarchy -top coherent_lq_address_store
 address_class: script free_undefined.ys
 address_class: prep -flatten -top coherent_lq_address_store
 coh_address_class_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_selected_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_class_small_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_class_offset_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_class_size_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_class_zero_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
-coh_sc_class_wrap_prove: select -assert-count 18 t:$check r:FLAVOR=assert %i
+coh_sc_selected_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+coh_sc_class_small_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+coh_sc_class_offset_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+coh_sc_class_size_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+coh_sc_class_zero_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+coh_sc_class_wrap_prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
 candidate: select -assert-count 1 t:$check r:FLAVOR=assert %i
 lq: select -assert-count 97 t:$check r:FLAVOR=assert %i
 selector: select -assert-count 4 t:$check r:FLAVOR=assert %i

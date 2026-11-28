@@ -39,7 +39,9 @@ select -assert-count 3 t:$check r:FLAVOR=assert %i
 vhold_lq_bmc: select -assert-count 8 t:$check r:FLAVOR=cover %i
 vhold_lq_cover: select -assert-count 8 t:$check r:FLAVOR=cover %i
 vhold_sq_bmc: select -assert-count 9 t:$check r:FLAVOR=cover %i
+vhold_sq_cursor_bmc: select -assert-count 9 t:$check r:FLAVOR=cover %i
 cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
+vhold_sq_cursor_cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
