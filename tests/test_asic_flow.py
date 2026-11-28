@@ -1251,7 +1251,9 @@ def test_sources_makefile_is_independent_of_the_mount_point(tmp_path: Path) -> N
 # <name> <master> <divisor> <pin>", "<input|output> <port> <clock> <delay>",
 # "false_path <hold|all> <ports>", or "false_path_to <pins>". The small netlist
 # has arbitrary cell and library pin names, a dual-clock memory, and a port
-# reaching multiple domains. With FROST_HARNESS_NO_PINS set, get_pins finds nothing.
+# reaching multiple domains. Cone queries enforce port direction; quiet port
+# queries resolve exact names (including bus bits) before wildcard patterns.
+# With FROST_HARNESS_NO_PINS set, get_pins finds nothing.
 SDC_HARNESS = r"""
 set clocks [dict create]
 set clock_ports [dict create]
@@ -1278,6 +1280,7 @@ set reference_ports {
 set async_pins {
     soc.gen_clock_resets.fabric_reset.renamed_ff/SET
     soc.gen_clock_resets.debug_reset.another_ff/CLEAR
+    soc.gen_clock_resets_other.ff/RN
     soc.unrelated_ff/RN
 }
 proc option {arguments name} {
@@ -1309,16 +1312,32 @@ proc get_pins {args} {
 }
 proc get_ports {args} {
     set patterns [lindex $args end]
-    if {"-quiet" in $args && ![dict exists $::reference_ports $patterns]} {return {}}
-    return $patterns
+    if {"-quiet" ni $args} {return $patterns}
+    set ports {}
+    foreach pattern $patterns {
+        if {[dict exists $::reference_ports $pattern]} {
+            lappend ports $pattern
+        } else {
+            foreach port [dict keys $::reference_ports] {
+                if {[string match $pattern $port]} {lappend ports $port}
+            }
+        }
+    }
+    return [lsort -unique $ports]
 }
 proc get_fanout {args} {
     if {"-flat" ni $args || "-endpoints_only" ni $args} {error "unbounded fanout"}
-    return [lindex [dict get $::reference_ports [option $args -from]] 1]
+    set port [lindex [option $args -from] 0]
+    if {[get_property $port direction] ne "input"} {error "fanout requires an input port"}
+    puts "fanout $port"
+    return [lindex [dict get $::reference_ports $port] 1]
 }
 proc get_fanin {args} {
     if {"-flat" ni $args || "-startpoints_only" ni $args} {error "unbounded fanin"}
-    return [lindex [dict get $::reference_ports [option $args -to]] 1]
+    set port [lindex [option $args -to] 0]
+    if {[get_property $port direction] ne "output"} {error "fanin requires an output port"}
+    puts "fanin $port"
+    return [lindex [dict get $::reference_ports $port] 1]
 }
 proc get_cells {args} {
     return [lsort -unique [lmap pin [option $args -of_objects] {file dirname $pin}]]
@@ -1341,7 +1360,10 @@ proc get_full_name {object} {return $object}
 proc get_property {object property} {
     switch $property {
         period {return [dict get $::clocks $object]}
-        direction {return [lindex [dict get $::reference_ports $object] 0]}
+        direction {
+            if {[llength $object] != 1} {error "direction requires exactly one port"}
+            return [lindex [dict get $::reference_ports [lindex $object 0]] 0]
+        }
         clocks {
             return [dict get $::reference_cells [file dirname $object] [file tail $object]]
         }
@@ -1399,6 +1421,7 @@ def _evaluate_sdc(
     find_pins: bool = True,
     cpu_period: str | None = None,
     netlist_changes: str = "",
+    sdc_commands: str = "",
 ) -> subprocess.CompletedProcess[str]:
     """Run the SDC against the harness's netlist and requested clock settings."""
     harness = tmp_path / "harness.tcl"
@@ -1406,6 +1429,8 @@ def _evaluate_sdc(
         SDC_HARNESS.replace(
             "source [lindex $argv 0]", netlist_changes + "\nsource [lindex $argv 0]"
         )
+        + "\n"
+        + sdc_commands
     )
     environment = {
         name: value
@@ -1542,30 +1567,157 @@ def test_io_references_survive_cell_and_library_pin_renaming(tmp_path: Path) -> 
     assert "generated nic_rx_clk_io nic_rx_clk 1 arbitrary_5/CLK" in result.stdout
 
 
+@pytest.mark.parametrize("cpu_period", [None, "3.103"], ids=["common", "separate"])
+def test_io_reference_cones_follow_port_direction(
+    tmp_path: Path, cpu_period: str | None
+) -> None:
+    """Inputs use bounded fanout; outputs use bounded fanin, in both CPU modes."""
+    result = _evaluate_sdc(tmp_path, cpu_period=cpu_period)
+    assert result.returncode == 0, result.stderr
+    assert {
+        line
+        for line in result.stdout.splitlines()
+        if line.startswith(("fanin ", "fanout "))
+    } == {
+        f"fanin {'o_uart_rx_ready' if cpu_period else 'o_ddr_axi_arvalid'}",
+        "fanout i_instr_mem_wrdata[0]",
+        "fanin o_nic_tx_raw_data[0]",
+        "fanout i_nic_rx_raw_data[0]",
+        "fanout i_jtag_tdi",
+    }
+
+
+def test_io_reference_rejects_multi_port_wildcard(tmp_path: Path) -> None:
+    """An ambiguous port query must stop before choosing a cone."""
+    result = _evaluate_sdc(
+        tmp_path,
+        netlist_changes="dict set reference_ports o_nic_tx_raw_valid {output {tx_ff/Q}}",
+        sdc_commands="io_reference_pin nic_tx_clk o_nic_tx_raw_*",
+    )
+    assert result.returncode != 0
+    assert (
+        "the I/O reference port for nic_tx_clk, o_nic_tx_raw_*, must exist exactly once"
+        in result.stderr
+    )
+
+
+def test_io_reference_memory_checks_domain_before_sorting(tmp_path: Path) -> None:
+    """A macro's earlier wrong-domain clock must not displace the right clock."""
+    result = _evaluate_sdc(
+        tmp_path,
+        netlist_changes="dict set reference_cells memory {clk_a core_clk clk_z core_clk_div4}",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "generated core_clk_div4_io core_clk_div4 1 memory/clk_z" in result.stdout
+
+
+def _rtl_without_comments(relative: str) -> str:
+    """Read declarations and scopes without accepting stale commented-out RTL."""
+    rtl = (orfs.REPOSITORY_ROOT / relative).read_text()
+    return re.sub(r"/\*.*?\*/|//[^\n]*", "", rtl, flags=re.DOTALL)
+
+
 @pytest.mark.parametrize(
-    ("clock", "port", "cells"),
+    ("port", "direction"),
     [
-        ("core_clk", "o_ddr_axi_arvalid", ["request_ff"]),
-        ("core_clk_div4", "i_instr_mem_wrdata[0]", ["memory"]),
-        ("nic_tx_clk", "o_nic_tx_raw_data[0]", ["tx_ff"]),
-        ("nic_rx_clk", "i_nic_rx_raw_data[0]", ["rx_a", "rx_z"]),
-        ("jtag_tck", "i_jtag_tdi", ["merged_idcode", "shift_ir"]),
+        ("o_ddr_axi_arvalid", "output"),
+        ("i_instr_mem_wrdata[0]", "input"),
+        ("o_nic_tx_raw_data[0]", "output"),
+        ("i_nic_rx_raw_data[0]", "input"),
+        ("i_jtag_tdi", "input"),
+        ("o_uart_rx_ready", "output"),
     ],
+    ids=["ddr", "program", "tx", "rx", "jtag", "uart"],
+)
+def test_io_reference_ports_match_rtl(port: str, direction: str) -> None:
+    """All six SDC references, including the separate-CPU UART, are real ports."""
+    sdc = "\n".join(
+        line.partition("#")[0]
+        for line in (ASIC_DIRECTORY / "constraint.sdc").read_text().splitlines()
+    )
+    table = re.search(r"^set io_references \{\n(.*?)^\}", sdc, re.MULTILINE | re.DOTALL)
+    assert table is not None
+    references = {
+        line.split()[2].strip("{}") for line in table[1].splitlines() if line.strip()
+    }
+    references.update(re.findall(r"^\s*lset io_references 2 (\w+)", sdc, re.MULTILINE))
+    assert port in references
+    name = port.partition("[")[0]
+    for relative in ("hw/rtl/platform_top.sv", "hw/rtl/soc_top/soc_top.sv"):
+        rtl = _rtl_without_comments(relative)
+        declaration = re.search(
+            rf"\b(input|output)\s+logic\s*(\[[^\]]+\])?\s*{name}\s*[,=]", rtl
+        )
+        assert declaration is not None, (relative, port)
+        assert declaration[1] == direction, (relative, port)
+        if "[" in port:
+            bounds = re.fullmatch(r"\[\s*(\d+)\s*:\s*(\d+)\s*\]", declaration[2])
+            assert bounds is not None, (relative, port)
+            bit = int(port.partition("[")[2].removesuffix("]"))
+            assert (
+                min(map(int, bounds.groups())) <= bit <= max(map(int, bounds.groups()))
+            )
+        else:
+            assert declaration[2] is None, (relative, port)
+    platform = _rtl_without_comments("hw/rtl/platform_top.sv")
+    assert re.search(rf"\.{name}\(\s*{name}\s*\)", platform), port
+
+
+def test_cpu_boundary_reset_scope_matches_rtl() -> None:
+    """The flattened SDC scope names the SoC's conditional reset-pair block."""
+    sdc = (ASIC_DIRECTORY / "constraint.sdc").read_text()
+    scope = re.search(r"string match \{(\w+)\.(\w+)\.\*\} \[get_full_name \$pin\]", sdc)
+    assert scope is not None
+    platform = _rtl_without_comments("hw/rtl/platform_top.sv")
+    assert re.search(rf"\bsoc_top\s*#\(.*?\)\s*{scope[1]}\s*\(", platform, re.DOTALL)
+    soc = _rtl_without_comments("hw/rtl/soc_top/soc_top.sv")
+    block = re.search(
+        rf"\bif\s*\(ASYNC_CPU_CLOCK\)\s*begin\s*:\s*{scope[2]}\b(.*?)end else begin",
+        soc,
+        re.DOTALL,
+    )
+    assert block is not None
+    assert set(re.findall(r"\bcdc_reset_pair\s+(\w+)\s*\(", block[1])) == {
+        "fabric_reset",
+        "core_reset",
+        "debug_reset",
+    }
+
+
+@pytest.mark.parametrize(
+    ("clock", "port", "cells", "cpu_period"),
+    [
+        ("core_clk", "o_ddr_axi_arvalid", ["request_ff"], None),
+        ("core_clk_div4", "i_instr_mem_wrdata[0]", ["memory"], None),
+        ("nic_tx_clk", "o_nic_tx_raw_data[0]", ["tx_ff"], None),
+        ("nic_rx_clk", "i_nic_rx_raw_data[0]", ["rx_a", "rx_z"], None),
+        ("jtag_tck", "i_jtag_tdi", ["merged_idcode", "shift_ir"], None),
+        ("core_clk", "o_uart_rx_ready", ["uart_ff"], "3.103"),
+    ],
+    ids=["ddr", "program", "tx", "rx", "jtag", "uart"],
 )
 @pytest.mark.parametrize("failure", ["port", "empty_cone", "wrong_domain"])
 def test_io_references_reject_missing_or_wrong_domain_registers(
-    tmp_path: Path, clock: str, port: str, cells: list[str], failure: str
+    tmp_path: Path,
+    clock: str,
+    port: str,
+    cells: list[str],
+    cpu_period: str | None,
+    failure: str,
 ) -> None:
     """A missing reference must fail rather than leave its ports unconstrained."""
     if failure == "port":
         changes = f"dict unset reference_ports {{{port}}}"
     elif failure == "empty_cone":
-        changes = f"dict set reference_ports {{{port}}} {{input {{}}}}"
+        changes = (
+            f"dict set reference_ports {{{port}}} "
+            f"[lreplace [dict get $reference_ports {{{port}}}] 1 1 {{}}]"
+        )
     else:
         changes = "\n".join(
             f"dict set reference_cells {cell} {{CLK unrelated_clock}}" for cell in cells
         )
-    result = _evaluate_sdc(tmp_path, netlist_changes=changes)
+    result = _evaluate_sdc(tmp_path, cpu_period=cpu_period, netlist_changes=changes)
     assert result.returncode != 0
     assert "constraint.sdc:" in result.stderr
     assert clock in result.stderr and port in result.stderr
@@ -1727,6 +1879,17 @@ def test_cpu_boundary_requires_its_reset_controls(tmp_path: Path) -> None:
         tmp_path,
         cpu_period="3.103",
         netlist_changes="set async_pins {soc.unrelated_ff/RN}",
+    )
+    assert result.returncode != 0
+    assert "CPU boundary reset pins are missing" in result.stderr
+
+
+def test_cpu_boundary_rejects_sibling_reset_scope(tmp_path: Path) -> None:
+    """A scope sharing the reset block's prefix cannot hide missing controls."""
+    result = _evaluate_sdc(
+        tmp_path,
+        cpu_period="3.103",
+        netlist_changes="set async_pins {soc.gen_clock_resets_other.ff/RN}",
     )
     assert result.returncode != 0
     assert "CPU boundary reset pins are missing" in result.stderr
