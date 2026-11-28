@@ -1652,11 +1652,29 @@ jobs:
           - shard: Coherence L1D control
             pytest_filter: coh_l1d_bmc
             timeout_minutes: 260
-          # The three-endpoint control BMC has a 340-minute allowance plus
-          # twenty minutes for image setup inside the 360-minute job cap.
+          # The three-endpoint control BMC is partitioned into seven tasks with
+          # 70- to 252-minute allowances plus twenty minutes for image setup.
           - shard: Coherence L1D multi-endpoint
             pytest_filter: coh_l1d_multi_bmc
-            timeout_minutes: 360
+            timeout_minutes: 150
+          - shard: Coherence L1D multi-endpoint holds
+            pytest_filter: coh_l1d_multi_hold_bmc
+            timeout_minutes: 90
+          - shard: Coherence L1D multi-endpoint atomic
+            pytest_filter: coh_l1d_multi_atomic_bmc
+            timeout_minutes: 200
+          - shard: Coherence L1D multi-endpoint store
+            pytest_filter: coh_l1d_multi_store_bmc
+            timeout_minutes: 170
+          - shard: Coherence L1D multi-endpoint grant
+            pytest_filter: coh_l1d_multi_grant_bmc
+            timeout_minutes: 195
+          - shard: Coherence L1D multi-endpoint acquire
+            pytest_filter: coh_l1d_multi_acquire_bmc
+            timeout_minutes: 155
+          - shard: Coherence L1D multi-endpoint path
+            pytest_filter: coh_l1d_multi_path_bmc
+            timeout_minutes: 275
           # Word variants share their representative's measured allowance:
           # 65 minutes each for one endpoint, 70 for three endpoints. The
           # sums use 79% and 85% of their respective job limits.
@@ -1767,7 +1785,10 @@ jobs:
               axi_coherent_bridge or
               (coherence_l1d and not (_twin or coh_l1d_stream_bmc or coh_l1d_stream_hold_bmc or coh_l1d_stream_free or
               coh_l1d_stream_outlier_prove or
-              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_zero or coh_l1d_full or coh_l1d_data or
+              coh_l1d_bmc or coh_l1d_multi_bmc or coh_l1d_multi_hold_bmc or
+              coh_l1d_multi_atomic_bmc or coh_l1d_multi_store_bmc or
+              coh_l1d_multi_grant_bmc or coh_l1d_multi_acquire_bmc or
+              coh_l1d_multi_path_bmc or coh_l1d_zero or coh_l1d_full or coh_l1d_data or
               coh_l1d_withdraw or coh_l1d_buffer_contract or
               coh_l1d_multi_data or coh_l1d_store_ or coh_l1d_ways_data or
               (coh_l1d_local and (prove or bmc))))
