@@ -1246,14 +1246,40 @@ def test_sources_makefile_is_independent_of_the_mount_point(tmp_path: Path) -> N
         orfs.sources_makefile([converted], converted, ["/elsewhere/headers"])
 
 
-# Stand-ins for the OpenSTA commands that asic/constraint.sdc calls. Each
-# command prints what it constrains: "clock <name> <period>", "generated
+# Stand-ins for the OpenSTA commands that asic/constraint.sdc calls. The
+# constraint commands print "clock <name> <period>", "generated
 # <name> <master> <divisor> <pin>", "<input|output> <port> <clock> <delay>",
-# or "false_path <hold|all> <ports>". With FROST_HARNESS_NO_PINS set,
-# get_pins finds nothing.
+# "false_path <hold|all> <ports>", or "false_path_to <pins>". The small netlist
+# has arbitrary cell and library pin names, a dual-clock memory, and a port
+# reaching multiple domains. With FROST_HARNESS_NO_PINS set, get_pins finds nothing.
 SDC_HARNESS = r"""
 set clocks [dict create]
 set clock_ports [dict create]
+set reference_cells {
+    request_ff {C core_clk}
+    memory {clk_a core_clk_div4 clk_b core_clk}
+    tx_ff {CLK nic_tx_clk}
+    rx_z {CLK nic_rx_clk}
+    rx_a {CLK nic_rx_clk}
+    other_domain {CLK core_clk}
+    merged_idcode {C jtag_tck}
+    shift_ir {C jtag_tck}
+    uart_ff {C core_clk}
+    combinational {}
+}
+set reference_ports {
+    o_ddr_axi_arvalid {output {request_ff/Q combinational/Y}}
+    i_instr_mem_wrdata[0] {input {memory/data_a}}
+    o_nic_tx_raw_data[0] {output {tx_ff/Q}}
+    i_nic_rx_raw_data[0] {input {rx_z/D other_domain/D rx_a/D}}
+    i_jtag_tdi {input {shift_ir/D merged_idcode/D}}
+    o_uart_rx_ready {output {uart_ff/Q}}
+}
+set async_pins {
+    soc.gen_clock_resets.fabric_reset.renamed_ff/SET
+    soc.gen_clock_resets.debug_reset.another_ff/CLEAR
+    soc.unrelated_ff/RN
+}
 proc option {arguments name} {
     return [lindex $arguments [expr {[lsearch -exact $arguments $name] + 1}]]
 }
@@ -1270,9 +1296,37 @@ proc create_generated_clock {args} {
 }
 proc get_pins {args} {
     if {[info exists ::env(FROST_HARNESS_NO_PINS)]} {return {}}
-    return [list [lindex $args end]]
+    if {[option $args -filter] ne "is_register_clock == true"} {
+        error "get_pins must select register clock pins"
+    }
+    set pins {}
+    foreach cell [option $args -of_objects] {
+        foreach {pin clock} [dict get $::reference_cells $cell] {
+            lappend pins $cell/$pin
+        }
+    }
+    return $pins
 }
-proc get_ports {patterns} {return $patterns}
+proc get_ports {args} {
+    set patterns [lindex $args end]
+    if {"-quiet" in $args && ![dict exists $::reference_ports $patterns]} {return {}}
+    return $patterns
+}
+proc get_fanout {args} {
+    if {"-flat" ni $args || "-endpoints_only" ni $args} {error "unbounded fanout"}
+    return [lindex [dict get $::reference_ports [option $args -from]] 1]
+}
+proc get_fanin {args} {
+    if {"-flat" ni $args || "-startpoints_only" ni $args} {error "unbounded fanin"}
+    return [lindex [dict get $::reference_ports [option $args -to]] 1]
+}
+proc get_cells {args} {
+    return [lsort -unique [lmap pin [option $args -of_objects] {file dirname $pin}]]
+}
+proc all_registers {args} {
+    if {$args ne "-async_pins"} {error "expected asynchronous control pins"}
+    return $::async_pins
+}
 proc get_clocks {names} {return $names}
 proc set_clock_groups {args} {
     foreach {flag members} [lrange $args 1 end] {
@@ -1284,7 +1338,16 @@ proc set_min_delay {delay args} {puts "min_delay $delay [join $args { }]"}
 proc all_inputs {args} {return $::inputs}
 proc all_outputs {} {return $::outputs}
 proc get_full_name {object} {return $object}
-proc get_property {clock property} {return [dict get $::clocks $clock]}
+proc get_property {object property} {
+    switch $property {
+        period {return [dict get $::clocks $object]}
+        direction {return [lindex [dict get $::reference_ports $object] 0]}
+        clocks {
+            return [dict get $::reference_cells [file dirname $object] [file tail $object]]
+        }
+        default {error "unexpected property $property"}
+    }
+}
 proc set_input_delay {delay args} {
     puts "input [lindex $args end] [option $args -clock] $delay"
 }
@@ -1292,6 +1355,10 @@ proc set_output_delay {delay args} {
     puts "output [lindex $args end] [option $args -clock] $delay"
 }
 proc set_false_path {args} {
+    if {"-to" in $args} {
+        puts "false_path_to [join [option $args -to] { }]"
+        return
+    }
     set checks [expr {"-hold" in $args ? "hold" : "all"}]
     puts "false_path $checks [join [option $args -from] { }]"
 }
@@ -1331,10 +1398,15 @@ def _evaluate_sdc(
     *,
     find_pins: bool = True,
     cpu_period: str | None = None,
+    netlist_changes: str = "",
 ) -> subprocess.CompletedProcess[str]:
-    """Run asic/constraint.sdc in tclsh with FROST_CORE_CLOCK_PERIOD set or not."""
+    """Run the SDC against the harness's netlist and requested clock settings."""
     harness = tmp_path / "harness.tcl"
-    harness.write_text(SDC_HARNESS)
+    harness.write_text(
+        SDC_HARNESS.replace(
+            "source [lindex $argv 0]", netlist_changes + "\nsource [lindex $argv 0]"
+        )
+    )
     environment = {
         name: value
         for name, value in os.environ.items()
@@ -1421,8 +1493,9 @@ def test_core_clock_period_sets_the_core_clocks_and_their_ports(
 def test_each_clock_has_an_io_copy_at_one_pin(tmp_path: Path) -> None:
     """Every clock's ports count from a copy generated inside the chip.
 
-    The copy divides by one, so it keeps its master's period, and a reference
-    pattern that matches no pin stops the constraints.
+    The copy divides by one, so it keeps its master's period. Connectivity
+    and clock membership select a pin even after registers merge or change
+    names, and a missing reference stops the constraints.
     """
     result = _evaluate_sdc(tmp_path)
     assert result.returncode == 0, result.stderr
@@ -1437,25 +1510,65 @@ def test_each_clock_has_an_io_copy_at_one_pin(tmp_path: Path) -> None:
     }
     for name, (_, divisor, pins) in generated.items():
         assert divisor == "1", name
-        assert len(pins) == 1 and pins[0].endswith(("/CK", "/clk0")), name
-
-    soc_source = (orfs.REPOSITORY_ROOT / "hw/rtl/soc_top/soc_top.sv").read_text()
-    assert re.search(r"\bnic_mac_10g\s*#\s*\([^;]*\)\s*nic_mac\b", soc_source, re.S), (
-        "the 10G MAC instance name in soc_top must stay stable"
-    )
-    mac_source = (
-        orfs.REPOSITORY_ROOT / "hw/rtl/peripherals/nic/nic_mac_10g.sv"
-    ).read_text()
-    assert re.search(r"\beth10g_mac_pcs\s*#\s*\([^;]*\)\s*u_mac\b", mac_source, re.S), (
-        "the 10G PCS instance name in nic_mac_10g must stay stable"
-    )
-    for direction in ("tx", "rx"):
-        expected = f".gen_nic_mac_10g.nic_mac.u_mac.{direction}_gearbox.reservoir[0]"
-        assert expected in generated[f"nic_{direction}_clk_io"][2][0]
+        assert len(pins) == 1, name
+    assert {name: pins for name, (_, _, pins) in generated.items()} == {
+        "core_clk_io": ["request_ff/C"],
+        "core_clk_div4_io": ["memory/clk_a"],
+        "nic_tx_clk_io": ["tx_ff/CLK"],
+        "nic_rx_clk_io": ["rx_a/CLK"],
+        "jtag_tck_io": ["merged_idcode/C"],
+    }
 
     missing = _evaluate_sdc(tmp_path, find_pins=False)
     assert missing.returncode != 0
-    assert "the I/O reference for core_clk" in missing.stderr
+    assert "no core_clk register clock pin" in missing.stderr
+
+
+def test_io_references_survive_cell_and_library_pin_renaming(tmp_path: Path) -> None:
+    """Neither the former bypass flop nor any generated cell name is required."""
+    result = _evaluate_sdc(
+        tmp_path,
+        netlist_changes=r"""
+        set rename {merged_idcode arbitrary_42 shift_ir arbitrary_43 request_ff arbitrary_9
+                    memory arbitrary_8 tx_ff arbitrary_7 rx_a arbitrary_6 rx_z arbitrary_5}
+        set reference_cells [string map $rename $reference_cells]
+        set reference_ports [string map $rename $reference_ports]
+        dict set reference_cells arbitrary_42 {CLOCK_INPUT jtag_tck}
+        """,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "generated jtag_tck_io jtag_tck 1 arbitrary_42/CLOCK_INPUT" in result.stdout
+    assert "generated core_clk_io core_clk 1 arbitrary_9/C" in result.stdout
+    assert "generated nic_rx_clk_io nic_rx_clk 1 arbitrary_5/CLK" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("clock", "port", "cells"),
+    [
+        ("core_clk", "o_ddr_axi_arvalid", ["request_ff"]),
+        ("core_clk_div4", "i_instr_mem_wrdata[0]", ["memory"]),
+        ("nic_tx_clk", "o_nic_tx_raw_data[0]", ["tx_ff"]),
+        ("nic_rx_clk", "i_nic_rx_raw_data[0]", ["rx_a", "rx_z"]),
+        ("jtag_tck", "i_jtag_tdi", ["merged_idcode", "shift_ir"]),
+    ],
+)
+@pytest.mark.parametrize("failure", ["port", "empty_cone", "wrong_domain"])
+def test_io_references_reject_missing_or_wrong_domain_registers(
+    tmp_path: Path, clock: str, port: str, cells: list[str], failure: str
+) -> None:
+    """A missing reference must fail rather than leave its ports unconstrained."""
+    if failure == "port":
+        changes = f"dict unset reference_ports {{{port}}}"
+    elif failure == "empty_cone":
+        changes = f"dict set reference_ports {{{port}}} {{input {{}}}}"
+    else:
+        changes = "\n".join(
+            f"dict set reference_cells {cell} {{CLK unrelated_clock}}" for cell in cells
+        )
+    result = _evaluate_sdc(tmp_path, netlist_changes=changes)
+    assert result.returncode != 0
+    assert "constraint.sdc:" in result.stderr
+    assert clock in result.stderr and port in result.stderr
 
 
 def test_clock_tree_synthesis_takes_each_clock_port_as_a_root(tmp_path: Path) -> None:
@@ -1562,8 +1675,13 @@ def test_cpu_boundary_constraints_bound_both_directions(
     tmp_path: Path, cpu_period: str
 ) -> None:
     """CPU, SoC and debug clocks share a group with bounded crossing delays."""
-    result = _evaluate_sdc(tmp_path, cpu_period=cpu_period)
+    result = _evaluate_sdc(
+        tmp_path,
+        cpu_period=cpu_period,
+        netlist_changes="dict set reference_cells request_ff {C cpu_clk}",
+    )
     assert result.returncode == 0, result.stderr
+    assert "generated core_clk_io core_clk 1 uart_ff/C" in result.stdout
     groups = [
         set(line.split()[1:])
         for line in result.stdout.splitlines()
@@ -1589,6 +1707,29 @@ def test_cpu_boundary_constraints_bound_both_directions(
     assert limits[1][3:] == ["-from", "core_clk", "core_clk_io", "-to", "cpu_clk"]
     assert limits[2][3:] == ["-from", "jtag_tck", "jtag_tck_io", "-to", "cpu_clk"]
     assert limits[3][3:] == ["-from", "cpu_clk", "-to", "jtag_tck", "jtag_tck_io"]
+
+    reset_paths = [
+        line.split()[1:]
+        for line in result.stdout.splitlines()
+        if line.startswith("false_path_to ")
+    ]
+    assert reset_paths == [
+        [
+            "soc.gen_clock_resets.fabric_reset.renamed_ff/SET",
+            "soc.gen_clock_resets.debug_reset.another_ff/CLEAR",
+        ]
+    ]
+
+
+def test_cpu_boundary_requires_its_reset_controls(tmp_path: Path) -> None:
+    """Unrelated asynchronous pins must not hide a missing reset scope."""
+    result = _evaluate_sdc(
+        tmp_path,
+        cpu_period="3.103",
+        netlist_changes="set async_pins {soc.unrelated_ff/RN}",
+    )
+    assert result.returncode != 0
+    assert "CPU boundary reset pins are missing" in result.stderr
 
 
 def test_mocked_memories_come_from_the_synthesis_log(tmp_path: Path) -> None:
