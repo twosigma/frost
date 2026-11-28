@@ -619,8 +619,12 @@ module vec_vmu #(
       end
       if (o_done) begin
         p_all_sectors : assert (f_issued == 7 && f_pending == 0);
+        p_done_not_idle : assert (!o_idle && !i_cmd_valid);
       end
       if (f_past_valid && !$past(i_rst)) begin
+        if ($past(o_done)) begin
+          p_done_enters_idle : assert (o_idle);
+        end
         if ($past(issue_state_q == VMU_SEC_ALLOC && buf_valid_q[alloc_ptr_q])) begin
           p_prepare_stable :
           assert ($stable(

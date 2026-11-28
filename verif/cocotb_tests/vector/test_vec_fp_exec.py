@@ -320,10 +320,12 @@ def execute(
 async def floating_point_families(dut: Any) -> None:
     """Every instruction form, width, rounding mode, mask, tail and flag result."""
     vlen = len(dut.o_wdata)
+    reg_data = int(dut.VRF_REG_DATA.value) == 1
     model = Model(vlen)
     memory = [0] * 32
 
     async def memory_port() -> None:
+        stage1 = 0
         while True:
             await FallingEdge(dut.i_clk)
             addresses = int(dut.o_raddr.value)
@@ -341,7 +343,11 @@ async def floating_point_families(dut: Any) -> None:
                     if enable >> byte & 1:
                         mask = 255 << (8 * byte)
                         memory[addr] = (memory[addr] & ~mask) | (data & mask)
-            dut.i_rdata.value = reads
+            if reg_data:
+                dut.i_rdata.value = stage1
+                stage1 = reads
+            else:
+                dut.i_rdata.value = reads
 
     Clock(dut.i_clk, 10, unit="ns").start()
     dut.i_rst.value = 1

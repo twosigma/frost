@@ -1545,12 +1545,12 @@ module dispatch #(
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
     o_rob_alloc_req.is_vcfg = (op == riscv_pkg::VSETVLI) || (op == riscv_pkg::VSETIVLI) ||
         (op == riscv_pkg::VSETVL);
-    // ROB's is_varith flag excludes vector arithmetic and vector loads/stores
-    // from two-wide commit (rob_f_ok_2wide_static); slot1_is_varith gates
-    // dispatch-time arithmetic legality, while VLOAD/VSTORE check legality at
-    // the ROB head.
+    // ROB's is_varith flag excludes vector arithmetic, vector-to-scalar moves
+    // and vector loads/stores from two-wide commit (rob_f_ok_2wide_static);
+    // slot1_is_varith gates dispatch-time arithmetic legality, while
+    // VLOAD/VSTORE check legality at the ROB head.
     o_rob_alloc_req.is_varith = slot1_is_varith || (op == riscv_pkg::VLOAD) ||
-        (op == riscv_pkg::VSTORE);
+        (op == riscv_pkg::VSTORE) || (VECTOR && (op == riscv_pkg::VTOX)) || op_is_vtof;
     // Vector arithmetic uses its registered legality (VECTOR) or its queued
     // LMUL class, and vill; VTOX uses vill, and VTOF (vfmv.f.s) the
     // arithmetic legality. Arithmetic other than whole-register moves,

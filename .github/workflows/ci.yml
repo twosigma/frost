@@ -1912,12 +1912,12 @@ jobs:
             timeout_minutes: 148
           # The vector CSR state, the vector memory unit and the vtype tracker:
           # the vector CSR BMC takes forty to fifty minutes, the memory unit's
-          # BMC has a 25-minute limit and the tracker's proofs take seconds;
+          # BMC has a 40-minute limit and the tracker's proofs take seconds;
           # new vector proofs join them.
           - shard: Vector
             pytest_filter: >-
               csr_file_vector or vec_lmul_legality or vec_vmu or vec_vtype_tracker
-            timeout_minutes: 126
+            timeout_minutes: 141
           # The line client link proofs, in two jobs: the zero-stage BMC, the
           # two-identity one-stage BMC and the cover take about an hour; the
           # four- and eight-identity BMCs about forty minutes.

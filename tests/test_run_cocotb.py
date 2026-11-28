@@ -3600,6 +3600,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         for vlen in (128, 256, 512)
     },
     **{
+        f"vec_crypto_exec_reg_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_crypto_exec",
+            hdl_toplevel_module="vec_crypto_exec",
+            description=(
+                f"Zvbc, AES, SHA-2 and GHASH results with VRF_REG_DATA=1 at VLEN {vlen}"
+            ),
+            verilator_extra_args=("--assert", f"-GVLEN={vlen}", "-GVRF_REG_DATA=1"),
+        )
+        for vlen in (128, 256, 512)
+    },
+    **{
         f"vec_fp_exec_v{vlen}": CocotbRunConfig(
             python_test_module="cocotb_tests.vector.test_vec_fp_exec",
             hdl_toplevel_module="vec_fp_exec",
@@ -3608,6 +3619,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
                 f"flags pulse per flag-raising instruction at VLEN {vlen}"
             ),
             verilator_extra_args=(f"-GVLEN={vlen}",),
+        )
+        for vlen in (128, 256, 512)
+    },
+    **{
+        f"vec_fp_exec_reg_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_fp_exec",
+            hdl_toplevel_module="vec_fp_exec",
+            description=(
+                f"FP instruction sequencing with VRF_REG_DATA=1 at VLEN {vlen}"
+            ),
+            verilator_extra_args=(f"-GVLEN={vlen}", "-GVRF_REG_DATA=1"),
         )
         for vlen in (128, 256, 512)
     },
@@ -3984,6 +4006,29 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Vector engine at VLEN 128: integer instructions against a model of their semantics",
         verilator_extra_args=("-GVLEN=128",),
     ),
+    **{
+        f"vec_engine_split_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_engine_split",
+            hdl_toplevel_module="vec_engine",
+            description=(
+                f"Vector engine split-issue back-to-back hazards and o_grp_ready at VLEN {vlen}"
+            ),
+            verilator_extra_args=("--assert", f"-GVLEN={vlen}", "-GSPLIT_ISSUE=1"),
+        )
+        for vlen in (128, 256, 512)
+    },
+    **{
+        f"vec_unit_offhead_v{vlen}": CocotbRunConfig(
+            python_test_module="cocotb_tests.vector.test_vec_unit_offhead",
+            hdl_toplevel_module="vec_unit",
+            description=(
+                f"Vector unit off-head completion, full/partial flushes, ROB wrap, "
+                f"commit staging and nearly full VIQ at VLEN {vlen}"
+            ),
+            verilator_extra_args=("--assert", f"-GVLEN={vlen}"),
+        )
+        for vlen in (128, 256, 512)
+    },
     "divider": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",
@@ -6845,6 +6890,25 @@ for _vlen in (128, 256, 512):
         extra_env=(
             ("VLEN", str(_vlen)),
             ("COCOTB_MAX_CYCLES", str(VECTOR_BRING_UP_PROGRAMS["vec_ldst"][1])),
+            ("FROST_COCOTB_MEM_CONFIG", "ddr"),
+        ),
+    )
+
+for _vlen in (128, 256, 512):
+    TEST_REGISTRY[f"vec_perf_bench_v{_vlen}"] = CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vec_perf_bench",
+        nic_mac_clocks=False,
+        description=(
+            f"Vector engine performance microbenchmark at VLEN {_vlen} in cached DDR; CLI-only"
+        ),
+        include_in_pytest=False,
+        rerun_after_reset=False,
+        verilator_extra_args=("-GVECTOR=1", f"-GVLEN={_vlen}"),
+        extra_env=(
+            ("VLEN", str(_vlen)),
+            ("COCOTB_MAX_CYCLES", "2000000"),
             ("FROST_COCOTB_MEM_CONFIG", "ddr"),
         ),
     )

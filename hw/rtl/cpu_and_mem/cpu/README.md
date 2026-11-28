@@ -1003,10 +1003,14 @@ and `vfmv.s.f` write element zero when `vstart < vl`, including
 `0 < vstart < vl`, and nothing when `vstart >= vl`. When arithmetic retires,
 `vec_unit` queues it with its scalar and the architectural `vl`, `vtype`,
 `vstart`, `vxrm` and `frm`, and the engine executes it after commit; the CSR
-file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`
-and `vfirst.m` execute at the ROB head once the unit is idle and return their
-registered result on CDB slot 6. Only `vcpop.m` and `vfirst.m` take an extra
-cycle to combine the counts or first-set indices from the 64-bit blocks.
+file clears `vstart` and sets VS Dirty. `vmv.x.s`, `vcpop.m`,
+`vfirst.m` and `vfmv.f.s` execute off the ROB head once older vector writes to
+their source registers (and older `vl` updates for `vcpop.m` and `vfirst.m`)
+have drained, returning their registered result on CDB slot 6 without waiting
+for the rest of the vector backend to empty; they retire alone in slot 1
+because `vec_unit` observes only the slot-1 commit bus for `o_vtox_commit`
+(`vtype` legality is checked at dispatch). Only `vcpop.m` and `vfirst.m` take
+extra cycles to mask, count or scan and combine the 64-bit blocks.
 Scalar integer programs, including CoreMark, do not enter these states.
 Retiring these scalar-result instructions clears
 `vstart`, dirtying VS only if that changes it. Saturation from active,
@@ -1024,7 +1028,7 @@ specification permits. A `VARITH_F` instruction reads its f-register operand
 at the ROB head, once the unit is idle and the older instructions have
 retired, through the register files' extra read port, and completes on CDB
 slot 6 with that value, which retirement hands to the queue. `vfmv.f.s`
-executes at the head like `vmv.x.s` and returns element zero on CDB slot 6,
+executes off the ROB head like `vmv.x.s` and returns element zero on CDB slot 6,
 NaN-boxed when SEW is 16 or 32; it writes the f register when it retires and
 clears `vstart`. The engine collects the exception flags of an instruction's
 active elements and, when the instruction finishes, sends them to the CSR file
@@ -1188,9 +1192,10 @@ before element `i` without an exception, and the instruction completes and
 retires with `vl` set to `i`. The CSR file installs it on the edge of the load's
 registered commit, one edge after the reorder buffer passes the load. Later
 instructions read the architectural `vl` after that edge (arithmetic at its own
-registered commit, memory and vector-to-scalar instructions at the head,
-`vsetvli x0, x0` at its commit); a vector arithmetic instruction right behind the
-load reads it on the next edge, with no cycle to spare.
+registered commit, memory instructions at the head, `vcpop.m` and `vfirst.m`
+off the head once the load retires, and `vsetvli x0, x0` at its commit); a
+vector arithmetic instruction right behind the load reads it on the next edge,
+with no cycle to spare.
 
 The X3 configuration and the opt-in VCU118 `--vector` build use `VECTOR=1`,
 `VLEN=256` and `VECTOR_ADVERTISE=1`, so `misa.V` reads one. Their device trees
@@ -1222,10 +1227,11 @@ logical operations, `vcpop.m`, `vfirst.m`, `vmsbf.m`, `vmsif.m`, `vmsof.m`,
 64-bit word of elements each, keeping the running count, the first-bit flag and
 the element index from one step of an instruction to the next.
 `vec_red_unit` runs the integer reductions and the widening sums the same way,
-one 64-bit word of elements per step: inactive elements count as the
-operation's identity, elements are extended to 64 bits so one operation
-serves every element width, and a three-level tree reduces each word before it
-meets the running value.
+one 64-bit word of elements per step: per-node active flags skip inactive
+elements without widening them to 64-bit identities, lower tree levels carry
+narrowed element widths while sharing one comparator across minimum and maximum
+forms, and a three-level pipelined tree reduces each word before it meets the
+running value.
 `vec_xbar` moves bytes within one element group: a crossbar whose output byte
 takes any input byte or zero, for the gathers, slides and compress that the
 sequencer turns into byte indices, and a rotator for slides by whole bytes and
@@ -1278,17 +1284,25 @@ the other blocks. It takes one operation at a time, signals when it is free,
 and returns each result a fixed P + 10 cycles later (P is the format's
 precision: 21, 34 and 63 cycles for FP16, FP32 and FP64).
 
-`vec_engine` combines the register file with registered execution blocks.
-Single-width ALU operations execute a register group at a time.
-`vec_int_exec` executes one element at a time for multiply/divide, carry and
-borrow, widening and narrowing arithmetic, extension, fixed point, masks,
-reductions and permutations. `vec_fixed_lane` separates arithmetic, shifts,
-rounding and saturation into registered stages; `vec_div_lane` uses 64
-restoring steps. The multiply, mask and reduction units supply their
-respective results. Gathers and slides read the selected source element in a
-separate registered step. Compress visits every source element, including
-unselected elements, and advances a packed destination cursor. Whole-register
-moves use the encoded register count independently of `vl` and LMUL.
+`vec_engine` combines the register file with registered execution blocks, with
+engine-side throughput and latency shaped by John Goodacre's vector performance
+study. Single-width ALU operations run through a six-stage, one-group-per-cycle
+pipeline (with registered VRF read data between the read and execute stages)
+with per-register RAW hazard stalls, skipping register groups outside
+`vstart..vl` and chaining element groups across multi-register LMUL operations.
+`vec_int_exec` streams single-width and widening integer multiply and
+multiply-accumulate through one shared 64-bit multiply lane in pipelined 64-bit
+beats (skipping register groups and upper beats outside `vstart..vl`), streams
+integer and widening-sum reductions one 64-bit lane per cycle through the
+pipelined reduction tree, and executes one element at a time for divide, carry
+and borrow, widening and narrowing add and shift, extension, fixed point, masks
+and permutations. `vec_fixed_lane` separates arithmetic, shifts, rounding and
+saturation into registered stages; `vec_div_lane` uses 64 restoring steps. The
+multiply, mask and reduction units supply their respective results. Gathers and
+slides read the selected source element in a separate registered step. Compress
+visits every source element, including unselected elements, and advances a
+packed destination cursor. Whole-register moves use the encoded register count
+independently of `vl` and LMUL.
 
 `vec_fp_exec` executes the floating-point instructions one element at a time:
 it reads the source registers, extracts the elements, runs `vec_fp_lane` and
@@ -1306,10 +1320,15 @@ flags. The FP16 arithmetic, estimate and FP16/integer conversion instances
 exist only with `riscv_pkg::VectorZvfh`, which also makes SEW=16 FP arithmetic
 legal; the FP16/FP32 conversions of Zvfhmin are always present.
 
-Instructions execute in order with no overlap. Only active body bytes are
-written, preserving tails and inactive elements. Mask results merge one bit
-into the previous destination byte. Widening and narrowing operations permit
-the overlaps specified by their source and destination EEWs; reductions read
+Single-width group-ALU instructions stream through the `vec_engine` pipeline
+back to back (stalling on RAW hazards or in-flight mask-destination compares),
+and register-independent group-ALU instructions pop from the VIQ and run in
+`vec_engine` concurrently with an active `vec_vmu` transfer; multi-cycle
+`vec_int_exec`, `vec_fp_exec` and `vec_crypto_exec` instructions wait for
+`vmu_busy_q` and execute in order without overlapping other engine operations.
+Only active body bytes are written, preserving tails and inactive elements.
+Mask results merge one bit into the previous destination byte. Widening and
+narrowing operations permit the overlaps specified by their source and destination EEWs; reductions read
 their seed before writing their scalar result. Each operand value follows the
 same sequence of states for its instruction and configuration. A registered
 read port and a byte-enabled write port serve the memory side.

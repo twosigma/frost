@@ -26,11 +26,12 @@
   six cycles after the cycle that takes the input, whatever the operation
   and operands.
 
-  The products are computed separately for each element width from operands
-  extended to SEW+1 bits, so one signed multiply covers the signed, unsigned and
-  mixed forms. The operands and their extension bits are registered before
-  the multipliers, which are followed by four register stages that synthesis
-  places inside the DSP cascades.
+  SEW 16, 32 and 64 share four 33x33 signed multipliers (one 17x17 slice each
+  at SEW 16, two 33x33 slices at SEW 32, and the four 32-bit quadrant products
+  at SEW 64), while SEW 8 uses eight 9x9 signed products. Operands are
+  registered before the multipliers, followed by three multiplier pipeline
+  stages, one product-assembly register stage, and the final output/accumulate
+  register stage.
 */
 module vec_mul_lane (
     input  logic                     i_clk,
@@ -63,82 +64,90 @@ module vec_mul_lane (
   end
 
   // x is signed for MULH and MULHSU, y only for MULH; the low-half results
-  // (MUL, MACC, NMSAC) are the same for any signedness. Stage A registers
-  // the operands with their sign-extension bits, so the multipliers start
-  // from registers.
+  // (MUL, MACC, NMSAC) are the same for any signedness. Stage A prepares and
+  // registers the four 33-bit signed multiplier operands (shared by SEW 16,
+  // 32 and 64) and the eight 9-bit signed operands for SEW 8.
   logic x_signed, y_signed;
   assign x_signed = (s0_op == vec_pkg::VM_MULH) || (s0_op == vec_pkg::VM_MULHSU);
   assign y_signed = (s0_op == vec_pkg::VM_MULH);
+
+  logic signed [32:0] ax_d[4], ay_d[4];
+  logic signed [8:0] a8x_d[8], a8y_d[8];
+  always_comb begin
+    for (int e = 0; e < 8; e++) begin
+      a8x_d[e] = $signed({x_signed & s0_x[8*e+7], s0_x[8*e+:8]});
+      a8y_d[e] = $signed({y_signed & s0_y[8*e+7], s0_y[8*e+:8]});
+    end
+    for (int k = 0; k < 4; k++) begin
+      ax_d[k] = '0;
+      ay_d[k] = '0;
+    end
+    unique case (s0_sew)
+      vec_pkg::SEW8, vec_pkg::SEW16: begin
+        for (int k = 0; k < 4; k++) begin
+          ax_d[k] = $signed({{17{x_signed & s0_x[16*k+15]}}, s0_x[16*k+:16]});
+          ay_d[k] = $signed({{17{y_signed & s0_y[16*k+15]}}, s0_y[16*k+:16]});
+        end
+      end
+      vec_pkg::SEW32: begin
+        ax_d[0] = $signed({x_signed & s0_x[31], s0_x[31:0]});
+        ay_d[0] = $signed({y_signed & s0_y[31], s0_y[31:0]});
+        ax_d[1] = $signed({x_signed & s0_x[63], s0_x[63:32]});
+        ay_d[1] = $signed({y_signed & s0_y[63], s0_y[63:32]});
+      end
+      default: begin  // SEW64: X = X_hi * 2^32 + X_lo, Y = Y_hi * 2^32 + Y_lo
+        ax_d[0] = $signed({1'b0, s0_x[31:0]});
+        ay_d[0] = $signed({1'b0, s0_y[31:0]});
+        ax_d[1] = $signed({x_signed & s0_x[63], s0_x[63:32]});
+        ay_d[1] = $signed({y_signed & s0_y[63], s0_y[63:32]});
+        ax_d[2] = $signed({1'b0, s0_x[31:0]});
+        ay_d[2] = $signed({y_signed & s0_y[63], s0_y[63:32]});
+        ax_d[3] = $signed({x_signed & s0_x[63], s0_x[63:32]});
+        ay_d[3] = $signed({1'b0, s0_y[31:0]});
+      end
+    endcase
+  end
+
   logic sa_valid;
   vec_pkg::mul_op_e sa_op;
   vec_pkg::sew_e sa_sew;
-  logic [63:0] sa_x, sa_y, sa_z;
-  logic [7:0] sa_xs, sa_ys;  // sign-extension bit of each byte's element
+  logic [63:0] sa_z;
+  logic signed [32:0] sa_ax[4], sa_ay[4];
+  logic signed [8:0] sa_a8x[8], sa_a8y[8];
   always_ff @(posedge i_clk) begin
     if (i_rst) sa_valid <= 1'b0;
     else sa_valid <= s0_valid;
     sa_op  <= s0_op;
     sa_sew <= s0_sew;
-    sa_x   <= s0_x;
-    sa_y   <= s0_y;
     sa_z   <= s0_z;
-    for (int i = 0; i < 8; i++) begin
-      sa_xs[i] <= x_signed & s0_x[8*i+7];
-      sa_ys[i] <= y_signed & s0_y[8*i+7];
-    end
+    sa_ax  <= ax_d;
+    sa_ay  <= ay_d;
+    sa_a8x <= a8x_d;
+    sa_a8y <= a8y_d;
   end
 
-  // Full products for each element width, from SEW+1-bit extended operands.
-  logic [7:0][15:0] p8;
-  logic [3:0][31:0] p16;
-  logic [1:0][63:0] p32;
-  logic [127:0] p64;
+  // Four shared 33x33 signed products and eight 9x9 signed products.
+  logic signed [65:0] m_comb[4];
+  logic [127:0] p8_comb;
   always_comb begin
+    for (int k = 0; k < 4; k++) m_comb[k] = sa_ax[k] * sa_ay[k];
     for (int e = 0; e < 8; e++) begin
-      logic signed [8:0] xe, ye;
       logic signed [17:0] pe;
-      xe = {sa_xs[e], sa_x[8*e+:8]};
-      ye = {sa_ys[e], sa_y[8*e+:8]};
-      pe = xe * ye;
-      p8[e] = pe[15:0];
-    end
-    for (int e = 0; e < 4; e++) begin
-      logic signed [16:0] xe, ye;
-      logic signed [33:0] pe;
-      xe = {sa_xs[2*e+1], sa_x[16*e+:16]};
-      ye = {sa_ys[2*e+1], sa_y[16*e+:16]};
-      pe = xe * ye;
-      p16[e] = pe[31:0];
-    end
-    for (int e = 0; e < 2; e++) begin
-      logic signed [32:0] xe, ye;
-      logic signed [65:0] pe;
-      xe = {sa_xs[4*e+3], sa_x[32*e+:32]};
-      ye = {sa_ys[4*e+3], sa_y[32*e+:32]};
-      pe = xe * ye;
-      p32[e] = pe[63:0];
-    end
-    begin
-      logic signed [64:0] xe, ye;
-      logic signed [129:0] pe;
-      xe  = {sa_xs[7], sa_x};
-      ye  = {sa_ys[7], sa_y};
-      pe  = xe * ye;
-      p64 = pe[127:0];
+      pe = sa_a8x[e] * sa_a8y[e];
+      p8_comb[16*e+:16] = pe[15:0];
     end
   end
 
-  // Product pipeline: MulStages register stages after the multipliers, which
-  // synthesis places inside the DSP cascades of the wide products.
-  localparam int MulStages = 4;
+  // Multiplier pipeline: MulStages register stages absorbed into the DSP
+  // cascades, followed by one stage that combines the partial products into
+  // a single 128-bit packed product register.
+  localparam int MulStages = 3;
   logic pv[MulStages];
   vec_pkg::mul_op_e pop[MulStages];
   vec_pkg::sew_e psew[MulStages];
   logic [63:0] pz[MulStages];
-  logic [7:0][15:0] pp8[MulStages];
-  logic [3:0][31:0] pp16[MulStages];
-  logic [1:0][63:0] pp32[MulStages];
-  logic [127:0] pp64[MulStages];
+  logic signed [65:0] pm[MulStages][4];
+  logic [127:0] pp8[MulStages];
   always_ff @(posedge i_clk) begin
     if (i_rst) for (int k = 0; k < MulStages; k++) pv[k] <= 1'b0;
     else begin
@@ -148,67 +157,77 @@ module vec_mul_lane (
     pop[0]  <= sa_op;
     psew[0] <= sa_sew;
     pz[0]   <= sa_z;
-    pp8[0]  <= p8;
-    pp16[0] <= p16;
-    pp32[0] <= p32;
-    pp64[0] <= p64;
+    pm[0]   <= m_comb;
+    pp8[0]  <= p8_comb;
     for (int k = 1; k < MulStages; k++) begin
       pop[k]  <= pop[k-1];
       psew[k] <= psew[k-1];
       pz[k]   <= pz[k-1];
+      pm[k]   <= pm[k-1];
       pp8[k]  <= pp8[k-1];
-      pp16[k] <= pp16[k-1];
-      pp32[k] <= pp32[k-1];
-      pp64[k] <= pp64[k-1];
     end
   end
+
+  // Stage 2: combine SEW64 quadrants and pack the selected width's products
+  // into one 128-bit register before the final accumulate stage.
+  logic [95:0] p64_mid;
+  logic [127:0] p64, prod_next;
+  assign p64_mid = 96'($signed(pm[MulStages-1][2])) + 96'($signed(pm[MulStages-1][3]));
+  assign p64 = {64'd0, pm[MulStages-1][0][63:0]} + {p64_mid, 32'd0} +
+               {pm[MulStages-1][1][63:0], 64'd0};
+  always_comb begin
+    unique case (psew[MulStages-1])
+      vec_pkg::SEW8: prod_next = pp8[MulStages-1];
+      vec_pkg::SEW16:
+      prod_next = {
+        pm[MulStages-1][3][31:0],
+        pm[MulStages-1][2][31:0],
+        pm[MulStages-1][1][31:0],
+        pm[MulStages-1][0][31:0]
+      };
+      vec_pkg::SEW32: prod_next = {pm[MulStages-1][1][63:0], pm[MulStages-1][0][63:0]};
+      default: prod_next = p64;
+    endcase
+  end
+
   logic s2_valid;
   vec_pkg::mul_op_e s2_op;
   vec_pkg::sew_e s2_sew;
   logic [63:0] s2_z;
-  logic [7:0][15:0] s2_p8;
-  logic [3:0][31:0] s2_p16;
-  logic [1:0][63:0] s2_p32;
-  logic [127:0] s2_p64;
-  assign s2_valid = pv[MulStages-1];
-  assign s2_op = pop[MulStages-1];
-  assign s2_sew = psew[MulStages-1];
-  assign s2_z = pz[MulStages-1];
-  assign s2_p8 = pp8[MulStages-1];
-  assign s2_p16 = pp16[MulStages-1];
-  assign s2_p32 = pp32[MulStages-1];
-  assign s2_p64 = pp64[MulStages-1];
+  logic [127:0] s2_prod;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) s2_valid <= 1'b0;
+    else s2_valid <= pv[MulStages-1];
+    s2_op   <= pop[MulStages-1];
+    s2_sew  <= psew[MulStages-1];
+    s2_z    <= pz[MulStages-1];
+    s2_prod <= prod_next;
+  end
 
   // Final stage: low or high halves, the accumulate, and the wide products.
   logic [63:0] lo, hi;
-  logic [127:0] wide;
   always_comb begin
-    lo   = '0;
-    hi   = '0;
-    wide = '0;
+    lo = '0;
+    hi = '0;
     unique case (s2_sew)
       vec_pkg::SEW8:
       for (int e = 0; e < 8; e++) begin
-        lo[8*e+:8] = s2_p8[e][7:0];
-        hi[8*e+:8] = s2_p8[e][15:8];
-        wide[16*e+:16] = s2_p8[e];
+        lo[8*e+:8] = s2_prod[16*e+:8];
+        hi[8*e+:8] = s2_prod[16*e+8+:8];
       end
       vec_pkg::SEW16:
       for (int e = 0; e < 4; e++) begin
-        lo[16*e+:16]   = s2_p16[e][15:0];
-        hi[16*e+:16]   = s2_p16[e][31:16];
-        wide[32*e+:32] = s2_p16[e];
+        lo[16*e+:16] = s2_prod[32*e+:16];
+        hi[16*e+:16] = s2_prod[32*e+16+:16];
       end
       vec_pkg::SEW32:
       for (int e = 0; e < 2; e++) begin
-        lo[32*e+:32]   = s2_p32[e][31:0];
-        hi[32*e+:32]   = s2_p32[e][63:32];
-        wide[64*e+:64] = s2_p32[e];
+        lo[32*e+:32] = s2_prod[64*e+:32];
+        hi[32*e+:32] = s2_prod[64*e+32+:32];
       end
       default: begin
-        lo   = s2_p64[63:0];
-        hi   = s2_p64[127:64];
-        wide = s2_p64;
+        lo = s2_prod[63:0];
+        hi = s2_prod[127:64];
       end
     endcase
   end
@@ -218,10 +237,10 @@ module vec_mul_lane (
   logic [7:0] tops;
   always_comb begin
     unique case (s2_sew)
-      vec_pkg::SEW8: tops = 8'b1111_1111;
+      vec_pkg::SEW8:  tops = 8'b1111_1111;
       vec_pkg::SEW16: tops = 8'b1010_1010;
       vec_pkg::SEW32: tops = 8'b1000_1000;
-      default: tops = 8'b1000_0000;
+      default:        tops = 8'b1000_0000;
     endcase
   end
   logic sub;
@@ -249,7 +268,7 @@ module vec_mul_lane (
       vec_pkg::VM_MULH, vec_pkg::VM_MULHU, vec_pkg::VM_MULHSU: o_result <= hi;
       default: o_result <= acc;
     endcase
-    o_wide <= wide;
+    o_wide <= s2_prod;
   end
 
 endmodule
