@@ -17,6 +17,7 @@
 import gzip
 import importlib
 import json
+import struct
 from pathlib import Path
 from typing import Any
 
@@ -140,7 +141,21 @@ def test_manifest_binds_binary_window_and_run(tmp_path: Path) -> None:
         stream_api.read_stream(path, manifest)
 
 
-def make_recorder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+def executable_elf(code: bytes) -> bytes:
+    """Build ELF64 headers with executable, non-executable and non-load segments."""
+    header = bytearray(64)
+    header[:16] = b"\x7fELF\x02\x01\x01" + bytes(9)
+    struct.pack_into("<HHIQQQIHHHHHH", header, 16,
+                     2, 243, 1, 0, 64, 0, 0, 64, 56, 3, 0, 0, 0)
+    offset = 64 + 3 * 56
+    segments = b"".join(struct.pack("<IIQQQQQQ", typ, flags, offset, va, va,
+                                  len(code), len(code) + 16, 4)
+                        for typ, flags, va in ((1, 5, 0), (1, 6, 4096), (4, 1, 8192)))
+    return bytes(header) + segments + code
+
+
+def make_recorder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                  code: bytes | None = None) -> Any:
     """Bind packed signal doubles with the same widths as production."""
     layouts = {
         "from_id_to_ex": cpu_structs.ID_TO_EX_FIELDS,
@@ -156,11 +171,11 @@ def make_recorder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     }
     dut = _Node("", set(), widths)
     # LUI x1,1; ADDI x1,x1,-8; LD x2,0(x1).
-    code = b"".join(i.to_bytes(4, "little") for i in (0x10B7, 0xFF808093, 0xB103))
-    (tmp_path / "sw.elf").write_bytes(code)
+    if code is None:
+        code = b"".join(i.to_bytes(4, "little") for i in (0x10B7, 0xFF808093, 0xB103))
+    (tmp_path / "sw.elf").write_bytes(executable_elf(code))
     (tmp_path / "sw.bin").write_bytes(code)
-    monkeypatch.setattr(recorder, "elf_segments", lambda _path: [(0, code)])
-    return recorder.InstructionTrace(
+    capture = recorder.InstructionTrace(
         dut,
         tmp_path / "i.jsonl.gz",
         tmp_path,
@@ -173,6 +188,9 @@ def make_recorder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
             "stop_pc": 8,
         },
     )
+
+    capture.test_dut = dut
+    return capture
 
 
 def drive(capture: Any, **values: int) -> None:
@@ -388,3 +406,124 @@ def test_annotation_mismatch_fails_closed(
     )
     with pytest.raises(AssertionError, match="lineage mismatch"):
         cap.sample(False)
+
+
+def test_real_executable_elf_segments(tmp_path: Path) -> None:
+    """PT_LOAD flags, file offsets, virtual addresses and filesz select code only."""
+    path = tmp_path / "app.elf"
+    code = bytes.fromhex("850093801000")
+    path.write_bytes(executable_elf(code))
+    assert recorder.elf_segments(path) == [(0, code)]
+    path.write_bytes(b"not an ELF")
+    with pytest.raises(ValueError, match="ELF64"):
+        recorder.elf_segments(path)
+
+
+def test_compressed_capture_and_signed_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Raw compressed parcels bind to ELF while expanded operands resolve an S immediate."""
+    store = 0xFE20BC23  # SD x2,-8(x1)
+    cap = make_recorder(tmp_path, monkeypatch, b"\x85\x00" + store.to_bytes(4, "little"))
+    cap.registers[1] = 4096
+    cap.registers[2] = 42
+    allocate(cap, 0, 0x00108093, 0, is_compressed=1, insn_bits=0xDEAD0085, uses_int_rs1=1)
+    drive(cap, rob_commit_comb=commit(0, 0, 1, 4097))
+    cap.sample(True)
+    allocate(cap, 2, store, 1, has_int_dest=0, uses_int_rs1=1, uses_int_rs2=1,
+             is_int_store=1, immediate_s_type=(1 << 64) - 8)
+    drive(cap, rob_commit_comb=commit(2, 1, 0, 0))
+    cap.sample(True)
+    evidence = cap.finish(2)
+    assert evidence["path"] == cap.path.name
+    ops = stream_api.read_stream(cap.path).instructions
+    assert ops[0].length == 2 and ops[0].instruction == 0x00108093
+    assert ops[1].kind == "store" and ops[1].address == 4089
+    assert ops[1].memory_bytes == 8 and ops[1].depends_on == (0,)
+
+
+@pytest.mark.parametrize("instruction,taken,predicted,kind", [
+    (0x00008463, False, False, "conditional"),
+    (0x00008463, True, False, "conditional"),
+    (0x00008463, True, True, "conditional"),
+    (0x008000EF, True, False, "jal"),
+    (0x000080E7, True, True, "jalr"),
+])
+def test_retired_branch_outcomes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                instruction: int, taken: bool, predicted: bool, kind: str) -> None:
+    """Conditional, direct and indirect branches retain actual and predicted targets."""
+    cap = make_recorder(tmp_path, monkeypatch, instruction.to_bytes(4, "little"))
+    allocate(cap, 0, instruction, 0, has_int_dest=int(kind != "conditional"),
+             is_branch_or_jump=1, btb_predicted_taken=int(predicted), btb_predicted_target=8)
+    packet = recorder.fields(cpu_structs.COMMIT_FIELDS, commit(0, 0, int(kind != "conditional"), 4))
+    packet.update(branch_taken=int(taken), branch_target=8)
+    drive(cap, rob_commit_comb=packed_structs.pack_struct(cpu_structs.COMMIT_FIELDS, packet))
+    cap.sample(True)
+    cap.finish(1)
+    op = stream_api.read_stream(cap.path).instructions[0]
+    assert op.next_pc == (8 if taken else 4)
+    assert op.prediction.execute_redirect == (taken != predicted)
+    assert cap.tiers["execute" if taken != predicted else "f0" if predicted else "sequential"] == 1
+
+
+def test_reverse_destination_check_and_zero_noise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unexpected commit destinations fail; x0 is absent from serialized operands."""
+    cap = make_recorder(tmp_path, monkeypatch)
+    allocate(cap, 0, 0x10B7, 0, has_int_dest=0)
+    with pytest.raises(AssertionError, match="destination"):
+        drive(cap, rob_commit_comb=commit(0, 0, 1, 4096))
+        cap.sample(True)
+    cap.file.close()
+    cap = make_recorder(tmp_path, monkeypatch, (0x13).to_bytes(4, "little"))
+    allocate(cap, 0, 0x13, 0, uses_int_rs1=1)
+    drive(cap, rob_commit_comb=commit(0, 0, 0, 0))
+    cap.sample(True)
+    cap.finish(1)
+    with gzip.open(cap.path, "rt") as file:
+        record = json.loads(file.readlines()[1])
+    assert record["sources"] == [] and record["destination"] is None
+
+
+def test_capture_window_and_done_quiescence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Aggregate and instruction capture share the window and stop all VPI work at DONE."""
+    import logging
+    import cocotb
+    from test_calibration_trace import calibration_trace, _drive
+
+    monkeypatch.setattr(cocotb, "log", logging.getLogger("capture"), raising=False)
+
+    old = make_recorder(tmp_path, monkeypatch)
+    if old.file is not None:
+        old.file.close()
+    monkeypatch.setenv("FROST_INSTRUCTION_TRACE_PATH", str(tmp_path / "i.jsonl.gz"))
+    monkeypatch.setattr(calibration_trace, "program_directory", lambda _app: tmp_path)
+    aggregate = calibration_trace.CalibrationTrace(old.test_dut, tmp_path / "t.jsonl",
+                                                   "coremark", 1, 3, (4, 8))
+    cap = aggregate.instructions
+    allocate(cap, 0, 0x10B7, 0)
+    drive(cap, rob_commit_comb=commit(0, 0, 1, 4096))
+    _drive(old.test_dut, {f"{CORE}.dbg_commit_valid": 1, f"{CORE}.dbg_commit_pc": 0})
+    aggregate.sample(0)
+    assert cap.registers[1] == 4096 and cap.count == 0
+    allocate(cap, 4, 0xFF808093, 1, uses_int_rs1=1)
+    drive(cap, rob_commit_comb=commit(4, 1, 1, 4088))
+    _drive(old.test_dut, {f"{CORE}.dbg_commit_valid": 1, f"{CORE}.dbg_commit_pc": 4})
+    aggregate.sample(1)
+    assert aggregate.state == "STARTING" and cap.count == 0
+    allocate(cap, 8, 0xB103, 2, uses_int_rs1=1, is_load_instruction=1)
+    drive(cap)
+    _drive(old.test_dut, {})
+    aggregate.sample(2)
+    assert aggregate.state == "ACTIVE"
+    drive(cap, rob_commit_comb=commit(8, 2, 2, 42))
+    _drive(old.test_dut, {f"{CORE}.dbg_commit_valid": 1, f"{CORE}.dbg_commit_pc": 8})
+    aggregate.sample(3)
+    assert aggregate.state == "DONE" and cap.count == aggregate.counters["retired_uops"] == 1
+    def forbidden(*_args: Any) -> None:
+        raise AssertionError("post-window signal access")
+    monkeypatch.setattr(calibration_trace, "_read", forbidden)
+    monkeypatch.setattr(cap, "sample", forbidden)
+    aggregate.sample(4)
+    aggregate.sample(500_000)
+    if not cap.closed:
+        cap.finish(1)
+    ops = stream_api.read_stream(cap.path).instructions
+    assert ops[0].address == 4088

@@ -426,6 +426,8 @@ class CalibrationTrace:
         cycle is the loop's 0-based count; the window's cycle stamps count
         from its first cycle.
         """
+        if self.state == "DONE":
+            return
         r1_ret = bool(_read(self.retire))
         r2_ret = bool(_read(self.retire_2))
         r1_pc = _read(self.retire_pc) if r1_ret else None

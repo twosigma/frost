@@ -283,14 +283,16 @@ class InstructionTrace:
             sources = []
             for used, shift in (("uses_int_rs1", 15), ("uses_int_rs2", 20)):
                 reg = (insn >> shift) & 31
-                if packet[used] and reg not in sources:
+                if packet[used] and reg and reg not in sources:
                     sources.append(reg)
             destination = (insn >> 7) & 31 if packet["has_int_dest"] else None
-            if destination and (
-                not commit["dest_valid"]
-                or commit["dest_rf"]
-                or commit["dest_reg"] != destination
-            ):
+            destination = destination or None
+            committed_destination = (
+                commit["dest_reg"]
+                if commit["dest_valid"] and not commit["dest_rf"]
+                else None
+            ) or None
+            if destination != committed_destination:
                 raise AssertionError(
                     "instruction capture: destination differs at retirement"
                 )
@@ -370,7 +372,7 @@ class InstructionTrace:
         self.closed = True
         return {
             "schema": SCHEMA,
-            "path": str(self.path),
+            "path": self.path.name,
             "instructions": self.count,
             "sha256": hashlib.sha256(self.path.read_bytes()).hexdigest(),
             "compressed_bytes": self.path.stat().st_size,
