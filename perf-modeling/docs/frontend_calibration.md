@@ -15,7 +15,7 @@ The fresh capture uses RTL commit
 `200f339eaf5996a5510cf4e0d96adbd4c22e576c`. It has 1,354 execute corrections,
 3,526 PD direction annotations and 581 PD backing annotations. The earlier
 capture had 1,485 execute corrections, so the two rows also include predictor
-variation. Replaying the fresh stream with the reviewed sources gives
+variation. The loaded `sw.bin` hash is unchanged. Replaying the fresh stream with the reviewed sources gives
 182,373 cycles (+10.10%); all fixes together add 8,183 cycles on that same
 input and reduce the gap to +5.37%. This also confirms that the previous
 0.22-point margin was insufficient for ordinary predictor variation.
@@ -94,7 +94,8 @@ Replay still describes only the architectural path. RTL dispatched 239,424
 operations versus 226,801 retired: 12,623 extra operations (5.57% of useful
 work) consume resources in RTL but are absent from replay. Wrong-path cache
 pollution, speculative fetch requests, predictor validation traffic, exact
-CDB arbitration and memory-station selection are not reconstructed. The
+CDB arbitration, JAL recovery admission against older unresolved branches,
+and memory-station slot selection are not reconstructed. The
 pipeline and data caches start empty at the window boundary. These differences
 can have opposing effects; the residual cannot be assigned entirely to
 wrong-path instructions from instruction counts alone.
@@ -153,6 +154,21 @@ and [reviewed comparison](../results/coremark_bram_calibration/with_scalar_rules
 remain historical evidence. The synthetic DDR pressure workload and its
 regenerated deterministic fixtures remain separate from instruction replay.
 
-Verification results are recorded with the refreshed comparison. All checks
-use the pinned image; the complete fast selection is
+Verification in the pinned image passed:
+
+- The CI CoreMark shard selection: **2 passed** (`coremark`, `coremark_profile`),
+  after cleaning the simulation build.
+- The CI calibration command with `--instructions`: **+5.37%, PASS** at 10%.
+  A subsequent passing `--refresh` updated the baseline and replay-source hashes.
+- All performance, memory, workload, sweep, frontend, capture and replay tests:
+  **211 passed**, including the new end-to-end cases.
+- The complete fast selection: **4,497 passed, 3 skipped, 1,947 deselected**.
+- Full `pre-commit run --all-files`, public-text validation, and the committed
+  `perf-modeling`, `tests`, and `verif` workstation-path scan: clean.
+  All five CI evidence files were also scanned, including the compressed stream.
+
+The complete fast selection is
 `pytest tests -m 'not cocotb and not synthesis and not formal and not slow'`.
+Upstream's temporary tolerance increase was merged and resolved to retain
+0.10 and remove its temporary README explanation. That merge changed no
+verified implementation or evidence files.
