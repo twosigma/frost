@@ -51,6 +51,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rtl-commit", required=True)
     parser.add_argument("--model-run", type=Path)
     parser.add_argument(
+        "--instructions", type=Path, help="separate binary-bound instruction stream"
+    )
+    parser.add_argument(
         "--baseline", type=Path, help="check the trace against this stored baseline"
     )
     parser.add_argument(
@@ -68,6 +71,16 @@ def parse_args() -> argparse.Namespace:
     if (args.counters or args.manifest or args.refresh) and not args.baseline:
         parser.error("--counters, --manifest, and --refresh need --baseline")
     return args
+
+
+def public_path(path: Path) -> str:
+    """Evidence names repository files without exposing checkout directories."""
+    try:
+        return (
+            path.resolve().relative_to(Path(__file__).resolve().parents[2]).as_posix()
+        )
+    except ValueError:
+        return path.name
 
 
 def _read_json(path: Path) -> Any:
@@ -94,12 +107,20 @@ def model_config(baseline: dict[str, Any]) -> Any:
     return config
 
 
-def _model_run(baseline: dict[str, Any]) -> dict[str, Any]:
-    """Run the model's built-in workload with the baseline's seed and configuration."""
+def _model_run(
+    baseline: dict[str, Any],
+    instructions: Path | None = None,
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the baseline workload; CoreMark BRAM requires the same capture's stream."""
     import frost_perf_model
 
     return frost_perf_model.run_workload(
-        model_config(baseline), baseline["model_workload"], baseline["model_seed"]
+        model_config(baseline),
+        baseline["model_workload"],
+        baseline["model_seed"],
+        instruction_trace=instructions,
+        manifest=manifest,
     )
 
 
@@ -164,17 +185,23 @@ def main() -> int:
     if events[0]["rtl_commit"] != args.rtl_commit:
         raise SystemExit("trace meta rtl_commit does not match --rtl-commit")
     baseline = _read_json(args.baseline) if args.baseline else None
+    manifest = _read_json(args.manifest) if args.manifest else None
+    if baseline and baseline["model_workload"] == "coremark_bram":
+        if not args.instructions or manifest is None or args.model_run:
+            raise SystemExit(
+                "CoreMark calibration requires --instructions and --manifest; --model-run cannot replace replay"
+            )
     if args.model_run:
         model = _read_json(args.model_run)
     elif baseline is not None:
-        model = _model_run(baseline)
+        model = _model_run(baseline, args.instructions, manifest)
     else:
         model = None
     record = compare_summary(summarize(events), model)
     record.update(
         {
             "rtl_commit": args.rtl_commit,
-            "trace": str(args.trace),
+            "trace": public_path(args.trace),
             "calibration_status": "valid trace only; fit parameters only with archived directed-case evidence",
         }
     )
@@ -185,25 +212,49 @@ def main() -> int:
         modelled = model_figures(model)
         counters = _read_json(args.counters) if args.counters else None
         deltas, failures = check_calibration(rtl, modelled, baseline, counters)
-        if args.manifest:
-            failures += _identity_failures(_read_json(args.manifest), baseline)
+        if manifest is not None:
+            failures += _identity_failures(manifest, baseline)
+            if "instruction_stream" in model:
+                evidence = model["instruction_stream"]
+                if evidence["rtl_commit"] != args.rtl_commit:
+                    failures.append(
+                        "instruction RTL commit differs from aggregate trace"
+                    )
+                if evidence["instructions"] != rtl["retired_uops"]:
+                    failures.append(
+                        "instruction count differs from aggregate retirement"
+                    )
+                record["instruction_stream"] = evidence
+                record["frontend"] = model["frontend"]
+                record["replay_execution"] = model["replay_execution"]
+                record["replay_sources"] = model["replay_sources"]
+                record["pipeline"] = model["pipeline"]
+                record["soc_top"] = model["soc_top"]
         record["check"] = {
-            "baseline": str(args.baseline),
+            "baseline": public_path(args.baseline),
             "rtl": rtl,
             "model": modelled,
             "deltas": deltas,
             "failures": failures,
             "passed": not failures,
         }
+        record["calibration_status"] = (
+            "passed measured comparison"
+            if not failures
+            else "failed measured comparison"
+        )
         print(_report(rtl, modelled, baseline, deltas, failures))
         if args.refresh and not failures:
             baseline["rtl"] = {"commit": args.rtl_commit, **rtl}
             baseline["model"] = modelled
             baseline["ipc_delta"] = deltas["model_vs_rtl_ipc"]
+            if "instruction_stream" in model:
+                baseline["instruction_stream"] = model["instruction_stream"]
+                baseline["replay_sources"] = model["replay_sources"]
             args.baseline.write_text(
                 json.dumps(baseline, indent=2) + "\n", encoding="utf-8"
             )
-            print(f"Rewrote the figures in {args.baseline}")
+            print(f"Rewrote the figures in {public_path(args.baseline)}")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
