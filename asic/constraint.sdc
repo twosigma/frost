@@ -59,31 +59,58 @@ if {[info exists ::env(FROST_CPU_CLOCK_PERIOD)] && $::env(FROST_CPU_CLOCK_PERIOD
 # one register at its interface, and the port delays count from the copy:
 # after clock tree synthesis its edges arrive with the tree's delay to that
 # pin, and before it, while the clocks are ideal, with the master's edges.
-# The registers are the DDR bridge's AXI read request register, the data
-# memory's program-loading port, the NIC's transmit and receive gearboxes,
-# and the JTAG TAP. A pattern leaves out the suffix that synthesis adds to a
-# register's name, and must match one pin. set_input_delay -reference_pin
+# Find a register through an interface port's combinational cone, then take
+# its clock pin in the requested domain. Synthesis can merge registers and
+# retain either name (the TAP's BYPASS bit and IDCODE bit 31 are identical),
+# so neither register names nor library pin names belong in this lookup.
+# When several pins qualify, sort their full names to choose reproducibly;
+# every candidate is at the interface and carries the requested clock.
+# set_input_delay -reference_pin
 # would say the same, but OpenROAD in the ORFS image crashes on any input
 # delay that uses it. Clock tree synthesis would take a copy for a second
 # clock on its master's net, so it takes the clock ports' nets as its roots
 # from CTS_ARGS in config.mk, which lists each clock's port.
+proc io_reference_pin {clock port_name} {
+  set port [get_ports -quiet $port_name]
+  if {[llength $port] != 1} {
+    error "constraint.sdc: the I/O reference port for $clock, $port_name, must exist exactly once"
+  }
+  if {[get_property $port direction] eq "input"} {
+    set endpoints [get_fanout -from $port -flat -endpoints_only]
+  } else {
+    set endpoints [get_fanin -to $port -flat -startpoints_only]
+  }
+  set candidates {}
+  if {[llength $endpoints]} {
+    set cells [get_cells -quiet -of_objects $endpoints]
+    if {[llength $cells]} {
+      foreach pin [get_pins -of_objects $cells -filter {is_register_clock == true}] {
+        if {[get_clocks $clock] in [get_property $pin clocks]} {
+          lappend candidates [list [get_full_name $pin] $pin]
+        }
+      }
+    }
+  }
+  if {![llength $candidates]} {
+    error "constraint.sdc: no $clock register clock pin at I/O reference port $port_name"
+  }
+  set pin [lindex [lsort -index 0 $candidates] 0 1]
+  puts "constraint.sdc: $clock I/O reference at $port_name: [get_full_name $pin]"
+  return $pin
+}
 set io_references {
-  core_clk i_clk {cpu.cluster_memory.memory_fabric.master.ar_valid_q$*/CK}
-  core_clk_div4 i_clk_div4 {soc.data_memory.u_sram.gen_row[0].u_macro/clk0}
-  nic_tx_clk i_nic_tx_clk {soc.gen_cached_tier.gen_nic_mac_10g.nic_mac.u_mac.tx_gearbox.reservoir[0]$*/CK}
-  nic_rx_clk i_nic_rx_clk {soc.gen_cached_tier.gen_nic_mac_10g.nic_mac.u_mac.rx_gearbox.reservoir[0]$*/CK}
-  jtag_tck i_jtag_tck {soc.gen_jtag_tap.u_jtag_tap.bypass_shift$*/CK}
+  core_clk i_clk o_ddr_axi_arvalid
+  core_clk_div4 i_clk_div4 {i_instr_mem_wrdata[0]}
+  nic_tx_clk i_nic_tx_clk {o_nic_tx_raw_data[0]}
+  nic_rx_clk i_nic_rx_clk {i_nic_rx_raw_data[0]}
+  jtag_tck i_jtag_tck i_jtag_tdi
 }
 if {$cpu_boundary} {
-  lset io_references 2 {soc.bus_slave.aw_valid_q$*/CK}
+  lset io_references 2 o_uart_rx_ready
 }
-foreach {clock source pattern} $io_references {
-  set pins [get_pins -quiet $pattern]
-  if { [llength $pins] != 1 } {
-    error "constraint.sdc: the I/O reference for $clock, $pattern, matches\
-      [llength $pins] pins"
-  }
-  create_generated_clock -name ${clock}_io -source [get_ports $source] -divide_by 1 $pins
+foreach {clock source port} $io_references {
+  set pin [io_reference_pin $clock $port]
+  create_generated_clock -name ${clock}_io -source [get_ports $source] -divide_by 1 $pin
 }
 
 # The quarter-rate clock is derived from the core clock, as on the X3, so the
@@ -157,7 +184,14 @@ if {$cpu_boundary} {
   set_max_delay $dtm_limit -ignore_clock_latency -from $cpu_clocks -to $dtm_clocks
   set_min_delay 0 -ignore_clock_latency -from $dtm_clocks -to $cpu_clocks
   set_min_delay 0 -ignore_clock_latency -from $cpu_clocks -to $dtm_clocks
-  set reset_pins [get_pins -quiet -hierarchical {*gen_clock_resets*chain_q*/SN *gen_clock_resets*chain_q*/RN}]
+  # Select asynchronous control pins by function within the RTL's reset
+  # scope, independent of generated register names and library pin spelling.
+  set reset_pins {}
+  foreach pin [all_registers -async_pins] {
+    if {[string match {soc.gen_clock_resets.*} [get_full_name $pin]]} {
+      lappend reset_pins $pin
+    }
+  }
   if {![llength $reset_pins]} { error "CPU boundary reset pins are missing" }
   set_false_path -to $reset_pins
 }

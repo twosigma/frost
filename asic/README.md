@@ -409,13 +409,15 @@ configuration:
 
 `--cpu-clock-period NS` enables `ASYNC_CPU_CLOCK` and creates `cpu_clk`
 on `i_cpu_clk`. In that configuration, `core_clk` names the SoC clock on
-`i_clk`, and its I/O reference is the SoC slave's AW register.
+`i_clk`, and its I/O reference is a register feeding the SoC UART's receive
+ready output.
 The CPU clock has no data ports. Clock tree synthesis includes `i_cpu_clk`.
 The CPU, SoC and debug transport clocks belong to the same exception
 group. Explicit maximum delays below the faster clock's period bound
 Gray pointers and held handshake payloads in both CPU/SoC and CPU/TCK
-directions, excluding clock-tree latency. Reset-chain asynchronous pins
-have false paths.
+directions, excluding clock-tree latency. Asynchronous control pins in the
+RTL's `soc.gen_clock_resets` scope have false paths, selected by their
+function rather than generated register names or library pin names.
 Changing either clock configuration requires an empty build directory.
 
 `core_clk_div4` is derived from the core clock, as on the X3, so the two are
@@ -435,15 +437,79 @@ aligned the board's clock with a point inside the chip, or the logic beyond
 the ports shared the clock tree. Each clock has an I/O copy, a generated
 clock named after it with `_io` appended, defined at the clock pin of one
 register at its interface, and each port's delay is set against its clock's
-copy:
+copy. The constraints traverse an interface port's combinational cone to
+find registers, then select a clock pin carrying that interface's clock:
 
-| Clock | Pin of its I/O copy |
-| --- | --- |
-| `core_clk` | The DDR bridge's AXI read request register |
-| `core_clk_div4` | The program-loading port of the data memory's first macro |
-| `nic_tx_clk` | The NIC's transmit gearbox |
-| `nic_rx_clk` | The NIC's receive gearbox |
-| `jtag_tck` | The JTAG TAP's bypass register |
+| Clock | Interface port | Registers searched |
+| --- | --- | --- |
+| `core_clk` | `o_ddr_axi_arvalid` | The DDR bridge's AXI read request register; with a separate CPU clock, `o_uart_rx_ready` selects the SoC UART instead |
+| `core_clk_div4` | `i_instr_mem_wrdata[0]` | The program-loading ports of the memory macros |
+| `nic_tx_clk` | `o_nic_tx_raw_data[0]` | The NIC's transmit gearbox |
+| `nic_rx_clk` | `i_nic_rx_raw_data[0]` | The NIC's receive gearbox |
+| `jtag_tck` | `i_jtag_tdi` | The TAP and debug transport's shift registers |
+
+If several clock pins qualify, the first in full-name order is the
+reference. The flow logs its choice and fails if the port is missing or no
+register clock pin in that domain qualifies. No generated cell name is
+required: synthesis can merge identical registers and keep either name.
+For example, the TAP's BYPASS bit and IDCODE bit 31 capture zero and shift
+in TDI together, so either register's name can survive their merger. The
+SDC follows connectivity through that merger without preserving extra
+hardware. A dual-clock macro contributes only the pin on the requested
+clock.
+
+The lookup relies on these properties of the current RTL and pinned ORFS
+flow; clock membership alone would not establish them for another design:
+
+1. OpenSTA's `get_cells -of_objects` expands a top-level port endpoint to
+   every cell attached to its net. The default `o_ddr_axi_arvalid` fanin
+   includes `i_ddr_axi_rst`, because
+   [`cpu_axi_master.sv`](../hw/rtl/cpu_top/cpu_axi_master.sv) gates ARVALID
+   with the external reset. On the synthesized design, that reset port
+   attaches directly to two combinational cells, which have no register
+   clock pins and therefore add no candidates. With `ASYNC_CPU_CLOCK=1`,
+   the core reference instead uses `o_uart_rx_ready`, whose two startpoints
+   are SoC registers on `i_clk`. None of the other four reference cones
+   includes a top-level port endpoint. Thus port expansion cannot select
+   an unrelated register in either supported configuration.
+2. Lifting data endpoints to cells loses the association between a macro's
+   data port and its clock. This matters only for `i_instr_mem_wrdata[0]`:
+   it reaches the data memory's program-loading port, whose data and clock
+   really are `din0` and `clk0 = i_clk_div4`, through
+   [`soc_top.sv`](../hw/rtl/soc_top/soc_top.sv) and
+   [`frost_sram_2rw.sv`](sram/frost_sram_2rw.sv). The query requests
+   `core_clk_div4`, rejecting `clk1` on `core_clk`; the instruction-memory
+   cone stops at its write-data register on `i_clk_div4`. The other five
+   reference ports reach ordinary registers rather than dual-clock macros.
+   A future reference driving only `din1` could incorrectly select `clk0`
+   if queried for its domain; it would need a data-pin-to-clock check before
+   reusing this lookup.
+3. `is_register_clock` and clock membership do not distinguish a latch gate
+   or an inverted clock from a rising-edge register clock. All six current
+   reference cones end at rising-edge registers or SRAM clock pins fed by
+   the non-inverted source clock, with no latch or inverted-clock candidate.
+   In particular, `i_jtag_tdi`
+   reaches the positive-edge shift registers in
+   [`jtag_tap.sv`](../hw/rtl/cpu_and_mem/debug/jtag_tap.sv) and
+   [`dtm_core.sv`](../hw/rtl/cpu_and_mem/debug/dtm_core.sv); traversal stops
+   there, before the TAP's falling-edge instruction-update and TDO
+   registers. Generating the I/O copies without `-invert` therefore
+   preserves their edge sense.
+4. The reset selector's literal `soc.gen_clock_resets.` prefix assumes
+   flattened `.` hierarchy. The pinned ORFS synthesis defaults to
+   `SYNTH_HIERARCHICAL=0`; [`config.mk`](config.mk) leaves that default, and
+   [`canonicalize.tcl`](canonicalize.tcl) preserves hierarchy only on
+   `coherence_home_engine`, outside the reset scope. Keeping hierarchy on
+   `soc_top` or `cdc_reset_pair`, or enabling hierarchical synthesis,
+   requires checking this selector again. A `/` replacing either literal
+   dot in the prefix would leave it empty and stop with
+   `CPU boundary reset pins are missing`. The literal dot also excludes
+   sibling scopes such as `soc.gen_clock_resets_other`.
+
+Changes to these cones or synthesis hierarchy must revisit those
+assumptions. The fast SDC tests check all six reference ports against
+`platform_top` and `soc_top`, and check that the reset scope still contains
+the three conditional `cdc_reset_pair` instances.
 
 After clock tree synthesis, a copy's edges arrive with the tree's delay to
 its pin, and the paths through the ports are timed against the skew between

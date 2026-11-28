@@ -15,7 +15,7 @@ This directory provides a **fast, cycle-approximate architectural performance mo
    - CoreMark has an aggregate IPC comparison against RTL. The Tomasulo microarchitectural suite and DDR MLP stress test have validated event captures without model IPC comparisons.
    - The archived CoreMark comparison records model IPC **1.0045**, within **+2.6%** of that capture's **0.9786 IPC** (239,452 RTL cycles). These historical figures precede the current hit-path model; section 12 records its load-kernel calibration.
    - A VCU118 board data set (`results/vcu118_sync10i/`) compares the memory path with sequential, strided, store and chase benchmarks measured on an FPGA build under Linux (section 13).
-   - Accurately models FROST-specific microarchitectural structures: the 256-entry Load Queue direct-mapped L0 Data Cache (`lq_l0_cache.sv`) with 1-cycle combinational fast-path bypass, early load wakeup (`EARLY_LOAD_WAKEUP = 1`), and the single-channel 512-bit AXI memory system.
+   - Represents the Load Queue direct-mapped L0 data cache, early load wakeup (`EARLY_LOAD_WAKEUP = 1`), and the single-channel 512-bit AXI memory system. Binary-bound BRAM replay uses the production 512-entry L0 and measured three-cycle dependent hit path; the synthetic sweep defaults retain their earlier abstractions.
 
 3. **Modular SoC / Core Boundary**:
    - Reflects the structural hierarchy of `platform_top.sv`:
@@ -125,7 +125,13 @@ The archived RTL results and model comparison below precede the hit-path extensi
 
 ## 4. How to Extract Traces from Verilator RTL
 
-Trace extraction is fully automated and integrated into the FROST test infrastructure (`verif/cocotb_tests/calibration_trace.py`, called from the real-program bench in `verif/cocotb_tests/test_real_program.py`). The monitor activates exclusively during the timed region of the target benchmark and introduces zero simulation timing perturbation.
+Trace extraction is integrated into the FROST test infrastructure (`verif/cocotb_tests/calibration_trace.py`, called from the real-program bench in `verif/cocotb_tests/test_real_program.py`). Aggregate event output is limited to the timed region. The observers read signals without driving the RTL.
+
+`FROST_INSTRUCTION_TRACE_PATH` additionally captures a separate compressed
+instruction stream tied to the loaded binary. Its observer follows register
+writes before the window to resolve data addresses. The
+[instruction evidence contract](docs/instruction_capture.md) describes the
+fields, prediction tiers, integrity checks, and CI capture policy.
 
 ### Step 1: Execute Simulation with Trace Capture
 
@@ -136,6 +142,7 @@ Run the benchmark using `./scripts/frost.py cocotb <benchmark>` with the calibra
 FROST_CALIBRATION_TRACE_PATH=perf-modeling/results/coremark/coremark_timed.jsonl \
 FROST_CALIBRATION_COUNTERS_PATH=perf-modeling/results/coremark/pipeline_counters.json \
 FROST_CALIBRATION_MANIFEST_PATH=perf-modeling/results/coremark/manifest.json \
+FROST_INSTRUCTION_TRACE_PATH=perf-modeling/results/coremark/instructions.jsonl.gz \
 FROST_GIT_COMMIT=$(git rev-parse HEAD) \
 ./scripts/frost.py cocotb coremark
 ```
@@ -271,13 +278,22 @@ The Fast Python Tests job also runs `tests/test_perf_memory.py`, `tests/test_per
 
 ### Calibration Check in CI
 
-In CI's Real Programs (CoreMark) shard, the BRAM job records a calibration trace of CoreMark's timed region during its CoreMark run, and the next step checks it with `tools/run_calibration.py` against the stored baseline in `calibration/ci_baseline.json`. The check fails if the trace breaks the contract, if it has no dispatch, retirement, AXI request, or AXI response records, if it disagrees with the capture's pipeline counters or comes from another program or memory tier, or if the IPC of the model's `coremark_bram` workload differs from the RTL's by more than the baseline's `ipc_tolerance` (10%). The capture is of the BRAM tier, whose loads and stores take the SoC's local port and never reach the coherent L1D, so `coremark_bram` places its data in low BRAM and runs 1,200 operations like the capture, with no length tuning for a cold start. The baseline's `model_config` sets the two fields that differ from the model's defaults to the captured hardware's values, and `model_config_sources` names where each comes from: `soc.local_bram_read_cycles` 10, measured on the RTL as cycles per load of a dependent pointer chase through BRAM data whose nodes alias in the L0 (8026 cycles for 800 loads), and `l0_cache_depth` 512, the RTL's `NormalLqL0Depth`. Pass or fail, the step prints the model's and the RTL's figures, the delta between their IPCs, and how far each has moved from the stored figures. To run the same check on a local capture:
+CI's BRAM CoreMark shard records aggregate events and a separate compressed
+instruction stream during its ordinary CoreMark run. `run_calibration.py`
+validates both contracts and their common binary, run and window identity,
+requires equal retirement counts, and checks current replay IPC within 10%
+of measured RTL IPC. Required dispatch, retirement and AXI events and the
+pipeline counter cross-check remain in place. The baseline retains its
+measured ten-cycle dependent local-BRAM load path and production 512-entry L0.
+Two cycles occupy the local port; eight account for the remaining pipeline stages. Pass or fail,
+the check prints current and stored figures and deltas. To check a local capture:
 
 ```bash
 ./scripts/frost.py run python3 perf-modeling/tools/run_calibration.py \
     --trace tests/calibration/coremark.jsonl \
     --counters tests/calibration/coremark_counters.json \
     --manifest tests/calibration/coremark_manifest.json \
+    --instructions tests/calibration/coremark_instructions.jsonl.gz \
     --baseline perf-modeling/calibration/ci_baseline.json \
     --rtl-commit "$(git rev-parse HEAD)" \
     --out tests/calibration/coremark_calibration.json
@@ -289,7 +305,7 @@ After an intentional performance change, refresh the stored baseline with one co
 ./scripts/frost.py run python3 perf-modeling/tools/refresh_baseline.py
 ```
 
-It runs CoreMark in the BRAM tier with the capture on, writing to `tests/calibration/`, applies the same check, and if the check passes, rewrites the RTL's and the model's figures and their delta in `ci_baseline.json`; the tolerance stays. In a git worktree, where git does not work in the container, set `FROST_GIT_COMMIT` to name the commit. If the model's IPC now differs from the RTL's by more than the tolerance, the refresh fails too, and the model's CoreMark workload or configuration needs recalibrating, or the tolerance a deliberate change.
+It runs CoreMark in the BRAM tier with the capture on, writing to `tests/calibration/`, applies the same check, and if the check passes, rewrites the RTL's and the model's figures and their delta in `ci_baseline.json`; the tolerance stays. In a git worktree, where git does not work in the container, set `FROST_GIT_COMMIT` to name the commit. If replay IPC differs by more than 10%, the refresh fails and leaves the baseline unchanged. Investigate the input and modeled structures before refreshing; this calibration retains the 10% tolerance.
 
 ### Adopting, Extending, and Refining the Model
 
@@ -359,7 +375,48 @@ The shared AXI return port carries at most one read response and one write respo
 
 ## 10. Workload models and instruction replay
 
-The built-in workloads are synthetic instruction and memory-pressure patterns: `coremark`, `memory_stress`, `redis_kv`, `http_api`, `faas_cold`, and `linux_service`. The CoreMark generator represents selected kernel dependencies and starts with instruction fetches ready. It is not the compiled CoreMark program.
+The sweep workloads remain synthetic instruction and memory-pressure patterns:
+`coremark`, `memory_stress`, `redis_kv`, `http_api`, `faas_cold`, and
+`linux_service`. Synthetic `coremark` represents selected kernel dependencies
+with ready instruction fetches. It is independent of CI's `coremark_bram`,
+which now requires the compiled program's instruction stream; there is no
+synthetic fallback for that comparison.
+
+`coremark_bram` replays the same dynamic instructions, addresses, dependencies
+and recorded predictions as the RTL window. `fetch_frontend.py` implements
+the decoupled fetch cursor, F0/F1 predictor and provider overlap, 16-halfword
+parcel queue, eight metadata slots, registered 8/7 stop thresholds,
+empty/partial bypass, compressed/spanning alignment, PD/ID stages and a real
+decoded-bundle queue. Redirect arbitration follows trap/xRET, fence, execute,
+PD and F1 validation priority. PD retains its branch and older decoded work;
+F1 validation preserves older parcels. Refills retain predictor results and
+accept on the returning-data cycle. BRAM cache hits supply a window in one cycle; a 256-line direct cache
+services misses through the shared SoC local port.
+
+Recorded F0, PD direction/backing/ITTAGE, and execution decisions determine
+when the correct-path successor can be fetched. Execution recovery waits for
+the branch's dependencies and the RTL stage-2/registered-recovery path. The replay does
+not execute wrong-path instructions or model their cache pollution. It starts
+with empty pipeline and data-cache state at the window boundary. These limits
+remain visible in the residual; the comparison does not establish exact
+cycle equivalence or DDR fetch accuracy.
+
+The real dependency stream also requires scalar execution stages absent from
+the pressure generators: a combinational ALU plus registered RS stage 2 takes
+two selection-to-wakeup cycles, full-width multiply takes eight, and word or
+carry-less multiply takes five (including the registered CDB edge). Resident L0 dependent loads take three cycles,
+as measured by the directed chase. Synthetic workloads retain their existing
+abstract execution settings. A completed producer still live in the ROB needs
+registered operand repair when its consumer dispatches: selection waits until
+the second cycle after dispatch. A resident consumer can still issue on a live
+CDB broadcast, and a retired producer supplies the register-file value directly.
+Branches use integer issue port 0; port 1 accepts only non-branches in the
+lowest eight INT_RS slots. Conditional branches bypass CDB, JAL has no station,
+and multiply uses its own four-entry station. Entries release at issue;
+dispatch admits a complete bundle using registered resource availability.
+Replay rejects operand-dependent division until
+that service is implemented. The [calibration evidence](docs/frontend_calibration.md)
+records the before/after comparison and source references; tolerance remains 10%.
 
 `memory_workloads.py` supplies the three timed bodies of `ddr_mlp_test` and all nine `ddr_bench` kernels. It preserves their data addresses, strides, address-generator seeds, record sectors, accumulator chains, copy dependencies, and serialized chase dependencies. Arithmetic and loop-control operations are representative, not a compiled instruction trace. The MLP ring is prepared and evicted before the modeled region. DDR bench data is zero, matching the behavioral memory's initial contents. Setup, eviction, profiling, UART, and verification are outside the modeled region.
 
@@ -367,7 +424,7 @@ The built-in workloads are synthetic instruction and memory-pressure patterns: `
 
 `--config-file` on `run` and `memory-run` reads a JSON object with `ModelConfig` fields and nested `ddr` and `soc` objects. Omitted fields use their defaults. For example, `{"axi_id_pool_size": 8, "ddr": {"controller": "interleaved", "channels": 2, "cycles_per_line": 4}}` selects two physical channels with a shared eight-transaction AXI limit.
 
-Instruction replay accepts JSONL records with `kind`, `fetch_address` or `pc`, `data_address`, `depends_on`, and `mispredict`, or CSV records with the equivalent fields. The supported kinds are `alu`, `branch`, `load`, and `store`. IDs are consecutive from zero, and dependencies refer to earlier IDs. Memory operations require a data address. IDs and addresses accept integers or integer strings, including hexadecimal strings. Floating-point numbers and booleans are rejected. Zero addresses are preserved. Unknown kinds, forward dependencies, malformed records, and aggregate calibration events are rejected.
+The generic `replay` command accepts JSONL records with `kind`, `fetch_address` or `pc`, `data_address`, `depends_on`, and `mispredict`, or CSV records with the equivalent fields. The supported kinds are `alu`, `branch`, `load`, and `store`. IDs are consecutive from zero, and dependencies refer to earlier IDs. Memory operations require a data address. IDs and addresses accept integers or integer strings, including hexadecimal strings. Floating-point numbers and booleans are rejected. Zero addresses are preserved. Unknown kinds, forward dependencies, malformed records, and aggregate calibration events are rejected.
 
 Calibration events contain dispatch and retirement counts and AXI handshakes. They do not contain an architectural instruction stream or its dependencies. They are suitable for trace validation and observed counters, not for reconstructing a program's cache accesses. The stored Tomasulo and DDR MLP calibration files contain observed trace totals and no model comparison. The [correlation guide](docs/rtl_correlation_guide.md) describes capture and comparison.
 
@@ -400,19 +457,49 @@ The `controller` group drives a balanced sequential read stream directly through
 
 ## 12. Model tests and calibration scope
 
-The Fast Python Tests job collects `tests/test_perf_model.py`, `tests/test_perf_memory.py`, `tests/test_perf_workloads.py`, and `tests/test_perf_sweep.py`. They cover model invariants, deterministic results, trace contracts, calibration checks, memory channel service, AXI ownership, kernel addresses and dependencies, and controller saturation. The JSON files under `results/` are regression fixtures, not independent RTL validation.
+The Fast Python Tests job collects `tests/test_perf_model.py`, `tests/test_perf_memory.py`, `tests/test_perf_workloads.py`, `tests/test_perf_sweep.py`, `tests/test_perf_frontend.py`, and `tests/test_instruction_trace.py`. They cover model invariants, deterministic results, trace contracts, calibration checks, memory channel service, AXI ownership, kernel addresses and dependencies, and controller saturation. The JSON files under `results/` are regression fixtures, not independent RTL validation.
 
 ```bash
-pytest tests/test_perf_model.py tests/test_perf_memory.py tests/test_perf_workloads.py tests/test_perf_sweep.py -q -p no:cacheprovider
+pytest tests/test_perf*.py tests/test_instruction_trace.py -q -p no:cacheprovider
 ```
 
 A model change that alters the stored results regenerates the corresponding JSON files with `run`, `explore`, `sweep`, `selftest`, and `audit`. The CoreMark fixture uses seed 11 and the default configuration. The exploration and sweep fixtures use their command defaults. Wall-clock fields are excluded from regression comparisons.
 
 The report renderers reproduce `results/FROST_perf_model_report.md` and `results/coremark_optimization_report.md` from the corresponding sweep and exploration results. The model tests compare both documents with that output.
 
-CI captures the BRAM CoreMark timed region and compares its observed IPC with the synthetic CoreMark workload. `calibration/ci_baseline.json` names the memory tier, workload, seed, required event classes, and tolerance. A passing comparison is an aggregate calibration check; it does not validate DDR sensitivity or other workloads. `tools/refresh_baseline.py` captures and checks that region before writing the baseline. A baseline refresh accompanies an intentional model or RTL performance change and records its reason in the commit.
+CI captures the BRAM CoreMark timed region and its separate compressed
+instruction stream in the same simulation. The comparator verifies matching
+binary hashes, RTL commit, run, memory tier, window, and retirement count
+before accepting the replay's IPC. Missing instruction evidence fails the
+comparison. `calibration/ci_baseline.json` retains the measured figures and
+stream identity with a 10% tolerance. `tools/refresh_baseline.py` recaptures
+and compares before updating any figures. A passing check calibrates only
+this workload and BRAM configuration.
 
-The `coremark` workload keeps its data cold in DDR at 3,600 operations, for the memory sweeps. The `coremark_bram` workload's loads and stores to low BRAM bypass the L1D, so with the baseline's configuration it runs at IPC 0.9717 against the capture's 0.9682 (+0.4%).
+For the current 226,801-instruction capture, RTL takes 200,797 cycles
+(IPC 1.1295) and replay takes 190,556 cycles (IPC 1.1902), a +5.37% IPC gap.
+The reviewed implementation was +9.78% on its previous capture.
+The former 3,128-operation synthetic BRAM workload missed this RTL by -13.71%.
+The separate synthetic `coremark` workload remains in the DDR sweeps.
+
+```bash
+python3 perf-modeling/tools/run_calibration.py \
+    --trace tests/calibration/coremark.jsonl \
+    --instructions tests/calibration/coremark_instructions.jsonl.gz \
+    --counters tests/calibration/coremark_counters.json \
+    --manifest tests/calibration/coremark_manifest.json \
+    --baseline perf-modeling/calibration/ci_baseline.json \
+    --rtl-commit <capture-commit> --out tests/calibration/coremark_calibration.json
+python3 perf-modeling/frost_perf_model.py run --workload coremark_bram \
+    --instruction-trace tests/calibration/coremark_instructions.jsonl.gz \
+    --config-file /tmp/ci-replay-config.json --out /tmp/coremark_replay.json
+```
+
+The standalone replay config equivalent to CI is
+`{"soc":{"local_turnaround_cycles":1},"local_load_pipeline_cycles":8,"l0_cache_depth":512}`. CI captures
+predictions anew as RTL changes; a standalone stream retains its recorded
+predictor behavior. The generic instruction replay and synthetic sweeps do
+not acquire this calibration automatically.
 
 ### L1D hit-path RTL calibration
 
@@ -451,8 +538,7 @@ The L1D calibration capture of BRAM CoreMark contains 223,556 ticks with
 matching CRCs; its timed window is 223,549 cycles and 226,801 retired
 micro-ops. This capture predates slot-2 tagged direction overrides in PD.
 The CI model workload contains 3,219 cycles and 3,128 retired micro-ops (IPC
-0.9717), within 4.22% of that capture's RTL IPC; these figures describe
-`calibration/ci_baseline.json`.
+0.9717), within 4.22% of that capture's RTL IPC; these are historical figures preceding the binary-bound replay calibration.
 
 ## 13. Board calibration data sets
 
@@ -488,5 +574,5 @@ With the home's prefetcher on and no look-ahead hints (the default recorded abov
 ### Open items
 
 - memcpy reads 46% slower than the board (94 against 172 MB/s) without look-ahead hints, against 13% slower with them. The model's hints supplied a share of the copy's read rate that the RTL does not issue, so the board's memcpy rate has another source that the model omits.
-- The model's default local BRAM read is 2 cycles, against 10 measured on the RTL (a dependent pointer chase through BRAM data, with its misses aliased in the L0, takes 10.0 cycles per load). The CI check sets 10 in its baseline.
-- The model's dependent L0 hit costs 1 cycle, against the RTL's 3 (the same chase with its nodes resident in the L0 takes 3.0 cycles per load).
+- Local BRAM service takes two cycles. CI adds eight cycles outside port occupancy to preserve the measured ten-cycle dependent alias chase; the placement of these intermediate pipeline stages remains approximate.
+- Synthetic workloads retain a one-cycle dependent L0 hit abstraction. Binary-bound BRAM replay uses the measured three-cycle dependent path.
