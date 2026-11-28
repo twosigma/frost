@@ -73,6 +73,32 @@ put: prep -top coherence_put_endpoint
 channel: hierarchy -top coherence_channel
 channel: script free_undefined.ys
 channel: prep -top coherence_channel
+request: select -assert-count 18 t:$check r:FLAVOR=assert %i
+request_prove: select -assert-count 1 t:$check r:FLAVOR=cover %i
+request_cover: select -assert-count 1 t:$check r:FLAVOR=cover %i
+channel_prove: select -assert-count 1 t:$check r:FLAVOR=cover %i
+channel_cover: select -assert-count 1 t:$check r:FLAVOR=cover %i
+home_pending_prove: select -assert-count 1 t:$check r:FLAVOR=cover %i
+home_pending_wide_prove: select -assert-count 1 t:$check r:FLAVOR=cover %i
+home_pending_cover: select -assert-count 1 t:$check r:FLAVOR=cover %i
+equiv: select -assert-count 62 t:$check r:FLAVOR=assert %i
+equiv: select -assert-count 3 t:$check r:FLAVOR=cover %i
+home_prove: select -assert-count 38 t:$check r:FLAVOR=assert %i
+home_cover: select -assert-count 38 t:$check r:FLAVOR=assert %i
+home_wide: select -assert-count 38 t:$check r:FLAVOR=assert %i
+home_prove: select -assert-count 2 t:$check r:FLAVOR=cover %i
+home_cover: select -assert-count 2 t:$check r:FLAVOR=cover %i
+put_prove: select -assert-count 2 t:$check r:FLAVOR=cover %i
+put_cover: select -assert-count 2 t:$check r:FLAVOR=cover %i
+home_wide: select -assert-count 2 t:$check r:FLAVOR=cover %i
+put: select -assert-count 7 t:$check r:FLAVOR=assert %i
+channel_prove: select -assert-count 4 t:$check r:FLAVOR=assert %i
+channel_cover: select -assert-count 4 t:$check r:FLAVOR=assert %i
+home_pending_prove: select -assert-count 4 t:$check r:FLAVOR=assert %i
+home_pending_wide_prove: select -assert-count 4 t:$check r:FLAVOR=assert %i
+home_pending_cover: select -assert-count 4 t:$check r:FLAVOR=assert %i
+layout: select -assert-count 112 t:$check r:FLAVOR=assert %i
+layout: select -assert-count 10 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_pkg.sv

@@ -85,6 +85,17 @@ age_order: chformal -remove -assert t:$check r:FLAVOR=assert %i load_queue/p_age
 prove_pre_match: select -assert-none t:$assume
 port1_amo: select -assert-count 5 t:$check r:FLAVOR=assert %i load_queue/p_amo_port1_* %i
 port1_amo: select -assert-count 3 t:$check r:FLAVOR=cover %i load_queue/cover_amo_port1_* %i
+bmc: select -assert-count 244 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 244 t:$check r:FLAVOR=assert %i
+bmc_no_prepare_busy: select -assert-count 244 t:$check r:FLAVOR=assert %i
+cover_no_prepare_busy: select -assert-count 244 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 20 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 20 t:$check r:FLAVOR=cover %i
+bmc_no_prepare_busy: select -assert-count 20 t:$check r:FLAVOR=cover %i
+cover_no_prepare_busy: select -assert-count 20 t:$check r:FLAVOR=cover %i
+probe_launch: select -assert-count 246 t:$check r:FLAVOR=assert %i
+probe_launch: select -assert-count 32 t:$check r:FLAVOR=cover %i
+prove_pre_match: select -assert-count 82 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

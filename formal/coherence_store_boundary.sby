@@ -215,6 +215,39 @@ bmc: opt -fast
 bmc: setundef -anyseq
 bmc: opt_clean
 check -assert
+cover_four: select -assert-count 23 t:$check r:FLAVOR=assert %i
+bmc_load_same: select -assert-count 23 t:$check r:FLAVOR=assert %i
+bmc_load_other: select -assert-count 23 t:$check r:FLAVOR=assert %i
+bmc_load_same_probe_launch: select -assert-count 23 t:$check r:FLAVOR=assert %i
+bmc_probe_kept_other: select -assert-count 23 t:$check r:FLAVOR=assert %i
+bmc_probe_kept_same: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_load: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_edges_same: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_edges_same_combined: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_edges_other: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_probe_kept_other: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_probe_kept_same: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_four: select -assert-count 2 t:$check r:FLAVOR=cover %i
+cover_amo_same: select -assert-count 2 t:$check r:FLAVOR=cover %i
+cover_amo_same_two: select -assert-count 2 t:$check r:FLAVOR=cover %i
+cover_amo_other_home: select -assert-count 2 t:$check r:FLAVOR=cover %i
+bmc_sc: select -assert-count 19 t:$check r:FLAVOR=assert %i
+bmc_old: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_amo: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_amo_same: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_amo_same_two: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_amo_other_home: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_sc: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_old: select -assert-count 19 t:$check r:FLAVOR=assert %i
+cover_load: select -assert-count 1 t:$check r:FLAVOR=cover %i
+cover_amo: select -assert-count 1 t:$check r:FLAVOR=cover %i
+cover_sc: select -assert-count 1 t:$check r:FLAVOR=cover %i
+cover_old: select -assert-count 1 t:$check r:FLAVOR=cover %i
+cover_edges_same: select -assert-count 4 t:$check r:FLAVOR=cover %i
+cover_edges_other: select -assert-count 4 t:$check r:FLAVOR=cover %i
+cover_edges_same_combined: select -assert-count 3 t:$check r:FLAVOR=cover %i
+cover_probe_kept_other: select -assert-count 6 t:$check r:FLAVOR=cover %i
+cover_probe_kept_same: select -assert-count 5 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_read_stream.sv

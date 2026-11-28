@@ -409,13 +409,15 @@ configuration:
 
 `--cpu-clock-period NS` enables `ASYNC_CPU_CLOCK` and creates `cpu_clk`
 on `i_cpu_clk`. In that configuration, `core_clk` names the SoC clock on
-`i_clk`, and its I/O reference is the SoC slave's AW register.
+`i_clk`, and its I/O reference is a register feeding the SoC UART's receive
+ready output.
 The CPU clock has no data ports. Clock tree synthesis includes `i_cpu_clk`.
 The CPU, SoC and debug transport clocks belong to the same exception
 group. Explicit maximum delays below the faster clock's period bound
 Gray pointers and held handshake payloads in both CPU/SoC and CPU/TCK
-directions, excluding clock-tree latency. Reset-chain asynchronous pins
-have false paths.
+directions, excluding clock-tree latency. Asynchronous control pins in the
+RTL's `soc.gen_clock_resets` scope have false paths, selected by their
+function rather than generated register names or library pin names.
 Changing either clock configuration requires an empty build directory.
 
 `core_clk_div4` is derived from the core clock, as on the X3, so the two are
@@ -435,15 +437,26 @@ aligned the board's clock with a point inside the chip, or the logic beyond
 the ports shared the clock tree. Each clock has an I/O copy, a generated
 clock named after it with `_io` appended, defined at the clock pin of one
 register at its interface, and each port's delay is set against its clock's
-copy:
+copy. The constraints traverse an interface port's combinational cone to
+find registers, then select a clock pin carrying that interface's clock:
 
-| Clock | Pin of its I/O copy |
-| --- | --- |
-| `core_clk` | The DDR bridge's AXI read request register |
-| `core_clk_div4` | The program-loading port of the data memory's first macro |
-| `nic_tx_clk` | The NIC's transmit gearbox |
-| `nic_rx_clk` | The NIC's receive gearbox |
-| `jtag_tck` | The JTAG TAP's bypass register |
+| Clock | Interface port | Registers searched |
+| --- | --- | --- |
+| `core_clk` | `o_ddr_axi_arvalid` | The DDR bridge's AXI read request register; with a separate CPU clock, `o_uart_rx_ready` selects the SoC UART instead |
+| `core_clk_div4` | `i_instr_mem_wrdata[0]` | The program-loading ports of the memory macros |
+| `nic_tx_clk` | `o_nic_tx_raw_data[0]` | The NIC's transmit gearbox |
+| `nic_rx_clk` | `i_nic_rx_raw_data[0]` | The NIC's receive gearbox |
+| `jtag_tck` | `i_jtag_tdi` | The TAP and debug transport's shift registers |
+
+If several clock pins qualify, the first in full-name order is the
+reference. The flow logs its choice and fails if the port is missing or no
+register clock pin in that domain qualifies. No generated cell name is
+required: synthesis can merge identical registers and keep either name.
+For example, the TAP's BYPASS bit and IDCODE bit 31 capture zero and shift
+in TDI together, so either register's name can survive their merger. The
+SDC follows connectivity through that merger without preserving extra
+hardware. A dual-clock macro contributes only the pin on the requested
+clock.
 
 After clock tree synthesis, a copy's edges arrive with the tree's delay to
 its pin, and the paths through the ports are timed against the skew between

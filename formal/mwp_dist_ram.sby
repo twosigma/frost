@@ -31,6 +31,9 @@ script free_undefined.ys
 prep -top mwp_dist_ram_formal
 memory_map
 opt -fast
+select -assert-count 3 t:$check r:FLAVOR=assert %i
+~bmc_unstaged: select -assert-count 4 t:$check r:FLAVOR=cover %i
+bmc_unstaged: select -assert-count 1 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/ram/sdp_dist_ram.sv

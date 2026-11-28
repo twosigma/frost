@@ -37,6 +37,16 @@ memory_map
 opt_muxtree
 opt -full
 opt_clean -purge
+prove_int_active: select -assert-count 26 t:$check r:FLAVOR=assert %i
+prove_int_ckpt_lo: select -assert-count 20 t:$check r:FLAVOR=assert %i
+prove_int_ckpt_mid: select -assert-count 20 t:$check r:FLAVOR=assert %i
+prove_int_ckpt_hi: select -assert-count 20 t:$check r:FLAVOR=assert %i
+prove_fp_active: select -assert-count 17 t:$check r:FLAVOR=assert %i
+prove_fp_ckpt_lo: select -assert-count 16 t:$check r:FLAVOR=assert %i
+prove_fp_ckpt_mid: select -assert-count 16 t:$check r:FLAVOR=assert %i
+prove_fp_ckpt_hi: select -assert-count 16 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 116 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 6 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

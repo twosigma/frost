@@ -17,6 +17,7 @@ flags_small: chparam -set DEPTH 128 coherent_l0_flags
 flags: hierarchy -top coherent_l0_flags
 flags: script free_undefined.ys
 flags: prep -top coherent_l0_flags
+select -assert-count 1 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

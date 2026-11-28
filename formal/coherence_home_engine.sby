@@ -25,6 +25,8 @@ script free_undefined.ys
 prep -top coherence_home_engine -flatten
 memory_map
 opt
+select -assert-count 33 t:$check r:FLAVOR=assert %i
+select -assert-count 9 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_pkg.sv
