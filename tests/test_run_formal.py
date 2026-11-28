@@ -135,7 +135,13 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_l1d", "coh_l1d_stream_free_bmc"): 10800,
     ("coherence_array", "coh_array4_port_bmc"): 6000,
     ("coherence_l1d", "coh_l1d_bmc"): 14400,
-    ("coherence_l1d", "coh_l1d_multi_bmc"): 20400,
+    ("coherence_l1d", "coh_l1d_multi_bmc"): 7740,
+    ("coherence_l1d", "coh_l1d_multi_hold_bmc"): 4260,
+    ("coherence_l1d", "coh_l1d_multi_atomic_bmc"): 10740,
+    ("coherence_l1d", "coh_l1d_multi_store_bmc"): 8760,
+    ("coherence_l1d", "coh_l1d_multi_grant_bmc"): 10260,
+    ("coherence_l1d", "coh_l1d_multi_acquire_bmc"): 7980,
+    ("coherence_l1d", "coh_l1d_multi_path_bmc"): 15120,
     ("coherence_l1d", "coh_l1d_local_control_bmc"): 3600,
     ("coherence_l1d", "coh_l1d_data_bmc"): 3900,
     ("coherence_l1d", "coh_l1d_data1_bmc"): 3900,
@@ -566,6 +572,12 @@ FORMAL_TARGETS = [
             "coh_l1d_conflict_stream_prove",
             "coh_l1d_bmc",
             "coh_l1d_multi_bmc",
+            "coh_l1d_multi_hold_bmc",
+            "coh_l1d_multi_atomic_bmc",
+            "coh_l1d_multi_store_bmc",
+            "coh_l1d_multi_grant_bmc",
+            "coh_l1d_multi_acquire_bmc",
+            "coh_l1d_multi_path_bmc",
             "coh_l1d_stream_bmc",
             "coh_l1d_stream_hold_bmc",
             "coh_l1d_stream_free_bmc",
@@ -3273,7 +3285,31 @@ SBY_TASKS = [
     ("coh_l1d_bmc", "Coherent L1 pending ownership and independent probes."),
     (
         "coh_l1d_multi_bmc",
-        "Coherent L1 with three request endpoints: line exclusion and waiters.",
+        "Coherent L1 with three request endpoints: remaining line-5xxx safety checks.",
+    ),
+    (
+        "coh_l1d_multi_hold_bmc",
+        "Coherent L1 with three request endpoints: hold, local-atomic and early unnamed checks.",
+    ),
+    (
+        "coh_l1d_multi_atomic_bmc",
+        "Coherent L1 with three request endpoints: atomic context and write-phase checks.",
+    ),
+    (
+        "coh_l1d_multi_store_bmc",
+        "Coherent L1 with three request endpoints: store buffer head, yield and launch checks.",
+    ),
+    (
+        "coh_l1d_multi_grant_bmc",
+        "Coherent L1 with three request endpoints: grant selection, ownership and data checks.",
+    ),
+    (
+        "coh_l1d_multi_acquire_bmc",
+        "Coherent L1 with three request endpoints: acquire and request payload checks.",
+    ),
+    (
+        "coh_l1d_multi_path_bmc",
+        "Coherent L1 with three request endpoints: prefetch, read, hit-path and shadow checks.",
     ),
     (
         "coh_home_wb_prove",
@@ -5018,6 +5054,12 @@ def test_atomic_proof_pairs_and_formal_shards() -> None:
         "coherence_l1d_coh_l1d_stream_free_nostore_hold_bmc": "Coherence L1D no-store holds",
         "coherence_l1d_coh_l1d_bmc": "Coherence L1D control",
         "coherence_l1d_coh_l1d_multi_bmc": "Coherence L1D multi-endpoint",
+        "coherence_l1d_coh_l1d_multi_hold_bmc": "Coherence L1D multi-endpoint holds",
+        "coherence_l1d_coh_l1d_multi_atomic_bmc": "Coherence L1D multi-endpoint atomic",
+        "coherence_l1d_coh_l1d_multi_store_bmc": "Coherence L1D multi-endpoint store",
+        "coherence_l1d_coh_l1d_multi_grant_bmc": "Coherence L1D multi-endpoint grant",
+        "coherence_l1d_coh_l1d_multi_acquire_bmc": "Coherence L1D multi-endpoint acquire",
+        "coherence_l1d_coh_l1d_multi_path_bmc": "Coherence L1D multi-endpoint path",
         "coherence_l1d_coh_l1d_zero_bmc": "Coherence L1D zero control",
         "coherence_l1d_coh_l1d_zero_multi_bmc": "Coherence L1D zero multi-endpoint",
         "coherence_l1d_coh_l1d_zero_cover": "Coherence L1D zero cover",
@@ -5498,7 +5540,7 @@ DONT_CARE_OPEN: dict[str, tuple[str, dict[str, list[str]]]] = {
     "coherence_l1d": (
         "converted in its own commit; its conflict tasks cut every flop, then run opt -full and sat",
         {
-            "coh_l1d_perf_prove coh_l1d_bmc coh_l1d_multi_bmc coh_l1d_stream_bmc coh_l1d_stream_hold_bmc coh_l1d_stream_free_nostore_bmc coh_l1d_stream_free_nostore_hold_bmc coh_l1d_stream_free_bmc coh_l1d_stream_outlier_prove coh_l1d_stream_owned_prove coh_l1d_stream_snapshot_prove coh_l1d_stream_prove coh_l1d_stream_cover coh_l1d_snapshot_cover coh_l1d_turn_cover coh_l1d_cover coh_l1d_path_cover coh_l1d_put_select_prove coh_l1d_data_bmc coh_l1d_data1_bmc coh_l1d_data2_bmc coh_l1d_data3_bmc coh_l1d_store_payload_bmc coh_l1d_store_grant_bmc coh_l1d_store_multi_payload_bmc coh_l1d_store_multi_grant_bmc coh_l1d_multi_data0_bmc coh_l1d_multi_data1_bmc coh_l1d_multi_data2_bmc coh_l1d_multi_data3_bmc coh_l1d_ways_data_bmc coh_l1d_answer_bmc coh_l1d_stream_answer_bmc coh_l1d_local_prove coh_l1d_local_multi_prove coh_l1d_local_owned_prove coh_l1d_local_multi_owned_prove coh_l1d_local_ways_owned_prove coh_l1d_local_sector_prove coh_l1d_local_multi_sector_prove coh_l1d_local_ways_sector_prove coh_l1d_local_cover coh_l1d_local_data_bmc coh_l1d_local_hold_bmc coh_l1d_local_control_bmc coh_l1d_local_ways_prove coh_l1d_zero_bmc coh_l1d_zero_multi_bmc coh_l1d_zero_payload_bmc coh_l1d_zero_cover coh_l1d_zero_lookahead_cover coh_l1d_zero_stream_hint_bmc coh_l1d_zero_stream_line_bmc coh_l1d_zero_stream_upper_ep0_bmc coh_l1d_zero_stream_upper_ep1_read_bmc coh_l1d_zero_stream_upper_ep1_store_bmc coh_l1d_zero_stream_upper_ep1_lookahead_bmc coh_l1d_zero_stream_upper_ep1_prefetch_bmc coh_l1d_zero_stream_upper_ep1_rest_bmc coh_l1d_zero_stream_upper_ep2_bmc coh_l1d_zero_progress_cover coh_l1d_zero_stream_bmc coh_l1d_zero_request_cover coh_l1d_full_bmc coh_l1d_full_multi_bmc coh_l1d_full_payload_bmc coh_l1d_full_cover coh_l1d_full_lookahead_cover coh_l1d_withdraw_full_bmc coh_l1d_withdraw_zero_bmc coh_l1d_withdraw_full_payload_bmc coh_l1d_withdraw_zero_payload_bmc coh_l1d_withdraw_full_cover coh_l1d_full_hold_cover coh_l1d_buffer_contract_bmc": [
+            "coh_l1d_perf_prove coh_l1d_bmc coh_l1d_multi_bmc coh_l1d_multi_hold_bmc coh_l1d_multi_atomic_bmc coh_l1d_multi_store_bmc coh_l1d_multi_grant_bmc coh_l1d_multi_acquire_bmc coh_l1d_multi_path_bmc coh_l1d_stream_bmc coh_l1d_stream_hold_bmc coh_l1d_stream_free_nostore_bmc coh_l1d_stream_free_nostore_hold_bmc coh_l1d_stream_free_bmc coh_l1d_stream_outlier_prove coh_l1d_stream_owned_prove coh_l1d_stream_snapshot_prove coh_l1d_stream_prove coh_l1d_stream_cover coh_l1d_snapshot_cover coh_l1d_turn_cover coh_l1d_cover coh_l1d_path_cover coh_l1d_put_select_prove coh_l1d_data_bmc coh_l1d_data1_bmc coh_l1d_data2_bmc coh_l1d_data3_bmc coh_l1d_store_payload_bmc coh_l1d_store_grant_bmc coh_l1d_store_multi_payload_bmc coh_l1d_store_multi_grant_bmc coh_l1d_multi_data0_bmc coh_l1d_multi_data1_bmc coh_l1d_multi_data2_bmc coh_l1d_multi_data3_bmc coh_l1d_ways_data_bmc coh_l1d_answer_bmc coh_l1d_stream_answer_bmc coh_l1d_local_prove coh_l1d_local_multi_prove coh_l1d_local_owned_prove coh_l1d_local_multi_owned_prove coh_l1d_local_ways_owned_prove coh_l1d_local_sector_prove coh_l1d_local_multi_sector_prove coh_l1d_local_ways_sector_prove coh_l1d_local_cover coh_l1d_local_data_bmc coh_l1d_local_hold_bmc coh_l1d_local_control_bmc coh_l1d_local_ways_prove coh_l1d_zero_bmc coh_l1d_zero_multi_bmc coh_l1d_zero_payload_bmc coh_l1d_zero_cover coh_l1d_zero_lookahead_cover coh_l1d_zero_stream_hint_bmc coh_l1d_zero_stream_line_bmc coh_l1d_zero_stream_upper_ep0_bmc coh_l1d_zero_stream_upper_ep1_read_bmc coh_l1d_zero_stream_upper_ep1_store_bmc coh_l1d_zero_stream_upper_ep1_lookahead_bmc coh_l1d_zero_stream_upper_ep1_prefetch_bmc coh_l1d_zero_stream_upper_ep1_rest_bmc coh_l1d_zero_stream_upper_ep2_bmc coh_l1d_zero_progress_cover coh_l1d_zero_stream_bmc coh_l1d_zero_request_cover coh_l1d_full_bmc coh_l1d_full_multi_bmc coh_l1d_full_payload_bmc coh_l1d_full_cover coh_l1d_full_lookahead_cover coh_l1d_withdraw_full_bmc coh_l1d_withdraw_zero_bmc coh_l1d_withdraw_full_payload_bmc coh_l1d_withdraw_zero_payload_bmc coh_l1d_withdraw_full_cover coh_l1d_full_hold_cover coh_l1d_buffer_contract_bmc": [
                 "memory_map",
                 "opt",
                 "opt -fast",
@@ -8163,6 +8205,24 @@ SCOPED_PROPERTY_COUNT_GUARDS: dict[tuple[str, str], tuple[tuple[str, ...], ...]]
         ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
     ),
     ("coherence_l1d.sby", "coh_l1d_multi_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_hold_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_atomic_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_store_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_grant_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_acquire_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_path_bmc"): (
         ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
     ),
     ("coherence_l1d.sby", "coh_l1d_answer_bmc"): (
@@ -12283,6 +12343,99 @@ def test_store_boundary_amo_other_partitions_complete() -> None:
         assert opts["depth"] == "140"
 
 
+def test_l1d_multi_partitions_complete() -> None:
+    """Require disjoint, exhaustive assertion partitions for coh_l1d_multi_bmc."""
+    other_name = "coh_l1d_multi_bmc"
+    kept_specs = (
+        ("coh_l1d_multi_hold_bmc", 79, 11),
+        ("coh_l1d_multi_atomic_bmc", 9, 9),
+        ("coh_l1d_multi_store_bmc", 15, 15),
+        ("coh_l1d_multi_grant_bmc", 10, 10),
+        ("coh_l1d_multi_acquire_bmc", 8, 8),
+        ("coh_l1d_multi_path_bmc", 75, 36),
+    )
+    names = (other_name, *(name for name, _, _ in kept_specs))
+    configs = {name: l1d_task_config(name) for name in names}
+    total = "select -assert-count 237 t:$check r:FLAVOR=assert %i"
+    keep_prefix = "chformal -assert -remove t:$check r:FLAVOR=assert %i "
+
+    def partition_lines(script: list[str]) -> list[str]:
+        return [
+            line
+            for line in script
+            if line.startswith(("select -assert-count ", "chformal -assert -remove "))
+            and "c:p_prefetch_conflict_split" not in line
+        ]
+
+    def named_checks(line: str) -> list[str]:
+        return [
+            word[2:]
+            for word in line.split()
+            if word.startswith("c:p_") and word != "c:p_*"
+        ]
+
+    parts = {name: partition_lines(configs[name]["[script]"]) for name in names}
+    kept_named: list[str] = []
+    kept_total = 0
+    for name, expected_count, expected_named in kept_specs:
+        lines = parts[name]
+        assert len(lines) == 4
+        assert lines[0] == total
+        assert lines[1].startswith(f"select -assert-count {expected_count} ")
+        assert lines[2].startswith(keep_prefix)
+        assert lines[2].endswith(" %d")
+        assert lines[3] == (
+            f"select -assert-count {expected_count} t:$check r:FLAVOR=assert %i"
+        )
+        assert lines[2][len(keep_prefix) : -3] == lines[1].split(" ", 3)[3]
+        own_named = named_checks(lines[2])
+        assert len(own_named) == expected_named
+        kept_named += own_named
+        kept_total += expected_count
+
+    assert len(kept_named) == len(set(kept_named)) == 89
+    assert kept_total == 196
+    assert (
+        "a:src=*coherence_read_payload.sv:* "
+        "c:$assert$coherence_l1d.sv:8* "
+        "c:$assert$coherence_l1d.sv:2*"
+    ) in parts["coh_l1d_multi_hold_bmc"][2]
+    assert "c:$assert$coherence_l1d.sv:4*" in parts["coh_l1d_multi_path_bmc"][2]
+
+    other = parts[other_name]
+    assert len(other) == 4
+    assert other[0] == total
+    assert other[1].startswith("chformal -assert -remove c:p_")
+    assert sorted(named_checks(other[1])) == sorted(kept_named)
+    assert other[2] == (
+        "chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_* %d "
+        "a:src=*coherence_read_payload.sv:* c:$assert$coherence_l1d.sv:8* "
+        "c:$assert$coherence_l1d.sv:2* c:$assert$coherence_l1d.sv:4* %u %u %u %i"
+    )
+    assert other[3] == "select -assert-count 41 t:$check r:FLAVOR=assert %i"
+    assert kept_total + 41 == 237
+
+    models = [
+        [line for line in configs[name]["[script]"] if line not in parts[name]]
+        for name in names
+    ]
+    assert all(model == models[0] for model in models)
+    assert [
+        line for line in models[0] if line.startswith("chformal -assert2assume")
+    ] == ["chformal -assert2assume c:p_prefetch_conflict_split"]
+    for name in names:
+        assert not any(
+            line.startswith(("cutpoint ", "connect ", "chformal -assert2assume"))
+            for line in parts[name]
+        )
+        assert configs[name]["[engines]"] == ["abc bmc3 -c"]
+        opts = dict(line.split(maxsplit=1) for line in configs[name]["[options]"])
+        assert opts["mode"] == "bmc"
+        assert opts["depth"] == "40"
+        assert int(opts["timeout"]) <= 15840
+        assert formal_task_timeout_s("coherence_l1d", name) <= 15840
+
+
 def test_local_data_partition_models_match() -> None:
     """Keep every scheduled real-array assertion at its original depth."""
     reference = l1d_task_config("coh_l1d_local_cover")
@@ -14721,7 +14874,13 @@ def test_fatal_frame_validation(
         ("coherence_home_twin", "home_twin_four", 2400),
         ("coherence_home_twin", "home_twin_addr40", 600),
         ("coherence_l1d", "coh_l1d_stream_free_bmc", 10800),
-        ("coherence_l1d", "coh_l1d_multi_bmc", 20400),
+        ("coherence_l1d", "coh_l1d_multi_bmc", 7740),
+        ("coherence_l1d", "coh_l1d_multi_hold_bmc", 4260),
+        ("coherence_l1d", "coh_l1d_multi_atomic_bmc", 10740),
+        ("coherence_l1d", "coh_l1d_multi_store_bmc", 8760),
+        ("coherence_l1d", "coh_l1d_multi_grant_bmc", 10260),
+        ("coherence_l1d", "coh_l1d_multi_acquire_bmc", 7980),
+        ("coherence_l1d", "coh_l1d_multi_path_bmc", 15120),
         ("coherence_l1d", "coh_l1d_local_control_bmc", 3600),
         ("coherence_l1d", "coh_l1d_data_bmc", 3900),
         ("coherence_l1d", "coh_l1d_data1_bmc", 3900),

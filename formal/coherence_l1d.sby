@@ -4,7 +4,13 @@ coh_l1d_conflict_prove single conflict
 coh_l1d_conflict_multi_prove multi conflict padded
 coh_l1d_conflict_stream_prove stream multi conflict padded
 coh_l1d_bmc single control control_single
-coh_l1d_multi_bmc multi control control_multi padded
+coh_l1d_multi_bmc multi control control_multi multiparts multiother padded
+coh_l1d_multi_hold_bmc multi control control_multi multiparts multihold padded
+coh_l1d_multi_atomic_bmc multi control control_multi multiparts multiatomic padded
+coh_l1d_multi_store_bmc multi control control_multi multiparts multistore padded
+coh_l1d_multi_grant_bmc multi control control_multi multiparts multigrant padded
+coh_l1d_multi_acquire_bmc multi control control_multi multiparts multiacquire padded
+coh_l1d_multi_path_bmc multi control control_multi multiparts multipath padded
 # The scripted and the free stream control BMCs use the cadical engine. On the
 # default engine their last frames pass or stall with unrelated logic changes.
 coh_l1d_stream_bmc stream multi cadical padded longbmc streamscript streambounded
@@ -186,11 +192,21 @@ nostore: timeout 3600
 # look-ahead admission. Each runs in its own CI job.
 control_single: depth 40
 control_single: timeout 10800
-# With free_undefined.ys, coh_l1d_bmc measured 10,283 s and coh_l1d_multi_bmc
-# measured 15,407 s; give both headroom inside their dedicated CI jobs.
+# With free_undefined.ys, coh_l1d_bmc measured 10,283 s; give it headroom
+# inside its dedicated CI job.
 coh_l1d_bmc: timeout 14400
 control_multi: timeout 18000
-coh_l1d_multi_bmc: timeout 20400
+# Split coh_l1d_multi_bmc into seven disjoint parts with no cross-partition
+# assumptions (verified times: hold 1,935 s, atomic 4,367 s, store 3,146 s,
+# grant 3,468 s, acquire 3,314 s, path 6,106 s, complement 3,000 s; >= 2.2x
+# rounded up to whole minutes).
+coh_l1d_multi_bmc: timeout 7740
+coh_l1d_multi_hold_bmc: timeout 4260
+coh_l1d_multi_atomic_bmc: timeout 10740
+coh_l1d_multi_store_bmc: timeout 8760
+coh_l1d_multi_grant_bmc: timeout 10260
+coh_l1d_multi_acquire_bmc: timeout 7980
+coh_l1d_multi_path_bmc: timeout 15120
 # Data tasks get about twice their measured duration, rounded up to five
 # minutes; word variants share the word-0 representative's allowance.
 coh_l1d_data_bmc: timeout 3900
@@ -373,6 +389,32 @@ conflict: opt_expr -keepdc -noclkinv
 # The matching conflict proof supplies this guarded, clocked identity.
 control: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 control: chformal -assert2assume c:p_prefetch_conflict_split
+# Partition coh_l1d_multi_bmc into seven disjoint subsets with no assumptions
+# between them: 11 hold/local-atomic + 68 early unnamed (79), 9 atomic,
+# 15 store, 10 grant, 8 acquire/request, 36 path/read/shadow + 39 4xxx unnamed
+# (75), and the remaining 41 5xxx unnamed assertions in coh_l1d_multi_bmc.
+multiparts: select -assert-count 237 t:$check r:FLAVOR=assert %i
+multihold: select -assert-count 79 t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold c:p_snapshot_credit_data c:p_local_addr_stable c:p_local_read_stable c:p_local_size_stable c:p_local_tag_stable c:p_local_way_stable c:p_bounded_local_atomic_idle %u %u %u %u %u %u %u %u %u %u %i t:$check r:FLAVOR=assert %i c:p_* %d a:src=*coherence_read_payload.sv:* c:$assert$coherence_l1d.sv:8* c:$assert$coherence_l1d.sv:2* %u %u %i %u
+multihold: chformal -assert -remove t:$check r:FLAVOR=assert %i t:$check r:FLAVOR=assert %i c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold c:p_snapshot_credit_data c:p_local_addr_stable c:p_local_read_stable c:p_local_size_stable c:p_local_tag_stable c:p_local_way_stable c:p_bounded_local_atomic_idle %u %u %u %u %u %u %u %u %u %u %i t:$check r:FLAVOR=assert %i c:p_* %d a:src=*coherence_read_payload.sv:* c:$assert$coherence_l1d.sv:8* c:$assert$coherence_l1d.sv:2* %u %u %i %u %d
+multihold: select -assert-count 79 t:$check r:FLAVOR=assert %i
+multiatomic: select -assert-count 9 t:$check r:FLAVOR=assert %i c:p_atomic_context_identity c:p_atomic_no_load_endpoint c:p_atomic_read_identity c:p_atomic_read_onehot c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_bounded_atomic_write_phase c:p_bounded_pending_atomic c:p_bounded_sc_write_done %u %u %u %u %u %u %u %u %i
+multiatomic: chformal -assert -remove t:$check r:FLAVOR=assert %i t:$check r:FLAVOR=assert %i c:p_atomic_context_identity c:p_atomic_no_load_endpoint c:p_atomic_read_identity c:p_atomic_read_onehot c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_bounded_atomic_write_phase c:p_bounded_pending_atomic c:p_bounded_sc_write_done %u %u %u %u %u %u %u %u %i %d
+multiatomic: select -assert-count 9 t:$check r:FLAVOR=assert %i
+multistore: select -assert-count 15 t:$check r:FLAVOR=assert %i c:p_store_acquire_once c:p_store_endpoint_limit c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_probe_exclusion c:p_store_read_service_bound c:p_store_yield_stops_continuation c:p_store_yields_read c:p_borrowed_store_limit c:p_block_zero_exact c:p_bounded_store_launch c:p_bounded_store_pop_pending %u %u %u %u %u %u %u %u %u %u %u %u %u %u %i
+multistore: chformal -assert -remove t:$check r:FLAVOR=assert %i t:$check r:FLAVOR=assert %i c:p_store_acquire_once c:p_store_endpoint_limit c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_probe_exclusion c:p_store_read_service_bound c:p_store_yield_stops_continuation c:p_store_yields_read c:p_borrowed_store_limit c:p_block_zero_exact c:p_bounded_store_launch c:p_bounded_store_pop_pending %u %u %u %u %u %u %u %u %u %u %u %u %u %u %i %d
+multistore: select -assert-count 15 t:$check r:FLAVOR=assert %i
+multigrant: select -assert-count 10 t:$check r:FLAVOR=assert %i c:p_grant_answer_fresh c:p_grant_error_exact c:p_grant_failure_exact c:p_grant_keeps_modified c:p_grant_live c:p_grant_owner_exact c:p_grant_prefetch_flag c:p_grant_sc_exclusive c:p_grant_victim_data c:p_bounded_grant_pick_live %u %u %u %u %u %u %u %u %u %i
+multigrant: chformal -assert -remove t:$check r:FLAVOR=assert %i t:$check r:FLAVOR=assert %i c:p_grant_answer_fresh c:p_grant_error_exact c:p_grant_failure_exact c:p_grant_keeps_modified c:p_grant_live c:p_grant_owner_exact c:p_grant_prefetch_flag c:p_grant_sc_exclusive c:p_grant_victim_data c:p_bounded_grant_pick_live %u %u %u %u %u %u %u %u %u %i %d
+multigrant: select -assert-count 10 t:$check r:FLAVOR=assert %i
+multiacquire: select -assert-count 8 t:$check r:FLAVOR=assert %i c:p_acquire_index c:p_acquire_read_payload c:p_acquire_read_role c:p_acquire_ready_exact c:p_acquire_request_valid c:p_request_admission c:p_request_payload c:p_request_ready_payload %u %u %u %u %u %u %u %i
+multiacquire: chformal -assert -remove t:$check r:FLAVOR=assert %i t:$check r:FLAVOR=assert %i c:p_acquire_index c:p_acquire_read_payload c:p_acquire_read_role c:p_acquire_ready_exact c:p_acquire_request_valid c:p_request_admission c:p_request_payload c:p_request_ready_payload %u %u %u %u %u %u %u %i %d
+multiacquire: select -assert-count 8 t:$check r:FLAVOR=assert %i
+multipath: select -assert-count 75 t:$check r:FLAVOR=assert %i c:p_prefetch_acquire_guard c:p_prefetch_acquire_pool c:p_prefetch_fill_isolation c:p_prefetch_hint_conflict c:p_prefetch_lookup_isolation c:p_prefetch_not_record c:p_prefetch_owner_conflict c:p_bounded_prefetch_acquire_window c:p_bounded_prefetch_live c:p_read_hit_data c:p_read_owned_exact c:p_read_status_exact c:p_read_turn_pointer c:p_failure_read_demand c:p_stream_replace_report c:p_bounded_miss_outstanding c:p_path_shadowed c:p_selected_kind c:p_absorb_go_exact c:p_cut_hold_exact c:p_probe_data c:p_snapshot_credit_image c:p_snapshot_hold c:p_snapshot_put_owner c:p_bounded_array_available c:p_bounded_probe_age c:p_bounded_wb_free_lookup c:p_bounded_wb_free_request c:p_skipped_array_data_unused c:p_shadow_tags_only c:p_bounded_path_answer_once c:p_bounded_path_slots c:p_bounded_shadow_agreement c:p_insert_lookup_set c:p_insert_lookup_valid c:p_insert_lookup_way c:$assert$coherence_l1d.sv:4* %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %i
+multipath: chformal -assert -remove t:$check r:FLAVOR=assert %i t:$check r:FLAVOR=assert %i c:p_prefetch_acquire_guard c:p_prefetch_acquire_pool c:p_prefetch_fill_isolation c:p_prefetch_hint_conflict c:p_prefetch_lookup_isolation c:p_prefetch_not_record c:p_prefetch_owner_conflict c:p_bounded_prefetch_acquire_window c:p_bounded_prefetch_live c:p_read_hit_data c:p_read_owned_exact c:p_read_status_exact c:p_read_turn_pointer c:p_failure_read_demand c:p_stream_replace_report c:p_bounded_miss_outstanding c:p_path_shadowed c:p_selected_kind c:p_absorb_go_exact c:p_cut_hold_exact c:p_probe_data c:p_snapshot_credit_image c:p_snapshot_hold c:p_snapshot_put_owner c:p_bounded_array_available c:p_bounded_probe_age c:p_bounded_wb_free_lookup c:p_bounded_wb_free_request c:p_skipped_array_data_unused c:p_shadow_tags_only c:p_bounded_path_answer_once c:p_bounded_path_slots c:p_bounded_shadow_agreement c:p_insert_lookup_set c:p_insert_lookup_valid c:p_insert_lookup_way c:$assert$coherence_l1d.sv:4* %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %i %d
+multipath: select -assert-count 75 t:$check r:FLAVOR=assert %i
+multiother: chformal -assert -remove c:p_grant_mux_exact c:p_local_image_stable c:p_load_payload_held c:p_reply_hold c:p_snapshot_credit_data c:p_local_addr_stable c:p_local_read_stable c:p_local_size_stable c:p_local_tag_stable c:p_local_way_stable c:p_bounded_local_atomic_idle c:p_atomic_context_identity c:p_atomic_no_load_endpoint c:p_atomic_read_identity c:p_atomic_read_onehot c:p_atomic_single_owner c:p_atomic_store_exclusive c:p_bounded_atomic_write_phase c:p_bounded_pending_atomic c:p_bounded_sc_write_done c:p_store_acquire_once c:p_store_endpoint_limit c:p_store_grant_head c:p_store_grant_head_exact c:p_store_head_address c:p_store_head_valid c:p_store_install_address c:p_store_probe_exclusion c:p_store_read_service_bound c:p_store_yield_stops_continuation c:p_store_yields_read c:p_borrowed_store_limit c:p_block_zero_exact c:p_bounded_store_launch c:p_bounded_store_pop_pending c:p_grant_answer_fresh c:p_grant_error_exact c:p_grant_failure_exact c:p_grant_keeps_modified c:p_grant_live c:p_grant_owner_exact c:p_grant_prefetch_flag c:p_grant_sc_exclusive c:p_grant_victim_data c:p_bounded_grant_pick_live c:p_acquire_index c:p_acquire_read_payload c:p_acquire_read_role c:p_acquire_ready_exact c:p_acquire_request_valid c:p_request_admission c:p_request_payload c:p_request_ready_payload c:p_prefetch_acquire_guard c:p_prefetch_acquire_pool c:p_prefetch_fill_isolation c:p_prefetch_hint_conflict c:p_prefetch_lookup_isolation c:p_prefetch_not_record c:p_prefetch_owner_conflict c:p_bounded_prefetch_acquire_window c:p_bounded_prefetch_live c:p_read_hit_data c:p_read_owned_exact c:p_read_status_exact c:p_read_turn_pointer c:p_failure_read_demand c:p_stream_replace_report c:p_bounded_miss_outstanding c:p_path_shadowed c:p_selected_kind c:p_absorb_go_exact c:p_cut_hold_exact c:p_probe_data c:p_snapshot_credit_image c:p_snapshot_hold c:p_snapshot_put_owner c:p_bounded_array_available c:p_bounded_probe_age c:p_bounded_wb_free_lookup c:p_bounded_wb_free_request c:p_skipped_array_data_unused c:p_shadow_tags_only c:p_bounded_path_answer_once c:p_bounded_path_slots c:p_bounded_shadow_agreement c:p_insert_lookup_set c:p_insert_lookup_valid c:p_insert_lookup_way
+multiother: chformal -assert -remove t:$check r:FLAVOR=assert %i c:p_* %d a:src=*coherence_read_payload.sv:* c:$assert$coherence_l1d.sv:8* c:$assert$coherence_l1d.sv:2* c:$assert$coherence_l1d.sv:4* %u %u %u %i
+multiother: select -assert-count 41 t:$check r:FLAVOR=assert %i
 zcontrol: select -assert-count 1 c:p_prefetch_conflict_split t:$check %i r:FLAVOR=assert %i
 zcontrol: chformal -assert2assume c:p_prefetch_conflict_split
 zcontrol: select -assert-min 1 c:p_zero_* t:$check %i r:FLAVOR=assert %i

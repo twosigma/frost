@@ -51,8 +51,11 @@ The 75-minute ROB retirement successor job allows 10 minutes for setup,
 `coherence_store_boundary:cover_four` have 120 minutes.
 The `coherence_store_boundary` four-record and intervening-load partitions
 each stay at or under 264 minutes (15,840 seconds), as listed in the table
-below. `coherence_l1d:coh_l1d_bmc` has 240 minutes at depth 40;
-`coh_l1d_multi_bmc` has 340 minutes at depth 40.
+below. `coherence_l1d:coh_l1d_bmc` has 240 minutes at depth 40; the seven
+`coh_l1d_multi_bmc` partition tasks (`coh_l1d_multi_hold_bmc`,
+`coh_l1d_multi_bmc`, `coh_l1d_multi_acquire_bmc`, `coh_l1d_multi_store_bmc`,
+`coh_l1d_multi_grant_bmc`, `coh_l1d_multi_atomic_bmc`, and
+`coh_l1d_multi_path_bmc`) have 71 to 252 minutes at depth 40.
 `coh_l1d_zero_bmc`, `coh_l1d_full_bmc`, `coh_l1d_withdraw_full_bmc` and
 `coh_l1d_withdraw_zero_bmc` have 180 minutes each at depth 40 on the Glucose
 backend, which finishes them in 55 to 72 minutes (the default engine did not
@@ -123,6 +126,13 @@ the listed L1D store-data BMCs keep depth 40.
 
 | Target | Task | SBY and runner timeout (seconds / minutes) |
 | --- | --- | --- |
+| `coherence_l1d` | `coh_l1d_multi_hold_bmc` | 4,260 / 71 |
+| `coherence_l1d` | `coh_l1d_multi_bmc` | 7,740 / 129 |
+| `coherence_l1d` | `coh_l1d_multi_acquire_bmc` | 7,980 / 133 |
+| `coherence_l1d` | `coh_l1d_multi_store_bmc` | 8,760 / 146 |
+| `coherence_l1d` | `coh_l1d_multi_grant_bmc` | 10,260 / 171 |
+| `coherence_l1d` | `coh_l1d_multi_atomic_bmc` | 10,740 / 179 |
+| `coherence_l1d` | `coh_l1d_multi_path_bmc` | 15,120 / 252 |
 | `coherence_l1d` | `coh_l1d_data_bmc`, `coh_l1d_data1_bmc`, `coh_l1d_data2_bmc`, `coh_l1d_data3_bmc` | 3,900 / 65 each |
 | `coherence_l1d` | `coh_l1d_multi_data0_bmc` through `coh_l1d_multi_data3_bmc` | 4,200 / 70 each |
 | `coherence_l1d` | `coh_l1d_store_payload_bmc` | 900 / 15 |
@@ -211,8 +221,13 @@ while `bmc_intervening_other_flow`, `bmc_intervening_same_value` and
 `bmc_intervening_other_value` run in dedicated 240-, 200- and 284-minute jobs.
 
 The L1D control job runs `coh_l1d_bmc` alone with a 260-minute limit (240-minute
-allowance plus setup), and the L1D multi-endpoint job runs `coh_l1d_multi_bmc`
-alone with a 360-minute limit (340-minute allowance plus setup). The zero-line and full-line control jobs run `coh_l1d_zero_bmc` and
+allowance plus setup), and the three-endpoint control assertions run across seven
+dedicated jobs without cross-partition assumptions: `coh_l1d_multi_hold_bmc` (90
+minutes, 79 assertions), `coh_l1d_multi_bmc` (150 minutes, the remaining 41
+line-5xxx assertions), `coh_l1d_multi_acquire_bmc` (155 minutes, 8 assertions),
+`coh_l1d_multi_store_bmc` (170 minutes, 15 assertions), `coh_l1d_multi_grant_bmc`
+(195 minutes, 10 assertions), `coh_l1d_multi_atomic_bmc` (200 minutes, 9
+assertions) and `coh_l1d_multi_path_bmc` (275 minutes, 75 assertions). The zero-line and full-line control jobs run `coh_l1d_zero_bmc` and
 `coh_l1d_full_bmc` alone with 200-minute limits, the zero-line and full-line
 multi-endpoint jobs run `coh_l1d_zero_multi_bmc` and `coh_l1d_full_multi_bmc`
 alone with 330-minute limits, and the zero cover job runs `coh_l1d_zero_cover`

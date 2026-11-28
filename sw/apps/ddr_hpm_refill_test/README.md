@@ -21,9 +21,15 @@ The program checks selectors 19, 20 and 21 on counters 3, 6 and 5:
   L2 demand refills and L2 prefetch refills must remain zero in the instruction
   windows. A data-side event cannot substitute for the instruction event.
 - Scattered loads into 32 untouched pages require exactly 32 demand reads and
-  no prefetch reads; a warm pass requires no demand reads. A stream over two
-  untouched pages requires exactly 128 demand-plus-prefetch reads and uses
-  prefetching. MINH, counter wrap, OF, LCOFIP and scountovf are also checked.
+  no prefetch reads; a warm pass requires no demand or prefetch reads. Both
+  the page and line offset use an assembly-masked five-bit index, so even a
+  speculative iteration past the loop exit revisits one of the same 32 lines.
+  A C loop bound alone does not constrain speculative addresses, and a C mask
+  can be optimized away using that bound. Event 20 counts memory reads from
+  squashed loads too; unbounded speculation can otherwise add cold reads to
+  the warm window. A stream over two untouched pages requires exactly 128
+  demand-plus-prefetch reads and uses prefetching. MINH, counter wrap, OF,
+  LCOFIP and scountovf are also checked.
 
 These are workload checks. Exact request-to-pulse accounting is checked on
 every clock by the cache/home benches and by the home refill formal properties.
