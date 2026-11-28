@@ -55,7 +55,7 @@ below. `coherence_l1d:coh_l1d_bmc` has 240 minutes at depth 40; the seven
 `coh_l1d_multi_bmc` partition tasks (`coh_l1d_multi_hold_bmc`,
 `coh_l1d_multi_bmc`, `coh_l1d_multi_acquire_bmc`, `coh_l1d_multi_store_bmc`,
 `coh_l1d_multi_grant_bmc`, `coh_l1d_multi_atomic_bmc`, and
-`coh_l1d_multi_path_bmc`) have 70 to 252 minutes at depth 40.
+`coh_l1d_multi_path_bmc`) have 71 to 252 minutes at depth 40.
 `coh_l1d_zero_bmc`, `coh_l1d_full_bmc`, `coh_l1d_withdraw_full_bmc` and
 `coh_l1d_withdraw_zero_bmc` have 180 minutes each at depth 40 on the Glucose
 backend, which finishes them in 55 to 72 minutes (the default engine did not
@@ -126,7 +126,7 @@ the listed L1D store-data BMCs keep depth 40.
 
 | Target | Task | SBY and runner timeout (seconds / minutes) |
 | --- | --- | --- |
-| `coherence_l1d` | `coh_l1d_multi_hold_bmc` | 4,200 / 70 |
+| `coherence_l1d` | `coh_l1d_multi_hold_bmc` | 4,260 / 71 |
 | `coherence_l1d` | `coh_l1d_multi_bmc` | 7,740 / 129 |
 | `coherence_l1d` | `coh_l1d_multi_acquire_bmc` | 7,980 / 133 |
 | `coherence_l1d` | `coh_l1d_multi_store_bmc` | 8,760 / 146 |

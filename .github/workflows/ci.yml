@@ -1670,7 +1670,7 @@ jobs:
             pytest_filter: coh_l1d_bmc
             timeout_minutes: 260
           # The three-endpoint control BMC is partitioned into seven tasks with
-          # 70- to 252-minute allowances plus twenty minutes for image setup.
+          # 71- to 252-minute allowances inside 90- to 275-minute jobs.
           - shard: Coherence L1D multi-endpoint
             pytest_filter: coh_l1d_multi_bmc
             timeout_minutes: 150

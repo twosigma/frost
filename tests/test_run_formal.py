@@ -136,7 +136,7 @@ SBY_TASK_TIMEOUT_OVERRIDES_S = {
     ("coherence_array", "coh_array4_port_bmc"): 6000,
     ("coherence_l1d", "coh_l1d_bmc"): 14400,
     ("coherence_l1d", "coh_l1d_multi_bmc"): 7740,
-    ("coherence_l1d", "coh_l1d_multi_hold_bmc"): 4200,
+    ("coherence_l1d", "coh_l1d_multi_hold_bmc"): 4260,
     ("coherence_l1d", "coh_l1d_multi_atomic_bmc"): 10740,
     ("coherence_l1d", "coh_l1d_multi_store_bmc"): 8760,
     ("coherence_l1d", "coh_l1d_multi_grant_bmc"): 10260,
@@ -8162,6 +8162,24 @@ SCOPED_PROPERTY_COUNT_GUARDS: dict[tuple[str, str], tuple[tuple[str, ...], ...]]
     ("coherence_l1d.sby", "coh_l1d_multi_bmc"): (
         ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
     ),
+    ("coherence_l1d.sby", "coh_l1d_multi_hold_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_atomic_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_store_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_grant_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_acquire_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_path_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
     ("coherence_l1d.sby", "coh_l1d_answer_bmc"): (
         ("c:p_answer_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
     ),
@@ -14812,7 +14830,7 @@ def test_fatal_frame_validation(
         ("coherence_home_twin", "home_twin_addr40", 600),
         ("coherence_l1d", "coh_l1d_stream_free_bmc", 10800),
         ("coherence_l1d", "coh_l1d_multi_bmc", 7740),
-        ("coherence_l1d", "coh_l1d_multi_hold_bmc", 4200),
+        ("coherence_l1d", "coh_l1d_multi_hold_bmc", 4260),
         ("coherence_l1d", "coh_l1d_multi_atomic_bmc", 10740),
         ("coherence_l1d", "coh_l1d_multi_store_bmc", 8760),
         ("coherence_l1d", "coh_l1d_multi_grant_bmc", 10260),

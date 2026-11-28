@@ -197,11 +197,11 @@ control_single: timeout 10800
 coh_l1d_bmc: timeout 14400
 control_multi: timeout 18000
 # Split coh_l1d_multi_bmc into seven disjoint parts with no cross-partition
-# assumptions (measured times: hold 1,896 s, atomic 4,861 s, store 3,979 s,
-# grant 4,653 s, acquire 3,604 s, path 6,863 s, complement 3,498 s; 2.2x
+# assumptions (verified times: hold 1,935 s, atomic 4,367 s, store 3,146 s,
+# grant 3,468 s, acquire 3,314 s, path 6,106 s, complement 3,000 s; >= 2.2x
 # rounded up to whole minutes).
 coh_l1d_multi_bmc: timeout 7740
-coh_l1d_multi_hold_bmc: timeout 4200
+coh_l1d_multi_hold_bmc: timeout 4260
 coh_l1d_multi_atomic_bmc: timeout 10740
 coh_l1d_multi_store_bmc: timeout 8760
 coh_l1d_multi_grant_bmc: timeout 10260
