@@ -6309,12 +6309,15 @@ async def test_sc_table_holds_a_full_store_queue_of_scs(dut: Any) -> None:
     """
     cocotb.log.info("=== Test: SC Table Holds A Full Store Queue Of SCs ===")
     dut_if, _model = await setup_test(dut)
-    sq_depth = 8  # riscv_pkg::SqDepth
+    sq_depth = len(dut.sc_pending_unit_inst.sct_valid)
+    assert sq_depth == 16, f"expected 16-entry SC table, got {sq_depth}"
     dut_if.set_fu_ready(RS_MEM, True)
 
     blocker_tag = await dut_if.dispatch(make_int_req(pc=0x8000, rd=5))
     sc_tags: list[int] = []
+    expected_addrs: dict[int, int] = {}
     for i in range(sq_depth):
+        sc_addr = 0x1000 + 8 * i
         req_sc = AllocationRequest(
             pc=0x8004 + 4 * i,
             dest_reg=6 + i,
@@ -6330,7 +6333,7 @@ async def test_sc_table_holds_a_full_store_queue_of_scs(dut: Any) -> None:
             rob_tag=tag_sc,
             op=OP_SC_W,
             src1_ready=True,
-            src1_value=0x1000 + 8 * i,
+            src1_value=sc_addr,
             src2_ready=True,
             src2_value=i,
             src3_ready=True,
@@ -6345,13 +6348,15 @@ async def test_sc_table_holds_a_full_store_queue_of_scs(dut: Any) -> None:
         dut_if.clear_rat_rename()
         dut_if.clear_rs_dispatch()
         sc_tags.append(tag_sc)
+        expected_addrs[tag_sc] = sc_addr
 
     # Let MEM_RS issue the last SC into the table.
     for _ in range(6):
         await dut_if.step()
     table = int(dut.sc_pending_unit_inst.sct_valid.value)
-    assert bin(table).count("1") == sq_depth, (
-        f"expected {sq_depth} waiting SCs in the SC table, got mask {table:#x}"
+    full_mask = (1 << sq_depth) - 1
+    assert table == full_mask, (
+        f"expected all {sq_depth} SC table slots occupied ({full_mask:#x}), got mask {table:#x}"
     )
 
     dut_if.drive_fu_complete(FU_FP_ADD, tag=blocker_tag, value=0)
@@ -6359,8 +6364,15 @@ async def test_sc_table_holds_a_full_store_queue_of_scs(dut: Any) -> None:
     dut_if.clear_fu_complete(FU_FP_ADD)
 
     committed: list[tuple[int, int]] = []
-    for _ in range(200):
+    fired_addrs: dict[int, tuple[int, int]] = {}
+    for _ in range(300):
         await RisingEdge(dut_if.clock)
+        if int(dut.sc_pending_unit_inst.sc_fire_now.value):
+            fired_tag = int(dut.sc_pending_unit_inst.sct_head_tag_q.value)
+            fired_addrs[fired_tag] = (
+                int(dut.sc_pending_unit_inst.o_sc_head_addr.value),
+                int(dut.sc_pending_unit_inst.sct_head_vaddr_q.value),
+            )
         for commit in (dut_if.read_commit(), dut_if.read_commit_2()):
             if commit["valid"]:
                 committed.append((commit["tag"], commit["value"]))
@@ -6374,6 +6386,13 @@ async def test_sc_table_holds_a_full_store_queue_of_scs(dut: Any) -> None:
     assert all(value == 1 for _, value in committed[1:]), (
         f"every SC should fail without a reservation: {committed[1:]}"
     )
+    for tag in sc_tags:
+        assert tag in fired_addrs, f"SC tag {tag} did not fire through sc_pending_unit"
+        got_pa, got_va = fired_addrs[tag]
+        want_addr = expected_addrs[tag]
+        assert got_pa == want_addr and got_va == want_addr, (
+            f"SC tag {tag} fired with PA={got_pa:#x} VA={got_va:#x}, expected {want_addr:#x}"
+        )
     assert not int(dut.sc_pending.value), "SC table should be empty after the SCs fire"
 
     cocotb.log.info("=== Test Passed ===")

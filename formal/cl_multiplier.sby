@@ -18,6 +18,8 @@ read -formal -sv cl_multiplier_formal.sv
 hierarchy -top cl_multiplier_formal
 script free_undefined.ys
 prep -top cl_multiplier_formal -flatten
+select -assert-count 2 t:$check r:FLAVOR=assert %i
+select -assert-count 1 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/cl_multiplier.sv

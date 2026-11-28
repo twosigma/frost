@@ -1,0 +1,666 @@
+{
+  "calibration_status": "passed measured comparison",
+  "check": {
+    "baseline": "perf-modeling/calibration/ci_baseline.json",
+    "deltas": {
+      "model_ipc_since_stored": -0.03729087512332341,
+      "model_vs_rtl_ipc": 0.053742731795377585,
+      "rtl_cycles_since_stored": -0.0029544371176610795,
+      "rtl_ipc_since_stored": 0.0029631916811505565,
+      "stored_model_vs_rtl_ipc": 0.09780321613518672
+    },
+    "failures": [],
+    "model": {
+      "cycles": 190556,
+      "ipc": 1.1902065534541026,
+      "retired_uops": 226801
+    },
+    "passed": true,
+    "rtl": {
+      "cycles": 200797,
+      "dispatched_uops": 239424,
+      "event_counts": {
+        "axi_request": 11674,
+        "axi_response": 11673,
+        "dispatch": 139422,
+        "meta": 1,
+        "retire": 128459
+      },
+      "ipc": 1.1295039268514968,
+      "retired_uops": 226801
+    }
+  },
+  "cycle_delta": 10241,
+  "frontend": {
+    "max_decoded": 4,
+    "max_metadata": 4,
+    "max_parcels": 14,
+    "provider": {
+      "hits": 139182,
+      "line_requests": 471,
+      "local_port_backpressure": 169,
+      "merged_misses": 1,
+      "misses": 471
+    },
+    "stats": {
+      "decode_backpressure": 33002,
+      "drained_parcels": 453602,
+      "empty_bypass": 45134,
+      "f0_launches": 124003,
+      "f0_taken": 21642,
+      "partial_bypass": 7729,
+      "pd_backing": 581,
+      "pd_direction": 3857,
+      "provider_wait": 3883,
+      "queue_backpressure": 35034,
+      "redirect_execute": 1354,
+      "redirect_pd": 4438,
+      "refill_predictor_overlap": 465,
+      "run_ahead_launches": 16882,
+      "windows": 123719
+    }
+  },
+  "instruction_stream": {
+    "artifacts": {
+      "sw.bin_sha256": "d302c201b8c51254daa87617b5274564785d57b7d13c2171d249183feaa26abd",
+      "sw.elf_sha256": "0057d9d36f71d0a4127d778d160641e844aa7a910ff777fb89ccfcf63a475375"
+    },
+    "benchmark": "coremark",
+    "instructions": 226801,
+    "memory_tier": "bram",
+    "rtl_commit": "200f339eaf5996a5510cf4e0d96adbd4c22e576c",
+    "run_number": 1,
+    "schema": "frost-instructions-v1",
+    "sha256": "bb0ee652c46d5fe32bc903f53c977bb65ea1c1a49f2b27953b42f4ad102a61f6",
+    "start_pc": 23684,
+    "stop_pc": 23688
+  },
+  "model": {
+    "configuration": {
+      "alu_cycles": 1,
+      "alu_issue_width": 2,
+      "axi_data_bytes": 64,
+      "axi_id_bits": 5,
+      "axi_id_pool_size": 32,
+      "branch_recovery_cycles": 2,
+      "cache_fill_cycles": 1,
+      "cache_normal_memory": true,
+      "cache_response_cycles": 1,
+      "cdb_width": 2,
+      "checkpoints": 12,
+      "coherence_release_cycles": 4,
+      "cpu_axi_id_bits": 6,
+      "ddr": {
+        "channels": 1,
+        "controller": "behavioral",
+        "cycles_per_line": 1,
+        "id_bits": 5,
+        "interleave_bytes": 64,
+        "jitter_seed": 44257,
+        "latency_cycles": 80,
+        "latency_jitter": 0,
+        "line_bytes": 64,
+        "num_slots": 8,
+        "reorder": false
+      },
+      "decoded_queue_bundles": 4,
+      "dispatch_width": 2,
+      "early_load_wakeup": true,
+      "int_rs_entries": 16,
+      "int_rs_issue2_window": 8,
+      "l0_cache_depth": 512,
+      "l1_data_cycles": 2,
+      "l1_line_bytes": 32,
+      "l1_tag_cycles": 1,
+      "l1_write_cycles": 1,
+      "l1d_bimodal_insert": true,
+      "l1d_bytes": 131072,
+      "l1d_hit_path": true,
+      "l1d_id_bits": 4,
+      "l1d_lookahead_hints": false,
+      "l1d_lookahead_sectors": 8,
+      "l1d_lookahead_slots": 2,
+      "l1d_mshrs": 8,
+      "l1d_read_slots": 8,
+      "l1d_request_cycles": 1,
+      "l1d_response_cycles": 2,
+      "l1d_return_cycles": 2,
+      "l1d_store_lookahead": true,
+      "l1d_store_records": 4,
+      "l1d_ways": 4,
+      "l1d_wb_slots": 2,
+      "l1i_bytes": 16384,
+      "l1i_mshrs": 2,
+      "l1i_ways": 4,
+      "l2_bimodal_insert": false,
+      "l2_bytes": 2097152,
+      "l2_data_cycles": 6,
+      "l2_id_bits": 5,
+      "l2_line_bytes": 64,
+      "l2_mshrs": 8,
+      "l2_prefetch": true,
+      "l2_prefetch_distance": 8,
+      "l2_prefetch_inflight": 3,
+      "l2_prefetch_streams": 4,
+      "l2_tag_cycles": 3,
+      "l2_waiters": 2,
+      "l2_ways": 4,
+      "l2_wb_slots": 2,
+      "load_issue_width": 1,
+      "load_queue_entries": 8,
+      "local_load_pipeline_cycles": 8,
+      "mem_rs_entries": 8,
+      "mul_rs_entries": 4,
+      "name": "rtl_baseline",
+      "normal_fetch_lines": 256,
+      "prefetch_page_bytes": 4096,
+      "retire_width": 2,
+      "rob_entries": 32,
+      "soc": {
+        "bram_base": 0,
+        "bram_bytes": 262144,
+        "ddr_aw_register_cycles": 1,
+        "ddr_base": 2147483648,
+        "ddr_bytes": 1073741824,
+        "local_bram_read_cycles": 2,
+        "local_bram_write_cycles": 2,
+        "local_mmio_cycles": 2,
+        "local_turnaround_cycles": 1,
+        "local_wide_fetch_cycles": 7,
+        "mmio_base": 1073741824,
+        "mmio_bytes": 268435456
+      },
+      "store_drain_cycles": 3,
+      "store_queue_entries": 8
+    },
+    "cpu_top": {
+      "axi_master": {
+        "inflight_cycles": 0
+      },
+      "l1d": {
+        "occupancy": {
+          "mshrs": 0,
+          "store_records": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "l1i": {
+        "occupancy": {
+          "mshrs": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "l2": {
+        "occupancy": {
+          "mshrs": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "line_size_adapter": {},
+      "pipeline": {
+        "max_occupancy": {
+          "int_rs": 16,
+          "lq": 8,
+          "mem_rs": 8,
+          "mul_rs": 4,
+          "rob": 32,
+          "sq": 8
+        },
+        "stats": {
+          "branch_mispredicts": 1354,
+          "branches_without_cdb": 52067,
+          "cdb_contention": 8193,
+          "completed": 226801,
+          "dispatch_0": 58590,
+          "dispatch_1": 37131,
+          "dispatch_2": 94835,
+          "dispatch_done_repairs": 31516,
+          "dispatch_stall_checkpoint": 551,
+          "dispatch_stall_int_rs": 182,
+          "dispatch_stall_lq": 5568,
+          "dispatch_stall_mem_rs": 10324,
+          "dispatch_stall_mul_rs": 4083,
+          "dispatch_stall_recovery": 2708,
+          "dispatch_stall_rob": 15426,
+          "dispatch_stall_sq": 331,
+          "dispatched": 226801,
+          "early_load_tokens": 38791,
+          "frontend_fetch_stall": 19417,
+          "issue_recovery_stall": 2708,
+          "l0_fills": 335,
+          "l0_hits": 49265,
+          "l0_misses": 898,
+          "l0_store_allocations": 7554,
+          "l0_store_updates": 10860,
+          "load_local_backpressure": 563,
+          "load_store_disambiguation_stall": 33762,
+          "loads_issued": 49600,
+          "local_loads": 335,
+          "local_stores": 10941,
+          "multiplies_issued": 10564,
+          "retire_head_not_ready": 87970,
+          "retired": 226801,
+          "rob_occupancy_sum": 3718760,
+          "sq_full_cycles": 315,
+          "store_drain_backpressure": 2895,
+          "stores_drained": 10941
+        }
+      },
+      "prefetcher": {}
+    },
+    "cycles": 190556,
+    "frontend": {
+      "max_decoded": 4,
+      "max_metadata": 4,
+      "max_parcels": 14,
+      "provider": {
+        "hits": 139182,
+        "line_requests": 471,
+        "local_port_backpressure": 169,
+        "merged_misses": 1,
+        "misses": 471
+      },
+      "stats": {
+        "decode_backpressure": 33002,
+        "drained_parcels": 453602,
+        "empty_bypass": 45134,
+        "f0_launches": 124003,
+        "f0_taken": 21642,
+        "partial_bypass": 7729,
+        "pd_backing": 581,
+        "pd_direction": 3857,
+        "provider_wait": 3883,
+        "queue_backpressure": 35034,
+        "redirect_execute": 1354,
+        "redirect_pd": 4438,
+        "refill_predictor_overlap": 465,
+        "run_ahead_launches": 16882,
+        "windows": 123719
+      }
+    },
+    "instruction_stream": {
+      "artifacts": {
+        "sw.bin_sha256": "d302c201b8c51254daa87617b5274564785d57b7d13c2171d249183feaa26abd",
+        "sw.elf_sha256": "0057d9d36f71d0a4127d778d160641e844aa7a910ff777fb89ccfcf63a475375"
+      },
+      "benchmark": "coremark",
+      "instructions": 226801,
+      "memory_tier": "bram",
+      "rtl_commit": "200f339eaf5996a5510cf4e0d96adbd4c22e576c",
+      "run_number": 1,
+      "schema": "frost-instructions-v1",
+      "sha256": "bb0ee652c46d5fe32bc903f53c977bb65ea1c1a49f2b27953b42f4ad102a61f6",
+      "start_pc": 23684,
+      "stop_pc": 23688
+    },
+    "ipc": 1.1902065534541026,
+    "memory": {
+      "axi": {
+        "inflight_cycles": 0
+      },
+      "ddr": {
+        "configuration": {
+          "channels": 1,
+          "controller": "behavioral",
+          "cycles_per_line": 1,
+          "id_bits": 5,
+          "interleave_bytes": 64,
+          "jitter_seed": 44257,
+          "latency_cycles": 80,
+          "latency_jitter": 0,
+          "line_bytes": 64,
+          "num_slots": 8,
+          "reorder": false
+        },
+        "effective_slots": 8,
+        "inflight_reads": 0,
+        "inflight_writes": 0,
+        "kind": "frost_single_channel_axi_ddr",
+        "stats": {}
+      },
+      "l1d": {
+        "occupancy": {
+          "mshrs": 0,
+          "store_records": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "l1i": {
+        "occupancy": {
+          "mshrs": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "l2": {
+        "occupancy": {
+          "mshrs": 0,
+          "writeback_slots": 0
+        },
+        "stats": {}
+      },
+      "line_size_adapter": {},
+      "prefetcher": {},
+      "soc": {
+        "configuration": {
+          "bram_base": 0,
+          "bram_bytes": 262144,
+          "ddr_aw_register_cycles": 1,
+          "ddr_base": 2147483648,
+          "ddr_bytes": 1073741824,
+          "local_bram_read_cycles": 2,
+          "local_bram_write_cycles": 2,
+          "local_mmio_cycles": 2,
+          "local_turnaround_cycles": 1,
+          "local_wide_fetch_cycles": 7,
+          "mmio_base": 1073741824,
+          "mmio_bytes": 268435456
+        },
+        "ddr": {
+          "configuration": {
+            "channels": 1,
+            "controller": "behavioral",
+            "cycles_per_line": 1,
+            "id_bits": 5,
+            "interleave_bytes": 64,
+            "jitter_seed": 44257,
+            "latency_cycles": 80,
+            "latency_jitter": 0,
+            "line_bytes": 64,
+            "num_slots": 8,
+            "reorder": false
+          },
+          "effective_slots": 8,
+          "inflight_reads": 0,
+          "inflight_writes": 0,
+          "kind": "frost_single_channel_axi_ddr",
+          "stats": {}
+        },
+        "kind": "frost_soc_top",
+        "stats": {
+          "local_bram_reads": 335,
+          "local_bram_wide_fetches": 471,
+          "local_bram_writes": 10941,
+          "local_port_backpressure": 3627
+        }
+      }
+    },
+    "micro_ops": 226801,
+    "micro_ops_per_second": 16670,
+    "model_version": "1.0",
+    "pipeline": {
+      "max_occupancy": {
+        "int_rs": 16,
+        "lq": 8,
+        "mem_rs": 8,
+        "mul_rs": 4,
+        "rob": 32,
+        "sq": 8
+      },
+      "stats": {
+        "branch_mispredicts": 1354,
+        "branches_without_cdb": 52067,
+        "cdb_contention": 8193,
+        "completed": 226801,
+        "dispatch_0": 58590,
+        "dispatch_1": 37131,
+        "dispatch_2": 94835,
+        "dispatch_done_repairs": 31516,
+        "dispatch_stall_checkpoint": 551,
+        "dispatch_stall_int_rs": 182,
+        "dispatch_stall_lq": 5568,
+        "dispatch_stall_mem_rs": 10324,
+        "dispatch_stall_mul_rs": 4083,
+        "dispatch_stall_recovery": 2708,
+        "dispatch_stall_rob": 15426,
+        "dispatch_stall_sq": 331,
+        "dispatched": 226801,
+        "early_load_tokens": 38791,
+        "frontend_fetch_stall": 19417,
+        "issue_recovery_stall": 2708,
+        "l0_fills": 335,
+        "l0_hits": 49265,
+        "l0_misses": 898,
+        "l0_store_allocations": 7554,
+        "l0_store_updates": 10860,
+        "load_local_backpressure": 563,
+        "load_store_disambiguation_stall": 33762,
+        "loads_issued": 49600,
+        "local_loads": 335,
+        "local_stores": 10941,
+        "multiplies_issued": 10564,
+        "retire_head_not_ready": 87970,
+        "retired": 226801,
+        "rob_occupancy_sum": 3718760,
+        "sq_full_cycles": 315,
+        "store_drain_backpressure": 2895,
+        "stores_drained": 10941
+      }
+    },
+    "replay_execution": {
+      "branch_issue_ports": 1,
+      "checkpoint_entries": 12,
+      "dispatch": "atomic bundle using registered resource availability",
+      "done_operand_dispatch_to_select_cycles": 2,
+      "execute_recovery_block_cycles": 2,
+      "execute_select_to_redirect_cycles": 2,
+      "instruction_provider_hit_cycles": 1,
+      "instruction_provider_line_bytes": 32,
+      "instruction_provider_lines": 256,
+      "instruction_provider_port_service_cycles": 7,
+      "int_rs_issue2_window": 8,
+      "integer_select_to_wakeup_cycles": 2,
+      "l0_dependent_load_cycles": 3,
+      "mul_rs_entries": 4,
+      "multiply_select_to_wakeup_cycles": 8,
+      "sources": {
+        "branches": "int_alu_shim.sv i_issue_writes_cdb_hint; dispatch.sv RS_NONE; early_misprediction_recovery.sv early_launch/early_mispredict_active/early_backend_recovery_pending",
+        "dispatch": "dispatch.sv slot2_can_fire, i_rob_full_for_2, station full/full_for_2",
+        "execution": "tomasulo_wrapper.sv cdb_bus_q; int_muldiv_shim.sv MulPipeDepth/WordMulDepth and DIRECT_MUL",
+        "fetch": "frost_hart.sv uncached_fetch; fetch_provider.sv DIRECT_LOOKUP, LINE_BYTES, miss slots and registered window",
+        "loads": "lq_l0_cache.sv store_update; tomasulo_wrapper.sv EARLY_LOAD_WAKEUP; directed dependent chase measurements in calibration/ci_baseline.json",
+        "local_service": "soc_top.sv fast_bram_request and local_state_q 0/4/1/2/3; soc_axi_slave.sv local_resp_fire",
+        "stations": "riscv_pkg.sv IntRsIssue2Window/MulRsDepth/NumCheckpoints; reservation_station.sv rs_valid and alloc_idx"
+      },
+      "word_and_carryless_multiply_cycles": 5,
+      "wrong_path_execution": "omitted; useful fetch waits for recovery"
+    },
+    "replay_sources": {
+      "fetch_frontend.py": "163cc791719d4b3afb441d506f7894a1fd261ecb26c4948e18bd5446cc401528",
+      "frost_perf_model.py": "eb2894bf643d272596f3976dfd38192670f9f1a03e249cebdfe506927c658d3c",
+      "instruction_stream.py": "5af08375e1d94aa83a9c54d6992149a93f88bde4ec003dae58e7d2879f26f932"
+    },
+    "retired": 226801,
+    "seed": 11,
+    "simulated_cycles_per_second": 14006,
+    "soc_top": {
+      "configuration": {
+        "bram_base": 0,
+        "bram_bytes": 262144,
+        "ddr_aw_register_cycles": 1,
+        "ddr_base": 2147483648,
+        "ddr_bytes": 1073741824,
+        "local_bram_read_cycles": 2,
+        "local_bram_write_cycles": 2,
+        "local_mmio_cycles": 2,
+        "local_turnaround_cycles": 1,
+        "local_wide_fetch_cycles": 7,
+        "mmio_base": 1073741824,
+        "mmio_bytes": 268435456
+      },
+      "ddr": {
+        "configuration": {
+          "channels": 1,
+          "controller": "behavioral",
+          "cycles_per_line": 1,
+          "id_bits": 5,
+          "interleave_bytes": 64,
+          "jitter_seed": 44257,
+          "latency_cycles": 80,
+          "latency_jitter": 0,
+          "line_bytes": 64,
+          "num_slots": 8,
+          "reorder": false
+        },
+        "effective_slots": 8,
+        "inflight_reads": 0,
+        "inflight_writes": 0,
+        "kind": "frost_single_channel_axi_ddr",
+        "stats": {}
+      },
+      "kind": "frost_soc_top",
+      "stats": {
+        "local_bram_reads": 335,
+        "local_bram_wide_fetches": 471,
+        "local_bram_writes": 10941,
+        "local_port_backpressure": 3627
+      }
+    },
+    "wall_time_seconds": 13.60454,
+    "workload": "coremark_bram"
+  },
+  "observed": {
+    "cycles_observed": 200797,
+    "event_counts": {
+      "axi_request": 11674,
+      "axi_response": 11673,
+      "dispatch": 139422,
+      "meta": 1,
+      "retire": 128459
+    },
+    "retired_uops": 226801
+  },
+  "pipeline": {
+    "max_occupancy": {
+      "int_rs": 16,
+      "lq": 8,
+      "mem_rs": 8,
+      "mul_rs": 4,
+      "rob": 32,
+      "sq": 8
+    },
+    "stats": {
+      "branch_mispredicts": 1354,
+      "branches_without_cdb": 52067,
+      "cdb_contention": 8193,
+      "completed": 226801,
+      "dispatch_0": 58590,
+      "dispatch_1": 37131,
+      "dispatch_2": 94835,
+      "dispatch_done_repairs": 31516,
+      "dispatch_stall_checkpoint": 551,
+      "dispatch_stall_int_rs": 182,
+      "dispatch_stall_lq": 5568,
+      "dispatch_stall_mem_rs": 10324,
+      "dispatch_stall_mul_rs": 4083,
+      "dispatch_stall_recovery": 2708,
+      "dispatch_stall_rob": 15426,
+      "dispatch_stall_sq": 331,
+      "dispatched": 226801,
+      "early_load_tokens": 38791,
+      "frontend_fetch_stall": 19417,
+      "issue_recovery_stall": 2708,
+      "l0_fills": 335,
+      "l0_hits": 49265,
+      "l0_misses": 898,
+      "l0_store_allocations": 7554,
+      "l0_store_updates": 10860,
+      "load_local_backpressure": 563,
+      "load_store_disambiguation_stall": 33762,
+      "loads_issued": 49600,
+      "local_loads": 335,
+      "local_stores": 10941,
+      "multiplies_issued": 10564,
+      "retire_head_not_ready": 87970,
+      "retired": 226801,
+      "rob_occupancy_sum": 3718760,
+      "sq_full_cycles": 315,
+      "store_drain_backpressure": 2895,
+      "stores_drained": 10941
+    }
+  },
+  "replay_execution": {
+    "branch_issue_ports": 1,
+    "checkpoint_entries": 12,
+    "dispatch": "atomic bundle using registered resource availability",
+    "done_operand_dispatch_to_select_cycles": 2,
+    "execute_recovery_block_cycles": 2,
+    "execute_select_to_redirect_cycles": 2,
+    "instruction_provider_hit_cycles": 1,
+    "instruction_provider_line_bytes": 32,
+    "instruction_provider_lines": 256,
+    "instruction_provider_port_service_cycles": 7,
+    "int_rs_issue2_window": 8,
+    "integer_select_to_wakeup_cycles": 2,
+    "l0_dependent_load_cycles": 3,
+    "mul_rs_entries": 4,
+    "multiply_select_to_wakeup_cycles": 8,
+    "sources": {
+      "branches": "int_alu_shim.sv i_issue_writes_cdb_hint; dispatch.sv RS_NONE; early_misprediction_recovery.sv early_launch/early_mispredict_active/early_backend_recovery_pending",
+      "dispatch": "dispatch.sv slot2_can_fire, i_rob_full_for_2, station full/full_for_2",
+      "execution": "tomasulo_wrapper.sv cdb_bus_q; int_muldiv_shim.sv MulPipeDepth/WordMulDepth and DIRECT_MUL",
+      "fetch": "frost_hart.sv uncached_fetch; fetch_provider.sv DIRECT_LOOKUP, LINE_BYTES, miss slots and registered window",
+      "loads": "lq_l0_cache.sv store_update; tomasulo_wrapper.sv EARLY_LOAD_WAKEUP; directed dependent chase measurements in calibration/ci_baseline.json",
+      "local_service": "soc_top.sv fast_bram_request and local_state_q 0/4/1/2/3; soc_axi_slave.sv local_resp_fire",
+      "stations": "riscv_pkg.sv IntRsIssue2Window/MulRsDepth/NumCheckpoints; reservation_station.sv rs_valid and alloc_idx"
+    },
+    "word_and_carryless_multiply_cycles": 5,
+    "wrong_path_execution": "omitted; useful fetch waits for recovery"
+  },
+  "replay_sources": {
+    "fetch_frontend.py": "163cc791719d4b3afb441d506f7894a1fd261ecb26c4948e18bd5446cc401528",
+    "frost_perf_model.py": "eb2894bf643d272596f3976dfd38192670f9f1a03e249cebdfe506927c658d3c",
+    "instruction_stream.py": "5af08375e1d94aa83a9c54d6992149a93f88bde4ec003dae58e7d2879f26f932"
+  },
+  "retired_uop_delta": 0,
+  "rtl_commit": "200f339eaf5996a5510cf4e0d96adbd4c22e576c",
+  "soc_top": {
+    "configuration": {
+      "bram_base": 0,
+      "bram_bytes": 262144,
+      "ddr_aw_register_cycles": 1,
+      "ddr_base": 2147483648,
+      "ddr_bytes": 1073741824,
+      "local_bram_read_cycles": 2,
+      "local_bram_write_cycles": 2,
+      "local_mmio_cycles": 2,
+      "local_turnaround_cycles": 1,
+      "local_wide_fetch_cycles": 7,
+      "mmio_base": 1073741824,
+      "mmio_bytes": 268435456
+    },
+    "ddr": {
+      "configuration": {
+        "channels": 1,
+        "controller": "behavioral",
+        "cycles_per_line": 1,
+        "id_bits": 5,
+        "interleave_bytes": 64,
+        "jitter_seed": 44257,
+        "latency_cycles": 80,
+        "latency_jitter": 0,
+        "line_bytes": 64,
+        "num_slots": 8,
+        "reorder": false
+      },
+      "effective_slots": 8,
+      "inflight_reads": 0,
+      "inflight_writes": 0,
+      "kind": "frost_single_channel_axi_ddr",
+      "stats": {}
+    },
+    "kind": "frost_soc_top",
+    "stats": {
+      "local_bram_reads": 335,
+      "local_bram_wide_fetches": 471,
+      "local_bram_writes": 10941,
+      "local_port_backpressure": 3627
+    }
+  },
+  "status": "comparison-recorded",
+  "trace": "tests/calibration/coremark.jsonl"
+}

@@ -151,8 +151,10 @@ class SQInterface:
         self.dut.i_alloc.value = 0
         self.dut.i_alloc_2.value = 0
         self.dut.i_early_addr_update.value = 0
+        self.dut.i_early_addr_hi.value = 0
         self.dut.i_early_addr_capture_valid.value = 0
         self.dut.i_early_addr_update_2.value = 0
+        self.dut.i_early_addr_hi_2.value = 0
         self.dut.i_early_addr_capture_valid_2.value = 0
         self.dut.i_addr_update.value = 0
         self.dut.i_vmt.value = 0
@@ -277,6 +279,7 @@ class SQInterface:
         self.dut.i_early_addr_update.value = pack_sq_addr_update(
             valid=True, rob_tag=rob_tag, address=address, is_mmio=is_mmio
         )
+        self.dut.i_early_addr_hi.value = address & MASK_XLEN
         self.dut.i_early_addr_capture_valid.value = 1
 
     def drive_early_addr_capture(
@@ -286,11 +289,13 @@ class SQInterface:
         self.dut.i_early_addr_update.value = pack_sq_addr_update(
             valid=False, rob_tag=rob_tag, address=address, is_mmio=is_mmio
         )
+        self.dut.i_early_addr_hi.value = address & MASK_XLEN
         self.dut.i_early_addr_capture_valid.value = 1
 
     def clear_early_addr_update(self) -> None:
         """Clear slot-1 early address update."""
         self.dut.i_early_addr_update.value = 0
+        self.dut.i_early_addr_hi.value = 0
         self.dut.i_early_addr_capture_valid.value = 0
 
     def drive_early_addr_update_2(
@@ -300,6 +305,7 @@ class SQInterface:
         self.dut.i_early_addr_update_2.value = pack_sq_addr_update(
             valid=True, rob_tag=rob_tag, address=address, is_mmio=is_mmio
         )
+        self.dut.i_early_addr_hi_2.value = address & MASK_XLEN
         self.dut.i_early_addr_capture_valid_2.value = 1
 
     def drive_early_addr_capture_2(
@@ -309,11 +315,13 @@ class SQInterface:
         self.dut.i_early_addr_update_2.value = pack_sq_addr_update(
             valid=False, rob_tag=rob_tag, address=address, is_mmio=is_mmio
         )
+        self.dut.i_early_addr_hi_2.value = address & MASK_XLEN
         self.dut.i_early_addr_capture_valid_2.value = 1
 
     def clear_early_addr_update_2(self) -> None:
         """Clear slot-2 early address update."""
         self.dut.i_early_addr_update_2.value = 0
+        self.dut.i_early_addr_hi_2.value = 0
         self.dut.i_early_addr_capture_valid_2.value = 0
 
     def drive_addr_update(

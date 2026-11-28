@@ -1,0 +1,52 @@
+{
+  "benchmark": "coremark",
+  "run_number": 1,
+  "wall_time_seconds": 168.726,
+  "simulated_cycles_per_second": 1190,
+  "git_commit": "200f339eaf5996a5510cf4e0d96adbd4c22e576c",
+  "clock_frequency_hz": 333333333,
+  "environment": {
+    "toolchain": "GCC: (toolchains.bootlin.com 2026.08-1) 16.2.0",
+    "simulator": "Verilator 5.054 2026-11-01",
+    "testbench": "cocotb 2.1.0"
+  },
+  "memory_configuration": {
+    "tier": "bram",
+    "ddr_model": "axi_behavioral_memory",
+    "ddr_latency": 80,
+    "ddr_latency_jitter": 0,
+    "ddr_reorder": false
+  },
+  "artifacts": {
+    "sw.bin_sha256": "d302c201b8c51254daa87617b5274564785d57b7d13c2171d249183feaa26abd",
+    "sw.elf_sha256": "0057d9d36f71d0a4127d778d160641e844aa7a910ff777fb89ccfcf63a475375",
+    "sw.S_sha256": "8db3ab12d35f9a3bfc4cac7155f5a173ff5ce6b704e8147a68f15e3d711151d6",
+    "sw.mem_sha256": "bb5d911e8ef76c8d923d317400b86252c8e40c849620f031766ae1065fa0a3d1"
+  },
+  "timed_region": {
+    "start_pc": "0x00005c84",
+    "stop_pc": "0x00005c88",
+    "start_sim_cycle": 24728,
+    "stop_sim_cycle": 225525,
+    "timed_cycles": 200797
+  },
+  "crc_validation": {
+    "seedcrc": "0xe9f5",
+    "crcfinal": "0xe714",
+    "status": "PASS"
+  },
+  "instruction_stream": {
+    "schema": "frost-instructions-v1",
+    "path": "coremark_instructions.jsonl.gz",
+    "instructions": 226801,
+    "sha256": "bb0ee652c46d5fe32bc903f53c977bb65ea1c1a49f2b27953b42f4ad102a61f6",
+    "compressed_bytes": 1963762,
+    "prediction_tiers": {
+      "execute": 1354,
+      "sequential": 27099,
+      "f0": 21430,
+      "pd_direction": 3526,
+      "pd_backing": 581
+    }
+  }
+}

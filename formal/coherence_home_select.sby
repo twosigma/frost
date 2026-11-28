@@ -20,6 +20,8 @@ seats: prep -top coherence_seat_select
 work: hierarchy -top coherence_work_select
 work: script free_undefined.ys
 work: prep -top coherence_work_select
+seats: select -assert-count 2 t:$check r:FLAVOR=assert %i
+work: select -assert-count 3 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_seat_select.sv

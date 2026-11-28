@@ -136,7 +136,13 @@ A separate valid bit, which does see reset, flush, or fault, is the only
 thing that makes each payload observable; a later insertion overwrites the
 payload on the same edge that sets its valid bit. The data MMU's pre-kill
 result pulses follow the same pattern: the SQ uses
-`dmmu_out_sq_capture_valid` for payload only, and the LQ uses
+`dmmu_out_sq_capture_valid` for payload only, the SC table uses
+`dmmu_out_sq_capture_valid && dmmu_out_is_sc` for its physical-address payload
+while keeping `sct_addr_valid` gated by `dmmu_store_ok && dmmu_out_is_sc`, uses
+`mem_rs_issue_staged && mem_rs_issue_is_sc` for issue-time payload capture into
+free slots (keeping the original VA in distributed RAM for coherent fault
+reporting), and
+the LQ uses
 `dmmu_out_lq_capture_valid` as its address-update valid because a flush clears
 the targeted LQ entry on the same edge.
 
@@ -315,12 +321,11 @@ CSR serialization and full flushes prevent an early-address candidate from
 surviving a mode change.
 
 A store whose base is not ready becomes the slot's repair candidate. It waits
-for its base tag on the done-repair channels or either CDB lane, then writes
-its address. The immediate is added to every possible base in parallel with
-the tag match, which then selects a finished address, in this priority: a
-fresh store, a held address, repair channels 1 through 6, CDB lane 0, and CDB
-lane 1. If a fresh store holds the slot's SQ port that cycle, the candidate
-keeps its address and writes it on the next free cycle. A candidate is
+for its base tag on the done-repair channels (1 through 6) or either CDB lane
+(lane 0 then lane 1), selects the matching base, adds the immediate with one
+adder per slot, and latches the repaired address into the slot's hold register.
+The held address emits on the next cycle that a fresh ready-base store does not
+take the slot's SQ port. A candidate is
 replaced by a newer unready store on the same slot (the old store then gets
 its address at MEM_RS issue), cancelled when MEM_RS issues the store (the
 issue delivers the address anyway), and cleared by any flush. Cancelling at
@@ -328,17 +333,17 @@ issue also keeps a stale candidate from writing into a later store that
 reuses the ROB tag: a store cannot complete, and so its tag cannot be reused,
 before MEM_RS issues it.
 
-While a candidate waits, it writes its provisional address into the SQ entry's
-payload without setting the address-valid bit; only the final update makes the
-address visible. Under data translation the early address goes through the
+Under data translation the early address goes through the
 data MMU's opportunistic lookup and is dropped unless that lookup hits and
 passes every store check; MEM_RS issue translates every store anyway and
 reports any fault.
 
-The pipeline supplies a separate address and device flag for each SQ port.
-Their select terms include the current translation enable: the copies equal
-the early packet fields when translation is inactive and zero when it is
-active. The wrapper combines them with the translation-qualified MMU result.
+The pipeline supplies two separate address copies (one per store-queue half)
+and a device flag for each SQ port.
+Their select terms include the current translation enable directly: the copies
+equal the early packet fields when translation is inactive and zero when it is
+active. The wrapper combines each copy with the translation-qualified MMU
+result.
 The MMU virtual address and its two-cycle packet delay use the original fields.
 
 ## Store-conditional resolution
@@ -362,9 +367,13 @@ Coherent SC completion supplies a zero-value flag from the selected success
 or fault-address source. The uncached store permit uses this flag with the
 completion valid bit and cached-region classification.
 
-The coherent SC table classifies aligned power-of-two cached regions with an
-address mask. Empty, unaligned, non-power-of-two or wrapping regions use the
-unsigned range comparison.
+The coherent SC table stores physical addresses in a two-write-port distributed
+RAM (allocation and MMU PA fill) and latches the ROB-head SC into a single-entry
+head register once its physical address is known. Cached-region classification,
+reservation comparison, and DMA coherence line queries read that single head
+register. Aligned power-of-two cached regions use an address mask; empty,
+unaligned, non-power-of-two or wrapping regions use the unsigned range
+comparison.
 
 A cached SC compares the exact physical address
 and W/D size recorded by LR. The reservation set is a 32-byte sector. Local
@@ -390,7 +399,7 @@ The pending table is keyed by ROB tag because MEM_RS issues SCs out of order:
 a speculated LR/SC retry loop can issue several SCs before the oldest reaches
 the head. Each waits in the table until it is at the head, so a younger SC can
 never block the one that must complete first. The table has `SqDepth`
-(eight) entries. That is enough because every waiting SC also holds an SQ
+(sixteen) entries. That is enough because every waiting SC also holds an SQ
 entry, so at most `SqDepth` can wait at once. An SC that found the table full
 would never fire; a simulation assertion checks that every issuing SC finds a
 free entry. A partial flush clears only entries younger than the flush tag,

@@ -41,7 +41,7 @@ from .sq_model import (
 )
 
 CLOCK_PERIOD_NS = 10
-SQ_DEPTH = 8
+SQ_DEPTH = 16
 
 
 def wbeat(word: int) -> int:
@@ -545,7 +545,7 @@ async def test_slot2_store_forwarding_newest_wins(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_alloc_to_full(dut: Any) -> None:
-    """Fill all 8 entries, verify o_full."""
+    """Fill every entry, verify o_full."""
     dut_if, model = await setup(dut)
 
     for i in range(SQ_DEPTH):
@@ -604,7 +604,7 @@ async def test_payload_only_fault_capture_stays_invisible(dut: Any) -> None:
     assert int(dut.sq_data_valid.value) == 0
     assert int(dut.sq_address_flat.value) & MASK_XLEN == 0xDEAD_1000
     assert int(dut.sq_is_mmio.value) & 1
-    assert int(dut.sq_data_fwd_flat.value) & MASK64 == 0xDEAD_BEEF_CAFE_0001
+    assert int(dut.u_sq_data_fwd.ram[0].value) == 0xDEAD_BEEF_CAFE_0001
 
     # The hidden payload must not let the committed entry drain. A later valid
     # update replaces it, and only that payload reaches memory.
@@ -1100,10 +1100,12 @@ async def test_forward_newest_winner_across_sq_ring_wrap(dut: Any) -> None:
     """The post-register payload mux uses the wrapped winner's physical slot."""
     dut_if, model = await setup(dut)
 
-    # Advance the empty SQ's physical head/tail to slot 6. The three live
-    # entries below then occupy slots 6, 7, and 0, so the newest matching
-    # store is physically below the older one across the ring wrap.
-    for tag in range(6):
+    # Advance the empty SQ's physical head/tail to slot SQ_DEPTH - 2. The three
+    # live entries below then occupy the last two slots and slot 0, so the
+    # newest matching store is physically below the older one across the ring
+    # wrap.
+    base = SQ_DEPTH - 2
+    for tag in range(base):
         await alloc_addr_data(
             dut_if,
             model,
@@ -1114,19 +1116,19 @@ async def test_forward_newest_winner_across_sq_ring_wrap(dut: Any) -> None:
         await commit_and_write(dut_if, model, rob_tag=tag)
 
     assert dut_if.empty, "SQ should be empty before the wrapped allocation"
-    dut_if.drive_rob_head_tag(6)
+    dut_if.drive_rob_head_tag(base)
 
-    await alloc_addr_data(dut_if, model, 6, 0x9000, 0x6666_0006)
-    await alloc_addr_data(dut_if, model, 7, 0xA000, 0x7777_0007)
-    await alloc_addr_data(dut_if, model, 8, 0xA000, 0x8888_0008)
+    await alloc_addr_data(dut_if, model, base, 0x9000, 0x6666_0006)
+    await alloc_addr_data(dut_if, model, base + 1, 0xA000, 0x7777_0007)
+    await alloc_addr_data(dut_if, model, base + 2, 0xA000, 0x8888_0008)
 
-    dut_if.drive_sq_check(addr=0xA000, rob_tag=9, size=MEM_SIZE_WORD)
+    dut_if.drive_sq_check(addr=0xA000, rob_tag=base + 3, size=MEM_SIZE_WORD)
     await dut_if.step()
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match and fwd.can_forward, "Wrapped same-address stores should forward"
     assert fwd.data == 0x8888_0008, (
-        "The newest store in wrapped slot 0 must beat the older store in slot 7: "
+        "The newest store in wrapped slot 0 must beat the older store in the last slot: "
         f"got 0x{fwd.data:x}"
     )
     dut_if.clear_sq_check()
@@ -2394,10 +2396,10 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
     """A flush reclaims tail slots; an SC-discard hole still consumes ring capacity.
 
     Allocate tags 0,1,2,5,6,7, then flush after tag 4. Once the tail pulls
-    back on the next edge, three entries remain and five slots are reusable.
-    Fill the queue, then discard an SC in the middle: the ring stays full with
-    seven live entries, and the discarded slot stays unavailable until the
-    head passes it.
+    back on the next edge, three entries remain and SQ_DEPTH - 3 slots are
+    reusable. Fill the queue, then discard an SC in the middle: the ring stays
+    full with SQ_DEPTH - 1 live entries, and the discarded slot stays
+    unavailable until the head passes it.
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(0)
@@ -2427,9 +2429,10 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
     assert not dut_full_after_flush, "SQ should not be full after partial flush"
     assert not model_full_after_flush, "Model should not be full after partial flush"
 
-    # Five allocations refill the window. Use locals so mypy does not carry
-    # narrowed full properties out of the loop and mark assertions unreachable.
-    for i in range(5):
+    # SQ_DEPTH - 3 allocations refill the window. Use locals so mypy does not
+    # carry narrowed full properties out of the loop and mark assertions
+    # unreachable.
+    for i in range(SQ_DEPTH - 3):
         dut_full_now = dut_if.full
         model_full_now = model.full
         assert not dut_full_now, f"SQ reported full too early at alloc {i}"
@@ -2440,10 +2443,12 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
         await dut_if.step()
         dut_if.clear_alloc()
 
-    assert dut_if.count == 8, f"Expected 8 valid entries, got {dut_if.count}"
-    assert model.count == 8, f"Model count must match DUT (got {model.count})"
-    assert dut_if.full, "SQ must be full at 8 valid entries"
-    assert model.full, "Model must be window-full at 8 entries"
+    assert dut_if.count == SQ_DEPTH, (
+        f"Expected {SQ_DEPTH} valid entries, got {dut_if.count}"
+    )
+    assert model.count == SQ_DEPTH, f"Model count must match DUT (got {model.count})"
+    assert dut_if.full, f"SQ must be full at {SQ_DEPTH} valid entries"
+    assert model.full, f"Model must be window-full at {SQ_DEPTH} entries"
 
     # Failed SC discard leaves a mid-window hole. Pure-tail allocation must
     # not reuse it: the window (and therefore full) is unchanged even though
@@ -2453,8 +2458,12 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_sc_discard()
 
-    assert dut_if.count == 7, f"Expected 7 valid entries, got {dut_if.count}"
-    assert model.count == 7, f"Model count must match DUT (got {model.count})"
+    assert dut_if.count == SQ_DEPTH - 1, (
+        f"Expected {SQ_DEPTH - 1} valid entries, got {dut_if.count}"
+    )
+    assert model.count == SQ_DEPTH - 1, (
+        f"Model count must match DUT (got {model.count})"
+    )
     assert dut_if.full, "sc hole must keep consuming capacity (no hole reuse)"
     assert model.full, "Model must stay window-full across the sc hole"
 

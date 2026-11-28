@@ -22,8 +22,9 @@
 //
 // Each slot retains one unready-base store for repair. Captured done-repair
 // channels cover bases already done at dispatch; live CDB lanes cover later
-// completions. A captured-channel repair is available at dispatch+2. A match
-// sends the repaired address when the SQ port is free, or holds it until then.
+// completions. A match selects the winning base, adds the immediate with one
+// adder per slot, and latches the repaired address into the hold register,
+// sending it to the SQ on the next free-port cycle.
 //
 // A newer unready store replaces the slot's candidate; the old store gets
 // its address at MEM_RS issue. Issue cancels a matching candidate before
@@ -91,8 +92,11 @@ module sq_early_addr_pipeline (
     output logic o_sq_early_addr_capture_valid_2,
     // The store queue's copies of the two packets' address and MMIO flag,
     // from their own take terms: the packets' fields without translation,
-    // zero with it. The packets themselves feed the MMU and its delay line.
+    // zero with it. Two explicit address copies per slot serve the lower and
+    // upper halves of the store queue. The packets themselves feed the MMU
+    // and its delay line.
     output logic [1:0][riscv_pkg::XLEN-1:0] o_sq_early_sq_address,
+    output logic [1:0][riscv_pkg::XLEN-1:0] o_sq_early_sq_address_hi,
     output logic [1:0] o_sq_early_sq_is_mmio
 );
 
@@ -282,11 +286,13 @@ module sq_early_addr_pipeline (
                                    ((sq_alloc_req.valid && !o_sq_full) ?
                                     !o_sq_full_for_2 : !o_sq_full);
 
-  // Repair hold state. A matched candidate whose SQ update port is taken by a
-  // fresh (ready-base) update latches its repaired address in these registers
-  // and sends it on the next free-port cycle. The candidate's immediate cannot
-  // change while it is held: only a newer unready store writes it, and that
-  // store evicts the held candidate on the same edge.
+  // Repair hold state. Every matched candidate latches its repaired address
+  // into these registers and sends it on the next cycle when the slot's SQ
+  // update port is not taken by a fresh (ready-base) update. Keeping repair
+  // registered removes the eight-source repair mux and adder tree from the
+  // store-queue address path. The candidate's immediate cannot change while it
+  // is held: only a newer unready store writes it, and that store evicts the
+  // held candidate on the same edge.
   //
   // Hold addresses are read only while repair_ready is set. Load on every edge
   // while it is clear, including the edge that sets it, then hold while set.
@@ -344,9 +350,8 @@ module sq_early_addr_pipeline (
       end else begin
         if (sq_early_addr_repair_fire) begin
           sq_early_addr_repair_valid_q <= 1'b0;
-          if (slot1_port_taken_by_fresh) sq_early_addr_repair_ready_q <= 1'b1;
-        end
-        if (sq_early_addr_repair_ready_q && !slot1_port_taken_by_fresh) begin
+          sq_early_addr_repair_ready_q <= 1'b1;
+        end else if (sq_early_addr_repair_ready_q && !slot1_port_taken_by_fresh) begin
           sq_early_addr_repair_ready_q <= 1'b0;
         end
       end
@@ -369,9 +374,8 @@ module sq_early_addr_pipeline (
       end else begin
         if (sq_early_addr_repair_fire_2) begin
           sq_early_addr_repair_valid_2_q <= 1'b0;
-          if (slot2_port_taken_by_fresh) sq_early_addr_repair_ready_2_q <= 1'b1;
-        end
-        if (sq_early_addr_repair_ready_2_q && !slot2_port_taken_by_fresh) begin
+          sq_early_addr_repair_ready_2_q <= 1'b1;
+        end else if (sq_early_addr_repair_ready_2_q && !slot2_port_taken_by_fresh) begin
           sq_early_addr_repair_ready_2_q <= 1'b0;
         end
       end
@@ -394,11 +398,9 @@ module sq_early_addr_pipeline (
   logic [riscv_pkg::XLEN-1:0] f_ref_hold_q, f_ref_hold_2_q;
   always_ff @(posedge i_clk) begin
     if (i_rst_n && !i_flush_all && !i_flush_en) begin
-      if (!slot1_new_unready_store && !slot1_mem_rs_issue_kill &&
-          sq_early_addr_repair_fire && slot1_port_taken_by_fresh)
+      if (!slot1_new_unready_store && !slot1_mem_rs_issue_kill && sq_early_addr_repair_fire)
         f_ref_hold_q <= sq_early_repair_effective_addr;
-      if (!slot2_new_unready_store && !slot2_mem_rs_issue_kill &&
-          sq_early_addr_repair_fire_2 && slot2_port_taken_by_fresh)
+      if (!slot2_new_unready_store && !slot2_mem_rs_issue_kill && sq_early_addr_repair_fire_2)
         f_ref_hold_2_q <= sq_early_repair_effective_addr_2;
     end
     if (reset_seen_q && i_rst_n && sq_early_addr_repair_ready_q) begin
@@ -460,21 +462,18 @@ module sq_early_addr_pipeline (
   assign sq_early_hold_effective_addr   = sq_early_addr_repair_addr_hold_q;
   assign sq_early_hold_effective_addr_2 = sq_early_addr_repair_addr_hold_2_q;
 
-  // Add each candidate base before selection for timing. With no match, use
-  // zero as the base, giving the immediate. Select each sum's MMIO flag with
-  // the same tree; preserve the flags to keep that selection separate.
+  // Select the matching repair base first, then add the immediate once per
+  // slot and latch into the hold register. With no match, use zero as the
+  // base, giving the immediate.
   logic [7:0][riscv_pkg::XLEN-1:0] repair_bases;
   logic [1:0][riscv_pkg::XLEN-1:0] repair_immediates;
   logic [1:0][7:0] repair_conditions;
   logic [1:0][3:0] repair_pair_matches;
   logic [1:0][1:0] repair_half_matches;
-  logic [1:0][7:0][riscv_pkg::XLEN-1:0] repair_sums;
-  logic [1:0][3:0][riscv_pkg::XLEN-1:0] repair_pair_sums;
-  logic [1:0][1:0][riscv_pkg::XLEN-1:0] repair_half_sums;
+  logic [1:0][3:0][riscv_pkg::XLEN-1:0] repair_pair_bases;
+  logic [1:0][1:0][riscv_pkg::XLEN-1:0] repair_half_bases;
+  logic [1:0][riscv_pkg::XLEN-1:0] repair_selected_bases;
   logic [1:0][riscv_pkg::XLEN-1:0] repair_addresses;
-  (* keep = "true" *) logic [1:0][7:0] repair_mmio_candidates;
-  logic [1:0][3:0] repair_mmio_pairs;
-  logic [1:0][1:0] repair_mmio_halves;
   logic [1:0] repair_is_mmio;
   assign repair_bases = {
     i_cdb_2.value[riscv_pkg::XLEN-1:0],
@@ -491,40 +490,26 @@ module sq_early_addr_pipeline (
   assign repair_pair_matches = {sq_early_addr_repair_pair_match_2, sq_early_addr_repair_pair_match};
   assign repair_half_matches = {sq_early_addr_repair_half_match_2, sq_early_addr_repair_half_match};
   for (genvar slot = 0; slot < 2; slot++) begin : gen_repair
-    for (genvar source = 0; source < 8; source++) begin : gen_source
-      wire [32:0] low = {1'b0, repair_bases[source][31:0]} + {1'b0, repair_immediates[slot][31:0]};
-      assign repair_sums[slot][source] = sum_from_low(
-          repair_bases[source], repair_immediates[slot], low
-      );
-      assign repair_mmio_candidates[slot][source] = sum_device_quadrant(
-          repair_bases[source], repair_immediates[slot], low
-      );
-    end
     for (genvar pair = 0; pair < 3; pair++) begin : gen_pair
-      assign repair_pair_sums[slot][pair] = repair_conditions[slot][2*pair] ?
-          repair_sums[slot][2*pair] : repair_sums[slot][2*pair+1];
-      assign repair_mmio_pairs[slot][pair] = repair_conditions[slot][2*pair] ?
-          repair_mmio_candidates[slot][2*pair] : repair_mmio_candidates[slot][2*pair+1];
+      assign repair_pair_bases[slot][pair] = repair_conditions[slot][2*pair] ?
+          repair_bases[2*pair] : repair_bases[2*pair+1];
     end
-    assign repair_pair_sums[slot][3] = repair_conditions[slot][6] ? repair_sums[slot][6] :
-        repair_conditions[slot][7] ? repair_sums[slot][7] : repair_immediates[slot];
-    assign repair_mmio_pairs[slot][3] = repair_conditions[slot][6] ?
-        repair_mmio_candidates[slot][6] : repair_conditions[slot][7] ?
-        repair_mmio_candidates[slot][7] : riscv_pkg::pma_device_quadrant(
-        repair_immediates[slot]
+    assign repair_pair_bases[slot][3] = repair_conditions[slot][6] ? repair_bases[6] :
+        repair_conditions[slot][7] ? repair_bases[7] : '0;
+    assign repair_half_bases[slot][0] = repair_pair_matches[slot][0] ?
+        repair_pair_bases[slot][0] : repair_pair_bases[slot][1];
+    assign repair_half_bases[slot][1] = repair_pair_matches[slot][2] ?
+        repair_pair_bases[slot][2] : repair_pair_bases[slot][3];
+    assign repair_selected_bases[slot] = repair_half_matches[slot][0] ?
+        repair_half_bases[slot][0] : repair_half_bases[slot][1];
+    wire [32:0] low = {1'b0, repair_selected_bases[slot][31:0]} +
+        {1'b0, repair_immediates[slot][31:0]};
+    assign repair_addresses[slot] = sum_from_low(
+        repair_selected_bases[slot], repair_immediates[slot], low
     );
-    assign repair_half_sums[slot][0] = repair_pair_matches[slot][0] ?
-        repair_pair_sums[slot][0] : repair_pair_sums[slot][1];
-    assign repair_half_sums[slot][1] = repair_pair_matches[slot][2] ?
-        repair_pair_sums[slot][2] : repair_pair_sums[slot][3];
-    assign repair_mmio_halves[slot][0] = repair_pair_matches[slot][0] ?
-        repair_mmio_pairs[slot][0] : repair_mmio_pairs[slot][1];
-    assign repair_mmio_halves[slot][1] = repair_pair_matches[slot][2] ?
-        repair_mmio_pairs[slot][2] : repair_mmio_pairs[slot][3];
-    assign repair_addresses[slot] = repair_half_matches[slot][0] ?
-        repair_half_sums[slot][0] : repair_half_sums[slot][1];
-    assign repair_is_mmio[slot] = repair_half_matches[slot][0] ?
-        repair_mmio_halves[slot][0] : repair_mmio_halves[slot][1];
+    assign repair_is_mmio[slot] = sum_device_quadrant(
+        repair_selected_bases[slot], repair_immediates[slot], low
+    );
   end
   assign sq_early_repair_effective_addr   = repair_addresses[0];
   assign sq_early_repair_effective_addr_2 = repair_addresses[1];
@@ -537,11 +522,9 @@ module sq_early_addr_pipeline (
   end
 `endif
 
-  // Port arbitration.  A fresh (ready-base) update lives for one cycle only,
-  // so it always wins.  A just-matched candidate emits combinationally on a
-  // free cycle and otherwise latches into the hold registers.  A held
-  // candidate drains on the next free cycle.  ready and waiting are exclusive
-  // states, so the last two arms never contend.
+  // Port arbitration. A fresh (ready-base) update lives for one cycle only,
+  // so it always wins. A repaired candidate always latches into its hold
+  // register first and emits on the next cycle the port is free.
   riscv_pkg::sq_addr_update_t sq_early_addr_update;
   always_comb begin
     sq_early_addr_update = '0;
@@ -556,13 +539,6 @@ module sq_early_addr_pipeline (
       sq_early_addr_update.rob_tag = sq_early_addr_repair_rob_tag_q;
       sq_early_addr_update.address = sq_early_hold_effective_addr;
       sq_early_addr_update.is_mmio = riscv_pkg::pma_device_quadrant(sq_early_hold_effective_addr);
-    end else if (sq_early_addr_repair_valid_q) begin
-      // An unmatched payload stays hidden behind sq_addr_valid. On a match,
-      // packet.valid exposes the repaired address.
-      sq_early_addr_update.valid   = sq_early_addr_repair_fire;
-      sq_early_addr_update.rob_tag = sq_early_addr_repair_rob_tag_q;
-      sq_early_addr_update.address = sq_early_repair_effective_addr;
-      sq_early_addr_update.is_mmio = repair_is_mmio[0];
     end
   end
 
@@ -581,16 +557,12 @@ module sq_early_addr_pipeline (
       sq_early_addr_update_2.address = sq_early_hold_effective_addr_2;
       sq_early_addr_update_2.is_mmio =
           riscv_pkg::pma_device_quadrant(sq_early_hold_effective_addr_2);
-    end else if (sq_early_addr_repair_valid_2_q) begin
-      sq_early_addr_update_2.valid   = sq_early_addr_repair_fire_2;
-      sq_early_addr_update_2.rob_tag = sq_early_addr_repair_rob_tag_2_q;
-      sq_early_addr_update_2.address = sq_early_repair_effective_addr_2;
-      sq_early_addr_update_2.is_mmio = repair_is_mmio[1];
     end
   end
 
-  // Select live CDB sums last for timing. Preserve fresh > held > repair
-  // priority and channel 1..6 > CDB0 > CDB1 priority, including duplicate tags.
+  // Output selection between the fresh ready-base sum and the registered
+  // repair hold flop. Two explicit address copies per slot serve the lower
+  // and upper halves of the store queue.
   wire [1:0] address_fresh = {sq_early_addr_valid_2_q, sq_early_addr_valid_q};
   wire [1:0] address_held = {sq_early_addr_repair_ready_2_q, sq_early_addr_repair_ready_q};
   wire [1:0] address_waiting = {sq_early_addr_repair_valid_2_q, sq_early_addr_repair_valid_q};
@@ -600,72 +572,38 @@ module sq_early_addr_pipeline (
   wire [1:0][riscv_pkg::XLEN-1:0] address_held_data = {
     sq_early_hold_effective_addr_2, sq_early_hold_effective_addr
   };
-  logic [1:0][riscv_pkg::XLEN-1:0] address_captured_repair;
-  (* keep = "true" *) logic [1:0][riscv_pkg::XLEN-1:0] address_nonlive;
-  (* keep = "true" *) logic [1:0][2:0] address_source_take;
   logic [1:0][riscv_pkg::XLEN-1:0] address_final;
-  (* keep = "true" *) logic [1:0] mmio_nonlive;
   logic [1:0] mmio_final;
   for (genvar slot = 0; slot < 2; slot++) begin : gen_live_address_final
-    assign address_captured_repair[slot] = repair_half_matches[slot][0] ?
-        repair_half_sums[slot][0] : repair_pair_matches[slot][2] ?
-        repair_pair_sums[slot][2] : repair_immediates[slot];
-    assign address_nonlive[slot] = address_fresh[slot] ? address_fresh_data[slot] :
-        address_held[slot] ? address_held_data[slot] :
-        address_waiting[slot] ? address_captured_repair[slot] : '0;
-    wire live_allowed = !address_fresh[slot] && !address_held[slot] &&
-        address_waiting[slot] && !(|repair_conditions[slot][5:0]);
-    assign address_source_take[slot][0] = live_allowed && repair_conditions[slot][6];
-    assign address_source_take[slot][1] = live_allowed && !repair_conditions[slot][6] &&
-        repair_conditions[slot][7];
-    assign address_source_take[slot][2] = !(|address_source_take[slot][1:0]);
-    // Decode source priority in parallel with each address sum and PMA
-    // check. A flat masked reduction avoids cascading the late MMIO result
-    // through the pair, half, captured, held and fresh muxes.
-    (* keep = "true" *)logic [8:0] mmio_take;
-    logic [8:0] mmio_value;
-    assign mmio_take[0]  = address_fresh[slot];
-    assign mmio_take[1]  = !address_fresh[slot] && address_held[slot];
-    assign mmio_value[0] = sq_early_effective_mmio[slot];
-    assign mmio_value[1] = riscv_pkg::pma_device_quadrant(address_held_data[slot]);
-    for (genvar source = 0; source < 6; source++) begin : gen_mmio_source
-      wire earlier_match = |(repair_conditions[slot] & 8'((1 << source) - 1));
-      assign mmio_take[source+2] = !address_fresh[slot] && !address_held[slot] &&
-          address_waiting[slot] && !earlier_match && repair_conditions[slot][source];
-      assign mmio_value[source+2] = repair_mmio_candidates[slot][source];
-    end
-    assign mmio_take[8] = !address_fresh[slot] && !address_held[slot] &&
-        address_waiting[slot] && !(|repair_conditions[slot][5:0]);
-    assign mmio_value[8] = riscv_pkg::pma_device_quadrant(repair_immediates[slot]);
-    assign mmio_nonlive[slot] = |(mmio_take & mmio_value);
-    assign mmio_final[slot] =
-        (repair_mmio_candidates[slot][6] && address_source_take[slot][0]) ||
-        (repair_mmio_candidates[slot][7] && address_source_take[slot][1]) ||
-        (mmio_nonlive[slot] && address_source_take[slot][2]);
-    assign address_final[slot] =
-        (repair_sums[slot][6] & {riscv_pkg::XLEN{address_source_take[slot][0]}}) |
-        (repair_sums[slot][7] & {riscv_pkg::XLEN{address_source_take[slot][1]}}) |
-        (address_nonlive[slot] & {riscv_pkg::XLEN{address_source_take[slot][2]}});
-    // The store queue's copy: the same select with translation folded into
-    // its own kept take terms, so the SQ's and the MMU's address nets are
-    // separate and the SQ needs no translation mux after the select.
-    (* keep = "true" *) logic [2:0] sq_take;
-    assign sq_take = address_source_take[slot] & {3{!i_translation_active}};
+    wire held_mmio = riscv_pkg::pma_device_quadrant(address_held_data[slot]);
+    assign address_final[slot] = address_fresh[slot] ? address_fresh_data[slot] :
+        address_held[slot] ? address_held_data[slot] : '0;
+    assign mmio_final[slot] = address_fresh[slot] ? sq_early_effective_mmio[slot] :
+        address_held[slot] ? held_mmio : 1'b0;
+    (* keep = "true", dont_touch = "true" *)logic [1:0] sq_take_lo;
+    (* keep = "true", dont_touch = "true" *)logic [1:0] sq_take_hi;
+    assign sq_take_lo[0] = address_fresh[slot] && !i_translation_active;
+    assign sq_take_lo[1] = !address_fresh[slot] && address_held[slot] && !i_translation_active;
+    assign sq_take_hi[0] = address_fresh[slot] && !i_translation_active;
+    assign sq_take_hi[1] = !address_fresh[slot] && address_held[slot] && !i_translation_active;
     assign o_sq_early_sq_is_mmio[slot] =
-        (repair_mmio_candidates[slot][6] && sq_take[0]) ||
-        (repair_mmio_candidates[slot][7] && sq_take[1]) || (mmio_nonlive[slot] && sq_take[2]);
+        (sq_early_effective_mmio[slot] && sq_take_lo[0]) || (held_mmio && sq_take_lo[1]);
     assign o_sq_early_sq_address[slot] =
-        (repair_sums[slot][6] & {riscv_pkg::XLEN{sq_take[0]}}) |
-        (repair_sums[slot][7] & {riscv_pkg::XLEN{sq_take[1]}}) |
-        (address_nonlive[slot] & {riscv_pkg::XLEN{sq_take[2]}});
+        (address_fresh_data[slot] & {riscv_pkg::XLEN{sq_take_lo[0]}}) |
+        (address_held_data[slot] & {riscv_pkg::XLEN{sq_take_lo[1]}});
+    assign o_sq_early_sq_address_hi[slot] =
+        (address_fresh_data[slot] & {riscv_pkg::XLEN{sq_take_hi[0]}}) |
+        (address_held_data[slot] & {riscv_pkg::XLEN{sq_take_hi[1]}});
 `ifndef SYNTHESIS
     always_comb begin
       if (reset_seen_q && !$isunknown(
               {i_translation_active, address_final[slot], mmio_final[slot]}
           )) begin
         p_sq_copy_exact :
-        assert ({o_sq_early_sq_address[slot], o_sq_early_sq_is_mmio[slot]} ==
-            (i_translation_active ? '0 : {address_final[slot], mmio_final[slot]}));
+        assert ({o_sq_early_sq_address[slot], o_sq_early_sq_address_hi[slot],
+                 o_sq_early_sq_is_mmio[slot]} ==
+            (i_translation_active ? '0 : {address_final[slot], address_final[slot],
+                                          mmio_final[slot]}));
       end
     end
 `endif
@@ -683,7 +621,11 @@ module sq_early_addr_pipeline (
     always_comb begin
       assert ({o_sq_early_sq_address[slot], o_sq_early_sq_is_mmio[slot]} ==
           (i_translation_active ? '0 : {packet.address, packet.is_mmio}));
+      assert (o_sq_early_sq_address_hi[slot] == (i_translation_active ? '0 : packet.address));
       assert ((o_sq_early_sq_address[slot] |
+          (f_mmu_pa[slot] & {riscv_pkg::XLEN{i_translation_active}})) ==
+          (i_translation_active ? f_mmu_pa[slot] : packet.address));
+      assert ((o_sq_early_sq_address_hi[slot] |
           (f_mmu_pa[slot] & {riscv_pkg::XLEN{i_translation_active}})) ==
           (i_translation_active ? f_mmu_pa[slot] : packet.address));
       assert ((o_sq_early_sq_is_mmio[slot] | (f_mmu_is_mmio[slot] & i_translation_active)) ==
@@ -728,10 +670,9 @@ module sq_early_addr_pipeline (
     p_slot2_address_exact : assert (address_final[1] == sq_early_addr_update_2.address);
   end
 `endif
-  assign o_sq_early_addr_capture_valid = sq_early_addr_valid_q ||
-      sq_early_addr_repair_ready_q || sq_early_addr_repair_valid_q;
+  assign o_sq_early_addr_capture_valid = sq_early_addr_valid_q || sq_early_addr_repair_ready_q;
   assign o_sq_early_addr_capture_valid_2 = sq_early_addr_valid_2_q ||
-      sq_early_addr_repair_ready_2_q || sq_early_addr_repair_valid_2_q;
+      sq_early_addr_repair_ready_2_q;
 
 `ifndef SYNTHESIS
   // Check tree selection against a serial priority reference for known inputs.
@@ -803,10 +744,10 @@ module sq_early_addr_pipeline (
   logic [riscv_pkg::XLEN-1:0] f_hold_base, f_hold_base_2;
   always @(posedge i_clk) begin
     if (i_rst_n && !slot1_new_unready_store && !slot1_mem_rs_issue_kill &&
-        sq_early_addr_repair_fire && slot1_port_taken_by_fresh)
+        sq_early_addr_repair_fire)
       f_hold_base <= sq_early_addr_repair_base_reference;
     if (i_rst_n && !slot2_new_unready_store && !slot2_mem_rs_issue_kill &&
-        sq_early_addr_repair_fire_2 && slot2_port_taken_by_fresh)
+        sq_early_addr_repair_fire_2)
       f_hold_base_2 <= sq_early_addr_repair_base_2_reference;
     if (reset_seen_q && i_rst_n && sq_early_addr_repair_ready_q) begin
       p_repair_hold_exact :

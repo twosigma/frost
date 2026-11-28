@@ -22,7 +22,7 @@ from config import FLEN, MASK_XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-SQ_DEPTH = 8
+SQ_DEPTH = 16
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK64 = (1 << FLEN) - 1

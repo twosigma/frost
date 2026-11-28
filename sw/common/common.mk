@@ -132,13 +132,13 @@ FROST_DDR_USABLE_BYTES := $(shell printf '0x%x' $$((1 << $(FROST_DDR_USABLE_LOG2
 LDFLAGS  += $(RISCV_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections \
             -Wl,--defsym=__frost_ddr_usable_bytes=$(FROST_DDR_USABLE_BYTES) $(EXTRA_LDFLAGS)
 
-# Vector loads and stores execute in cached memory only, and a program built
-# with the vector extension may get vector code on stack objects from the
-# compiler itself. In the DDR tier such a program therefore keeps its stack in
-# cached DDR too: __frost_ddr_stack_bytes (a multiple of 16) makes link_ddr.ld
-# reserve that much between the program and the heap. The extension shows as a
-# v among the single-letter extensions before the first underscore, or as a Zve
-# subset. Programs built without it keep the stack in low BRAM.
+# In the DDR tier, a program built with the vector extension keeps its stack in
+# cached DDR so compiler-generated vector accesses to stack objects use the
+# cached vector memory unit and hardware misaligned support:
+# __frost_ddr_stack_bytes (a multiple of 16) makes link_ddr.ld reserve that
+# much between the program and the heap. The extension shows as a v among the
+# single-letter extensions before the first underscore, or as a Zve subset.
+# Programs built without it keep the stack in low BRAM.
 FROST_MARCH_PARTS := $(subst _, ,$(FROST_MARCH_EXTENSIONS))
 FROST_MARCH_VECTOR := $(if $(or $(findstring v,$(firstword $(FROST_MARCH_PARTS))),$(filter zve%,$(FROST_MARCH_PARTS))),1,0)
 FROST_DDR_STACK_BYTES ?= 0x100000

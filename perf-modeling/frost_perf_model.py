@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import heapq
 import json
 import random
@@ -60,6 +61,8 @@ from typing import Any, Protocol
 from collections.abc import Callable, Iterable
 
 from memory_workloads import KERNELS, build_kernel
+from fetch_frontend import FetchFrontend
+from instruction_stream import InstructionStream, read_stream
 
 
 RTL_COMMIT = "410aa8f3e866fffb078fc8f7fd3672866d83d131"
@@ -153,9 +156,12 @@ class SocConfig:
     mmio_bytes: int = 0x1000_0000
     ddr_aw_register_cycles: int = 1  # aw_valid_q stage in soc_axi_slave.sv
     local_bram_read_cycles: int = 2
-    local_bram_write_cycles: int = 1
-    local_wide_fetch_cycles: int = 5  # 4 serialized BRAM dwords + response
+    local_bram_write_cycles: int = 2  # soc_top fast_bram: 0 -> 1 -> response
+    local_wide_fetch_cycles: int = (
+        7  # soc_top: 0 -> 4 -> 1 (four dwords) -> 2 -> response
+    )
     local_mmio_cycles: int = 2
+    local_turnaround_cycles: int = 0  # optional state-3 response -> state-0 acceptance
 
 
 @dataclass(frozen=True)
@@ -173,6 +179,9 @@ class ModelConfig:
     cdb_width: int = 2
     rob_entries: int = 32
     int_rs_entries: int = 16
+    int_rs_issue2_window: int = 8  # riscv_pkg::IntRsIssue2Window
+    mul_rs_entries: int = 4  # riscv_pkg::MulRsDepth; one issue port
+    checkpoints: int = 12  # riscv_pkg::NumCheckpoints, freed at retirement
     mem_rs_entries: int = 8
     load_queue_entries: int = 8
     store_queue_entries: int = 8
@@ -241,6 +250,7 @@ class ModelConfig:
     cache_fill_cycles: int = 1
     cache_response_cycles: int = 1
     alu_cycles: int = 1
+    local_load_pipeline_cycles: int = 0  # measured chase minus SoC port service
     # cpu_top <-> soc_top AXI4 boundary geometry (cpu_memory_fabric.sv / soc_axi_slave.sv).
     axi_data_bytes: int = 64
     cpu_axi_id_bits: int = (
@@ -1394,11 +1404,19 @@ class SocTopModel:
             ok = False
 
         def finish_local(status_ok: bool = ok) -> None:
-            self._local_busy = False
+            if self.soc_config.local_turnaround_cycles:
+                self.loop.after(
+                    self.soc_config.local_turnaround_cycles, self._release_local
+                )
+            else:
+                self._local_busy = False
             transaction.complete(status_ok)
 
         self.loop.after(latency, finish_local)
         return True
+
+    def _release_local(self) -> None:
+        self._local_busy = False
 
     def _forward_registered_ddr_write(self, ddr_tx: AxiTransaction) -> None:
         if self.ddr.submit(ddr_tx):
@@ -1417,6 +1435,79 @@ class SocTopModel:
             "stats": dict(self.stats),
             "ddr": self.ddr.summary(),
         }
+
+
+class BramFetchProvider:
+    """fetch_provider DIRECT_LOOKUP with local-port line fills.
+
+    frost_hart.sv sets 256 direct lines of 32 bytes. Both words of an
+    eight-byte window must be resident, including a line-crossing window.
+    Line returns survive redirects; only the frontend's epoch cancels
+    publication. The two parity slots use uncached AXI IDs 34 and 35.
+    """
+
+    def __init__(self, config: ModelConfig, loop: EventLoop, soc: SocTopPort) -> None:
+        """Start with a cold direct cache and two empty parity slots."""
+        self.config, self.loop, self.soc = config, loop, soc
+        self.tags: dict[int, int] = {}
+        self.pending: dict[int, list[Callable[[], None]]] = {}
+        self.slots: set[int] = set()
+        self.stats: Counter[str] = Counter()
+
+    def request(self, pc: int, returned: Callable[[int], None]) -> None:
+        """Start the registered lookup; missing lines share the data port."""
+        line_bytes = self.config.l1_line_bytes
+        lines = sorted({(pc & ~3) // line_bytes, ((pc & ~3) + 4) // line_bytes})
+        remaining = set(lines)
+
+        def ready(line: int) -> None:
+            remaining.remove(line)
+            if not remaining:
+                returned(self.loop.cycle)
+
+        for line in lines:
+            if self.tags.get(line % self.config.normal_fetch_lines) == line:
+                self.stats["hits"] += 1
+                self.loop.after(1, lambda line=line: ready(line))
+            elif line in self.pending:
+                self.pending[line].append(lambda line=line: ready(line))
+                self.stats["merged_misses"] += 1
+            else:
+                self.stats["misses"] += 1
+                self.pending[line] = [lambda line=line: ready(line)]
+                # Registered miss selection precedes the AXI request.
+                self.loop.after(1, lambda line=line: self._fill(line))
+
+    def _fill(self, line: int) -> None:
+        parity = line & 1
+        if parity in self.slots:
+            self.loop.after(1, lambda: self._fill(line))
+            return
+
+        def returned(ok: bool) -> None:
+            if not ok:
+                raise ValueError("BRAM instruction fill failed")
+            self.slots.remove(parity)
+            self.tags[line % self.config.normal_fetch_lines] = line
+            # fetch_provider registers line data before window publication.
+            callbacks = self.pending.pop(line)
+            self.loop.after(1, lambda: [callback() for callback in callbacks])
+
+        request = AxiTransaction(
+            address=line * self.config.l1_line_bytes,
+            is_write=False,
+            transaction_id=TransactionId("fetch", "fill", parity, 6),
+            complete=returned,
+            source="fetch",
+            axi_id=34 + parity,
+            bytes_size=self.config.l1_line_bytes,
+        )
+        if self.soc.submit_axi(request):
+            self.slots.add(parity)
+            self.stats["line_requests"] += 1
+        else:
+            self.stats["local_port_backpressure"] += 1
+            self.loop.after(1, lambda: self._fill(line))
 
 
 class AxiBridge:
@@ -2513,6 +2604,9 @@ class MicroOp:
     data_address: int | None = None
     depends_on: tuple[int, ...] = ()
     mispredict: bool = False
+    execution_cycles: int | None = None
+    memory_bytes: int = 8
+    instruction: int = 0  # expanded encoding when replaying a captured stream
 
 
 @dataclass
@@ -2525,6 +2619,10 @@ class RobEntry:
     done: bool = False
     rs_issued: bool = False  # left MEM_RS for the LQ or SQ
     fault: bool = False
+    retired: bool = False
+    operands_ready_cycle: int = 0
+    retired_cycle: int = -1
+    rs_slot: int = -1
 
 
 class FrostPipeline:
@@ -2541,10 +2639,16 @@ class FrostPipeline:
         program: list[MicroOp],
         controller: DdrController | None = None,
         soc: SocTopPort | None = None,
+        frontend: FetchFrontend | None = None,
+        l0_hit_cycles: int = 1,
+        scalar_replay: bool = False,
     ) -> None:
         """Set up the pipeline, caches, and SoC to run program."""
         self.config = config
         self.program = program
+        self.frontend = frontend
+        self.l0_hit_cycles = l0_hit_cycles
+        self.scalar_replay = scalar_replay
         self.loop = EventLoop()
         self.soc: SocTopPort = soc or SocTopModel(
             config, self.loop, controller=controller
@@ -2557,12 +2661,22 @@ class FrostPipeline:
         self.completed_ids: set[int] = set()
         self._load_ready_cycles: dict[int, int] = {}
         self._early_ready_ids: set[int] = set()
+        self._early_mem_ready_ids: set[int] = set()
+        self._local_store_response_cycle = -1
         self._registered_cdb_count = 0
         self.l0_cache: dict[int, int] = {}
         self.fetch_state: dict[int, str] = {}
         self.next_dispatch = 0
         self.retired = 0
         self.int_rs_in_use = 0
+        self.mul_rs_in_use = 0
+        self.checkpoints_in_use = 0
+        self.int_slots: list[RobEntry | None] = [None] * config.int_rs_entries
+        self.mul_slots: list[RobEntry | None] = [None] * config.mul_rs_entries
+        self.dispatch_occupancy: dict[str, int] | None = None
+        self.dispatch_free_slots: dict[str, list[int]] = {}
+        self.mul_results: set[int] = set()
+        self.backend_blocked_until = 0
         self.mem_rs_in_use = 0
         self.lq_in_use = 0
         self.sq_in_use = 0
@@ -2603,6 +2717,65 @@ class FrostPipeline:
     def _fetch_done(self, line: int, ok: bool) -> None:
         self.fetch_state[line] = "ready" if ok else "error"
 
+    def _station(self, op: MicroOp) -> str:
+        if op.kind in {"load", "store"}:
+            return "mem_rs"
+        if self.scalar_replay:
+            if op.instruction & 127 == 0x6F:
+                return "none"
+            if instruction_execution_cycles(op.instruction) > 2:
+                return "mul_rs"
+        return "int_rs"
+
+    def _snapshot_dispatch(self) -> None:
+        """Snapshot registered full/full_for_2 before this cycle's releases.
+
+        dispatch.sv admits the entire bundle; reservation_station.sv chooses
+        the lowest slot from the old valid vector, before issue clears it.
+        """
+        self.dispatch_occupancy = {
+            "rob": len(self.rob),
+            "int_rs": self.int_rs_in_use,
+            "mul_rs": self.mul_rs_in_use,
+            "mem_rs": self.mem_rs_in_use,
+            "lq": self.lq_in_use,
+            "sq": self.sq_in_use,
+            "checkpoint": self.checkpoints_in_use,
+        }
+        self.dispatch_free_slots = {
+            name: [i for i, entry in enumerate(slots) if entry is None]
+            for name, slots in (("int_rs", self.int_slots), ("mul_rs", self.mul_slots))
+        }
+
+    def _bundle_stall(self, ops: list[MicroOp]) -> str | None:
+        if self.dispatch_occupancy is None:
+            self._snapshot_dispatch()
+        assert self.dispatch_occupancy is not None
+        demand: Counter[str] = Counter(rob=len(ops))
+        for op in ops:
+            demand[self._station(op)] += 1
+            if op.kind in {"load", "store", "branch"}:
+                demand[
+                    {"load": "lq", "store": "sq", "branch": "checkpoint"}[op.kind]
+                ] += 1
+        capacity = {
+            "rob": self.config.rob_entries,
+            "int_rs": self.config.int_rs_entries,
+            "mul_rs": self.config.mul_rs_entries,
+            "mem_rs": self.config.mem_rs_entries,
+            "lq": self.config.load_queue_entries,
+            "sq": self.config.store_queue_entries,
+            "checkpoint": self.config.checkpoints,
+        }
+        return next(
+            (
+                name
+                for name, limit in capacity.items()
+                if self.dispatch_occupancy[name] + demand[name] > limit
+            ),
+            None,
+        )
+
     def _can_dispatch(self, op: MicroOp) -> str | None:
         if len(self.rob) >= self.config.rob_entries:
             return "rob"
@@ -2626,23 +2799,77 @@ class FrostPipeline:
         if self.loop.cycle < self.frontend_blocked_until:
             self.stats["frontend_recovery_stall"] += 1
             return
+        if self.scalar_replay and self.loop.cycle < self.backend_blocked_until:
+            self.stats["dispatch_stall_recovery"] += 1
+            return
         dispatched = 0
-        while dispatched < self.config.dispatch_width and self.next_dispatch < len(
-            self.program
-        ):
+        available = self.config.dispatch_width
+        if self.frontend is not None:
+            if not self.frontend.decoded:
+                self.stats["frontend_fetch_stall"] += 1
+                return
+            bundle = self.frontend.decoded[0]
+            if bundle[0].index != self.next_dispatch:
+                raise AssertionError(
+                    "frontend and backend instruction cursors diverged"
+                )
+            available = min(available, len(bundle))
+        if self.scalar_replay:
+            reason = self._bundle_stall(
+                self.program[self.next_dispatch : self.next_dispatch + available]
+            )
+            if reason:
+                self.stats[f"dispatch_stall_{reason}"] += 1
+                return
+        while dispatched < available and self.next_dispatch < len(self.program):
             op = self.program[self.next_dispatch]
-            if self.fetch_state.get(self._fetch_line(op.fetch_address)) != "ready":
+            if (
+                self.frontend is None
+                and self.fetch_state.get(self._fetch_line(op.fetch_address)) != "ready"
+            ):
                 self.stats["frontend_fetch_stall"] += 1
                 break
-            reason = self._can_dispatch(op)
+            reason = None if self.scalar_replay else self._can_dispatch(op)
             if reason:
                 self.stats[f"dispatch_stall_{reason}"] += 1
                 break
             entry = RobEntry(op=op, dispatched_cycle=self.loop.cycle)
+            if self.scalar_replay and any(
+                dep in self.entries
+                and self.entries[dep].done
+                and (
+                    not self.entries[dep].retired
+                    or self.entries[dep].retired_cycle == self.loop.cycle
+                )
+                for dep in op.depends_on
+            ):
+                # A live RAT rename is unready even when its ROB producer is
+                # done. Dispatch registers the tag, then indexed repair writes
+                # the resident operand one edge later. Production INT/MUL/MEM
+                # disable ISSUE_REPAIR_BYPASS, as does a deferred CDB match on
+                # the dispatch edge (reservation_station.sv).
+                entry.operands_ready_cycle = self.loop.cycle + 2
+                self.stats["dispatch_done_repairs"] += 1
             self.rob.append(entry)
             self.entries[op.op_id] = entry
-            if op.kind in {"alu", "branch"}:
-                self.int_rs_in_use += 1
+            station = self._station(op)
+            if self.scalar_replay and op.kind == "branch":
+                self.checkpoints_in_use += 1
+            if station == "none":
+                # JAL's ROB link value is ready at allocation; no station/CDB.
+                entry.issued = True
+                self._mark_done(entry)
+                if op.mispredict:
+                    self.loop.after(2, lambda entry=entry: self._recover_branch(entry))
+            elif station in {"int_rs", "mul_rs"}:
+                if self.scalar_replay:
+                    slots = self.int_slots if station == "int_rs" else self.mul_slots
+                    entry.rs_slot = self.dispatch_free_slots[station].pop(0)
+                    slots[entry.rs_slot] = entry
+                if station == "int_rs":
+                    self.int_rs_in_use += 1
+                else:
+                    self.mul_rs_in_use += 1
             else:
                 self.mem_rs_in_use += 1
                 if op.kind == "load":
@@ -2652,16 +2879,32 @@ class FrostPipeline:
             self.next_dispatch += 1
             dispatched += 1
             self.stats["dispatched"] += 1
+        if self.frontend is not None and dispatched:
+            self.frontend.consume(dispatched)
+        self.dispatch_occupancy = None
 
     def _deps_ready(self, entry: RobEntry) -> bool:
+        if self.loop.cycle < entry.operands_ready_cycle:
+            return False
         deps = entry.op.depends_on
         for dep in deps:
-            if dep not in self.completed_ids:
+            if self.scalar_replay:
+                station = self._station(entry.op)
+                early = (
+                    dep in self._early_mem_ready_ids
+                    if station == "mem_rs"
+                    else dep in self._early_ready_ids
+                    if station == "int_rs"
+                    else False
+                )
+            else:
+                early = dep in self._early_ready_ids
+            if dep not in self.completed_ids and not early:
                 return False
             if (
-                entry.op.kind in {"load", "store"}
+                (self.scalar_replay or entry.op.kind in {"load", "store"})
                 and self._load_ready_cycles.get(dep, 0) > self.loop.cycle
-                and dep not in self._early_ready_ids
+                and not early
             ):
                 return False
         return True
@@ -2669,7 +2912,91 @@ class FrostPipeline:
     def _complete_later(self, entry: RobEntry, delay: int) -> None:
         self.loop.after(delay, lambda entry=entry: self.completions.append(entry))
 
+    def _mark_done(self, entry: RobEntry) -> None:
+        entry.done = True
+        self.completed_ids.add(entry.op.op_id)
+        self.stats["completed"] += 1
+
+    def _recover_branch(self, entry: RobEntry) -> None:
+        """RS select -> stage 2 -> early_mispredict_active (two edges).
+
+        early_misprediction_recovery.sv registers early_launch, then the
+        backend partial flush; both phases block dispatch/issue. Recovery
+        runs independently of CDB arbitration, including for JALR.
+        """
+        if self.frontend is not None:
+            self.frontend.request_redirect("execute", entry.op.op_id + 1)
+        else:
+            self.frontend_blocked_until = self.loop.cycle + 2
+        self.backend_blocked_until = self.loop.cycle + 2
+        self.stats["branch_mispredicts"] += 1
+
+    def _issue_scalar(self) -> None:
+        """Lowest-index INT/MUL selection, with INT port 1's eight-slot window."""
+        ready = [
+            entry
+            for entry in self.int_slots
+            if entry is not None and self._deps_ready(entry)
+        ]
+        chosen = ready[:1]
+        if chosen and self.config.alu_issue_width > 1:
+            second = next(
+                (
+                    entry
+                    for entry in ready[1:]
+                    if entry.rs_slot < self.config.int_rs_issue2_window
+                    and entry.op.kind != "branch"
+                ),
+                None,
+            )
+            if second is not None:
+                chosen.append(second)
+        for entry in chosen:
+            entry.issued = True
+            self.int_slots[entry.rs_slot] = None
+            self.int_rs_in_use -= 1
+            if entry.op.kind == "branch":
+                if entry.op.mispredict:
+                    self.loop.after(2, lambda entry=entry: self._recover_branch(entry))
+                if entry.op.instruction & 127 != 0x67:
+                    # int_alu_shim i_issue_writes_cdb_hint excludes conditional branches.
+                    self.loop.after(2, lambda entry=entry: self._mark_done(entry))
+                    self.stats["branches_without_cdb"] += 1
+                    continue
+            self._complete_later(
+                entry, entry.op.execution_cycles or self.config.alu_cycles
+            )
+        mul = next(
+            (
+                entry
+                for entry in self.mul_slots
+                if entry is not None and self._deps_ready(entry)
+            ),
+            None,
+        )
+        if mul is not None:
+            result_cycle = self.loop.cycle + (mul.op.execution_cycles or 2) - 1
+            # int_muldiv_shim: four live credits and short-op tracker collision.
+            if len(self.mul_results) >= 4 or result_cycle in self.mul_results:
+                self.stats["mul_credit_or_collision_stall"] += 1
+                return
+            mul.issued = True
+            self.mul_slots[mul.rs_slot] = None
+            self.mul_rs_in_use -= 1
+            self.mul_results.add(result_cycle)
+            self.loop.after(
+                result_cycle - self.loop.cycle,
+                lambda: self.mul_results.remove(result_cycle),
+            )
+            self._complete_later(mul, mul.op.execution_cycles or 2)
+            self.stats["multiplies_issued"] += 1
+
     def _issue(self) -> None:
+        if self.scalar_replay:
+            if self.loop.cycle < self.backend_blocked_until:
+                self.stats["issue_recovery_stall"] += 1
+                return
+            self._issue_scalar()
         alu_issued = 0
         mem_issued = 0
         mem_rs_issued = 0
@@ -2686,6 +3013,8 @@ class FrostPipeline:
             if entry.issued or entry.done:
                 continue
             op = entry.op
+            if self.scalar_replay and op.kind in {"alu", "branch"}:
+                continue
             if op.kind in {"load", "store"} and not entry.rs_issued:
                 # MEM_RS issues one operation per cycle and frees its entry
                 # at issue (reservation_station.sv); the LQ or SQ holds it on.
@@ -2704,9 +3033,16 @@ class FrostPipeline:
             if op.kind in {"alu", "branch"}:
                 if alu_issued >= self.config.alu_issue_width:
                     continue
+                # INT_RS port 1 chooses a non-branch. If port 0 already chose
+                # an ALU, a later ready branch must wait for the next cycle.
+                if self.scalar_replay and op.kind == "branch" and alu_issued:
+                    self.stats["branch_issue_port_stall"] += 1
+                    continue
                 entry.issued = True
                 alu_issued += 1
-                self._complete_later(entry, self.config.alu_cycles)
+                self._complete_later(
+                    entry, op.execution_cycles or self.config.alu_cycles
+                )
             elif op.kind == "load":
                 if mem_issued >= self.config.load_issue_width:
                     continue
@@ -2725,7 +3061,9 @@ class FrostPipeline:
                     else -1
                 )
 
-                # FROST LQ L0 Data Cache Fast-Path (direct bypass to CDB, 1 cycle)
+                # L0 hit service: the pressure generators use their legacy
+                # one-cycle abstraction; binary replay includes the measured
+                # three-cycle dependent path through RS/LQ/result staging.
                 if (
                     self.config.l0_cache_depth > 0
                     and self.l0_cache.get(l0_idx) == dword
@@ -2734,7 +3072,9 @@ class FrostPipeline:
                     entry.issued = True
                     mem_issued += 1
                     self.stats["loads_issued"] += 1
-                    self.loop.after(1, lambda entry=entry: self._load_result(entry))
+                    self.loop.after(
+                        self.l0_hit_cycles, lambda entry=entry: self._load_result(entry)
+                    )
                     continue
 
                 self.stats["l0_misses"] += 1
@@ -2761,10 +3101,12 @@ class FrostPipeline:
                         address=addr,
                         is_write=False,
                         transaction_id=TransactionId("uncached", "fill", 0, 6),
-                        complete=on_load_complete,
+                        complete=lambda ok, done=on_load_complete: self.loop.after(
+                            self.config.local_load_pipeline_cycles, lambda: done(ok)
+                        ),
                         source="uncached",
                         axi_id=32,
-                        bytes_size=8,
+                        bytes_size=op.memory_bytes,
                     )
                     if not self.soc.submit_axi(local_read):
                         self.stats["load_local_backpressure"] += 1
@@ -2783,7 +3125,7 @@ class FrostPipeline:
                     complete=lambda ok, done=on_load_complete: self.loop.after(
                         self.config.l1d_return_cycles, lambda: done(ok)
                     ),
-                    bytes_size=8,
+                    bytes_size=op.memory_bytes,
                 )
                 if self.config.l1d_request_cycles:
                     self.loop.after(
@@ -2816,6 +3158,20 @@ class FrostPipeline:
         early_lane_available = self._registered_cdb_count < self.config.cdb_width
         self._registered_cdb_count = 0
         self._early_ready_ids.clear()
+        self._early_mem_ready_ids.clear()
+        if (
+            self.scalar_replay
+            and self.config.early_load_wakeup
+            and self._local_store_response_cycle != self.loop.cycle
+        ):
+            # MEM_RS has a separate third pre-issue token, unlike INT's
+            # two-lane merge. MUL_RS sees only registered CDB broadcasts.
+            # tomasulo_wrapper.sv mem_rs_pre_issue_raw_valid / u_mul_rs.
+            self._early_mem_ready_ids.update(
+                entry.op.op_id
+                for entry in self.completions
+                if entry.op.kind == "load" and not entry.fault
+            )
         if not self.completions:
             return
         self.completions.sort(
@@ -2839,13 +3195,21 @@ class FrostPipeline:
                     self._early_ready_ids.add(entry.op.op_id)
                     early_lane_available = False
                     self.stats["early_load_tokens"] += 1
-            if entry.op.kind in {"alu", "branch"}:
+            if not self.scalar_replay and entry.op.kind in {"alu", "branch"}:
                 self.int_rs_in_use -= 1
                 if entry.op.kind == "branch" and entry.op.mispredict:
-                    self.frontend_blocked_until = max(
-                        self.frontend_blocked_until,
-                        self.loop.cycle + self.config.branch_recovery_cycles,
-                    )
+                    if self.frontend is not None:
+                        self.loop.after(
+                            self.config.branch_recovery_cycles,
+                            lambda target=entry.op.op_id + 1: (
+                                self.frontend.request_redirect("execute", target)
+                            ),
+                        )
+                    else:
+                        self.frontend_blocked_until = max(
+                            self.frontend_blocked_until,
+                            self.loop.cycle + self.config.branch_recovery_cycles,
+                        )
                     self.stats["branch_mispredicts"] += 1
             self.stats["completed"] += 1
 
@@ -2901,21 +3265,28 @@ class FrostPipeline:
             complete=lambda _ok: self._store_acknowledged(),
             source="uncached",
             axi_id=32,
-            bytes_size=8,
+            bytes_size=self.committed_stores[0].op.memory_bytes,
         )
         if not self.soc.submit_axi(write):
             self.stats["store_drain_backpressure"] += 1
             return
-        self.committed_stores.popleft()
-        self.next_store_launch = self.loop.cycle + self.config.store_drain_cycles
+        store = self.committed_stores.popleft()
+        # Local writes use the SoC handshake, not the cached L1D launch interval.
+        self.next_store_launch = self.loop.cycle
         self.stats["stores_drained"] += 1
         self.stats["local_stores"] += 1
         if self.config.l0_cache_depth > 0:
             dword = address >> 3
-            if self.l0_cache.get(dword % self.config.l0_cache_depth) == dword:
+            index = dword % self.config.l0_cache_depth
+            if self.scalar_replay and store.op.memory_bytes == 8 and address % 8 == 0:
+                # lq_l0_cache.sv store_update allocates on a full-dword strobe.
+                self.l0_cache[index] = dword
+                self.stats["l0_store_allocations"] += 1
+            if self.l0_cache.get(index) == dword:
                 self.stats["l0_store_updates"] += 1
 
     def _store_acknowledged(self) -> None:
+        self._local_store_response_cycle = self.loop.cycle
         self.sq_in_use -= 1
 
     def _retire(self) -> None:
@@ -2926,6 +3297,10 @@ class FrostPipeline:
                 self.stats["retire_head_not_ready"] += 1
                 break
             self.rob.popleft()
+            entry.retired = True
+            entry.retired_cycle = self.loop.cycle
+            if self.scalar_replay and entry.op.kind == "branch":
+                self.checkpoints_in_use -= 1
             self.retired += 1
             retired += 1
             self.stats["retired"] += 1
@@ -2934,6 +3309,10 @@ class FrostPipeline:
                 self.committed_stores.append(entry)
 
     def _record_occupancy(self) -> None:
+        if self.scalar_replay:
+            self.max_occupancy["mul_rs"] = max(
+                self.max_occupancy["mul_rs"], self.mul_rs_in_use
+            )
         n_rob = len(self.rob)
         if n_rob > self.max_occupancy["rob"]:
             self.max_occupancy["rob"] = n_rob
@@ -2960,6 +3339,8 @@ class FrostPipeline:
         while self.retired < len(self.program):
             if self.loop.cycle >= max_cycles:
                 raise RuntimeError(f"model timed out after {max_cycles} cycles")
+            if self.scalar_replay:
+                self._snapshot_dispatch()
             self.loop.run_ready()
             self._drain_cdb()
             self._retire()
@@ -2970,8 +3351,15 @@ class FrostPipeline:
             self.memory.l1d.service_replays()
             self._issue()
             self.memory.l1d.step_after_loads()
+            if self.frontend is not None:
+                self.frontend.step(self.loop.cycle)
+            before_dispatch = self.next_dispatch
             self._dispatch()
-            self._issue_fetches()
+            if self.scalar_replay:
+                self.stats[f"dispatch_{self.next_dispatch - before_dispatch}"] += 1
+                self.stats["rob_occupancy_sum"] += len(self.rob)
+            if self.frontend is None:
+                self._issue_fetches()
             self._record_occupancy()
             self.loop.cycle += 1
         elapsed_s = time.perf_counter() - start_time
@@ -3004,6 +3392,8 @@ class FrostPipeline:
             "soc_top": mem_summary["soc"],
             "memory": mem_summary,
         }
+        if self.frontend is not None:
+            result["frontend"] = self.frontend.summary()
         return result
 
 
@@ -3169,14 +3559,11 @@ def workload_coremark(seed: int, operations: int = 3600) -> list[MicroOp]:
     return _coremark_ops(operations, 0x8000_0000, 0x1_0000)
 
 
-def workload_coremark_bram(seed: int, operations: int = 1200) -> list[MicroOp]:
-    """Model the CoreMark kernels in the BRAM tier, as CI's capture runs them.
-
-    Its data lies in low BRAM, whose loads and stores take the SoC's local
-    port and never reach the coherent L1D, so the length needs no tuning for
-    a cold start.
-    """
-    return _coremark_ops(operations, 0x0000_0000, 0x8000)
+def workload_coremark_bram(seed: int) -> list[MicroOp]:
+    """Require the compiled program's instruction stream for BRAM calibration."""
+    raise ValueError(
+        "coremark_bram requires --instruction-trace from the same RTL capture"
+    )
 
 
 def _coremark_ops(operations: int, region: int, stride: int) -> list[MicroOp]:
@@ -3244,23 +3631,42 @@ WORKLOADS: dict[str, Callable[[int], list[MicroOp]]] = {
     "coremark": workload_coremark,
 }
 
-# Workloads outside the sweeps: the CI check's BRAM-tier stand-in for the capture.
-STANDIN_WORKLOADS: dict[str, Callable[[int], list[MicroOp]]] = {
+# Workloads outside the synthetic sweeps: the CI check requires an instruction stream.
+REPLAY_WORKLOADS: dict[str, Callable[[int], list[MicroOp]]] = {
     "coremark_bram": workload_coremark_bram,
 }
 
 
 def _named_workloads() -> dict[str, Callable[[int], list[MicroOp]]]:
-    """Return the sweep workloads and the stand-ins by name."""
-    return {**WORKLOADS, **STANDIN_WORKLOADS}
+    """Return the synthetic sweep workloads and the instruction-replay entry."""
+    return {**WORKLOADS, **REPLAY_WORKLOADS}
 
 
-def run_workload(config: ModelConfig, workload_name: str, seed: int) -> dict[str, Any]:
+def run_workload(
+    config: ModelConfig,
+    workload_name: str,
+    seed: int,
+    instruction_trace: Path | None = None,
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Run a named workload on config and return the result.
 
     The result also names the workload, its seed, and its micro-op count.
-    The CoreMark workload starts with every fetch line ready.
+    Synthetic CoreMark starts with every fetch line ready. CoreMark BRAM
+    requires the binary-bound instruction stream and uses decoupled fetch.
     """
+    if workload_name == "coremark_bram" and instruction_trace is not None:
+        stream = read_stream(instruction_trace, manifest)
+        if (
+            stream.metadata["benchmark"] != "coremark"
+            or stream.metadata["memory_tier"] != "bram"
+        ):
+            raise ValueError("coremark_bram needs a BRAM CoreMark instruction stream")
+        result = run_instruction_stream(config, stream)
+        result.update(
+            workload=workload_name, seed=seed, micro_ops=len(stream.instructions)
+        )
+        return result
     if workload_name not in _named_workloads():
         raise KeyError(workload_name)
     program = _named_workloads()[workload_name](seed)
@@ -3274,6 +3680,109 @@ def run_workload(config: ModelConfig, workload_name: str, seed: int) -> dict[str
     result["seed"] = seed
     result["micro_ops"] = len(program)
     return result
+
+
+def run_instruction_stream(
+    config: ModelConfig, stream: InstructionStream
+) -> dict[str, Any]:
+    """Replay dependencies and addresses through the production fetch structure."""
+    if stream.metadata["memory_tier"] != "bram":
+        raise ValueError(
+            "instruction replay currently implements the BRAM fetch provider"
+        )
+    program = [
+        MicroOp(
+            insn.index,
+            insn.kind,
+            insn.pc,
+            insn.address,
+            insn.depends_on,
+            bool(insn.prediction and insn.prediction.execute_redirect),
+            execution_cycles=instruction_execution_cycles(insn.instruction),
+            memory_bytes=insn.memory_bytes or 8,
+            instruction=insn.instruction,
+        )
+        for insn in stream.instructions
+    ]
+    frontend = FetchFrontend(stream.instructions, config.decoded_queue_bundles)
+    # The architectural stream exposes real load-use chains. The L0 array
+    # itself is combinational; MEM_RS/LQ and registered result/wakeup are not.
+    # The measured resident dependent chase takes three cycles per load.
+    pipeline = FrostPipeline(
+        config, program, frontend=frontend, l0_hit_cycles=3, scalar_replay=True
+    )
+    provider = BramFetchProvider(config, pipeline.loop, pipeline.soc)
+    frontend.provider_request = provider.request
+    result = pipeline.run()
+    result["frontend"]["provider"] = dict(provider.stats)
+    result["replay_execution"] = {
+        "l0_dependent_load_cycles": 3,
+        "integer_select_to_wakeup_cycles": 2,
+        "done_operand_dispatch_to_select_cycles": 2,
+        "branch_issue_ports": 1,
+        "multiply_select_to_wakeup_cycles": 8,
+        "word_and_carryless_multiply_cycles": 5,
+        "instruction_provider_hit_cycles": 1,
+        "instruction_provider_lines": config.normal_fetch_lines,
+        "instruction_provider_line_bytes": config.l1_line_bytes,
+        "instruction_provider_port_service_cycles": config.soc.local_wide_fetch_cycles,
+        "execute_select_to_redirect_cycles": 2,
+        "execute_recovery_block_cycles": 2,
+        "int_rs_issue2_window": config.int_rs_issue2_window,
+        "mul_rs_entries": config.mul_rs_entries,
+        "checkpoint_entries": config.checkpoints,
+        "dispatch": "atomic bundle using registered resource availability",
+        "sources": {
+            "execution": "tomasulo_wrapper.sv cdb_bus_q; int_muldiv_shim.sv MulPipeDepth/WordMulDepth and DIRECT_MUL",
+            "stations": "riscv_pkg.sv IntRsIssue2Window/MulRsDepth/NumCheckpoints; reservation_station.sv rs_valid and alloc_idx",
+            "dispatch": "dispatch.sv slot2_can_fire, i_rob_full_for_2, station full/full_for_2",
+            "branches": "int_alu_shim.sv i_issue_writes_cdb_hint; dispatch.sv RS_NONE; early_misprediction_recovery.sv early_launch/early_mispredict_active/early_backend_recovery_pending",
+            "fetch": "frost_hart.sv uncached_fetch; fetch_provider.sv DIRECT_LOOKUP, LINE_BYTES, miss slots and registered window",
+            "local_service": "soc_top.sv fast_bram_request and local_state_q 0/4/1/2/3; soc_axi_slave.sv local_resp_fire",
+            "loads": "lq_l0_cache.sv store_update; tomasulo_wrapper.sv EARLY_LOAD_WAKEUP; directed dependent chase measurements in calibration/ci_baseline.json",
+        },
+        "wrong_path_execution": "omitted; useful fetch waits for recovery",
+    }
+    result["replay_sources"] = {
+        name: hashlib.sha256((Path(__file__).parent / name).read_bytes()).hexdigest()
+        for name in (
+            "frost_perf_model.py",
+            "fetch_frontend.py",
+            "instruction_stream.py",
+        )
+    }
+    result["instruction_stream"] = {
+        "sha256": stream.sha256,
+        **stream.metadata,
+        "instructions": len(program),
+    }
+    return result
+
+
+def instruction_execution_cycles(instruction: int) -> int:
+    """Use the scalar execution pipelines, not one ALU cycle for every opcode.
+
+    RS selection precedes the stage-2 launch by one cycle; the CDB is
+    registered. A combinational ALU therefore takes two selection-to-wakeup
+    cycles. multiplier.sv takes six launch-to-result cycles; WordMulDepth
+    and cl_multiplier.sv take three. Their CDB adapter accepts a live result.
+    Division is not present in the captured timed body; reject it until
+    operand-dependent divider service is represented.
+    """
+    opcode, funct7, funct3 = (
+        instruction & 127,
+        instruction >> 25,
+        (instruction >> 12) & 7,
+    )
+    if opcode in {0x33, 0x3B} and funct7 == 1:
+        if funct3 >= 4:
+            raise ValueError(
+                "instruction replay needs operand-dependent division service"
+            )
+        return 5 if opcode == 0x3B else 8
+    if opcode == 0x33 and funct7 == 5 and funct3 in {1, 2, 3}:
+        return 5
+    return 2
 
 
 def run_memory_kernel(
@@ -3805,7 +4314,7 @@ def rtl_audit() -> dict[str, Any]:
                 "source": "hw/rtl/soc_top/soc_axi_slave.sv:130-238; hw/rtl/soc_top/soc_top.sv:35-39, 396-399, 1396-1430; hw/rtl/lib/cache/axi_behavioral_memory.sv:18-67",
             },
             {
-                "fact": "Load Queue direct-mapped L0 Data Cache (NormalLqL0Depth = 512 dword entries) provides 1-cycle fast-path bypass for cached hits; EARLY_LOAD_WAKEUP enables 1-cycle dependent scheduling.",
+                "fact": "The direct-mapped L0 array has a combinational lookup and NormalLqL0Depth=512 dword entries. The registered RS/LQ/result path gives a measured three-cycle resident dependent load; early wakeup can use an idle registered CDB lane.",
                 "source": "hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv:18-47; hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv:1926-1928; hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv:43, 2806-2817",
             },
             {
@@ -3846,9 +4355,11 @@ def rtl_audit() -> dict[str, Any]:
             },
         ],
         "implemented_features": [
+            "Binary-bound BRAM CoreMark instruction replay with architectural dependencies, resolved addresses, recorded prediction tiers, decoupled F0/F1 fetch, parcel/metadata capacity, bypass/alignment, PD/ID and decoded queues, and redirect/refill service. Synthetic workloads retain their separate idealized feed.",
+            "Binary replay reserves integer issue port 0 for branches and delays consumers of completed live ROB producers through registered allocation-indexed operand repair, including dispatch-cycle CDB delivery; resident CDB matches bypass and retired producers read the architectural register file (reservation_station/README.md; tomasulo_wrapper.sv).",
             "Explicit CpuTopModel + SocTopModel separation across the 6-bit-ID, 512-bit AXI4 boundary so downstream projects can replace SocTopModel or DdrController independently.",
             "Two-wide dispatch/retire, bounded ROB/RS/LQ/SQ with MEM_RS release at issue and LQ release at the result, out-of-order load/ALU completion, two-lane CDB contention, and committed stores draining from the SQ into the L1D's store records.",
-            "Load Queue L0 Data Cache (256 dword entries) with 1-cycle CDB fast-path bypass and fill from L1D memory responses.",
+            "Configurable direct-mapped L0 with fills from memory responses: synthetic defaults use 256 dword entries and one-cycle dependent hits; BRAM calibration uses 512 entries and measured three-cycle dependent hits.",
             "Coherent L1D with an independent four-cycle hit path, tags-only controller shadows, two-entry hit stream training, request endpoints held through U, attached loads that look up again after installation, stream look-ahead on the highest endpoints, four ordered store records with one lent endpoint, and buffered victim writebacks.",
             "Separate L1I and L1D caches; 32-byte to 64-byte sector adapter; L2 with the home's stream prefetch agent; fill ownership; coalescing; writeback slots; write intent; cache-line dirty state.",
             "Explicit cache lower transaction IDs ({type, slot}), 64-byte single-beat AXI transfers, soc_axi_slave physical address decode (DDR vs. local BRAM/MMIO), and a single-channel 512-bit AXI DDR model matching axi_behavioral_memory.sv.",
@@ -3858,7 +4369,7 @@ def rtl_audit() -> dict[str, Any]:
             "Cache stage timing, insertion-LFSR phase, and pipeline stage latencies are abstractions that require cycle-by-cycle calibration.",
             "The L1D controller's priority omits probes, atomics, maintenance and the credited read turn's exact edges; the SQ launch interval, the C-to-U interval (coherence_release_cycles), and the L2 home's lookup and fill timing are abstractions, and the home's instruction prefetch table and DMA pause are not modeled.",
             "The default DDR endpoint models FROST's single-channel axi_behavioral_memory.sv (LATENCY=80, NUM_SLOTS=max(L2MaxSlots,8)); board DDR4 MIG refresh and bank/row timing require hardware or VIP trace calibration.",
-            "Workload micro-ops are representative pressure patterns, not captured Redis, HTTP, Linux or FaaS execution traces.",
+            "Sweep micro-ops are representative pressure patterns, not captured Redis, HTTP, Linux or FaaS execution traces. BRAM CoreMark uses a captured instruction stream but omits wrong-path execution/cache pollution and starts the timed window with empty pipeline/data caches.",
             "The model does not execute the RISC-V ISA, model Sv39 page walks/DMA coherence traffic as workload events, or prove functional RTL equivalence.",
             "The candidate sweep may rank sensitivities, but synthesis/Fmax/area and RTL waveform comparison are required before an RTL change is accepted.",
         ],
@@ -4137,6 +4648,7 @@ def parse_args() -> argparse.Namespace:
     run.add_argument("--seed", type=int, default=11)
     run.add_argument("--out", type=Path, required=True)
     run.add_argument("--config-file", type=Path)
+    run.add_argument("--instruction-trace", type=Path)
     memory_run = sub.add_parser("memory-run", help="Run a DDR benchmark loop body")
     memory_run.add_argument("--kernel", choices=KERNELS, required=True)
     memory_run.add_argument("--scale-shift", type=int, default=4)
@@ -4198,7 +4710,12 @@ def main() -> int:
     if args.command == "run":
         dump_json(
             args.out,
-            run_workload(load_config(args.config_file), args.workload, args.seed),
+            run_workload(
+                load_config(args.config_file),
+                args.workload,
+                args.seed,
+                instruction_trace=args.instruction_trace,
+            ),
         )
         return 0
     if args.command == "memory-run":

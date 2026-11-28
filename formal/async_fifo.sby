@@ -28,6 +28,11 @@ limit_cover: chparam -set DYNAMIC_LIMIT 1 async_fifo
 hierarchy -top async_fifo
 script free_undefined.ys
 prep -top async_fifo
+select -assert-count 11 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 2 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 2 t:$check r:FLAVOR=cover %i
+limit_bmc: select -assert-count 3 t:$check r:FLAVOR=cover %i
+limit_cover: select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/ram/sdp_block_ram_dc.sv

@@ -1,7 +1,7 @@
 # Store Queue
 
 The SQ holds stores from dispatch until they are written to memory. It has
-eight entries (`riscv_pkg::SqDepth`) and two allocation ports. Stores write
+sixteen entries (`riscv_pkg::SqDepth`) and two allocation ports. Stores write
 cached memory after commit, in program order. With `PRECISE_UNCACHED=1`
 (as in `cpu_top`), Device and strict uncached stores execute at the ROB head
 with the interrupt and debug shield armed, and retire only after the AXI B
@@ -32,7 +32,9 @@ masks intersect.
 | No conflict | No older store overlaps | Reads the L0 cache or memory |
 
 The result is registered: the LQ sees it one cycle after presenting the
-check (`i_sq_check_capture_valid`).
+check (`i_sq_check_capture_valid`). The forwarding unit registers the winning
+slot index and byte offset, and `store_queue` reads the raw payload from its
+distributed-RAM forwarding copy (`u_sq_data_fwd`) during the LQ consume cycle.
 
 Two ordering rules decide which stores count:
 
@@ -42,6 +44,13 @@ Two ordering rules decide which stores count:
   order), not by ROB-tag age. A committed store can still be waiting to drain
   after its ROB tag has been reused, and tag age would then rank it newest and
   forward stale data.
+
+Ring position needs no age comparison: every entry below the ring head was
+allocated after every entry at or above it, and within each half a higher
+index is newer. The unit therefore takes the highest-index conflict below the
+head when there is one and the highest-index conflict at or above the head
+otherwise, two fixed-priority picks formed in parallel from the conflict mask
+and the registered head.
 
 MMIO stores and store-conditionals never forward. An SC can fail and write
 nothing, so a load behind it waits for the SC to drain and then reads memory.
@@ -71,20 +80,28 @@ Dispatch uses the registered `o_dispatch_full` and `o_dispatch_full_for_2`
 flags. They count this cycle's allocations but give no credit for this cycle's
 drains, flushes, or SC discards, so they err only on the side of stalling;
 early credit would let dispatch send a store the SQ cannot accept. `o_full`
-and `o_full_for_2` give the exact combinational status, and a separate counter
-drives `o_count` and `o_empty`. The counter forms each entry's removal from
-the queue's state and the flush and tag inputs first; the SC discard and the
-write completion apply next, and the registered commit pulses last.
+and `o_full_for_2` give the exact combinational status, and a pair of per-half
+live counters (lower and upper eight entries) drive `o_count` and `o_empty`.
+Each counter forms its half's removal from the queue's state and the flush and
+tag inputs first; the SC discard and the write completion apply next, and the
+registered commit pulses last.
 
 Addresses arrive from the early-address pipeline or from MEM_RS issue, and
-data from MEM_RS issue, matched to entries by ROB tag. If both address sources
-update an entry in the same cycle, the MEM_RS update wins. With translation on,
+data from MEM_RS issue, matched to entries by ROB tag. Each early-address slot
+supplies two identical address copies, one for the lower half of the queue
+(`i_early_addr_update*.address`) and one for the upper half
+(`i_early_addr_hi*`). The queue groups address writes into four banks indexed
+by `{half, parity}` (four entries per bank). Dual-store dispatch bundles
+allocate consecutive tail entries on opposite parities, so fresh slot-1 and
+slot-2 early updates never share a bank. Within a bank, MEM_RS issue takes
+priority over early slot 1, which takes priority over early slot 2; a losing
+opportunistic early update is skipped and the entry receives its address at
+MEM_RS issue. With translation on,
 an early address is captured only together with a successful translation.
 
-A payload can be written before its valid bit is set: the early-address
-pipeline keeps refreshing a waiting store's address until its base register
-resolves. Forwarding and the drain read a payload only after its valid bit is
-set.
+A payload can be written before its valid bit is set when a pre-kill DMMU
+capture fires. Forwarding and the drain read a payload only after its valid bit
+is set.
 
 ## Draining to memory
 
@@ -93,15 +110,17 @@ entry is eligible and has its address and data, and it never skips ahead.
 An entry also waits while an older vector memory instruction that overlaps it,
 or whose range is not known yet, is still live in the vector unit's memory
 table; an SC waits for every older live one (the load queue README, "Vector
-range holds", describes the rows; the SQ registers the hold before the drain
-check).
+range holds", describes the rows; the SQ enables `CURSOR_ONLY=1` so every entry
+tracks its older-VMT row while sector derivation and range overlap run only for
+the drain cursor, and registers the hold before the drain check).
 Cached and buffered Normal entries require commit; precise uncached entries require ROB-head
 permission and the shield.
 Entry, ordering and FIFO checks prepare launch and cursor completion before
 coherent store credit arrives. Credit qualifies the cached arm last.
 Explicit store credit and precise-store permission enter the final launch and
 cursor-completion selection directly; implicit SC credit is prepared separately.
-Each stored address is classified in parallel with cursor selection. Aligned
+Cached and buffered-Normal address classes are evaluated when an entry's address
+is written and held in per-entry registers. Aligned
 power-of-two cached regions use a mask comparison; other maps retain the
 general range comparison, including empty or wrapping ranges.
 Each entry prepares its cached serial, uncached serial, buffered overlap and
@@ -186,13 +205,11 @@ record open to collect a 64-byte block. Every cycle the SQ also registers
 32-byte sector of its last write, also a cached plain store, so the L1D may
 give it credit as a combining write when all four sector records are in use
 (see the [cache library](../../../../lib/cache/README.md#full-line-stores)).
-Each entry's claim is formed from registered state and the room-qualified
-allocation targets, and the cursor choices select one entry for each launch
-outcome: after a cached plain launch the cursor's post-fire choice; without a
-launch the post-fire choice past a Zicbom entry and the base choice
-otherwise, where the base choice is the cursor entry itself or the same entry
-as the post-fire choice. The allocation's dispatch valids apply next and the
-launch selects last.
+The sector match runs per entry in parallel with the cursor scan and, for an
+aligned power-of-two cached region, compares only the sector offset bits within
+the cached region. The room-qualified allocation targets and sent marks split
+each entry's claim before the cursor choices select one entry per launch
+outcome, dispatch valids apply next, and the write launch selects last.
 
 Cached ordinary stores complete when captured in one of the L1D's four ordered
 sector records. Each scalar receives an acknowledgement, including scalars
@@ -249,20 +266,25 @@ the entry without writing memory. The LR reservation lives in the LQ.
 ## Storage
 
 Control fields are flip-flops, because the address CAM, the forwarding scan,
-and flushes read every entry at once. Store data lives in a LUTRAM read by the
-drain, plus a per-entry flip-flop copy read by the forwarding path. The LQ
+and flushes read every entry at once. Store data lives in two distributed RAM
+copies written together via the same nibble-encoded ROB-tag match index:
+`u_sq_data_drain`, read by the drain at `drain_idx_q`, and `u_sq_data_fwd`,
+read by the forwarding path at the forwarding unit's registered winning slot
+index. The LQ
 sends four identical copies of the check address (`i_sq_check_addr` and
-`_b`, `_c`, `_d`), each compared against two entries.
+`_b`, `_c`, `_d`), each compared against a quarter of the entries (four).
 
 ## Verification
 
 The `store_queue` cocotb target covers two-wide allocation, updates,
 forwarding, pipelined drain, flushes, and SC discard. Inline formal properties
 check live-count consistency, write prerequisites, in-flight bounds,
-forwarding, and that committed stores survive a partial flush; `sq_forwarding_unit`
-proves the standalone forwarding unit unbounded at eight entries and checks
-`tree_equiv` between the synthesized balanced `fwd_node` reduction tree and
-the linear formal selector.
+forwarding (including an independent capture-time payload reference around
+`u_sq_data_fwd`), and that committed stores survive a partial flush; `sq_forwarding_unit`
+proves the standalone forwarding unit unbounded at eight entries (at sixteen
+the base case does not finish within the task budget), covers it at sixteen,
+and checks `tree_equiv` between the synthesized fixed-priority newest pick and
+the linear formal selector at the core's `SqDepth`.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

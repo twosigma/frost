@@ -668,7 +668,9 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
         assert not (int(dut.u_sq.sq_addr_valid.value) & 1)
         assert not dut_if.read_rs_issue_for(RS_MEM)["valid"]
 
-        dut_if.set_fu_ready(RS_MEM, True)
+        # Hold MEM_RS issue for one cycle so the registered early repair
+        # delivers the SQ address independently of MEM_RS issue.
+        dut_if.set_fu_ready(RS_MEM, False)
         dut_if.drive_fu_complete(FU_FP_ADD, tag=producer_tag, value=base_value)
         if target_lane == 1:
             # MUL outranks FP_ADD, placing the producer exclusively on lane 1.
@@ -695,8 +697,8 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
         assert not read_sq_early_addr_update(dut)[0]
         assert not dut_if.read_rs_issue_for(RS_MEM)["valid"]
 
-        # First edge: both CDB copies register and the early update appears.
-        # The SQ write and MEM_RS stage2 capture wait for the next edge.
+        # First edge: both CDB copies register and the repair pipeline matches
+        # the lane and latches the repaired address into its hold register.
         await dut_if.step()
         dut_if.clear_fu_complete(FU_FP_ADD)
         if target_lane == 1:
@@ -707,6 +709,13 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
             producer_tag,
             base_value & MASK_XLEN,
         )
+        assert not read_sq_early_addr_update(dut)[0]
+        assert not (int(dut.u_sq.sq_addr_valid.value) & 1)
+        assert not dut_if.read_rs_issue_for(RS_MEM)["valid"]
+
+        # Second edge: the registered repair update appears at the SQ port
+        # while MEM_RS issue is still held.
+        await dut_if.step()
         assert read_sq_early_addr_update(dut) == (
             True,
             store_tag,
@@ -716,8 +725,9 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
         assert not (int(dut.u_sq.sq_addr_valid.value) & 1)
         assert not dut_if.read_rs_issue_for(RS_MEM)["valid"]
 
-        # Second edge: SQ consumes the update; MEM_RS stage2 presents the
-        # store with the same repaired base.
+        # Third edge: SQ consumes the registered repair update; release MEM_RS
+        # so stage2 presents the store with the same repaired base.
+        dut_if.set_fu_ready(RS_MEM, True)
         await dut_if.step()
         assert not read_sq_early_addr_update(dut)[0]
         assert int(dut.u_sq.sq_addr_valid.value) & 1

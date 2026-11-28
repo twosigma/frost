@@ -51,6 +51,7 @@ def main() -> int:
         "FROST_CALIBRATION_TRACE_PATH": CAPTURE / f"{test}.jsonl",
         "FROST_CALIBRATION_COUNTERS_PATH": CAPTURE / f"{test}_counters.json",
         "FROST_CALIBRATION_MANIFEST_PATH": CAPTURE / f"{test}_manifest.json",
+        "FROST_INSTRUCTION_TRACE_PATH": CAPTURE / f"{test}_instructions.jsonl.gz",
     }
     environment = {
         name: value
@@ -81,6 +82,8 @@ def main() -> int:
             str(files["FROST_CALIBRATION_COUNTERS_PATH"]),
             "--manifest",
             str(files["FROST_CALIBRATION_MANIFEST_PATH"]),
+            "--instructions",
+            str(files["FROST_INSTRUCTION_TRACE_PATH"]),
             "--baseline",
             str(BASELINE),
             "--rtl-commit",

@@ -57,8 +57,12 @@ module sq_forwarding_unit_formal #(
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
 
-  logic                          o_sq_all_older_addrs_known;
-  riscv_pkg::sq_forward_result_t o_sq_forward;
+  logic                          [IdxWidth-1:0] dut_sq_data_fwd_idx;
+  logic                          [    FLEN-1:0] dut_sq_data_fwd_data;
+  logic                                         o_sq_all_older_addrs_known;
+  riscv_pkg::sq_forward_result_t                o_sq_forward;
+
+  assign dut_sq_data_fwd_data = sq_data_fwd_flat[dut_sq_data_fwd_idx*FLEN+:FLEN];
 
   sq_forwarding_unit #(
       .DEPTH(DEPTH)
@@ -90,7 +94,8 @@ module sq_forwarding_unit_formal #(
       .sq_rob_tag_flat           (sq_rob_tag_flat),
       .sq_address_flat           (sq_address_flat),
       .sq_size_flat              (sq_size_flat),
-      .sq_data_fwd_flat          (sq_data_fwd_flat),
+      .o_sq_data_fwd_idx         (dut_sq_data_fwd_idx),
+      .i_sq_data_fwd_data        (dut_sq_data_fwd_data),
       .o_sq_all_older_addrs_known(o_sq_all_older_addrs_known),
       .o_sq_forward              (o_sq_forward)
   );
@@ -104,7 +109,7 @@ module sq_forwarding_unit_formal #(
   // Caller contracts proved in load_queue and store_queue:
   // 1. load_queue replicates its probe address across all four fanout copies.
   // 2. store_queue sets sq_is_zero on every sq_is_cmo entry passed to the CAM.
-  // 3. store_queue's write-once FF data mirror holds a valid entry's payload
+  // 3. store_queue's write-once forwarding RAM holds a valid entry's payload
   //    across the capture edge through the consume cycle.
   always_comb begin
     assume (i_sq_check_addr_b == i_sq_check_addr);
@@ -113,7 +118,7 @@ module sq_forwarding_unit_formal #(
     assume ((sq_is_cmo & ~sq_is_zero) == '0);
   end
 
-  for (genvar s = 0; s < DEPTH; s++) begin : gen_data_mirror_hold
+  for (genvar s = 0; s < DEPTH; s++) begin : gen_data_ram_hold
     always_ff @(posedge i_clk) begin
       if (f_past_valid && i_rst_n && $past(
               i_rst_n

@@ -1004,6 +1004,7 @@ module frost_rvfi_platform #(
       .o_coherent_atomic_protected(coherent_atomic_protected),
       .o_coherent_sc_commit(coherent_sc_commit),
       .i_fatal_stop(cache_fatal),
+      .o_uncached_addr(),
       .o_uncached_read_enable(),
       .o_uncached_read_size(mmio_load_size),
       .o_uncached_read_ready(),

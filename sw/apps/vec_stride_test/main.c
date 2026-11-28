@@ -601,20 +601,37 @@ static void check_v8_e32(const char *what,
 
 static void test_faults(void)
 {
-    /* 3a. Bare: element 1 of a vlse64 lies in low BRAM, which vector accesses
-     * do not reach. Element 0, in DDR, is loaded first. */
+    /* 3a. Bare: mixed DDR -> low BRAM succeeds; DDR -> unmapped PA 0x40000
+     * faults at element 1 after element 0 completes. */
     volatile uint64_t stack_word[2] __attribute__((aligned(16)));
     stack_word[0] = 0x1122334455667788ull;
     unsigned long bram = (unsigned long) &stack_word[0];
     long to_bram = (long) bram - (long) (DDR_BUF + 0x200u);
+    fill_buf();
+    seed_v8_group(0x77u);
+    setvl(2, 0x18ul); /* e64 m1 */
+    RUN_TRAP_STRIDED(VLSE64_V8, DDR_BUF + 0x200u, to_bram);
+    check(g_cause == ~0ul, "bare vlse64 DDR->BRAM succeeds", 0, g_cause, ~0ul);
+    {
+        volatile uint64_t *dump64 = (volatile uint64_t *) (vrf_io + 1024);
+        store_v8_group((volatile uint8_t *) dump64);
+        check(dump64[1] == 0x1122334455667788ull,
+              "bare vlse64 BRAM element loaded",
+              1,
+              dump64[1],
+              0x1122334455667788ull);
+    }
+
+    const unsigned long unmapped = 0x00040000ul;
+    long to_unmapped = (long) unmapped - (long) (DDR_BUF + 0x200u);
     const unsigned long fault_elem = 1u;
     fill_buf();
     seed_v8_group(0x77u);
     setvl(4, 0x18ul); /* e64 m1 */
     set_vs(VS_CLEAN);
-    RUN_TRAP_STRIDED(VLSE64_V8, DDR_BUF + 0x200u, to_bram);
-    check(g_cause == CAUSE_LOAD_ACCESS && g_tval == bram && g_vstart_trap == fault_elem,
-          "bare vlse64 access fault at a BRAM element",
+    RUN_TRAP_STRIDED(VLSE64_V8, DDR_BUF + 0x200u, to_unmapped);
+    check(g_cause == CAUSE_LOAD_ACCESS && g_tval == unmapped && g_vstart_trap == fault_elem,
+          "bare vlse64 access fault at an unmapped element",
           g_vstart_trap,
           g_cause,
           CAUSE_LOAD_ACCESS);
@@ -626,7 +643,7 @@ static void test_faults(void)
         for (unsigned long b = 0; b < 32u; b++) {
             unsigned long i = b / 8u;
             uint8_t want = (i < fault_elem)
-                               ? ref[(unsigned long) (0x200 + (long) i * to_bram) + b % 8u]
+                               ? ref[(unsigned long) (0x200 + (long) i * to_unmapped) + b % 8u]
                                : seed_byte(0x77u, b);
             check(dump[b] == want, "bare fault: elements before vstart loaded", b, dump[b], want);
         }
@@ -635,16 +652,17 @@ static void test_faults(void)
     fill_buf();
     seed_v8_group(0x99u);
     setvl(4, 0x18ul);
-    RUN_TRAP_STRIDED(".insn r 0x27, 7, 0x05, x8, %0, %1", DDR_BUF + 0x200u, to_bram);
-    check(g_cause == CAUSE_STORE_ACCESS && g_tval == bram && g_vstart_trap == fault_elem,
-          "bare vsse64 access fault at a BRAM element",
+    RUN_TRAP_STRIDED(".insn r 0x27, 7, 0x05, x8, %0, %1", DDR_BUF + 0x200u, to_unmapped);
+    check(g_cause == CAUSE_STORE_ACCESS && g_tval == unmapped && g_vstart_trap == fault_elem,
+          "bare vsse64 access fault at an unmapped element",
           g_vstart_trap,
           g_cause,
           CAUSE_STORE_ACCESS);
     wr_vstart(0);
     for (unsigned long i = 0; i < fault_elem; i++)
         for (unsigned b = 0; b < 8u; b++)
-            ref[(unsigned long) (0x200 + (long) i * to_bram) + b] = seed_byte(0x99u, i * 8u + b);
+            ref[(unsigned long) (0x200 + (long) i * to_unmapped) + b] =
+                seed_byte(0x99u, i * 8u + b);
     check_buf("bare fault: store image", 0);
     check(stack_word[0] == 0x1122334455667788ull, "BRAM word untouched", 0, stack_word[0], 0);
 

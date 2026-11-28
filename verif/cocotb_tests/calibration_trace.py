@@ -26,6 +26,10 @@ FROST_CALIBRATION_MANIFEST_PATH name optional files for the window's pipeline
 counters and the run's manifest. A relative path starts at the repository
 root. perf-modeling/README.md describes the trace format.
 
+FROST_INSTRUCTION_TRACE_PATH additionally writes a separate compressed,
+binary-bound instruction stream for the same window. Its observer follows
+register writes from the beginning of the selected run to resolve addresses.
+
 The trace and the manifest record the commit from FROST_GIT_COMMIT, or else
 from git. The manifest takes the tool versions from cocotb and the simulator,
 the compiler from the program's ELF, the clock from the bench's clock period,
@@ -310,6 +314,29 @@ class CalibrationTrace:
         self.counters: Counter[str] = Counter()
         self.rob_occupancy_sum = 0
         self.sq_occupancy_sum = 0
+        self.instructions = None
+        self.instruction_manifest: dict[str, Any] | None = None
+        if instruction_path := os.environ.get("FROST_INSTRUCTION_TRACE_PATH"):
+            from cocotb_tests.instruction_trace import InstructionTrace
+
+            program = program_directory(app_name)
+            if program is None:
+                raise AssertionError(
+                    "instruction capture needs the loaded program directory"
+                )
+            self.instructions = InstructionTrace(
+                dut,
+                output_path(instruction_path),
+                program,
+                {
+                    "benchmark": app_name,
+                    "rtl_commit": self.commit,
+                    "memory_tier": os.environ.get("FROST_COCOTB_MEM_CONFIG", "bram"),
+                    "start_pc": self.start_pc,
+                    "stop_pc": self.stop_pc,
+                    "run_number": run_number,
+                },
+            )
 
         missing: list[str] = []
 
@@ -399,6 +426,8 @@ class CalibrationTrace:
         cycle is the loop's 0-based count; the window's cycle stamps count
         from its first cycle.
         """
+        if self.state == "DONE":
+            return
         r1_ret = bool(_read(self.retire))
         r2_ret = bool(_read(self.retire_2))
         r1_pc = _read(self.retire_pc) if r1_ret else None
@@ -415,6 +444,8 @@ class CalibrationTrace:
             self.timed_cycle = 0
             self._open()
 
+        if self.instructions is not None:
+            self.instructions.sample(self.state == "ACTIVE")
         if self.state != "ACTIVE":
             return
         trace = self.file
@@ -522,6 +553,10 @@ class CalibrationTrace:
             )
         counters = self.counters
         total_timed = self.timed_cycle
+        if self.instructions is not None:
+            self.instruction_manifest = self.instructions.finish(
+                counters["retired_uops"]
+            )
         wall_time_s = time.perf_counter() - self.start_wall_time
         retired = counters["retired_uops"]
         pipeline_counters = {
@@ -574,6 +609,8 @@ class CalibrationTrace:
         if self.manifest_path is None:
             return
         manifest = self.manifest(uart_text, wall_time_s)
+        if self.instruction_manifest is not None:
+            manifest["instruction_stream"] = self.instruction_manifest
         manifest_file = self.manifest_path
         manifest_file.parent.mkdir(parents=True, exist_ok=True)
         manifest_file.write_text(

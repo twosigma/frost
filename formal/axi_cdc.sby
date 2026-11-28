@@ -33,6 +33,8 @@ cover: chformal -assert -remove
 memory_map
 opt -full
 opt_clean -purge
+prf: select -assert-count 33 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 9 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cdc/cdc_sync.sv

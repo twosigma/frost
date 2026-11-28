@@ -722,21 +722,42 @@ static void check_v8_e32(const char *what, unsigned long vl, unsigned long upto,
 
 static void test_faults(void)
 {
-    /* Bare: element 1's index points into low BRAM. */
+    /* Bare: mixed DDR + low BRAM succeeds; unmapped PA 0x40000 faults at element 1. */
     volatile uint64_t stack_word[2] __attribute__((aligned(16)));
     stack_word[0] = 0x1122334455667788ull;
     unsigned long bram = (unsigned long) &stack_word[0];
     fill_buf();
     seed_v8_group(0x77u);
     g_offs[0] = 0x300u;
-    g_offs[1] = bram - DDR_BUF; /* wraps to the BRAM address */
+    g_offs[1] = bram - DDR_BUF;
+    g_offs[2] = 0x340u;
+    setvl(3, 0x10ul);
+    load_index(8, 3);
+    setvl(3, 0x10ul);
+    RUN_TRAP(VLUXEI64_E32, DDR_BUF);
+    check(g_cause == ~0ul, "bare vluxei64 DDR+BRAM succeeds", 0, g_cause, ~0ul);
+    {
+        volatile uint32_t *dump32 = (volatile uint32_t *) (vrf_io + 1024);
+        store_v8_group((volatile uint8_t *) dump32);
+        check(dump32[1] == 0x55667788u,
+              "bare vluxei64 BRAM element loaded",
+              1,
+              dump32[1],
+              0x55667788u);
+    }
+
+    const unsigned long unmapped = 0x00040000ul;
+    fill_buf();
+    seed_v8_group(0x77u);
+    g_offs[0] = 0x300u;
+    g_offs[1] = unmapped - DDR_BUF; /* wraps to unmapped PA past low BRAM */
     g_offs[2] = 0x340u;
     setvl(3, 0x10ul);
     load_index(8, 3);
     setvl(3, 0x10ul);
     set_vs(VS_CLEAN);
     RUN_TRAP(VLUXEI64_E32, DDR_BUF);
-    check(g_cause == CAUSE_LOAD_ACCESS && g_tval == bram && g_vstart_trap == 1u,
+    check(g_cause == CAUSE_LOAD_ACCESS && g_tval == unmapped && g_vstart_trap == 1u,
           "bare vluxei64 access fault at element 1",
           g_vstart_trap,
           g_cause,
@@ -754,7 +775,7 @@ static void test_faults(void)
     seed_v8_group(0x99u);
     setvl(3, 0x10ul);
     RUN_TRAP(VSOXEI64_E32, DDR_BUF);
-    check(g_cause == CAUSE_STORE_ACCESS && g_tval == bram && g_vstart_trap == 1u,
+    check(g_cause == CAUSE_STORE_ACCESS && g_tval == unmapped && g_vstart_trap == 1u,
           "bare vsoxei64 access fault at element 1",
           g_vstart_trap,
           g_cause,

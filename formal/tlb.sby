@@ -29,6 +29,11 @@ cover_itlb: chparam -set NUM_ENTRIES 16 -set NUM_PORTS 2 -set FETCH_VERDICTS 1 -
 hierarchy -top dtlb
 script free_undefined.ys
 prep -top dtlb
+bmc: select -assert-count 25 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 25 t:$check r:FLAVOR=assert %i
+select -assert-count 9 t:$check r:FLAVOR=cover %i
+bmc_itlb: select -assert-count 23 t:$check r:FLAVOR=assert %i
+cover_itlb: select -assert-count 23 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

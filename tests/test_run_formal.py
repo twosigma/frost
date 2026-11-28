@@ -1284,16 +1284,20 @@ FORMAL_TARGETS = [
     FormalTarget(
         "vec_head_mmu.sby",
         "Head vector translation before access, precise partial faults, commit shield "
-        "and consumption of every commit; strided and indexed element runs in order with "
-        "each element translated first, mid-run interrupt boundaries, precise mid-run "
-        "faults and pointer masking",
+        "and consumption of every commit; strided, indexed and uncached element runs in "
+        "order with each element translated first, mid-run interrupt boundaries, precise "
+        "mid-run faults and pointer masking",
         tasks=(
             "bmc",
             "cover",
             "stride_bmc",
             "stride_cover",
             "index_bmc",
+            "index_irq_bmc",
             "index_cover",
+            "uncached_bmc",
+            "uncached_seg_bmc",
+            "uncached_cover",
         ),
     ),
     FormalTarget(
@@ -1302,7 +1306,14 @@ FORMAL_TARGETS = [
         "atomic scalar entry or one with an unknown address, unknown vector range, "
         "or overlap. A settled hold has such a cause in either queue. The cleanup "
         "covers forbid head advancement on rollback edges",
-        tasks=("vhold_lq_bmc", "vhold_sq_bmc", "vhold_lq_cover", "cover"),
+        tasks=(
+            "vhold_lq_bmc",
+            "vhold_sq_bmc",
+            "vhold_sq_cursor_bmc",
+            "vhold_lq_cover",
+            "cover",
+            "vhold_sq_cursor_cover",
+        ),
     ),
     FormalTarget(
         "vec_vmt.sby",
@@ -3821,8 +3832,16 @@ SBY_TASKS = [
         "Vector range holds with the store queue's per-entry addresses, 8 frames.",
     ),
     (
+        "vhold_sq_cursor_bmc",
+        "Vector range holds with cursor-only overlap checks for the store queue, 8 frames.",
+    ),
+    (
         "vhold_lq_cover",
         "Vector range-hold reachability with the load queue's address-update port, 16 frames.",
+    ),
+    (
+        "vhold_sq_cursor_cover",
+        "Vector range-hold reachability with cursor-only overlap checks for the store queue, 16 frames.",
     ),
     (
         "vmt_bmc",
@@ -3835,9 +3854,25 @@ SBY_TASKS = [
     ("stride_cover", "Strided head run reachability: retirement, mid-run fault, tag."),
     (
         "index_bmc",
-        "Indexed head run: index reads, order, translation first, precise faults, 60 frames.",
+        "Indexed head run (uninterrupted): index reads, order, translation first, precise faults, 60 frames.",
+    ),
+    (
+        "index_irq_bmc",
+        "Indexed head run (mid-run interrupts): pause, flush to idle, withdraw and resume, 60 frames.",
     ),
     ("index_cover", "Indexed head run reachability: retirement, mid-run fault."),
+    (
+        "uncached_bmc",
+        "Uncached unit-stride, strided and FoF runs: order, shield, withheld grant, faults, IRQ stop, 36 frames.",
+    ),
+    (
+        "uncached_seg_bmc",
+        "Uncached 2-field segment runs: order, shield, withheld grant, faults, IRQ stop, 44 frames.",
+    ),
+    (
+        "uncached_cover",
+        "Uncached head run reachability: retirement, alignment/bus faults, FoF trim, IRQ stop, withheld grant.",
+    ),
     ("bmc", "Check assertions up to the configured depth"),
     ("bmc_cdb", "Compare the first valid CDB packet across wrapper copies."),
     ("bmc_cdb_2", "Compare the second valid CDB packet across wrapper copies."),
@@ -4318,7 +4353,7 @@ SBY_TASKS = [
     ),
     (
         "tree_equiv",
-        "Store-queue forwarding balanced winner tree equals the linear formal selector.",
+        "Store-queue forwarding fixed-priority newest pick equals the linear formal selector.",
     ),
     (
         "int_prove",
@@ -6641,8 +6676,8 @@ TWIN_COMPARISONS = {
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
     ),
     ("store_queue_twin", "sq_twin"): TwinComparison(
-        primitive_points=87,
-        all_points=9057,
+        primitive_points=1414,
+        all_points=12903,
         top="store_queue",
         gold_inputs=(
             "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
@@ -6653,17 +6688,17 @@ TWIN_COMPARISONS = {
             "read -sv -D SYNTHESIS -D FROST_XILINX_PRIMS riscv_pkg.sv "
             "vec_hold_rows.sv sdp_dist_ram.sv sq_forwarding_unit.sv store_queue.sv",
         ),
-        registers=117,
+        registers=170,
         clock="i_clk",
-        gold_only_free=243,
-        gate_only_free=243,
+        gold_only_free=314,
+        gate_only_free=314,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
-        initialized_nets=16,
+        initialized_nets=32,
     ),
     ("store_queue_twin", "sq_twin_cpu"): TwinComparison(
-        primitive_points=87,
-        all_points=9066,
+        primitive_points=1414,
+        all_points=12912,
         top="store_queue",
         gold_inputs=(
             "read -sv -D SYNTHESIS riscv_pkg.sv vec_hold_rows.sv sdp_dist_ram.sv "
@@ -6678,13 +6713,13 @@ TWIN_COMPARISONS = {
             "chparam -set TRUST_DISPATCH_VALID 1 -set PRECISE_UNCACHED 1 "
             "-set CACHE_NORMAL_MEMORY 1 store_queue",
         ),
-        registers=121,
+        registers=174,
         clock="i_clk",
-        gold_only_free=246,
-        gate_only_free=246,
+        gold_only_free=317,
+        gate_only_free=317,
         hide_wires=HIDE_FUNC_AND_LOOP_TEMPS,
         clean_hidden=True,
-        initialized_nets=16,
+        initialized_nets=32,
     ),
     ("coherence_l1d_twin", "l1d_twin_single"): TwinComparison(
         primitive_points=9,
@@ -8101,6 +8136,206 @@ def test_check_count_guards_specify_flavor() -> None:
         ["select -assert-count 2 t:$check r:FLAVOR=assert %i"]
     )
     assert unqualified_check_count_guards(qualified) == []
+
+
+PROPERTY_COUNT_GUARD_SELECTIONS: frozenset[tuple[str, ...]] = frozenset(
+    {
+        ("t:$assert",),
+        ("t:$cover",),
+        ("t:$check", "r:FLAVOR=assert", "%i"),
+        ("r:FLAVOR=assert", "t:$check", "%i"),
+        ("t:$check", "r:FLAVOR=cover", "%i"),
+        ("r:FLAVOR=cover", "t:$check", "%i"),
+    }
+)
+
+# Existing subsystem-scoped guards whose selection intersects a flavor-qualified
+# t:$check set with a named cell or module pattern. Any new script or task must
+# use one of PROPERTY_COUNT_GUARD_SELECTIONS.
+SCOPED_PROPERTY_COUNT_GUARDS: dict[tuple[str, str], tuple[tuple[str, ...], ...]] = {
+    ("coherence_l1d.sby", "coh_l1d_perf_prove"): (
+        ("c:p_perf_retime_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_multi_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_answer_bmc"): (
+        ("c:p_answer_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_stream_answer_bmc"): (
+        ("c:p_answer_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_zero_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_zero_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_zero_multi_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_zero_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_zero_lookahead_cover"): (
+        ("c:p_zero_cover_*", "t:$check", "%i", "r:FLAVOR=cover", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_zero_progress_cover"): (
+        ("c:p_zero_progress_*", "t:$check", "%i", "r:FLAVOR=cover", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_full_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_full_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_full_multi_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_full_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_full_lookahead_cover"): (
+        ("c:p_full_cover_*", "t:$check", "%i", "r:FLAVOR=cover", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_withdraw_full_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_full_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_withdraw_zero_bmc"): (
+        ("c:p_prefetch_conflict_split", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+        ("c:p_zero_*", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_withdraw_full_cover"): (
+        ("c:p_withdraw_full_cover", "t:$check", "%i", "r:FLAVOR=cover", "%i"),
+    ),
+    ("coherence_l1d.sby", "coh_l1d_full_hold_cover"): (
+        (
+            "c:p_full_hold_cover_*",
+            "c:p_full_credit_cover_*",
+            "%u",
+            "t:$check",
+            "%i",
+            "r:FLAVOR=cover",
+            "%i",
+        ),
+    ),
+    ("coherence_l1d_zero_index.sby", "zero_index_invariants"): (
+        ("c:p_index_head_conflict", "t:$check", "%i", "r:FLAVOR=assert", "%i"),
+    ),
+    ("load_queue.sby", "bmc_age_order"): (
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_age_*", "%i"),
+    ),
+    ("load_queue.sby", "prove_port1_amo"): (
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_amo_port1_*", "%i"),
+        ("t:$check", "r:FLAVOR=cover", "%i", "load_queue/cover_amo_port1_*", "%i"),
+    ),
+    ("load_queue.sby", "cover_port1_amo"): (
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_amo_port1_*", "%i"),
+        ("t:$check", "r:FLAVOR=cover", "%i", "load_queue/cover_amo_port1_*", "%i"),
+    ),
+    ("load_queue_amo_compute.sby", "bmc"): (
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_local_*", "%i"),
+        ("t:$check", "r:FLAVOR=cover", "%i", "load_queue/cover_local_*", "%i"),
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_lq_*_free_tree_*", "%i"),
+    ),
+    ("load_queue_amo_compute.sby", "cover"): (
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_local_*", "%i"),
+        ("t:$check", "r:FLAVOR=cover", "%i", "load_queue/cover_local_*", "%i"),
+        ("t:$check", "r:FLAVOR=assert", "%i", "load_queue/p_lq_*_free_tree_*", "%i"),
+    ),
+}
+
+
+def has_property_count_guard(
+    commands: list[sby_config.ParsedCommand],
+    extra_selections: tuple[tuple[str, ...], ...] = (),
+) -> bool:
+    """Report whether parsed commands include a nonzero whole-expression property guard."""
+    allowed = PROPERTY_COUNT_GUARD_SELECTIONS | frozenset(extra_selections)
+    for cmd in commands:
+        if cmd.form.id not in ("select_assert_count", "select_assert_min"):
+            continue
+        if int(cmd.args[2]) <= 0:
+            continue
+        if tuple(cmd.args[3:]) in allowed:
+            return True
+    return False
+
+
+def shared_opening_count_guard_gaps(sby_path: Path) -> list[str]:
+    """Return task gaps where a shared-opening property script lacks a count guard."""
+    gaps: list[str] = []
+    for task, cfg in sby_config.resolved(sby_path).items():
+        parsed = cfg.parsed(sby_path.parent, expand_opening=False)
+        extra = SCOPED_PROPERTY_COUNT_GUARDS.get((sby_path.name, task), ())
+        if any(cmd.args == tuple(UNDEFINED_OPENING_MARK) for cmd in parsed) and not (
+            has_property_count_guard(parsed, extra)
+        ):
+            gaps.append(task or "-")
+    return gaps
+
+
+def test_shared_opening_scripts_have_count_guards(tmp_path: Path) -> None:
+    """Every non-twin script with the shared opening guards its assert or cover count."""
+    formal = Path(__file__).resolve().parents[1] / FORMAL_DIR
+    sby_config.resolve_files(formal.glob("*.sby"))
+    twin_targets = {target for target, _ in TWIN_COMPARISONS}
+    lacking: list[str] = []
+    for sby_path in sorted(formal.glob("*.sby")):
+        if sby_path.stem in twin_targets:
+            continue
+        for task in shared_opening_count_guard_gaps(sby_path):
+            lacking.append(f"{sby_path.name} {task}")
+    assert not lacking, lacking
+
+    for (sby_name, task), expected_selections in SCOPED_PROPERTY_COUNT_GUARDS.items():
+        cfg = sby_config.resolved(formal / sby_name)[task]
+        parsed = cfg.parsed(formal, expand_opening=False)
+        present = {
+            tuple(cmd.args[3:])
+            for cmd in parsed
+            if cmd.form.id in ("select_assert_count", "select_assert_min")
+            and int(cmd.args[2]) > 0
+        }
+        assert set(expected_selections) <= present, (sby_name, task, present)
+
+    for rejected in (
+        "select -assert-count 2 t:$check r:FLAVOR=assume %i",
+        "select -assert-count 1 @watch_choice",
+        "select -assert-count 3 c:p_equiv_*",
+        "select -assert-min 0 t:$check r:FLAVOR=assert %i",
+        "select -assert-min 0 t:$assert",
+        "select -assert-count 0 t:$check r:FLAVOR=assert %i",
+        "select -assert-min 1 t:$check r:FLAVOR=assert %i @watch_choice %u",
+        "select -assert-count 1 t:$check r:FLAVOR=assert %i @watch_choice %d",
+        "select -assert-count 1 t:$assert c:p_unused %d",
+        "select -assert-count 1 t:$assert n:foo %x",
+        "select -assert-count 1 t:$assert w:foo %i",
+        "select -assert-count 1 t:$check r:FLAVOR=assert %i c:p_foo %u",
+    ):
+        assert not has_property_count_guard(
+            sby_config.parse_script_lines([rejected])
+        ), rejected
+    for accepted in (
+        "select -assert-count 2 t:$check r:FLAVOR=assert %i",
+        "select -assert-count 2 t:$cover",
+        "select -assert-min 1 t:$assert",
+        "select -assert-min 1 t:$check r:FLAVOR=assert %i",
+    ):
+        assert has_property_count_guard(sby_config.parse_script_lines([accepted])), (
+            accepted
+        )
+    (tmp_path / UNDEFINED_OPENING_FILE).write_bytes(
+        (formal / UNDEFINED_OPENING_FILE).read_bytes()
+    )
+    sample = formal / "alu_shift_hint.sby"
+    mutated = tmp_path / sample.name
+    text = sample.read_text(encoding="ascii")
+    stripped = (
+        "\n".join(
+            line for line in text.splitlines() if "select -assert-count" not in line
+        )
+        + "\n"
+    )
+    assert stripped != text
+    mutated.write_text(stripped, encoding="ascii")
+    assert shared_opening_count_guard_gaps(mutated) == ["bmc"]
 
 
 DONT_CARE_NO_STATE = (

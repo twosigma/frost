@@ -2726,7 +2726,7 @@ package riscv_pkg;
 
   // Memory queue depths
   localparam int unsigned LqDepth = 8;  // Load queue entries
-  localparam int unsigned SqDepth = 8;  // Store queue entries
+  localparam int unsigned SqDepth = 16;  // Store queue entries
 
   // Checkpoint parameters
   // Branch speculation recovery checkpoints. The count need not be a power of

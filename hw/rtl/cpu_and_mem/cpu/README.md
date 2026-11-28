@@ -715,7 +715,7 @@ walk response carries the field (`ptw_resp_t.pbmt`); the second-level TLB
 (4 KiB array and superpage array), the DTLB and the ITLB store it and return
 it on a hit. Over low BRAM, which has no alias, the DTLB's per-entry checks
 and the walk-response checks apply the field: the page is MMIO and refuses
-AMOs. AMO, LR, SC, `cbo.zero` and vector loads and stores on an NC or IO page
+AMOs. AMO, LR, SC and `cbo.zero` on an NC or IO page
 are access faults, and so is an instruction fetch (PMA overrides the Svpbmt
 chapter permits). The walk cache holds only pointers, whose PBMT field must be
 zero.
@@ -724,7 +724,8 @@ With the misaligned-access engine, a misaligned load or store to a permitted
 NC/IO DDR page raises an access fault (cause 5 or 7). The X3 has an uncached
 DDR alias. The VCU118's 2 GiB map has no alias, so aligned NC/IO DDR accesses
 also raise access faults. Misaligned NC/IO accesses to low BRAM or mapped
-device registers raise an address-misaligned exception (cause 4 or 6).
+device registers raise an address-misaligned exception (cause 4 or 6). Vector
+loads and stores follow the same NC/IO rules per element.
 Without the engine, misaligned NC/IO loads and stores trap before translation.
 
 The walker keeps a walk cache of upper-level pointers: 16 level-1 pointers
@@ -1077,8 +1078,7 @@ the data group and any index group must exclude `v0`. On indexed stores, data
 and index groups may overlap only at equal element widths. Both checks cover
 every data field of a segment. The unit then computes the active byte span
 from `vl`, `vstart` and `v0`, translates
-the one or two touched pages on the DMMU's walk-request port (requiring cached
-DDR with `PBMT = PMA`), waits for older committed scalar stores (`o_sq_committed_empty`), records
+the one or two touched pages on the DMMU's walk-request port, waits for older committed scalar stores (`o_sq_committed_empty`), records
 the physical page segments in `vec_vmt`, and completes on CDB slot 6 to retire
 alone in slot 1 (`vstart` cleared; VS set Dirty on loads and when `vstart` was
 nonzero). The head unit receives the registered commit one cycle after the
@@ -1092,22 +1092,38 @@ executes those first-page elements before a synchronous machine or supervisor
 trap records the first unexecuted element in `vstart`. The CSR file registers
 that entry and writes `vstart`, and sets VS Dirty, on the following edge;
 nothing retires or writes a CSR in between. Machine or supervisor interrupts
-and Debug Mode halts between elements of a strided, indexed, segment, or
-fault-only-first run use the same `vstart` path; a partial-load fault in Debug
-Mode re-parks without that `vstart` update. After retirement,
+and Debug Mode halts between elements of a strided, indexed, segment,
+fault-only-first, or uncached element run use the same `vstart` path; a
+partial-load fault in Debug Mode re-parks without that `vstart` update. After retirement,
 `vector/vec_vmu.sv` splits the access into 32-byte sectors across six
 line-client identities (IDs 2..7) to the coherence home, freeing the `vec_vmt`
 entry once all sector responses and VRF writes finish. A failed sector response after retirement, or during a partial
 first-page run ahead of a second-page fault, suppresses any VRF write and
 raises a sticky hart fatal error alongside `o_cache_fatal`.
 
-Vector loads and stores are executed in cached memory only: an element address
-in any other region, such as the low BRAM or a device, raises an access fault.
-Every address that a program's vector code touches, including copies and clears
-of stack objects that the compiler vectorizes by itself, must therefore be in
-cached memory. In the bare-metal DDR layout, a program built with the vector
-extension has its stack in cached DDR as well, so it runs as written; in the
-BRAM layout, its static data and stack are in the low BRAM (see the
+Vector loads and stores reach every region a scalar load or store of the same
+width and kind can (cached DDR, low BRAM, the device windows, and Svpbmt NC/IO
+pages), with scalar PMA, Sv39 permission, and alignment rules. Sv39 page and
+access faults determined by the registered walker response, permissions, PPN
+range, and PBMT leave the walk-wait state immediately, with no extra evaluation
+cycle. Cached translations also leave that state immediately. The remaining
+non-PMA PBMT leaves and non-cached PMA leaves register their classification and
+physical page before evaluating the multi-window PMA checks, keeping those
+comparators off the L2TLB response path. Unit-stride,
+whole-register, and mask accesses whose translated span stays in cached DDR
+(`PBMT = PMA`) use `vec_vmu`; if either span page maps to an uncached region,
+or when an element of a strided, indexed, segment, or fault-only-first run
+targets an uncached region, `vec_head_mmu` executes each uncached beat one at a
+time at the ROB head over the shared uncached data port after draining committed
+stores and settling the head interrupt shield. Uncached device reads never
+speculate, and single-element device reads never replay (a bus error on segment
+field `k > 0` or a fault-only-first segment trim may re-read fields `0..k-1` if
+software restarts the segment instruction, as the RVV specification permits);
+low-BRAM vector stores invalidate the scalar L0 read cache and any overlapping
+LR/SC reservation. In the bare-metal DDR layout, a program built with the vector
+extension places its stack in cached DDR for cached throughput and hardware
+misaligned stack accesses; in the BRAM layout, its static data and stack are in
+low BRAM, where naturally aligned vector accesses execute (see the
 [software memory configuration](../../../../sw/README.md#memory-configuration)).
 
 Strided and indexed loads and stores run their active elements in order at
@@ -1116,26 +1132,33 @@ port after `rs1` and forms element `i`'s address as `rs1 + i * rs2` by a running
 sum; an indexed form reads element `i` of the index group `vs2` through the VRF
 read port and adds it, zero-extended, to `rs1`. For each element the unit
 applies pointer masking, translates the one or two pages of the element's
-bytes, and then gives `vec_vmu` a descriptor for that element alone, waiting for
-its completion before the next element, so the ordered and unordered indexed
-forms both run in element order. A strided form's legality is that of the
-unit-stride form. An indexed form's data has EEW SEW and EMUL LMUL and its index
-group the width field's EEW and the matching EMUL, which must lie in
-`[1/8, 8]`; both groups must be aligned, and a load's destination may overlap
-the index group only with equal EEWs, at the index group's lowest register when
-the destination EEW is smaller, or at the destination group's highest register
-when it is larger and the index EMUL is at least 1. A masked load's destination
-group may not contain `v0`. The mask is a source with EEW 1, so a masked store
-cannot use `v0` as data and a masked indexed load or store cannot use it as an
-index. An indexed store may read overlapping data and index groups only when
-SEW equals the index EEW. The head raises an illegal-instruction exception for
-these reserved encodings before accessing memory. A segment form has 2 to 8
-fields and treats each segment as one element. For a unit-stride segment the
-stride is NF * EEW. Its fields lie
-one after another from the segment's address, the segment's one or two pages are
-translated first, and each field then gets its own descriptor, for register
-group `vd + f * EMUL` (EMUL at least one register), so a fault on a segment is
-reported before any of its fields is accessed. NF * EMUL may not exceed 8, the
+bytes, and then either gives `vec_vmu` a descriptor for that element alone (for
+cached DDR) or issues a single-beat request on the head uncached data port (for
+low BRAM, device windows, and Svpbmt NC/IO pages), waiting for its completion
+before the next element, so the ordered and unordered indexed forms both run in
+element order. A strided form's legality is that of the unit-stride form. An
+indexed form's data has EEW SEW and EMUL LMUL and its index group the width
+field's EEW and the matching EMUL, which must lie in `[1/8, 8]`; both groups
+must be aligned, and a load's destination may overlap the index group only with
+equal EEWs, at the index group's lowest register when the destination EEW is
+smaller, or at the destination group's highest register when it is larger and
+the index EMUL is at least 1. A masked load's destination group may not contain
+`v0`. The mask is a source with EEW 1, so a masked store cannot use `v0` as data
+and a masked indexed load or store cannot use it as an index. An indexed store
+may read overlapping data and index groups only when SEW equals the index EEW.
+The head raises an illegal-instruction exception for these reserved encodings
+before accessing memory. A segment form has 2 to 8 fields and treats each
+segment as one element. For a unit-stride segment the stride is NF * EEW. Its
+fields lie one after another from the segment's address, the segment's one or
+two pages are translated first, and each field then either gets its own
+`vec_vmu` descriptor (when cached) or executes as a single uncached beat on the
+head uncached data port (when uncached), for register
+group `vd + f * EMUL` (EMUL at least one register), so translation, permission,
+PMA, and alignment faults on a segment are reported before any of its fields is
+accessed (an uncached bus error on field `k > 0` occurs after fields `0..k-1`
+have completed and reports the segment's index in `vstart` with the failing
+field's address in `xtval`, or trims `vl` to the segment on a fault-only-first
+load). NF * EMUL may not exceed 8, the
 last field group may not pass `v31`, and an indexed segment load's field groups
 may not overlap the index group. The first access waits for older committed
 scalar stores to drain. Before launching each element (or segment), the unit
@@ -1148,8 +1171,9 @@ boundary, writes `vstart` and sets VS Dirty, and resumes from `vstart` after
 `mret`, `sret`, or `dret`; one armed before the first access is taken first,
 and the instruction then runs from its initial `vstart`. A fault on
 element `i` is reported on the same sideband with `vstart = i` after elements
-`vstart..i-1` are performed; `xtval` is the element's transformed address, or
-the second page's base when the element straddles into a faulting page. The instruction never
+`vstart..i-1` are performed; `xtval` is the element's transformed address, the
+second page's base when the element straddles into a faulting page, or the
+failing field's address on an uncached segment bus error. The instruction never
 writes a range into `vec_vmt`, so every younger scalar load and store waits
 until the entry is freed, which happens when the instruction retires after its
 last element. A load whose head-executed part (an element of a run, or the

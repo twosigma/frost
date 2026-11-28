@@ -29,15 +29,15 @@ setattr -set keep 1 w:* w:$* %d
 opt_clean
 check -assert
 select -assert-none t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
-select -assert-count 16 a:init
+select -assert-count 32 a:init
 select -assert-none i:* o:* %i
-~cpu: select -assert-count 117 t:$dff
-cpu: select -assert-count 121 t:$dff
+~cpu: select -assert-count 170 t:$dff
+cpu: select -assert-count 174 t:$dff
 select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
 expose -dff -cut store_queue/w:*
 select -assert-none store_queue/t:$dff %co:+[Q] store_queue/w:* %i %co1 store_queue/t:* %i
-~cpu: select -assert-count 243 t:$anyseq
-cpu: select -assert-count 246 t:$anyseq
+~cpu: select -assert-count 314 t:$anyseq
+cpu: select -assert-count 317 t:$anyseq
 rename -top gold
 design -stash gold
 design -reset
@@ -59,15 +59,15 @@ setattr -set keep 1 w:* w:$* %d
 opt_clean
 check -assert
 select -assert-none t:$initstate t:$anyinit t:$anyconst t:$allseq t:$allconst t:$sr t:$*latch* t:$*ff* t:$dff %d
-select -assert-count 16 a:init
+select -assert-count 32 a:init
 select -assert-none i:* o:* %i
-~cpu: select -assert-count 117 t:$dff
-cpu: select -assert-count 121 t:$dff
+~cpu: select -assert-count 170 t:$dff
+cpu: select -assert-count 174 t:$dff
 select -assert-none t:$dff i:i_clk %co1:+$dff[CLK] %d
 expose -dff -cut store_queue/w:*
 select -assert-none store_queue/t:$dff %co:+[Q] store_queue/w:* %i %co1 store_queue/t:* %i
-~cpu: select -assert-count 243 t:$anyseq
-cpu: select -assert-count 246 t:$anyseq
+~cpu: select -assert-count 314 t:$anyseq
+cpu: select -assert-count 317 t:$anyseq
 rename -top gate
 design -stash gate
 design -reset
@@ -82,18 +82,18 @@ equiv_make gold gate equiv
 delete gold gate twin_both
 setundef -anyseq
 select -assert-none i:*_gold i:*_gate o:*_gold o:*_gate
-~cpu: select -assert-count 486 t:$anyseq
-~cpu: select -assert-count 243 t:$anyseq n:*_gold %i
-~cpu: select -assert-count 243 t:$anyseq n:*_gate %i
-cpu: select -assert-count 492 t:$anyseq
-cpu: select -assert-count 246 t:$anyseq n:*_gold %i
-cpu: select -assert-count 246 t:$anyseq n:*_gate %i
+~cpu: select -assert-count 628 t:$anyseq
+~cpu: select -assert-count 314 t:$anyseq n:*_gold %i
+~cpu: select -assert-count 314 t:$anyseq n:*_gate %i
+cpu: select -assert-count 634 t:$anyseq
+cpu: select -assert-count 317 t:$anyseq n:*_gold %i
+cpu: select -assert-count 317 t:$anyseq n:*_gate %i
 select -set prim t:* a:from_prim %i
 select -set blk @prim %co*:-$equiv[Y] t:$equiv %i
 # o_cache_invalidate_valid ORs two registers (Zicbom's pulse), so it is no point.
-select -assert-min 87 @blk
-~cpu: select -assert-min 9057 t:$equiv
-cpu: select -assert-min 9066 t:$equiv
+select -assert-min 1414 @blk
+~cpu: select -assert-min 12903 t:$equiv
+cpu: select -assert-min 12912 t:$equiv
 equiv_simple
 equiv_status -assert
 design -reset

@@ -55,6 +55,16 @@ link_mirror1_cover: hierarchy -top coherence_link -chparam WIDTH 4 -chparam KIND
 hierarchy -top coherence_link
 script free_undefined.ys
 prep -top coherence_link
+link_zero_prove: select -assert-count 3 t:$check r:FLAVOR=assert %i
+link_one1_prove: select -assert-count 3 t:$check r:FLAVOR=assert %i
+link_one2_prove: select -assert-count 3 t:$check r:FLAVOR=assert %i
+link_always1_prove: select -assert-count 4 t:$check r:FLAVOR=assert %i
+link_always2_prove: select -assert-count 4 t:$check r:FLAVOR=assert %i
+link_credit1_bmc: select -assert-count 4 t:$check r:FLAVOR=assert %i
+link_credit2_bmc: select -assert-count 4 t:$check r:FLAVOR=assert %i
+link_credit1_cover: select -assert-count 4 t:$check r:FLAVOR=assert %i
+~zero: select -assert-count 1 t:$check r:FLAVOR=cover %i
+mirror: select -assert-count 8 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_link.sv

@@ -109,7 +109,7 @@ The baseline `perf-modeling/frost_perf_model.py` directly models the FROST platf
 3. **Key Microarchitectural Mechanisms**:
    - **Load Queue L0 Data Cache (`lq_l0_cache.sv`)**: Modeled the 256-entry direct-mapped dword cache (`NormalLqL0Depth = 256`) delivering 1-cycle fast-path bypass.
    - **Early Load Wakeup (`EARLY_LOAD_WAKEUP = 1`)**: Aligned with `mem_wakeup_merge.sv`, allowing a nonfaulting load to wake a dependent memory operation one cycle early when a registered CDB lane is free.
-   - **Decoded Queue Predecode Presentation**: In steady-state timed loop execution, resident instructions in low BRAM / L1I are served with 2 instructions/cycle throughput without redundant frontend cold-start stalls.
+   - **Idealized Instruction Supply**: The analytical run starts with every instruction line ready and feeds up to two micro-ops per cycle directly into dispatch. It does not simulate a decoded queue or predecode stages. See the [front-end calibration investigation](../../docs/frontend_calibration.md) for the limits of applying this historical comparison to the decoupled front end.
    - **CoreMark Kernel ILP & Dependency Structure**: Calibrated matrix unrolling (dual independent accumulators) and CRC lookup table parallelism matching GCC 15.3.0 PGO code generation, with realistic branch misprediction rates (< 0.2%).
 4. **Trace Deliverables Summary**:
    - `perf-modeling/results/coremark/manifest.json`: Full provenance, compiler flags, binary hashes, and cycle timing.

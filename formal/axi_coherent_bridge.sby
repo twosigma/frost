@@ -100,6 +100,16 @@ prove_soc: select -assert-count 138 t:$assert
 prove_soc_held: select -assert-count 1 t:$assert
 soc8proof: select -assert-min 1 t:$assert
 partitioned: select -clear
+prove: select -assert-count 94 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 94 t:$check r:FLAVOR=assert %i
+prove: select -assert-count 12 t:$check r:FLAVOR=cover %i
+prove_full_width: select -assert-count 12 t:$check r:FLAVOR=cover %i
+bmc_soc: select -assert-count 12 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 12 t:$check r:FLAVOR=cover %i
+prove_full_width: select -assert-count 93 t:$check r:FLAVOR=assert %i
+bmc_soc: select -assert-count 255 t:$check r:FLAVOR=assert %i
+cover_soc: select -assert-count 255 t:$check r:FLAVOR=assert %i
+cover_soc: select -assert-count 10 t:$check r:FLAVOR=cover %i
 
 [files]
 free_undefined.ys

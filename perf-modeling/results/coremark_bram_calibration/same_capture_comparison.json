@@ -1,0 +1,51 @@
+{
+  "instruction_stream": {
+    "artifacts": {
+      "sw.bin_sha256": "d302c201b8c51254daa87617b5274564785d57b7d13c2171d249183feaa26abd",
+      "sw.elf_sha256": "0057d9d36f71d0a4127d778d160641e844aa7a910ff777fb89ccfcf63a475375"
+    },
+    "benchmark": "coremark",
+    "instructions": 226801,
+    "memory_tier": "bram",
+    "rtl_commit": "200f339eaf5996a5510cf4e0d96adbd4c22e576c",
+    "run_number": 1,
+    "schema": "frost-instructions-v1",
+    "sha256": "bb0ee652c46d5fe32bc903f53c977bb65ea1c1a49f2b27953b42f4ad102a61f6",
+    "start_pc": 23684,
+    "stop_pc": 23688
+  },
+  "rtl": {
+    "cycles": 200797,
+    "dispatched_uops": 239424,
+    "event_counts": {
+      "axi_request": 11674,
+      "axi_response": 11673,
+      "dispatch": 139422,
+      "meta": 1,
+      "retire": 128459
+    },
+    "ipc": 1.1295039268514968,
+    "retired_uops": 226801
+  },
+  "before": {
+    "implementation_commit": "6b322540583266fb2bb327202d5951aaeb7da744",
+    "cycles": 182373,
+    "ipc": 1.2436106221863983,
+    "ipc_delta": 0.10102372609980659,
+    "replay_sources": {
+      "fetch_frontend.py": "932c3fced35e2720017a1277f5e495a7e56a763139197c89eaf01401a0a47962",
+      "frost_perf_model.py": "efd6b0214d7e3c8a890a9bd8a65006bfa743eb910e049acad437c1d41930c399",
+      "instruction_stream.py": "5af08375e1d94aa83a9c54d6992149a93f88bde4ec003dae58e7d2879f26f932"
+    }
+  },
+  "after": {
+    "cycles": 190556,
+    "ipc": 1.1902065534541026,
+    "ipc_delta": 0.053742731795377585,
+    "replay_sources": {
+      "fetch_frontend.py": "163cc791719d4b3afb441d506f7894a1fd261ecb26c4948e18bd5446cc401528",
+      "frost_perf_model.py": "eb2894bf643d272596f3976dfd38192670f9f1a03e249cebdfe506927c658d3c",
+      "instruction_stream.py": "5af08375e1d94aa83a9c54d6992149a93f88bde4ec003dae58e7d2879f26f932"
+    }
+  }
+}

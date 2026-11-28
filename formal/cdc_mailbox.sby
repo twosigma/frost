@@ -21,6 +21,8 @@ prep -top cdc_mailbox_formal -flatten
 ~cover: chformal -cover -remove
 opt -fast
 opt_clean -purge
+select -assert-count 7 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cdc/cdc_sync.sv

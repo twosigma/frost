@@ -34,6 +34,7 @@ flatten
 opt -purge
 select -assert-none t:$mem* t:$*ff* t:$*latch* t:$fsm
 prep -top immu_bare_formal
+select -assert-count 6 t:$check r:FLAVOR=assert %i
 
 [files]
 free_undefined.ys
