@@ -29,6 +29,8 @@ cover_256: chparam -set DEPTH 256 lq_l0_cache
 hierarchy -top lq_l0_cache
 script free_undefined.ys
 prep -top lq_l0_cache
+select -assert-count 22 t:$check r:FLAVOR=assert %i
+select -assert-count 7 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

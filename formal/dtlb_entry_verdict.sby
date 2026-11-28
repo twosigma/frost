@@ -25,6 +25,14 @@ read -formal -D SYNTHESIS -D DTLB_ENTRY_VERDICT_PROOF -sv dtlb.sv
 hierarchy -top dtlb
 script free_undefined.ys
 prep -top dtlb
+prove: select -assert-count 11 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 11 t:$check r:FLAVOR=assert %i
+prove: select -assert-count 7 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 7 t:$check r:FLAVOR=cover %i
+prove_256m: select -assert-count 12 t:$check r:FLAVOR=assert %i
+cover_256m: select -assert-count 12 t:$check r:FLAVOR=assert %i
+prove_256m: select -assert-count 8 t:$check r:FLAVOR=cover %i
+cover_256m: select -assert-count 8 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

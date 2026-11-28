@@ -19,6 +19,8 @@ read -formal -sv mul_completion_tag.sv
 hierarchy -top mul_completion_tag
 script free_undefined.ys
 prep -top mul_completion_tag
+select -assert-count 4 t:$check r:FLAVOR=assert %i
+select -assert-count 6 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

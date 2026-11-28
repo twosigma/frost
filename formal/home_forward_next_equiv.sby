@@ -20,6 +20,7 @@ bmc_fills3: chparam -set FILLS 3 home_forward_next_equiv
 hierarchy -top home_forward_next_equiv
 script free_undefined.ys
 prep -top home_forward_next_equiv
+select -assert-count 1 t:$check r:FLAVOR=assert %i
 
 [files]
 home_forward_next_equiv.sv

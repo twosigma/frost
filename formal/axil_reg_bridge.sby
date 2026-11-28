@@ -20,6 +20,8 @@ prove_engine: chparam -set ADDR_BITS 8 -set WIDE_COUNT 3 -set WIDE_OFFSETS 24'h5
 hierarchy -top axil_reg_bridge
 script free_undefined.ys
 prep -top axil_reg_bridge
+select -assert-count 29 t:$check r:FLAVOR=assert %i
+select -assert-count 8 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/axi/axil_checker.sv

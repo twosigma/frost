@@ -19,6 +19,7 @@ script free_undefined.ys
 setundef -undriven -anyseq
 opt
 prep -top reorder_buffer
+select -assert-count 6 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

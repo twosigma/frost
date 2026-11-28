@@ -44,6 +44,22 @@ bmc_always_granted: chparam -set ALLOW_GRANT_REFILL 0 -set ALWAYS_GRANTED 1 -set
 hierarchy -top fu_cdb_adapter
 script free_undefined.ys
 prep -top fu_cdb_adapter
+bmc: select -assert-count 20 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 20 t:$check r:FLAVOR=assert %i
+bmc_registered: select -assert-count 20 t:$check r:FLAVOR=assert %i
+cover_registered: select -assert-count 20 t:$check r:FLAVOR=assert %i
+bmc_no_refill: select -assert-count 20 t:$check r:FLAVOR=assert %i
+cover_no_refill: select -assert-count 20 t:$check r:FLAVOR=assert %i
+bmc: select -assert-count 13 t:$check r:FLAVOR=cover %i
+cover: select -assert-count 13 t:$check r:FLAVOR=cover %i
+bmc_no_refill: select -assert-count 13 t:$check r:FLAVOR=cover %i
+cover_no_refill: select -assert-count 13 t:$check r:FLAVOR=cover %i
+bmc_precomputed: select -assert-count 13 t:$check r:FLAVOR=cover %i
+bmc_always_granted: select -assert-count 13 t:$check r:FLAVOR=cover %i
+bmc_registered: select -assert-count 14 t:$check r:FLAVOR=cover %i
+cover_registered: select -assert-count 14 t:$check r:FLAVOR=cover %i
+bmc_precomputed: select -assert-count 21 t:$check r:FLAVOR=assert %i
+bmc_always_granted: select -assert-count 23 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

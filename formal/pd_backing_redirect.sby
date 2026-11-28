@@ -36,6 +36,8 @@ prove_indirect: select -assert-count 7 @edge_obligations t:$check %i r:FLAVOR=as
 prove_indirect: chformal -assert -remove t:$check r:FLAVOR=assert %i @edge_obligations %d
 prove_indirect: chformal -cover -remove
 prove_indirect: select -assert-count 7 t:$check r:FLAVOR=assert %i
+~prove_indirect: select -assert-count 82 t:$check r:FLAVOR=assert %i
+~prove_indirect: select -assert-count 26 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

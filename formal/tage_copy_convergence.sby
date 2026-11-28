@@ -33,6 +33,9 @@ bmc_mode: chformal -cover -remove
 cover_mode: chformal -assert -remove
 # Two banks of four tables with separate lookup and training arrays.
 select -assert-count 16 t:$mem_v2
+prove_mode: select -assert-count 28 t:$check r:FLAVOR=assert %i
+cover_mode: select -assert-count 4 t:$check r:FLAVOR=cover %i
+bmc_mode: select -assert-count 16 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

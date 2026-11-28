@@ -19,6 +19,7 @@ bmc_32x32: chparam -set LINE_BYTES 32 -set DATA_BYTES 32 line_align_check
 hierarchy -top line_align_check
 script free_undefined.ys
 prep -top line_align_check
+select -assert-count 7 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/line_align.sv

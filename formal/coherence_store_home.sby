@@ -78,6 +78,18 @@ bmc: opt -fast -keepdc
 bmc: select -assert-none t:$check r:FLAVOR=assume %i
 bmc: select -assert-none t:$assume
 bmc: select -clear
+bmc_siblings: select -assert-count 16 t:$check r:FLAVOR=assert %i
+bmc_siblings_second: select -assert-count 16 t:$check r:FLAVOR=assert %i
+bmc_rows: select -assert-count 16 t:$check r:FLAVOR=assert %i
+bmc_rows_second: select -assert-count 16 t:$check r:FLAVOR=assert %i
+bmc_conflict: select -assert-count 17 t:$check r:FLAVOR=assert %i
+bmc_conflict_second: select -assert-count 17 t:$check r:FLAVOR=assert %i
+bmc_pressure: select -assert-count 16 t:$check r:FLAVOR=assert %i
+bmc_pressure_second: select -assert-count 16 t:$check r:FLAVOR=assert %i
+link_bmc_siblings: select -assert-count 33 t:$check r:FLAVOR=assert %i
+link_bmc_siblings_second: select -assert-count 33 t:$check r:FLAVOR=assert %i
+link_bmc_pressure: select -assert-count 33 t:$check r:FLAVOR=assert %i
+link_bmc_pressure_second: select -assert-count 33 t:$check r:FLAVOR=assert %i
 # Optimize the cover and its assumptions before undefined bits become inputs.
 # The optimizations keep the unknown starting values of registers and
 # memories (-full would resolve undefined multiplexer inputs); -fine and the
@@ -96,6 +108,10 @@ compact_covers: select -clear
 setundef -anyseq
 opt_clean
 check -assert
+cover_siblings: select -assert-count 16 t:$check r:FLAVOR=assert %i
+cover_rows: select -assert-count 16 t:$check r:FLAVOR=assert %i
+cover_siblings: select -assert-count 1 t:$check r:FLAVOR=cover %i
+cover_rows: select -assert-count 1 t:$check r:FLAVOR=cover %i
 
 [files]
 coherence_store_home_formal.sv
