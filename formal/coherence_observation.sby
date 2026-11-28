@@ -21,6 +21,10 @@ cover: read_verilog -formal -D SYNTHESIS -D COHERENCE_OBSERVATION_PROOF -sv lq_c
 hierarchy -top lq_coherence_port
 script free_undefined.ys
 prep -top lq_coherence_port
+~prove_unrestricted: select -assert-count 22 t:$check r:FLAVOR=assert %i
+~prove_unrestricted: select -assert-count 18 t:$check r:FLAVOR=cover %i
+prove_unrestricted: select -assert-count 12 t:$check r:FLAVOR=assert %i
+prove_unrestricted: select -assert-count 16 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

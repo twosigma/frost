@@ -26,6 +26,8 @@ script free_undefined.ys
 prep -top rs_mem_broadcast_formal -flatten
 proof: memory_map -keepdc
 proof: opt -keepdc
+select -assert-count 34 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 5 t:$check r:FLAVOR=cover %i
 
 [files]
 ../tests/slang/xilinx_primitives.sv

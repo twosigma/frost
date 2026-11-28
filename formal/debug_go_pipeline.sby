@@ -17,6 +17,8 @@ read_verilog -formal -D SYNTHESIS -D DEBUG_GO_PIPELINE_PROOF -sv debug_dirty_nex
 hierarchy -top debug_module
 script free_undefined.ys
 prep -top debug_module
+select -assert-count 12 t:$check r:FLAVOR=assert %i
+select -assert-count 6 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

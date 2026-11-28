@@ -31,6 +31,9 @@ prep -top coherence_array_progress -flatten
 select -assert-count 2 c:p_progress_*
 select -assert-count 12 c:c_progress_*
 induct: select -assert-count 22 c:*p_induct_*
+~induct: select -assert-count 2 t:$check r:FLAVOR=assert %i
+induct: select -assert-count 24 t:$check r:FLAVOR=assert %i
+select -assert-count 12 t:$check r:FLAVOR=cover %i
 memory_map -keepdc
 opt -keepdc
 basic: techmap

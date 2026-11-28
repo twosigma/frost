@@ -19,6 +19,8 @@ script free_undefined.ys
 prep -top nic_diag_formal -flatten
 ~cover: chformal -cover -remove
 opt_clean
+select -assert-count 70 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 2 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/peripherals/nic/nic_pkg.sv

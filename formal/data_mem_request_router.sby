@@ -17,6 +17,8 @@ read -formal -sv data_mem_request_router.sv
 hierarchy -top data_mem_request_router
 script free_undefined.ys
 prep -top data_mem_request_router
+select -assert-count 45 t:$check r:FLAVOR=assert %i
+select -assert-count 9 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

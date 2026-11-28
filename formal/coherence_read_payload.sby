@@ -16,6 +16,7 @@ wide: chparam -set WIDTH 74 coherence_read_payload_formal
 hierarchy -top coherence_read_payload_formal
 script free_undefined.ys
 prep -flatten -top coherence_read_payload_formal
+select -assert-count 19 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_read_payload.sv

@@ -76,6 +76,15 @@ selection: opt -keepdc
 selection: chformal -lower
 selection: select -assert-count 1 t:$assert
 selection: select -assert-none t:$assume
+~selection: select -assert-count 22 t:$check r:FLAVOR=assert %i
+coh_array_bmc: select -assert-count 7 t:$check r:FLAVOR=cover %i
+coh_array_uram_bmc: select -assert-count 7 t:$check r:FLAVOR=cover %i
+coh_array4_bmc: select -assert-count 7 t:$check r:FLAVOR=cover %i
+coh_array4_uram_bmc: select -assert-count 7 t:$check r:FLAVOR=cover %i
+coh_array_cover: select -assert-count 7 t:$check r:FLAVOR=cover %i
+coh_array_uram_cover: select -assert-count 7 t:$check r:FLAVOR=cover %i
+port: select -assert-count 13 t:$check r:FLAVOR=cover %i
+snapshot: select -assert-count 10 t:$check r:FLAVOR=cover %i
 
 [files]
 free_undefined.ys

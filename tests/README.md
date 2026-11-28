@@ -84,6 +84,14 @@ place or fit the macros that elaboration found; a selector group that matches
 no macro stops that script with the group's name. Separate cases elaborate the
 home and L1D arrays and the predictor memories.
 
+`test_asic_flow.py` checks the flow launcher and evaluates its SDC with a
+small connectivity model. The I/O-reference cases cover merged and renamed
+registers, different library pin names, dual-clock memories, multiple
+endpoints, missing ports and wrong clock domains. The CPU-boundary cases
+also check that reset exceptions select only asynchronous controls in the
+reset scope. The ASIC workflow exercises these queries in the pinned
+OpenROAD image on the synthesized design.
+
 ### Strict SystemVerilog elaboration
 
 The fast Python suite executes [`slang_frontend.py`](slang_frontend.py)

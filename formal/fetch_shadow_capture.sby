@@ -25,6 +25,10 @@ one: chparam -set VICTIM_LINES 1 fetch_provider
 hierarchy -top fetch_provider
 script free_undefined.ys
 prep -top fetch_provider
+shadow: select -assert-count 10 t:$check r:FLAVOR=assert %i
+shadow: select -assert-count 3 t:$check r:FLAVOR=cover %i
+direct: select -assert-count 18 t:$check r:FLAVOR=assert %i
+direct: select -assert-count 5 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

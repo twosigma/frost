@@ -29,6 +29,11 @@ prove_soc4: chparam -set NUM_PORTS 4 -set ADDR_WIDTH 64 -set DATA_WIDTH 256 -set
 hierarchy -top axi_mux
 script free_undefined.ys
 prep -top axi_mux
+prove: select -assert-count 36 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 36 t:$check r:FLAVOR=assert %i
+select -assert-count 5 t:$check r:FLAVOR=cover %i
+prove_soc: select -assert-count 38 t:$check r:FLAVOR=assert %i
+prove_soc4: select -assert-count 42 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/axi/axi_mux.sv

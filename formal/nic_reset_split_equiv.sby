@@ -18,6 +18,8 @@ script free_undefined.ys
 prep -top nic_reset_split_equiv -flatten
 ~cover: chformal -cover -remove
 opt_clean
+select -assert-count 24 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 3 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cdc/cdc_sync.sv

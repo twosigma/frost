@@ -115,6 +115,30 @@ covers: prep -flatten -top coherence_home_harness
 ~slang_ctl: opt
 slang_ctl: memory_map -keepdc
 slang_ctl: opt -keepdc
+coh_home_control_prove: select -assert-count 722 t:$check r:FLAVOR=assert %i
+coh_home_fill_cover: select -assert-count 722 t:$check r:FLAVOR=assert %i
+coh_home_cmo_cover: select -assert-count 722 t:$check r:FLAVOR=assert %i
+coh_home_control64_prove: select -assert-count 728 t:$check r:FLAVOR=assert %i
+coh_home_control_partition_prove: select -assert-count 723 t:$check r:FLAVOR=assert %i
+ultra_base: select -assert-count 769 t:$check r:FLAVOR=assert %i
+ultra_fast: select -assert-count 777 t:$check r:FLAVOR=assert %i
+coh_home_control_fast_prove: select -assert-count 730 t:$check r:FLAVOR=assert %i
+coh_home_control64_fast_prove: select -assert-count 736 t:$check r:FLAVOR=assert %i
+coh_home_control_partition_fast_prove: select -assert-count 731 t:$check r:FLAVOR=assert %i
+coh_home_control4_bmc: select -assert-count 822 t:$check r:FLAVOR=assert %i
+coh_home_prefetch_cover: select -assert-count 822 t:$check r:FLAVOR=assert %i
+coh_home_dispatch_cover: select -assert-count 822 t:$check r:FLAVOR=assert %i
+coh_home_control4_ultra_bmc: select -assert-count 855 t:$check r:FLAVOR=assert %i
+coh_home_control4_ultra_fast_bmc: select -assert-count 863 t:$check r:FLAVOR=assert %i
+coh_home_fast_cover: select -assert-count 863 t:$check r:FLAVOR=assert %i
+coh_home_fill_cover: select -assert-count 5 t:$check r:FLAVOR=cover %i
+coh_home_fast_cover: select -assert-count 5 t:$check r:FLAVOR=cover %i
+cmo_base: select -assert-count 4 t:$check r:FLAVOR=cover %i
+wb: select -assert-count 98 t:$check r:FLAVOR=assert %i
+covers: select -assert-count 293 t:$check r:FLAVOR=assert %i
+covers: select -assert-count 1 t:$check r:FLAVOR=cover %i
+pfcover: select -assert-count 6 t:$check r:FLAVOR=cover %i
+dispatch_covers: select -assert-count 2 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_seat_select.sv

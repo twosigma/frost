@@ -22,6 +22,9 @@ hierarchy -top nic_irq_formal
 script free_undefined.ys
 prep -top nic_irq_formal -flatten
 opt_clean
+prove: select -assert-count 13 t:$check r:FLAVOR=assert %i
+~prove: select -assert-count 14 t:$check r:FLAVOR=assert %i
+~prove: select -assert-count 5 t:$check r:FLAVOR=cover %i
 
 [files]
 ../hw/rtl/peripherals/nic/nic_pkg.sv

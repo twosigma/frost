@@ -15,6 +15,7 @@ read -formal -sv alu_shift_hint.sv
 hierarchy -top alu_shift_hint
 script free_undefined.ys
 prep -top alu_shift_hint
+select -assert-count 52 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

@@ -70,6 +70,9 @@ techmap
 opt -fast -keepdc
 setundef -anyseq
 opt_clean
+~reservation: select -assert-count 36 t:$check r:FLAVOR=assert %i
+cover: select -assert-count 4 t:$check r:FLAVOR=cover %i
+reservation: select -assert-count 3 t:$check r:FLAVOR=assert %i
 
 [files]
 ../hw/rtl/lib/cache/coherence_read_stream.sv
